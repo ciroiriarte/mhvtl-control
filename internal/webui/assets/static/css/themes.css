@@ -1,0 +1,226 @@
+/*
+ * mhvtld dashboard — theme tokens + base component styles.
+ *
+ * Two themes, selected via the data-theme attribute on <html>:
+ *   data-theme="modern"  (default): high-density dark appliance console (ours).
+ *   data-theme="classic": mimics the original mhvtl-gui (light grey, bold
+ *                          Tahoma/Trebuchet, cyan accents, pink error boxes).
+ *
+ * All colors/metrics are CSS variables so the two themes swap cleanly and new
+ * themes can be added by defining another [data-theme="..."] block.
+ */
+
+/* ---- Modern (default) ------------------------------------------------- */
+:root,
+:root[data-theme="modern"] {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+  --bg:          #0b0f14;
+  --bg-elev:     #121820;
+  --bg-elev-2:   #19212c;
+  --panel:       #121820;
+  --panel-head:  #1b2531;
+  --border:      #26303d;
+  --border-soft: #1c2530;
+
+  --text:        #e6edf3;
+  --text-dim:    #9fb0c0;
+  --text-faint:  #64748b;
+
+  --accent:      #2dd4bf;   /* teal */
+  --accent-2:    #38bdf8;   /* sky  */
+  --accent-ink:  #052e2b;
+
+  --ok:          #34d399;
+  --warn:        #fbbf24;
+  --err:         #f87171;
+  --err-bg:      #2a1518;
+  --err-border:  #5b2b2f;
+
+  --slot-empty:  #1c2530;
+  --slot-full:   #184e48;
+  --slot-full-br:#2dd4bf;
+  --drive-load:  #1e3a5f;
+
+  --bar-track:   #1c2530;
+  --bar-fill:    linear-gradient(90deg, #2dd4bf, #38bdf8);
+
+  --radius:      8px;
+  --radius-sm:   5px;
+  --gap:         14px;
+  --shadow:      0 1px 0 rgba(255,255,255,.02), 0 8px 24px rgba(0,0,0,.35);
+}
+
+/* ---- Classic (legacy mhvtl-gui look) ---------------------------------- */
+:root[data-theme="classic"] {
+  --font-sans: "Trebuchet MS", Tahoma, Verdana, Arial, Helvetica, sans-serif;
+  --font-mono: "Courier New", Courier, monospace;
+
+  --bg:          #cccccc;
+  --bg-elev:     #eeeeee;
+  --bg-elev-2:   #e4e4e4;
+  --panel:       #ffffff;
+  --panel-head:  #dfeffb;
+  --border:      #00ccff;
+  --border-soft: #9fd9ec;
+
+  --text:        #000000;
+  --text-dim:    #333333;
+  --text-faint:  #666666;
+
+  --accent:      #0099cc;
+  --accent-2:    #00ccff;
+  --accent-ink:  #ffffff;
+
+  --ok:          #1a7f37;
+  --warn:        #b26a00;
+  --err:         #ef013d;
+  --err-bg:      #fbbfdc;
+  --err-border:  #ef013d;
+
+  --slot-empty:  #f2f2f2;
+  --slot-full:   #d7f0fa;
+  --slot-full-br:#00ccff;
+  --drive-load:  #dfeffb;
+
+  --bar-track:   #e4e4e4;
+  --bar-fill:    linear-gradient(90deg, #00ccff, #0099cc);
+
+  --radius:      3px;
+  --radius-sm:   2px;
+  --gap:         10px;
+  --shadow:      none;
+}
+:root[data-theme="classic"] body { font-weight: bold; }
+:root[data-theme="classic"] .panel { border-width: 2px; }
+
+/* ---- Base ------------------------------------------------------------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent-2); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, .mono, .num { font-family: var(--font-mono); }
+
+/* ---- App shell -------------------------------------------------------- */
+.app { max-width: 1280px; margin: 0 auto; padding: 0 16px 48px; }
+
+.topbar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 16px; margin: 0 -16px 18px;
+  background: var(--panel-head);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 10;
+}
+.topbar .brand { font-size: 16px; font-weight: 700; letter-spacing: .3px; }
+.topbar .brand span { color: var(--accent); }
+.topbar .spacer { flex: 1; }
+.topbar .stat { color: var(--text-dim); font-size: 12px; }
+.topbar .stat b { color: var(--text); font-family: var(--font-mono); }
+
+/* theme + target controls */
+.controls { display: flex; align-items: center; gap: 10px; }
+.controls label { color: var(--text-dim); font-size: 12px; }
+select, input[type="text"], input[type="password"] {
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font: inherit;
+}
+
+/* ---- Grid + panels ---------------------------------------------------- */
+.grid { display: grid; gap: var(--gap); grid-template-columns: repeat(12, 1fr); }
+.col-12 { grid-column: span 12; }
+.col-8  { grid-column: span 8; }
+.col-6  { grid-column: span 6; }
+.col-4  { grid-column: span 4; }
+@media (max-width: 920px) { .grid > [class^="col-"] { grid-column: span 12; } }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.panel > header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  background: var(--panel-head);
+  border-bottom: 1px solid var(--border);
+  font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .5px;
+}
+.panel > header .count { color: var(--text-faint); font-weight: 400; }
+.panel > .body { padding: 14px; }
+
+/* ---- Library rack ----------------------------------------------------- */
+.rack { display: flex; flex-direction: column; gap: 12px; }
+.drive-row, .slot-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.drive {
+  min-width: 150px; padding: 8px 10px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+}
+.drive.loaded { background: var(--drive-load); border-color: var(--accent); }
+.drive .id { font-family: var(--font-mono); color: var(--text-dim); font-size: 12px; }
+.drive .pid { font-weight: 600; }
+
+.slot-grid { gap: 6px; }
+.slot {
+  width: 86px; padding: 6px 8px; text-align: center;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+  background: var(--slot-empty); font-size: 11px;
+}
+.slot.full { background: var(--slot-full); border-color: var(--slot-full-br); }
+.slot .n { color: var(--text-faint); display: block; font-family: var(--font-mono); }
+.slot .bc { font-family: var(--font-mono); font-weight: 600; }
+
+/* ---- Disk dock -------------------------------------------------------- */
+.disk { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
+.disk:last-child { border-bottom: 0; }
+.disk .head { display: flex; align-items: baseline; gap: 10px; }
+.disk .name { font-family: var(--font-mono); font-weight: 700; }
+.disk .tag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+  padding: 1px 6px; border-radius: 999px;
+  background: var(--bg-elev-2); color: var(--text-dim); border: 1px solid var(--border-soft);
+}
+.disk .tag.mvtl { background: var(--slot-full); color: var(--text); border-color: var(--slot-full-br); }
+.bar { height: 8px; border-radius: 999px; background: var(--bar-track); overflow: hidden; margin-top: 6px; }
+.bar > span { display: block; height: 100%; background: var(--bar-fill); }
+
+/* ---- Buttons ---------------------------------------------------------- */
+.btn {
+  font: inherit; font-weight: 600; cursor: pointer;
+  padding: 6px 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elev); color: var(--text);
+}
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.sm { padding: 3px 8px; font-size: 12px; }
+
+/* ---- Tables ----------------------------------------------------------- */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border-soft); }
+th { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+
+/* ---- Messaging -------------------------------------------------------- */
+.error {
+  background: var(--err-bg); color: var(--err);
+  border: 1px solid var(--err-border); border-radius: var(--radius-sm);
+  padding: 8px 12px; margin: 8px 0;
+}
+.muted { color: var(--text-faint); }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }

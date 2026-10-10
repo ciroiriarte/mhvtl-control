@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en" data-theme="modern">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mhvtld — Virtual Tape Appliance</title>
+  <link rel="stylesheet" href="static/css/themes.css">
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">mh<span>vtld</span></div>
+    <div class="stat" id="sys-stat">connecting…</div>
+    <div class="spacer"></div>
+    <div class="controls">
+      <label for="theme-select">Theme</label>
+      <select id="theme-select" aria-label="Theme">
+        <option value="modern">Modern</option>
+        <option value="classic">Classic (mhvtl-gui)</option>
+      </select>
+      <button class="btn sm" id="target-btn" title="Configure the mhvtld node this dashboard manages">Target…</button>
+      <button class="btn sm" id="refresh-btn">Refresh</button>
+    </div>
+  </div>
+
+  <main class="app">
+    <div id="global-error"></div>
+
+    <div class="grid">
+      <section class="panel col-8">
+        <header>Library Rack <span class="count" id="lib-count"></span></header>
+        <div class="body" id="library-rack"><p class="muted">Loading libraries…</p></div>
+      </section>
+
+      <section class="panel col-4">
+        <header>System</header>
+        <div class="body" id="system-status"><p class="muted">Loading…</p></div>
+      </section>
+
+      <section class="panel col-12">
+        <header>Raw Disk Dock <span class="count" id="disk-count"></span></header>
+        <div class="body" id="disk-dock"><p class="muted">Loading disks…</p></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Remote target configuration (API base URL + bearer token) -->
+  <dialog id="target-dialog">
+    <form method="dialog" id="target-form">
+      <h3 style="margin:0 0 10px">Managed node</h3>
+      <p class="muted" style="margin:0 0 12px">
+        Point this dashboard at a local or remote mhvtld. Leave the base URL
+        blank to use the node that served this page (same origin).
+      </p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <label>API base URL
+          <input type="text" id="target-url" placeholder="https://vtl-node.example:8080" style="width:100%">
+        </label>
+        <label>API token (Bearer)
+          <input type="password" id="target-token" placeholder="optional" style="width:100%">
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" id="target-save" value="save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="static/js/app.js"></script>
+</body>
+</html>
