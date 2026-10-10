@@ -8,6 +8,15 @@
  *
  * All colors/metrics are CSS variables so the two themes swap cleanly and new
  * themes can be added by defining another [data-theme="..."] block.
+ *
+ * WCAG-AA CONTRAST (US-F9) — verified ratios for text/link foregrounds:
+ *   modern --text-faint #94a3b8 on --bg-elev #121820 .......... 6.96:1  (was
+ *       #64748b 3.6:1 FAIL).
+ *   classic --err (error TEXT) #a8002a on --err-bg #fbbfdc ..... 5.04:1  (was
+ *       #ef013d 2.87:1 FAIL; the red #ef013d is kept only as the error border).
+ *   classic --accent-2 (link/accent TEXT) #00698f on #ffffff ... 6.15:1  (was
+ *       #00ccff 1.90:1 FAIL; #00ccff is kept ONLY as a decorative border/fill,
+ *       e.g. --border, --slot-full-br, --bar-fill).
  */
 
 /* ---- Modern (default) ------------------------------------------------- */
@@ -26,7 +35,7 @@
 
   --text:        #e6edf3;
   --text-dim:    #9fb0c0;
-  --text-faint:  #64748b;
+  --text-faint:  #94a3b8;   /* WCAG-AA: 6.96:1 on #121820 (was #64748b) */
 
   --accent:      #2dd4bf;   /* teal */
   --accent-2:    #38bdf8;   /* sky  */
@@ -70,14 +79,14 @@
   --text-faint:  #666666;
 
   --accent:      #0099cc;
-  --accent-2:    #00ccff;
+  --accent-2:    #00698f;   /* WCAG-AA link/text: 6.15:1 on #fff (was #00ccff) */
   --accent-ink:  #ffffff;
 
   --ok:          #1a7f37;
   --warn:        #b26a00;
-  --err:         #ef013d;
+  --err:         #a8002a;   /* WCAG-AA error TEXT: 5.04:1 on #fbbfdc (was #ef013d) */
   --err-bg:      #fbbfdc;
-  --err-border:  #ef013d;
+  --err-border:  #ef013d;   /* decorative red border only */
 
   --slot-empty:  #f2f2f2;
   --slot-full:   #d7f0fa;
@@ -115,6 +124,7 @@ code, .mono, .num { font-family: var(--font-mono); }
 
 .topbar {
   display: flex; align-items: center; gap: 16px;
+  flex-wrap: wrap; /* US-F10: wrap on narrow screens, no horizontal overflow */
   padding: 12px 16px; margin: 0 -16px 18px;
   background: var(--panel-head);
   border-bottom: 1px solid var(--border);
@@ -127,7 +137,7 @@ code, .mono, .num { font-family: var(--font-mono); }
 .topbar .stat b { color: var(--text); font-family: var(--font-mono); }
 
 /* theme + target controls */
-.controls { display: flex; align-items: center; gap: 10px; }
+.controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .controls label { color: var(--text-dim); font-size: 12px; }
 select, input[type="text"], input[type="password"] {
   background: var(--bg-elev);
@@ -144,7 +154,14 @@ select, input[type="text"], input[type="password"] {
 .col-8  { grid-column: span 8; }
 .col-6  { grid-column: span 6; }
 .col-4  { grid-column: span 4; }
-@media (max-width: 920px) { .grid > [class^="col-"] { grid-column: span 12; } }
+/* US-F10: panels carry `panel col-N`, so a prefix selector on the col- class
+ * never matched (the class list starts with "panel", not "col-"). Target the
+ * col-* classes directly so panels collapse to full width at phone widths. */
+@media (max-width: 920px) {
+  .grid > .col-8,
+  .grid > .col-6,
+  .grid > .col-4 { grid-column: span 12; }
+}
 
 .panel {
   background: var(--panel);
@@ -185,6 +202,54 @@ select, input[type="text"], input[type="password"] {
 .slot .n { color: var(--text-faint); display: block; font-family: var(--font-mono); }
 .slot .bc { font-family: var(--font-mono); font-weight: 600; }
 
+/* ---- Library toolbar (US-F6: search / filter / table / multi-lib nav) -- */
+.lib-toolbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 14px; border-bottom: 1px solid var(--border-soft);
+}
+.lib-toolbar[hidden] { display: none; }
+.lib-toolbar .ctl, .lib-toolbar .lib-nav { color: var(--text-dim); font-size: 12px; display: flex; align-items: center; gap: 6px; }
+.lib-toolbar .slot-search { flex: 1; min-width: 140px; }
+.slot-summary { font-size: 11px; margin: 8px 0 4px; }
+
+/* US-F6: bound the slot area so hundreds of slots never blow out page height. */
+.slot-scroll { max-height: 340px; overflow: auto; padding-right: 2px; }
+.slot-table { width: 100%; }
+.slot-table th, .slot-table td { font-size: 12px; }
+.slot-table td.mono { font-family: var(--font-mono); }
+
+/* ---- MAP (import/export) area — visually distinct from storage slots ---- */
+.map-area {
+  border: 1px dashed var(--accent-2); border-radius: var(--radius-sm);
+  background: var(--bg-elev); padding: 8px 10px; margin: 4px 0 2px;
+}
+.map-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+  font-weight: 700; color: var(--accent-2); margin-bottom: 6px;
+}
+.map-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.map-slot {
+  display: flex; flex-direction: column; gap: 4px;
+  min-width: 140px; padding: 6px 8px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+  background: var(--slot-empty); font-size: 11px;
+}
+.map-slot.full { background: var(--slot-full); border-color: var(--slot-full-br); }
+.map-slot .n { color: var(--text-faint); }
+.map-slot .bc { font-weight: 600; }
+.map-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ---- Telemetry badges (US-F7) ----------------------------------------- */
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.badge {
+  font-size: 10px; letter-spacing: .3px;
+  padding: 1px 6px; border-radius: 999px;
+  background: var(--bg-elev-2); color: var(--text-dim); border: 1px solid var(--border-soft);
+}
+.badge.comp.on { background: var(--slot-full); color: var(--text); border-color: var(--slot-full-br); }
+.badge.configured { background: var(--drive-load); color: var(--text); border-color: var(--accent); }
+.cap-line { font-size: 11px; margin: 6px 0 2px; }
+
 /* ---- Disk dock -------------------------------------------------------- */
 .disk { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
 .disk:last-child { border-bottom: 0; }
@@ -196,6 +261,10 @@ select, input[type="text"], input[type="password"] {
   background: var(--bg-elev-2); color: var(--text-dim); border: 1px solid var(--border-soft);
 }
 .disk .tag.mvtl { background: var(--slot-full); color: var(--text); border-color: var(--slot-full-br); }
+/* US-F8: distinct tones for the four truthful disk-status labels. */
+.disk .tag.status.err { background: var(--err-bg); color: var(--err); border-color: var(--err-border); }
+.disk .tag.status.inuse { background: var(--drive-load); color: var(--text); border-color: var(--accent); }
+.disk .tag.status.none { background: var(--bg-elev-2); color: var(--text-dim); }
 .bar { height: 8px; border-radius: 999px; background: var(--bar-track); overflow: hidden; margin-top: 6px; }
 .bar > span { display: block; height: 100%; background: var(--bar-fill); }
 
@@ -208,7 +277,18 @@ select, input[type="text"], input[type="password"] {
 }
 .btn:hover { border-color: var(--accent); }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.btn.sm { padding: 3px 8px; font-size: 12px; }
+/* US-F9: small actions keep a >=32px touch target. */
+.btn.sm { padding: 4px 10px; font-size: 12px; min-height: 32px; }
+
+/* US-F9: a clearly-visible keyboard focus ring for every interactive element. */
+a:focus-visible,
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}
 
 /* ---- Tables ----------------------------------------------------------- */
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -224,3 +304,78 @@ th { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-
 .muted { color: var(--text-faint); }
 .ok { color: var(--ok); }
 .warn { color: var(--warn); }
+
+/* ---- Active-node badge ------------------------------------------------ */
+.node-badge {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-dim);
+  padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-elev);
+}
+.node-badge .node-label { font-family: var(--font-mono); color: var(--text); }
+.node-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+.node-badge .dot.ok { background: var(--ok); }
+.node-badge .dot.err { background: var(--err); }
+.node-badge .dot.unknown { background: var(--warn); }
+
+/* ---- Per-panel status regions ----------------------------------------- */
+.panel-status { padding: 4px 14px; min-height: 0; font-size: 11px; }
+.panel-status:empty { padding: 0; }
+.panel-status .status-line { color: var(--text-faint); }
+.panel-status .status-line.loading { color: var(--text-dim); }
+.panel-error {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--err-bg); color: var(--err);
+  border: 1px solid var(--err-border); border-radius: var(--radius-sm);
+  padding: 6px 10px; font-size: 12px; margin: 4px 0;
+}
+.panel-error .msg { flex: 1; }
+.panel-error .dismiss {
+  background: transparent; border: 0; color: var(--err); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0 2px;
+}
+.body.greyed { opacity: .4; pointer-events: none; filter: grayscale(.5); }
+
+/* ---- Drive actions / loaded info -------------------------------------- */
+.drive-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.drive .loaded-info { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+.btn.ghost { background: transparent; }
+.btn[disabled] { opacity: .45; cursor: not-allowed; }
+.btn[disabled]:hover { border-color: var(--border); }
+
+/* ---- Dialog chrome ---------------------------------------------------- */
+dialog {
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 18px; max-width: 520px; width: 92vw;
+}
+dialog::backdrop { background: rgba(0,0,0,.55); }
+dialog h3 { font-size: 15px; }
+.inline-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); }
+.target-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.test-result { font-size: 12px; }
+.test-result.ok { color: var(--ok); }
+.test-result.err { color: var(--err); }
+
+/* ---- Mount picker ----------------------------------------------------- */
+.mount-slot-list { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; }
+.btn.slot-pick { display: flex; justify-content: space-between; gap: 12px; text-align: left; }
+.btn.slot-pick .n { color: var(--text-faint); }
+
+/* ---- Format dialog ---------------------------------------------------- */
+.format-details { margin-bottom: 12px; }
+.danger {
+  background: var(--err-bg); color: var(--err);
+  border: 1px solid var(--err-border); border-radius: var(--radius-sm);
+  padding: 8px 12px; font-weight: 700; font-size: 12px; margin: 0 0 12px;
+}
+
+/* ---- Toasts ----------------------------------------------------------- */
+.toast-wrap { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+.toast {
+  background: var(--bg-elev-2); color: var(--text);
+  border: 1px solid var(--accent); border-left-width: 3px;
+  border-radius: var(--radius-sm); padding: 8px 14px; font-size: 13px;
+  box-shadow: var(--shadow); opacity: 1; transition: opacity .3s ease;
+}
+.toast.leaving { opacity: 0; }

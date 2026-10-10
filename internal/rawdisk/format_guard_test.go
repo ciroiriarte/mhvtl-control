@@ -1,9 +1,58 @@
 package rawdisk
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestFormatRejectsMountedDevice verifies ToolFormatter.Format refuses a device
+// whose partition is mounted, even with Force set.
+func TestFormatRejectsMountedDevice(t *testing.T) {
+	ms, err := ParseMountinfo(strings.NewReader(fakeMountinfo)) // /dev/sdb1 mounted
+	if err != nil {
+		t.Fatalf("ParseMountinfo: %v", err)
+	}
+	tf := ToolFormatter{ToolPath: "/bin/true", Mounts: ms}
+	_, err = tf.Format(FormatRequest{Device: "/dev/sdb", Barcode: "VOL001L5", Force: true})
+	if !errors.Is(err, ErrDeviceInUse) {
+		t.Fatalf("err = %v, want ErrDeviceInUse (even with Force)", err)
+	}
+}
+
+// TestFormatRejectsSystemDevice verifies a disk backing "/" is refused.
+func TestFormatRejectsSystemDevice(t *testing.T) {
+	ms, err := ParseMountinfo(strings.NewReader(fakeMountinfo)) // /dev/sda2 backs /
+	if err != nil {
+		t.Fatalf("ParseMountinfo: %v", err)
+	}
+	tf := ToolFormatter{ToolPath: "/bin/true", Mounts: ms}
+	_, err = tf.Format(FormatRequest{Device: "/dev/sda", Barcode: "VOL001L5", Force: true})
+	if !errors.Is(err, ErrDeviceInUse) {
+		t.Fatalf("err = %v, want ErrDeviceInUse", err)
+	}
+}
+
+// TestFormatAllowsEligibleDevice verifies the in-use guard does NOT fire for an
+// unmounted, non-MVTL device. The /bin/true stub avoids a real format tool; the
+// subsequent superblock re-read may fail, but it must not be ErrDeviceInUse.
+func TestFormatAllowsEligibleDevice(t *testing.T) {
+	ms, err := ParseMountinfo(strings.NewReader("")) // nothing mounted
+	if err != nil {
+		t.Fatalf("ParseMountinfo: %v", err)
+	}
+	img := filepath.Join(t.TempDir(), "disk.img")
+	if err := os.WriteFile(img, make([]byte, 4<<20), 0o644); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	tf := ToolFormatter{ToolPath: "/bin/true", Mounts: ms}
+	_, err = tf.Format(FormatRequest{Device: img, Barcode: "VOL001L5", Force: true})
+	if errors.Is(err, ErrDeviceInUse) {
+		t.Fatalf("eligible device wrongly rejected as in use: %v", err)
+	}
+}
 
 // TestFormatRejectsArgvInjection verifies the argv-injection guards in
 // ToolFormatter.Format: a non-absolute or flag-like device and an out-of-charset

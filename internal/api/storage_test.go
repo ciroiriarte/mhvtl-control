@@ -47,6 +47,26 @@ func TestDisksHandlerUnformatted(t *testing.T) {
 	if d.Path != img {
 		t.Errorf("path = %q, want %q", d.Path, img)
 	}
+	if d.Status != "no_mvtl" {
+		t.Errorf("status = %q, want no_mvtl", d.Status)
+	}
+}
+
+func TestFormatDeviceInUse(t *testing.T) {
+	ff := fakeFormatter{err: rawdisk.ErrDeviceInUse}
+	h := NewServer(Config{Formatter: ff}).Handler()
+
+	rec := postJSON(t, h, "/api/v1/storage/disks/format", `{"device":"/dev/sdb","barcode":"VOL001L5"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (body %s)", rec.Code, rec.Body.String())
+	}
+	var env errorEnvelope
+	if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Error.Code != "device_in_use" {
+		t.Errorf("code = %q, want device_in_use", env.Error.Code)
+	}
 }
 
 // fakeFormatter is a test Formatter returning a canned superblock or error.

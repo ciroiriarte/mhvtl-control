@@ -29,6 +29,7 @@ type diskDTO struct {
 	LogicalSectorSize  int      `json:"logical_sector_size"`
 	PhysicalSectorSize int      `json:"physical_sector_size"`
 	MVTLFormatted      bool     `json:"mvtl_formatted"`
+	Status             string   `json:"status"`
 	Model              string   `json:"model"`
 	Serial             string   `json:"serial"`
 	TempCelsius        *int     `json:"temp_celsius"`
@@ -59,6 +60,7 @@ func toDiskDTO(d rawdisk.Disk) diskDTO {
 		LogicalSectorSize:  d.LogicalSectorSize,
 		PhysicalSectorSize: d.PhysicalSectorSize,
 		MVTLFormatted:      d.MVTLFormatted,
+		Status:             d.Status,
 		Model:              d.Model,
 		Serial:             d.Serial,
 		TempCelsius:        d.TempCelsius,
@@ -109,6 +111,10 @@ func (s *Server) handleFormat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, rawdisk.ErrAlreadyFormatted) {
 			writeError(w, http.StatusConflict, "already_formatted", err.Error())
+			return
+		}
+		if errors.Is(err, rawdisk.ErrDeviceInUse) {
+			writeError(w, http.StatusConflict, "device_in_use", err.Error())
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "format_error", err.Error())

@@ -3,6 +3,7 @@ package rawdisk
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -29,6 +30,16 @@ type FormatRequest struct {
 // carries a valid MVTL superblock and Force was not set.
 var ErrAlreadyFormatted = errors.New("device already carries an MVTL superblock; use force")
 
+// ErrDeviceInUse is returned when the target device is mounted (or a partition
+// of it is) or backs a critical system mount. It is refused unconditionally,
+// even with Force, to prevent wiping a live or system disk.
+var ErrDeviceInUse = errors.New("rawdisk: device is mounted or a system disk; refusing to format")
+
+// ErrMountCheckUnavailable is returned when the mount table cannot be read and
+// the target is a real block device. The in-use guard cannot be evaluated, so
+// formatting fails closed rather than risk wiping a mounted or system disk.
+var ErrMountCheckUnavailable = errors.New("rawdisk: cannot read mount table to verify a block device is not in use; refusing to format")
+
 // Formatter initializes a device with an MVTL superblock and returns the
 // resulting superblock summary.
 type Formatter interface {
@@ -41,6 +52,9 @@ type Formatter interface {
 type ToolFormatter struct {
 	// ToolPath is the path to the mhvtl-raw-format executable.
 	ToolPath string
+	// Mounts is the mount-state seam used to refuse formatting a mounted or
+	// system disk. When nil, DefaultMounts() is consulted at call time.
+	Mounts MountChecker
 }
 
 // Format guards against clobbering an existing cartridge, then execs the
@@ -76,6 +90,27 @@ func (t ToolFormatter) Format(req FormatRequest) (*Superblock, error) {
 		return nil, fmt.Errorf("rawdisk: invalid barcode %q", req.Barcode)
 	}
 
+	// Refuse a mounted or system disk unconditionally, before any force logic:
+	// Force may overwrite an existing cartridge, never a live/system disk.
+	mounts := t.Mounts
+	if mounts == nil {
+		m, err := DefaultMounts()
+		if err != nil {
+			// Fail closed: without a mount table we cannot prove the target is
+			// not mounted or a system disk. For a real block device that risks
+			// wiping a live disk, so refuse. A regular file (image, as used in
+			// tests) cannot be a mount source, so proceed.
+			if isBlockDevice(req.Device) {
+				return nil, ErrMountCheckUnavailable
+			}
+		} else {
+			mounts = m
+		}
+	}
+	if mounts != nil && (mounts.IsDeviceInUse(req.Device) || mounts.IsSystemDisk(req.Device)) {
+		return nil, ErrDeviceInUse
+	}
+
 	if !req.Force {
 		if _, err := ReadSuperblock(req.Device); err == nil {
 			return nil, ErrAlreadyFormatted
@@ -103,6 +138,18 @@ func (t ToolFormatter) Format(req FormatRequest) (*Superblock, error) {
 // even if the Device validation in Format were ever loosened.
 func formatArgs(barcode, device string) []string {
 	return []string{"--barcode", barcode, "--", device}
+}
+
+// isBlockDevice reports whether path is a block special device (the S_ISBLK
+// equivalent). A stat failure or any non-block mode returns false, so the
+// fail-closed guard fires only for a confirmed block device.
+func isBlockDevice(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	mode := fi.Mode()
+	return mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0
 }
 
 // isAbsentSuperblock reports whether err means "no usable MVTL superblock",

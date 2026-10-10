@@ -27,6 +27,10 @@ type Disk struct {
 
 	// TempCelsius is a best-effort SMART/hwmon temperature, nil if unknown.
 	TempCelsius *int
+
+	// Status is a coarse per-disk classification: "in_use", "mvtl", "no_mvtl",
+	// or "probe_failed". See classifyStatus.
+	Status string
 }
 
 // Options controls ListDisks.
@@ -65,6 +69,13 @@ func ListDisks(opts Options) ([]Disk, error) {
 
 	var disks []Disk
 
+	// Best-effort mount snapshot: a read failure yields the zero MountSet, which
+	// reports nothing in use, so classification still proceeds by superblock.
+	mounts, err := DefaultMounts()
+	if err != nil {
+		mounts = MountSet{}
+	}
+
 	entries, err := os.ReadDir(sysDir)
 	if err != nil {
 		// Missing sysfs (e.g. in a test sandbox) is not fatal; still process
@@ -78,11 +89,11 @@ func ListDisks(opts Options) ([]Disk, error) {
 		if !opts.IncludeVirtual && isVirtual(name) {
 			continue
 		}
-		disks = append(disks, probeSysBlock(sysDir, name))
+		disks = append(disks, probeSysBlock(sysDir, name, mounts))
 	}
 
 	for _, p := range opts.ScanPaths {
-		disks = append(disks, probeScanPath(p))
+		disks = append(disks, probeScanPath(p, mounts))
 	}
 
 	return disks, nil
@@ -90,7 +101,7 @@ func ListDisks(opts Options) ([]Disk, error) {
 
 // probeSysBlock builds a Disk from /sys/block/<name> and a ReadSuperblock
 // attempt against /dev/<name>.
-func probeSysBlock(sysDir, name string) Disk {
+func probeSysBlock(sysDir, name string, mounts MountChecker) Disk {
 	base := filepath.Join(sysDir, name)
 	d := Disk{Name: name, Path: filepath.Join("/dev", name)}
 
@@ -106,31 +117,55 @@ func probeSysBlock(sysDir, name string) Disk {
 	d.Model = readStr(filepath.Join(base, "device", "model"))
 	d.Serial = readStr(filepath.Join(base, "device", "serial"))
 
-	attachSuperblock(&d, d.Path)
+	readErr := attachSuperblock(&d, d.Path)
+	d.Status = classifyStatus(d.MVTL, readErr, deviceInUse(mounts, d.Path))
 	return d
 }
 
 // probeScanPath builds a Disk from an explicit image/device path.
-func probeScanPath(path string) Disk {
+func probeScanPath(path string, mounts MountChecker) Disk {
 	d := Disk{Path: path, Name: filepath.Base(path)}
 	if fi, err := os.Stat(path); err == nil {
 		if fi.Size() >= 0 {
 			d.SizeBytes = uint64(fi.Size())
 		}
 	}
-	attachSuperblock(&d, path)
+	readErr := attachSuperblock(&d, path)
+	d.Status = classifyStatus(d.MVTL, readErr, deviceInUse(mounts, path))
 	return d
 }
 
 // attachSuperblock runs ReadSuperblock and records the result. Absence and
-// permission errors are swallowed; only a valid superblock sets MVTLFormatted.
-func attachSuperblock(d *Disk, path string) {
+// permission errors are swallowed from the Disk fields (only a valid superblock
+// sets MVTLFormatted) but returned so the caller can classify the disk.
+func attachSuperblock(d *Disk, path string) error {
 	sb, err := ReadSuperblock(path)
 	if err != nil {
-		return
+		return err
 	}
 	d.MVTL = sb
 	d.MVTLFormatted = true
+	return nil
+}
+
+// deviceInUse reports whether mounts flags path as mounted or a system disk.
+func deviceInUse(mounts MountChecker, path string) bool {
+	return mounts != nil && (mounts.IsDeviceInUse(path) || mounts.IsSystemDisk(path))
+}
+
+// classifyStatus maps a superblock-read outcome and mount state to a coarse
+// per-disk status. "in_use" takes precedence over any superblock state.
+func classifyStatus(sb *Superblock, readErr error, inUse bool) string {
+	if inUse {
+		return "in_use"
+	}
+	if readErr == nil && sb != nil {
+		return "mvtl"
+	}
+	if errors.Is(readErr, ErrNotFormatted) {
+		return "no_mvtl"
+	}
+	return "probe_failed"
 }
 
 // readStr reads a sysfs attribute and trims surrounding whitespace; returns ""
