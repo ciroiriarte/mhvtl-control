@@ -229,6 +229,25 @@ func TestThemesResponsiveGridFixAndContrast(t *testing.T) {
 	}
 }
 
+// TestClassicThemeChrome asserts the classic theme carries the faithful
+// mhvtl-gui skin (blue gradient banner, purple section headers, black terminal
+// System pane, beveled buttons) rather than a plain light palette.
+func TestClassicThemeChrome(t *testing.T) {
+	h := newServer()
+	_, css := get(t, h, "/static/css/themes.css")
+	for _, marker := range []string{
+		`[data-theme="classic"] .topbar`,             // blue gradient banner
+		`[data-theme="classic"] #system-panel .body`, // black terminal pane
+		`[data-theme="classic"] .panel > header`,     // purple section header
+		`[data-theme="classic"] .btn {`,              // beveled buttons
+		"#8a008a",                                    // purple header color (AA 6.87:1 on #e6e6e6)
+	} {
+		if !strings.Contains(css, marker) {
+			t.Errorf("classic theme missing faithful-skin marker %q", marker)
+		}
+	}
+}
+
 func TestReferencedAssetsDoNotFourOhFour(t *testing.T) {
 	h := newServer()
 	for _, path := range []string{"/static/css/themes.css", "/static/js/app.js"} {

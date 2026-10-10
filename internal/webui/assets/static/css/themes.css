@@ -3,8 +3,12 @@
  *
  * Two themes, selected via the data-theme attribute on <html>:
  *   data-theme="modern"  (default): high-density dark appliance console (ours).
- *   data-theme="classic": mimics the original mhvtl-gui (light grey, bold
- *                          Tahoma/Trebuchet, cyan accents, pink error boxes).
+ *   data-theme="classic": faithful skin of the original mhvtl-gui (markh794) —
+ *                          blue gradient banner, embossed MHVTL wordmark,
+ *                          purple section headers, a black terminal System
+ *                          pane with yellow/green monospace, and beveled Win9x
+ *                          controls on a grey background. Same single-page
+ *                          layout as modern; see the "Classic chrome" block.
  *
  * All colors/metrics are CSS variables so the two themes swap cleanly and new
  * themes can be added by defining another [data-theme="..."] block.
@@ -66,13 +70,13 @@
   --font-sans: "Trebuchet MS", Tahoma, Verdana, Arial, Helvetica, sans-serif;
   --font-mono: "Courier New", Courier, monospace;
 
-  --bg:          #cccccc;
-  --bg-elev:     #eeeeee;
-  --bg-elev-2:   #e4e4e4;
-  --panel:       #ffffff;
-  --panel-head:  #dfeffb;
-  --border:      #00ccff;
-  --border-soft: #9fd9ec;
+  --bg:          #c0c0c0;   /* classic desktop grey behind the content */
+  --bg-elev:     #ececec;
+  --bg-elev-2:   #e0e0e0;
+  --panel:       #f0f0f0;   /* light grey group-box like the mhvtl-gui console */
+  --panel-head:  #ececec;
+  --border:      #808080;   /* win9x bevel grey */
+  --border-soft: #a8a8a8;
 
   --text:        #000000;
   --text-dim:    #333333;
@@ -102,7 +106,143 @@
   --shadow:      none;
 }
 :root[data-theme="classic"] body { font-weight: bold; }
-:root[data-theme="classic"] .panel { border-width: 2px; }
+
+/* =======================================================================
+ * Classic chrome — faithful skin of the original mhvtl-gui (markh794):
+ * blue gradient pill title-bars, beveled Win9x controls, a black terminal
+ * System pane with green/yellow monospace, purple section headers, and an
+ * embossed MHVTL wordmark. Scoped to [data-theme="classic"] so the modern
+ * theme is untouched. Palette taken from the 2011 web console screenshots.
+ * ===================================================================== */
+
+/* Page + typography */
+:root[data-theme="classic"] body {
+  background:
+    repeating-linear-gradient(0deg, transparent 0 2px, rgba(0,0,0,.015) 2px 3px),
+    var(--bg);
+}
+:root[data-theme="classic"] .app { padding-top: 0; }
+
+/* Signature blue gradient pill bar as the top banner */
+:root[data-theme="classic"] .topbar {
+  background: linear-gradient(180deg, #4f7bf0 0%, #1c3fd0 45%, #0a1f9a 100%);
+  border: 1px solid #0a1f6e;
+  border-radius: 9px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.55), 0 1px 2px rgba(0,0,0,.4);
+  margin: 10px 0 16px;
+  padding: 8px 14px;
+  color: #fff;
+}
+:root[data-theme="classic"] .topbar .stat,
+:root[data-theme="classic"] .topbar .node-label,
+:root[data-theme="classic"] .topbar .node-health,
+:root[data-theme="classic"] .topbar .controls label { color: #eaf0ff; }
+:root[data-theme="classic"] .topbar .stat b { color: #fff; }
+
+/* Embossed MHVTL-style wordmark */
+:root[data-theme="classic"] .brand {
+  font-family: "Arial Black", "Arial Narrow", Impact, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  color: #dfe6f5;
+  text-shadow: 1px 1px 0 #06105a, -1px -1px 0 rgba(255,255,255,.45);
+}
+:root[data-theme="classic"] .brand span { color: #fff; }
+
+/* Node badge as an inset status chip on the blue bar */
+:root[data-theme="classic"] .node-badge {
+  background: rgba(0,0,0,.28);
+  border: 1px solid #06105a;
+  border-radius: 3px;
+}
+
+/* Beveled Win9x buttons */
+:root[data-theme="classic"] .btn {
+  background: #d4d0c8;
+  color: #000;
+  border: 2px outset #f4f2ee;
+  border-radius: 0;
+  font-weight: bold;
+  box-shadow: none;
+}
+:root[data-theme="classic"] .btn:hover { background: #dedbd4; }
+:root[data-theme="classic"] .btn:active { border-style: inset; }
+:root[data-theme="classic"] .btn.primary {   /* green "Start"-style */
+  background: #0a8a0a; color: #fff; border: 2px outset #5fd05f;
+}
+:root[data-theme="classic"] .btn.danger,
+:root[data-theme="classic"] .btn[data-kind="danger"] { /* red "Stop"-style */
+  background: #c40000; color: #fff; border: 2px outset #ff6b6b;
+}
+
+/* Inputs / selects as sunken fields */
+:root[data-theme="classic"] select,
+:root[data-theme="classic"] input[type="text"],
+:root[data-theme="classic"] input[type="search"],
+:root[data-theme="classic"] input[type="password"] {
+  background: #fff; color: #000;
+  border: 2px inset #d4d0c8; border-radius: 0;
+}
+
+/* Group-box panels with a bevel + purple header on a blue underline */
+:root[data-theme="classic"] .panel {
+  background: var(--panel);
+  border: 2px solid #808080;
+  box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 #9a9a9a;
+  border-radius: 0;
+}
+:root[data-theme="classic"] .panel > header {
+  background: #e6e6e6;
+  color: #8a008a;                 /* purple section title */
+  border-bottom: 2px solid #1c3fd0;
+  text-transform: none;
+  font-weight: 700;
+  letter-spacing: .2px;
+}
+:root[data-theme="classic"] .panel > header .count { color: #1c3fd0; }
+
+/* The System panel as a black terminal pane (the gui's status box) */
+:root[data-theme="classic"] #system-panel .body {
+  background: #000;
+  border-top: 1px solid #333;
+  font-family: var(--font-mono);
+  font-weight: bold;
+}
+:root[data-theme="classic"] #system-panel .body th { color: #ffd21a; }   /* yellow labels */
+:root[data-theme="classic"] #system-panel .body td { color: #39ff5a; }   /* green values  */
+:root[data-theme="classic"] #system-panel .body tr { border-color: #1e1e1e; }
+:root[data-theme="classic"] #system-panel .body .muted { color: #8a8a8a; }
+
+/* Library / disk panels keep the light console look */
+:root[data-theme="classic"] .lib-toolbar { background: #e6e6e6; border-bottom: 1px solid #a8a8a8; }
+:root[data-theme="classic"] .drive {
+  border: 2px solid #808080;
+  box-shadow: inset 1px 1px 0 #fff, inset -1px -1px 0 #9a9a9a;
+  background: #f6f6f6;
+}
+:root[data-theme="classic"] .drive.loaded { background: #d7e6fb; border-color: #1c3fd0; }
+:root[data-theme="classic"] .slot {
+  border: 2px solid #9a9a9a;
+  box-shadow: inset 1px 1px 0 #fff;
+  background: #f2f2f2; border-radius: 0;
+}
+:root[data-theme="classic"] .slot.full { background: #cfe3fb; border-color: #1c3fd0; }
+
+/* Bold blue links/accents (gui uses blue hyperlinks) */
+:root[data-theme="classic"] a { color: #0a1fd0; font-weight: bold; }
+
+/* Map area + badges: beveled, blue-accented */
+:root[data-theme="classic"] .map-area { border: 2px solid #808080; box-shadow: inset 1px 1px 0 #fff; }
+:root[data-theme="classic"] .tag { border-radius: 2px; }
+
+/* Thin blue gradient divider under the banner, echoing the gui's double bar */
+:root[data-theme="classic"] .topbar::after {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: -8px; height: 4px;
+  background: linear-gradient(90deg, #1c3fd0, #4f7bf0, #1c3fd0);
+  border-radius: 3px;
+}
+:root[data-theme="classic"] .topbar { position: relative; }
 
 /* ---- Base ------------------------------------------------------------- */
 * { box-sizing: border-box; }
