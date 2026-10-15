@@ -1,0 +1,30 @@
+Source: mhvtld
+Section: admin
+Priority: optional
+Maintainer: Ciro Iriarte <ciro.iriarte@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ golang-go (>= 2:1.22~),
+Standards-Version: 4.7.2
+Homepage: https://github.com/ciroiriarte/mhvtld
+Vcs-Git: https://github.com/ciroiriarte/mhvtld.git
+Vcs-Browser: https://github.com/ciroiriarte/mhvtld
+Rules-Requires-Root: no
+
+Package: mhvtld
+Architecture: any
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends: mhvtl
+Static-Built-Using: ${golang:Static-Built-Using}
+Description: management daemon and web dashboard for the mhVTL virtual tape library
+ mhvtld is a REST API and web dashboard for mhVTL. It shows libraries,
+ drives, slots and the import/export station live from the SCSI medium
+ changer; loads and unloads cartridges and moves them between slots and
+ drives; creates and edits media; reports drive statistics and device nodes;
+ and formats raw disks as cartridges.
+ .
+ It is a single binary with the dashboard built in. It listens on 127.0.0.1
+ by default and is not enabled on install: see
+ /usr/share/doc/mhvtld/README.Debian.

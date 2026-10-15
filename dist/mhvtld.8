@@ -1,0 +1,104 @@
+.TH MHVTLD 8 "2026-10-15" "mhvtld 0.1.0" "System Administration"
+.SH NAME
+mhvtld \- management daemon and web dashboard for the mhVTL virtual tape library
+.SH SYNOPSIS
+.B mhvtld
+.RI [ options ]
+.SH DESCRIPTION
+.B mhvtld
+serves a REST API under
+.I /api/v1
+and a web dashboard at
+.IR / .
+It reads the libraries and drives of a running mhVTL from
+.IR device.conf ,
+reads live library state and moves cartridges through each library's SCSI
+medium changer, sends library commands over the mhVTL message queue, runs
+.BR mktape (1)
+and
+.BR edit_tape (1)
+to create and edit media, and runs
+.B mhvtl-raw-format
+to format raw disks as cartridges.
+.PP
+mhVTL may start after
+.BR mhvtld ,
+and may restart while it runs.
+.SH OPTIONS
+.TP
+.BI \-listen " addr"
+Address to listen on. Default: 127.0.0.1:8080.
+.B mhvtld
+refuses a non-loopback address without a token, unless given
+.BR \-insecure .
+.TP
+.BI \-api\-token " token"
+Bearer token required on
+.IR /api/v1/* .
+Defaults to the
+.B MHVTLD_API_TOKEN
+environment variable.
+.TP
+.B \-insecure
+Allow a non-loopback
+.B \-listen
+address without a token.
+.TP
+.BI \-tls\-cert " file" " \-tls\-key " file
+Serve HTTPS with this certificate and key.
+.TP
+.BI \-cors\-origin " origin"
+Send Access-Control-Allow-Origin with this value. Default: CORS disabled.
+.TP
+.BI \-config\-dir " dir"
+Directory holding device.conf and library_contents.<id>. Default: /etc/mhvtl.
+.TP
+.BI \-home\-dir " dir"
+Media home of a library for which neither device.conf nor mhvtl.conf gives
+one. Default: /var/lib/mhvtl.
+.TP
+.BI \-changer " libid" = /dev/sgN
+Use this node for a library's changer instead of finding it in sysfs.
+Repeatable.
+.TP
+.BI \-drive " driveid" = /dev/sgN
+Use this node, or a link to it, for a drive instead of finding it in sysfs.
+Repeatable.
+.TP
+.BI \-mktape " path" ", \-edit\-tape " path ", \-format\-tool " path
+Paths of mhVTL's mktape, edit_tape and mhvtl-raw-format. Default: found in
+.BR PATH .
+.TP
+.B \-include\-virtual
+List loop, ram, dm and zram block devices among the disks.
+.TP
+.BI \-scan\-path " path"
+Also inspect this disk or image path. Repeatable.
+.TP
+.B \-version
+Print the version and exit.
+.SH NOTES
+Under
+.BR mhvtld.service ,
+media homes under /home, /root and /run/user are hidden from
+.BR mhvtld ,
+so mktape and edit_tape cannot reach them.
+.SH FILES
+.TP
+.I /etc/mhvtl/mhvtld.env
+Options for
+.BR mhvtld.service :
+.B MHVTLD_OPTS
+and
+.BR MHVTLD_API_TOKEN .
+.TP
+.I /etc/mhvtl/device.conf
+mhVTL's library and drive configuration.
+.SH SEE ALSO
+.BR vtllibrary (1),
+.BR vtltape (1),
+.BR vtlcmd (1),
+.BR mktape (1),
+.BR edit_tape (1)
+.PP
+https://github.com/ciroiriarte/mhvtld

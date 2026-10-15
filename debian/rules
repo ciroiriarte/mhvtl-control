@@ -1,0 +1,55 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/pkg-info.mk
+
+# The build must not write to $HOME or reach the network: mhvtld uses only the
+# Go standard library, so the module cache is never needed, and the build cache
+# lives in the build tree.
+export GOCACHE = $(CURDIR)/debian/.gocache
+export GOTOOLCHAIN = local
+export GOFLAGS = -mod=readonly
+export GOPROXY = off
+
+# Symbols are kept (LDFLAGS empty) so dh_strip can split them into -dbgsym.
+# PIE, as Debian's hardening expects; it links no libraries, only needs ld.so.
+MAKE_VARS = GO=go VERSION=$(DEB_VERSION_UPSTREAM) LDFLAGS= \
+	GOBUILDFLAGS="-trimpath -buildvcs=false -buildmode=pie"
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) build $(MAKE_VARS)
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	go test ./...
+endif
+
+override_dh_auto_install:
+	$(MAKE) install $(MAKE_VARS) DESTDIR=$(CURDIR)/debian/mhvtld
+
+# The options file may hold the API token.
+override_dh_fixperms:
+	dh_fixperms
+	chmod 0600 debian/mhvtld/etc/mhvtl/mhvtld.env
+
+# dwz does not understand the DWARF the Go linker writes.
+override_dh_dwz:
+
+# Not enabled on install: the operator decides whether and where to expose
+# the dashboard. deb-systemd-invoke doesn't start a disabled unit, so a fresh
+# install starts nothing, and an upgrade restarts mhvtld only where it is
+# enabled.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable
+
+override_dh_auto_clean:
+	rm -rf bin debian/.gocache
+
+# The Go standard library is linked in statically, so record the toolchain's
+# source package as Static-Built-Using, which deb-control(5) defines for
+# static builds such as Go's (dpkg >= 1.21.3):
+# https://manpages.debian.org/trixie/dpkg-dev/deb-control.5.en.html
+override_dh_gencontrol:
+	dh_gencontrol -- "-Vgolang:Static-Built-Using=$$(dpkg-query -W -f='$${source:Package} (= $${source:Version})' $$(dpkg-query -S "$$(readlink -f "$$(command -v go)")" | cut -d: -f1))"

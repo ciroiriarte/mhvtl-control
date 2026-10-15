@@ -1,0 +1,3 @@
+# mhvtld is pure Go (CGO_ENABLED=0): even built as PIE it links no libraries,
+# not even libc, which rpmlint reports as a static binary.
+addFilter("statically-linked-binary /usr/bin/mhvtld")

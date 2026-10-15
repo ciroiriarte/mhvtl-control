@@ -1,0 +1,53 @@
+[Unit]
+Description=mhVTL management daemon (REST API and web dashboard)
+Documentation=https://github.com/ciroiriarte/mhvtld
+# Ordered after mhVTL when both start, but not tied to it: mhvtld opens the
+# message queue and finds the changers on demand, so it may start first and
+# survives mhVTL restarts.
+After=network.target mhvtl.target
+# A configuration error (such as a non-loopback --listen without a token)
+# exits at once; stop retrying after 5 failed starts in a minute rather than
+# restart forever. A transient failure still gets its retries.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/mhvtl/mhvtld.env
+ExecStart=/usr/bin/mhvtld $MHVTLD_OPTS
+Restart=on-failure
+RestartSec=5
+
+# mhvtld runs as root: the mhVTL message queue is root's (mode 0660), and it
+# opens /dev/sg* and the disks it formats, all root-owned. Every capability
+# is dropped but CAP_DAC_OVERRIDE, which lets mktape and edit_tape write media
+# homes owned by another user: mhVTL ran as user "vtl" until 2018, and older
+# homes are still vtl-owned. SG_IO needs no CAP_SYS_RAWIO here, as the sg
+# nodes are opened read-write.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+NoNewPrivileges=yes
+# full, not strict: media homes can be anywhere device.conf puts them, except
+# under /home, /root and /run/user, which ProtectHome hides.
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+# PrivateDevices must stay off: it would hide /dev/sg* and the disks to format.
+PrivateDevices=no
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+# RestrictSUIDSGID must stay off: mktape creates each cartridge directory
+# with S_ISGID (mhvtl usr/vtlcart.c, file_be_open_cartridge()), which it
+# refuses.
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
