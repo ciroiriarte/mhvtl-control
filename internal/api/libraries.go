@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 
@@ -204,7 +205,8 @@ func hasDrive(lib config.Library, id int) bool {
 // writeChangerError maps a changer failure to an HTTP response: an
 // unreachable changer is 503, a request the changer's state refuses (sense
 // NOT READY, or ILLEGAL REQUEST for an empty source, a full destination or an
-// invalid element) is 409, anything else is 500.
+// invalid element) is 409, a drive that refused the cartridge is 409 too,
+// anything else is 500.
 func writeChangerError(w http.ResponseWriter, op string, err error) {
 	var se *scsi.SenseError
 	var te *scsi.TransportError
@@ -217,6 +219,12 @@ func writeChangerError(w http.ResponseWriter, op string, err error) {
 		writeError(w, http.StatusConflict, "conflict", op+": "+err.Error())
 	case errors.As(err, &se) && conflictSense(se):
 		writeError(w, http.StatusConflict, "conflict", op+": "+se.Error())
+	case errors.As(err, &se) && se.Key == scsi.KeyHardwareError && se.Code() == scsi.ASCManualIntervention:
+		// mhVTL's changer reports a drive that failed to load or unload the
+		// cartridge (wrong media type for the drive, missing or damaged
+		// media) as HARDWARE ERROR, manual intervention required.
+		writeError(w, http.StatusConflict, "conflict", op+": the drive refused the cartridge "+
+			"(check that the media type suits the drive and that the media exists): "+se.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "scsi_error", op+": "+err.Error())
 	}
@@ -344,6 +352,17 @@ func (s *Server) handleMapImport(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Controller == nil {
 		writeError(w, http.StatusServiceUnavailable, "ipc_unavailable", "mhvtl control queue not configured")
 		return
+	}
+	// The library accepts any barcode into the MAP; a cartridge with no media
+	// only fails once a drive tries to load it. Refuse it up front, as vtlcmd
+	// does. A cartridge is <home>/<barcode>: a directory of stream files, or a
+	// symlink to a raw block device.
+	if lib.HomeDir != "" {
+		if _, err := os.Stat(filepath.Join(lib.HomeDir, req.Barcode)); err != nil {
+			writeError(w, http.StatusConflict, "conflict", fmt.Sprintf(
+				"no media for %s in %s (create it with mktape first)", req.Barcode, lib.HomeDir))
+			return
+		}
 	}
 	err := s.cfg.Controller.ImportMap(int64(lib.ID), req.Barcode)
 	var re *ipc.ReplyError

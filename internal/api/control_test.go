@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -144,7 +146,8 @@ func TestChangerErrorMapping(t *testing.T) {
 		{"MAP open", sense(scsi.KeyNotReady, 0x3a, 0x02), 409, "conflict"},
 		{"library offline", sense(scsi.KeyNotReady, 0x04, 0x12), 409, "conflict"},
 		{"invalid field", sense(scsi.KeyIllegalRequest, 0x24, 0x00), 500, "scsi_error"},
-		{"hardware", sense(scsi.KeyHardwareError, 0x04, 0x03), 500, "scsi_error"},
+		{"drive refused cartridge", sense(scsi.KeyHardwareError, 0x04, 0x03), 409, "conflict"},
+		{"other hardware", sense(scsi.KeyHardwareError, 0x44, 0x00), 500, "scsi_error"},
 		{"drive empty", changer.ErrDriveEmpty, 409, "conflict"},
 		{"no empty slot", changer.ErrNoEmptySlot, 409, "conflict"},
 		{"out of range", fmt.Errorf("%w: slot 99", changer.ErrOutOfRange), 400, "bad_request"},
@@ -180,9 +183,32 @@ func TestMountMissingConfigIsNotFound(t *testing.T) {
 	}
 }
 
+// writeConfigDirWithMedia is writeConfigDir with every library's home
+// directory moved to a temporary one holding media for the given barcodes.
+func writeConfigDirWithMedia(t *testing.T, barcodes ...string) string {
+	t.Helper()
+	dir := writeConfigDir(t)
+	home := t.TempDir()
+	for _, bc := range barcodes {
+		if err := os.Mkdir(filepath.Join(home, bc), 0o755); err != nil {
+			t.Fatalf("create media %s: %v", bc, err)
+		}
+	}
+	conf := filepath.Join(dir, "device.conf")
+	b, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatalf("read device.conf: %v", err)
+	}
+	re := regexp.MustCompile(`(?m)^(\s*Home directory:).*$`)
+	if err := os.WriteFile(conf, re.ReplaceAll(b, []byte("${1} "+home)), 0o644); err != nil {
+		t.Fatalf("write device.conf: %v", err)
+	}
+	return dir
+}
+
 func TestMapImport(t *testing.T) {
 	fc := &ipc.FakeController{}
-	h := NewServer(Config{ConfigDir: writeConfigDir(t), Controller: fc}).Handler()
+	h := NewServer(Config{ConfigDir: writeConfigDirWithMedia(t, "E01009L8"), Controller: fc}).Handler()
 	rec := postJSON(t, h, "/api/v1/libraries/30/map/import", `{"barcode":"E01009L8"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
@@ -215,7 +241,7 @@ func TestMapImportErrorMapping(t *testing.T) {
 		{errors.New("boom"), 500, "control_error"},
 	}
 	for _, c := range cases {
-		h := NewServer(Config{ConfigDir: writeConfigDir(t), Controller: &ipc.FakeController{Err: c.err}}).Handler()
+		h := NewServer(Config{ConfigDir: writeConfigDirWithMedia(t, "A00001L8"), Controller: &ipc.FakeController{Err: c.err}}).Handler()
 		rec := postJSON(t, h, "/api/v1/libraries/10/map/import", `{"barcode":"A00001L8"}`)
 		if rec.Code != c.status {
 			t.Errorf("%v: status = %d, want %d", c.err, rec.Code, c.status)
@@ -229,5 +255,17 @@ func TestMapImportErrorMapping(t *testing.T) {
 	h := NewServer(Config{ConfigDir: writeConfigDir(t)}).Handler()
 	if rec := postJSON(t, h, "/api/v1/libraries/10/map/import", `{"barcode":"A00001L8"}`); rec.Code != 503 {
 		t.Errorf("nil controller: status = %d, want 503", rec.Code)
+	}
+}
+
+func TestMapImportWithoutMediaIsRefused(t *testing.T) {
+	fc := &ipc.FakeController{}
+	h := NewServer(Config{ConfigDir: writeConfigDirWithMedia(t, "E01009L8"), Controller: fc}).Handler()
+	rec := postJSON(t, h, "/api/v1/libraries/10/map/import", `{"barcode":"E01033L8"}`)
+	if rec.Code != http.StatusConflict || errorCode(t, rec) != "conflict" {
+		t.Fatalf("status = %d (body %s), want 409 conflict", rec.Code, rec.Body.String())
+	}
+	if len(fc.Calls) != 0 {
+		t.Errorf("controller called for a cartridge with no media: %+v", fc.Calls)
 	}
 }
