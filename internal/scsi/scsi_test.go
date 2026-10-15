@@ -140,6 +140,11 @@ func TestParseVPDSerial(t *testing.T) {
 	if err != nil || s != "XYZZY_A" {
 		t.Fatalf("serial = %q, %v; want XYZZY_A", s, err)
 	}
+	// Captured from mhVTL's STK L700 sysfs vpd_pg80: blanks, then NULs.
+	live := append([]byte{0x08, 0x80, 0x00, 0x12}, []byte("XYZZY_A     \x00\x00\x00\x00\x00\x00")...)
+	if s, err := ParseVPDSerial(live); err != nil || s != "XYZZY_A" {
+		t.Fatalf("live serial = %q, %v; want XYZZY_A", s, err)
+	}
 	if _, err := ParseVPDSerial([]byte{0x08, 0x83, 0, 0}); err == nil {
 		t.Error("page 0x83 accepted as 0x80")
 	}

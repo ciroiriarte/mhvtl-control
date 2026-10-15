@@ -134,7 +134,8 @@ func ParseVPDSerial(b []byte) (string, error) {
 	if 4+n > len(b) {
 		return "", ErrShortResponse
 	}
-	return strings.TrimRight(strings.TrimSpace(string(b[4:4+n])), "\x00"), nil
+	// Devices pad with blanks, NULs or both (mhVTL: blanks, then NULs).
+	return strings.Trim(string(b[4:4+n]), " \x00"), nil
 }
 
 // ElementRange is the first element address and number of elements of one
