@@ -11,7 +11,7 @@ import (
 func TestSystemHandler(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/system", nil)
-	NewServer(Config{}).Handler().ServeHTTP(rec, req)
+	NewServer(Config{Version: "0.1.0"}).Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -25,6 +25,9 @@ func TestSystemHandler(t *testing.T) {
 	}
 	if got.Hostname == "" {
 		t.Error("hostname empty")
+	}
+	if got.Version != "0.1.0" {
+		t.Errorf("version = %q, want 0.1.0", got.Version)
 	}
 	if got.CPUCount < 1 {
 		t.Errorf("cpu_count = %d", got.CPUCount)

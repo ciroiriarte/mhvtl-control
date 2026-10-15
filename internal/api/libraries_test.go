@@ -13,7 +13,8 @@ import (
 	"mhvtld/internal/config"
 )
 
-const etcDir = "/home/ciro/code/vtl/mhvtl/etc"
+// etcDir holds copies of mhVTL's sample etc/device.conf and library_contents.10.
+const etcDir = "../config/testdata"
 
 // writeConfigDir copies the real device.conf and library_contents.10 fixtures
 // into a temp dir and returns it.

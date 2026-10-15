@@ -148,9 +148,13 @@ func TestCrossLanguageFrame(t *testing.T) {
 		t.Fatalf("write C source: %v", err)
 	}
 	bin := filepath.Join(dir, "resp")
-	// Resolve the submodule include dir relative to this test file so the test
-	// is portable across checkouts; skip (not fail) if the submodule is absent.
-	inc, err := filepath.Abs(filepath.Join("..", "..", "..", "mhvtl", "include"))
+	// The mhVTL source is $MHVTL_SRC, else the superproject's sibling
+	// submodule; skip (not fail) if neither is there.
+	mhvtlSrc := os.Getenv("MHVTL_SRC")
+	if mhvtlSrc == "" {
+		mhvtlSrc = filepath.Join("..", "..", "..", "mhvtl")
+	}
+	inc, err := filepath.Abs(filepath.Join(mhvtlSrc, "include"))
 	if err != nil {
 		t.Fatalf("resolve include dir: %v", err)
 	}

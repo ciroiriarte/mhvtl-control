@@ -56,6 +56,8 @@ type Config struct {
 	CORSOrigin string
 	// StaticFS, when non-nil, serves the web UI at "/" and "/static/".
 	StaticFS fs.FS
+	// Version is the daemon's version, reported by GET /system.
+	Version string
 }
 
 // ChangerService is the medium-changer surface the API uses; implemented by
@@ -147,7 +149,7 @@ func NewServer(cfg Config) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /api/v1/system", handleSystem)
+	mux.HandleFunc("GET /api/v1/system", s.handleSystem)
 	mux.HandleFunc("GET /api/v1/libraries", s.handleLibraries)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/mount", s.handleMount)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/unmount", s.handleUnmount)
@@ -200,12 +202,15 @@ type System struct {
 	LoadAverage      [3]float64 `json:"load_average"`
 	UptimeSeconds    float64    `json:"uptime_seconds"`
 	ActiveTransports []string   `json:"active_transports"`
+	Version          string     `json:"version"`
 }
 
-func handleSystem(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleSystem(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(collectSystem())
+	sys := collectSystem()
+	sys.Version = s.cfg.Version
+	_ = json.NewEncoder(w).Encode(sys)
 }
 
 func collectSystem() System {

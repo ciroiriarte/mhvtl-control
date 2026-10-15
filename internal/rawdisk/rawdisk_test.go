@@ -71,10 +71,15 @@ int main(int argc, char **argv) {
 }
 `
 
-// mhvtlRepo locates the C submodule relative to this package.
+// mhvtlRepo locates the mhVTL source: $MHVTL_SRC, else the sibling submodule
+// of the superproject.
 func mhvtlRepo(t *testing.T) string {
 	t.Helper()
-	abs, err := filepath.Abs("../../../mhvtl")
+	src := os.Getenv("MHVTL_SRC")
+	if src == "" {
+		src = "../../../mhvtl"
+	}
+	abs, err := filepath.Abs(src)
 	if err != nil {
 		t.Fatalf("abs: %v", err)
 	}

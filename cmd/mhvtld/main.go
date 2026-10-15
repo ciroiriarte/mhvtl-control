@@ -25,7 +25,11 @@ import (
 	"mhvtld/internal/webui"
 )
 
+// version is set at build time: -ldflags "-X main.version=0.1.0".
+var version = "dev"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	listen := flag.String("listen", "127.0.0.1:8080", "address to listen on")
 	configDir := flag.String("config-dir", "/etc/mhvtl", "directory holding device.conf and library_contents.<id>")
 	apiToken := flag.String("api-token", "", "bearer token required on /api/v1/* (falls back to MHVTLD_API_TOKEN)")
@@ -52,6 +56,10 @@ func main() {
 	editTape := flag.String("edit-tape", "edit_tape", "path to mhVTL's edit_tape (edits media)")
 	homeDir := flag.String("home-dir", "/var/lib/mhvtl", "media home of a library device.conf and mhvtl.conf give none for")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("mhvtld", version)
+		return
+	}
 
 	token := *apiToken
 	if token == "" {
@@ -91,6 +99,7 @@ func main() {
 		Token:       token,
 		CORSOrigin:  *corsOrigin,
 		StaticFS:    webui.FS(),
+		Version:     version,
 	}
 
 	srv := &http.Server{
@@ -105,10 +114,10 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() {
 		if *tlsCert != "" && *tlsKey != "" {
-			log.Printf("mhvtld listening on %s (TLS)", *listen)
+			log.Printf("mhvtld %s listening on %s (TLS)", version, *listen)
 			errCh <- srv.ListenAndServeTLS(*tlsCert, *tlsKey)
 		} else {
-			log.Printf("mhvtld listening on %s", *listen)
+			log.Printf("mhvtld %s listening on %s", version, *listen)
 			errCh <- srv.ListenAndServe()
 		}
 	}()
