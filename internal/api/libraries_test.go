@@ -185,3 +185,33 @@ func TestLibrariesNotLiveKeepsConfigView(t *testing.T) {
 		}
 	}
 }
+
+// Each drive reports its own NAA and SCSI address from device.conf, not the
+// library's (the dashboard used to fall back to the changer's identity).
+func TestLibrariesDriveIdentity(t *testing.T) {
+	srv := NewServer(Config{ConfigDir: writeConfigDir(t)})
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/libraries", nil))
+	var body struct {
+		Libraries []struct {
+			ID     int    `json:"id"`
+			NAA    string `json:"naa"`
+			Drives []struct {
+				ID     int    `json:"id"`
+				NAA    string `json:"naa"`
+				Target int    `json:"target"`
+			} `json:"drives"`
+		} `json:"libraries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	lib := body.Libraries[0]
+	d := lib.Drives[0]
+	if d.ID != 11 || d.NAA != "10:22:33:44:ab:00:01:00" || d.Target != 1 {
+		t.Errorf("drive = %+v, want id 11, naa 10:22:33:44:ab:00:01:00, target 1", d)
+	}
+	if d.NAA == lib.NAA {
+		t.Errorf("drive NAA equals the library's %q", lib.NAA)
+	}
+}

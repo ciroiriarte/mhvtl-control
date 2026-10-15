@@ -39,13 +39,13 @@ func TestParseDeviceConf(t *testing.T) {
 		idx  int
 		want Drive
 	}{
-		{0, Drive{ID: 11, LibraryID: 10, Slot: 1, Vendor: "IBM", Product: "ULT3580-TD8",
+		{0, Drive{ID: 11, Target: 1, LibraryID: 10, Slot: 1, Vendor: "IBM", Product: "ULT3580-TD8",
 			Revision: "HB81", Serial: "XYZZY_A1", NAA: "10:22:33:44:ab:00:01:00",
 			CompressionFactor: 1, CompressionEnabled: true, CompressionType: "lzo"}},
-		{2, Drive{ID: 13, LibraryID: 10, Slot: 3, Vendor: "IBM", Product: "ULT3580-TD6",
+		{2, Drive{ID: 13, Target: 3, LibraryID: 10, Slot: 3, Vendor: "IBM", Product: "ULT3580-TD6",
 			Revision: "2160", Serial: "XYZZY_A3", NAA: "10:22:33:44:ab:00:03:00",
 			CompressionFactor: 1, CompressionEnabled: true, CompressionType: "lzo"}},
-		{7, Drive{ID: 34, LibraryID: 30, Slot: 4, Vendor: "STK", Product: "T10000B",
+		{7, Drive{ID: 34, Target: 12, LibraryID: 30, Slot: 4, Vendor: "STK", Product: "T10000B",
 			Revision: "550V", Serial: "XYZZY_B4", NAA: "30:22:33:44:ab:00:12:00",
 			CompressionFactor: 1, CompressionEnabled: true, CompressionType: "lzo"}},
 	}

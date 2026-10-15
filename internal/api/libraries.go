@@ -36,6 +36,10 @@ type driveDTO struct {
 	Product            string `json:"product"`
 	Revision           string `json:"revision"`
 	Serial             string `json:"serial"`
+	NAA                string `json:"naa"`
+	Channel            int    `json:"channel"`
+	Target             int    `json:"target"`
+	LUN                int    `json:"lun"`
 	Slot               int    `json:"slot"`
 	CompressionEnabled bool   `json:"compression_enabled"`
 	CompressionType    string `json:"compression_type"`
@@ -76,6 +80,10 @@ func toLibraryDTO(l config.Library) libraryDTO {
 			Product:            d.Product,
 			Revision:           d.Revision,
 			Serial:             d.Serial,
+			NAA:                d.NAA,
+			Channel:            d.Channel,
+			Target:             d.Target,
+			LUN:                d.LUN,
 			Slot:               d.Slot,
 			CompressionEnabled: d.CompressionEnabled,
 			CompressionType:    d.CompressionType,

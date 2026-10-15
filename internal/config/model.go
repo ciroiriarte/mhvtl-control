@@ -16,15 +16,16 @@ type Library struct {
 
 // Drive is a virtual tape drive defined in device.conf.
 type Drive struct {
-	ID                 int
-	LibraryID          int
-	Slot               int
-	Vendor, Product    string
-	Revision, Serial   string
-	NAA                string
-	CompressionFactor  int
-	CompressionEnabled bool
-	CompressionType    string
+	ID                   int
+	Channel, Target, LUN int
+	LibraryID            int
+	Slot                 int
+	Vendor, Product      string
+	Revision, Serial     string
+	NAA                  string
+	CompressionFactor    int
+	CompressionEnabled   bool
+	CompressionType      string
 }
 
 // Slot is a storage slot. An empty Barcode means the slot is empty.

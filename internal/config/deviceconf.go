@@ -50,7 +50,7 @@ func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, err erro
 			case "Library":
 				lib = &Library{ID: id, Channel: ch, Target: tg, LUN: lun}
 			case "Drive":
-				drv = &Drive{ID: id}
+				drv = &Drive{ID: id, Channel: ch, Target: tg, LUN: lun}
 			}
 			continue
 		}

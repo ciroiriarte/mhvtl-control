@@ -244,19 +244,14 @@
     body.appendChild(mk("table", { children: [tbody] }));
   }
 
-  // scsiAddr resolves SCSI addressing for a drive. The drive DTO is preferred
-  // (forward-compatible) and the library's changer addressing is the fallback.
+  // scsiAddr returns a drive's own SCSI address and NAA. It never borrows the
+  // library's: that would label every drive with the changer's identity.
   // Returns {addr, naa} where either may be "" when unknown.
-  function scsiAddr(lib, d) {
-    function pick(k) {
-      if (d && d[k] != null) { return d[k]; }
-      if (lib && lib[k] != null) { return lib[k]; }
-      return null;
-    }
-    var c = pick("channel"), t = pick("target"), l = pick("lun");
+  function scsiAddr(d) {
+    var c = d ? d.channel : null, t = d ? d.target : null, l = d ? d.lun : null;
     var addr = (c != null && t != null && l != null)
       ? (coerceNumber(c) + ":" + coerceNumber(t) + ":" + coerceNumber(l)) : "";
-    var naa = (d && d.naa) ? String(d.naa) : (lib && lib.naa ? String(lib.naa) : "");
+    var naa = (d && d.naa) ? String(d.naa) : "";
     return { addr: addr, naa: naa };
   }
 
@@ -275,7 +270,7 @@
     } else {
       wrap.appendChild(mk("span", { class: "badge comp off", text: "compression off" }));
     }
-    var sa = scsiAddr(lib, d);
+    var sa = scsiAddr(d);
     if (sa.addr) {
       wrap.appendChild(mk("span", { class: "badge scsi", text: "scsi " + sa.addr, attrs: { title: "SCSI channel:target:lun" } }));
     }
