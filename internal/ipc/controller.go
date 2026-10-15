@@ -3,6 +3,7 @@ package ipc
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -42,6 +43,7 @@ type IPCController struct {
 	mu        sync.Mutex
 	key       int
 	client    *Client // nil until opened, and after the cached id went stale
+	reply     int64   // this process's reply mtype (ReplyType)
 	timeoutMs int
 	// late holds devices whose last command timed out: their reply may
 	// still arrive, and must not be taken as the answer to the next one.
@@ -53,7 +55,7 @@ var _ Controller = (*IPCController)(nil)
 // NewIPCController returns a controller for the queue keyed by QKey(). It
 // never fails: the queue is opened on first use.
 func NewIPCController() *IPCController {
-	return &IPCController{key: QKey(), timeoutMs: 5000}
+	return &IPCController{key: QKey(), reply: ReplyType(os.Getpid()), timeoutMs: 5000}
 }
 
 // staleQueue reports whether err means the cached queue id no longer names a
@@ -68,7 +70,7 @@ func (c *IPCController) open() error {
 	if c.client != nil {
 		return nil
 	}
-	cl := &Client{}
+	cl := &Client{Reply: c.reply}
 	if err := cl.OpenQueue(c.key, false); err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
@@ -99,11 +101,13 @@ func (c *IPCController) send(dev int64, text string) error {
 }
 
 // command sends text to dev and, when the C handler replies, returns dev's
-// reply. Replies share one message type (VTLCMD_Q), so one from any other
-// device (a leftover from an earlier timed-out request) is discarded and the
-// wait continues until the deadline. A receive error is never followed by a
-// resend: the command was already delivered. Caller holds c.mu, so concurrent
-// requests never read each other's replies.
+// reply. Replies come back on this process's own mtype (c.reply), so vtlcmd
+// and other clients never see them, nor this one theirs. What can still be
+// queued there is a leftover from one of our earlier timed-out requests: one
+// from another device is discarded and the wait continues until the
+// deadline. A receive error is never followed by a resend: the command was
+// already delivered. Caller holds c.mu, so concurrent requests never read
+// each other's replies.
 func (c *IPCController) command(dev int64, text string, replies bool) (string, error) {
 	if c.late[dev] && c.client != nil {
 		// Replies carry no request id, so a late one from dev would be read

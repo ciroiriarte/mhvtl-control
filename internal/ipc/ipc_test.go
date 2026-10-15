@@ -46,10 +46,11 @@ func deviceRecv(t *testing.T, qid int, dev int64, timeout time.Duration) string 
 	}
 }
 
-// deviceReply sends text back on mtype=VTLCMDQ, as a daemon replies to vtlcmd.
-func deviceReply(t *testing.T, qid int, dev int64, text string) {
+// deviceReply sends text from dev back on mtype to, as a daemon replies to
+// the snd_id of the command it answers.
+func deviceReply(t *testing.T, qid int, dev, to int64, text string) {
 	t.Helper()
-	buf := marshalFrame(VTLCMDQ, dev, text)
+	buf := marshalFrame(to, dev, text)
 	_, _, errno := syscall.Syscall6(syscall.SYS_MSGSND, uintptr(qid),
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(qMsgSize), 0, 0, 0)
 	if errno != 0 {
@@ -77,7 +78,7 @@ func TestRoundTripRealQueue(t *testing.T) {
 		if got != "online" {
 			t.Errorf("device received %q, want %q", got, "online")
 		}
-		deviceReply(t, c.qid, dev, want)
+		deviceReply(t, c.qid, dev, VTLCMDQ, want)
 	}()
 
 	if err := c.Send(dev, "online"); err != nil {
@@ -119,9 +120,9 @@ int main(int argc, char **argv) {
 	printf("%zu\n", sizeof(struct q_msg));
 	fflush(stdout);
 
-	/* Echo the received text back on the VTLCMD_Q reply channel. */
+	/* Echo the received text back to its sender, as vtllibrary does. */
 	struct q_entry r;
-	r.rcv_id = VTLCMD_Q;
+	r.rcv_id = e.msg.snd_id;
 	r.msg.snd_id = dev;
 	r.msg.text[0] = '\0';
 	strncat(r.msg.text, e.msg.text, MAXTEXTLEN);
@@ -160,7 +161,7 @@ func TestCrossLanguageFrame(t *testing.T) {
 		t.Fatalf("compile C responder: %v\n%s", err, out)
 	}
 
-	c := &Client{}
+	c := &Client{Reply: ReplyType(os.Getpid())}
 	key := uniqueKey()
 	if err := c.OpenQueue(key, true); err != nil {
 		t.Fatalf("OpenQueue: %v", err)
@@ -197,9 +198,12 @@ func TestCrossLanguageFrame(t *testing.T) {
 	t.Logf("cross-language round-trip text = %q", text)
 }
 
+// testReply is the reply mtype test controllers use.
+var testReply = ReplyType(os.Getpid())
+
 // newTestController returns a controller for key with a short reply timeout.
 func newTestController(key int) *IPCController {
-	return &IPCController{key: key, timeoutMs: 1000}
+	return &IPCController{key: key, reply: testReply, timeoutMs: 1000}
 }
 
 // createQueue creates the queue for key, as the mhvtl daemons do, and
@@ -215,7 +219,7 @@ func createQueue(t *testing.T, key int) *Client {
 }
 
 // library answers every replying command for dev the way vtllibrary does,
-// recording the command texts, until stop is closed.
+// on the command's snd_id, recording the command texts, until stop is closed.
 func library(t *testing.T, qid int, dev int64, answer func(cmd string) string, stop <-chan struct{}) <-chan []string {
 	t.Helper()
 	got := make(chan []string, 1)
@@ -236,10 +240,11 @@ func library(t *testing.T, qid int, dev int64, answer func(cmd string) string, s
 				time.Sleep(time.Millisecond)
 				continue
 			}
+			snd := int64(getU64LE(buf[8:16]))
 			cmd := cstr(buf[16 : 16+TextLen])
 			cmds = append(cmds, cmd)
 			if reply := answer(cmd); reply != "" {
-				r := marshalFrame(VTLCMDQ, dev, reply)
+				r := marshalFrame(snd, dev, reply)
 				syscall.Syscall6(syscall.SYS_MSGSND, uintptr(qid),
 					uintptr(unsafe.Pointer(&r[0])), uintptr(qMsgSize), 0, 0, 0)
 			}
@@ -356,7 +361,7 @@ func TestControllerDiscardsStaleReply(t *testing.T) {
 	key := uniqueKey()
 	q := createQueue(t, key)
 	// A late reply from library 30 to an earlier, timed-out request.
-	deviceReply(t, q.qid, 30, "MAP Full")
+	deviceReply(t, q.qid, 30, testReply, "MAP Full")
 
 	stop := make(chan struct{})
 	defer close(stop)
@@ -412,12 +417,12 @@ func TestControllerConcurrentCommandsGetOwnReplies(t *testing.T) {
 func TestControllerDiscardsLateReplyFromSameDevice(t *testing.T) {
 	key := uniqueKey()
 	q := createQueue(t, key)
-	c := &IPCController{key: key, timeoutMs: 50}
+	c := &IPCController{key: key, reply: testReply, timeoutMs: 50}
 	if err := c.OpenMap(10); !errors.Is(err, ErrTimeout) {
 		t.Fatalf("silent library: err = %v, want ErrTimeout", err)
 	}
 	deviceRecv(t, q.qid, 10, time.Second) // the timed-out "open map"
-	deviceReply(t, q.qid, 10, "late reply")
+	deviceReply(t, q.qid, 10, testReply, "late reply")
 
 	stop := make(chan struct{})
 	cmds := library(t, q.qid, 10, func(string) string { return "OK" }, stop)
@@ -434,8 +439,40 @@ func TestControllerDiscardsLateReplyFromSameDevice(t *testing.T) {
 func TestControllerNoReplyTimesOut(t *testing.T) {
 	key := uniqueKey()
 	createQueue(t, key)
-	c := &IPCController{key: key, timeoutMs: 50}
+	c := &IPCController{key: key, reply: testReply, timeoutMs: 50}
 	if err := c.ImportMap(10, "A00001L8"); !errors.Is(err, ErrTimeout) {
 		t.Fatalf("silent library: err = %v, want ErrTimeout", err)
+	}
+}
+
+// Replies to vtlcmd (and the bay monitor), which share VTLCMD_Q, are neither
+// taken as mhvtld's nor consumed: they stay queued for their reader. That
+// includes a reply from the very library mhvtld is commanding.
+func TestControllerLeavesVtlcmdRepliesAlone(t *testing.T) {
+	key := uniqueKey()
+	q := createQueue(t, key)
+	deviceReply(t, q.qid, 10, VTLCMDQ, "MAP Full")
+
+	stop := make(chan struct{})
+	defer close(stop)
+	library(t, q.qid, 10, func(string) string { return "OK" }, stop)
+
+	c := newTestController(key)
+	if err := c.ImportMap(10, "A00001L8"); err != nil {
+		t.Fatalf("ImportMap took vtlcmd's reply: %v", err)
+	}
+	vtlcmd := &Client{qid: q.qid}
+	snd, text, err := vtlcmd.Receive(0)
+	if err != nil || snd != 10 || text != "MAP Full" {
+		t.Errorf("vtlcmd's reply = %d %q, %v; want it still queued", snd, text, err)
+	}
+}
+
+func TestReplyType(t *testing.T) {
+	if got := ReplyType(1); got != VTLCMDQ+1 {
+		t.Errorf("ReplyType(1) = %d", got)
+	}
+	if NewIPCController().reply != ReplyType(os.Getpid()) {
+		t.Error("controller does not reply on its own mtype")
 	}
 }

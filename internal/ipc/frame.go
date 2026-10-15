@@ -25,7 +25,8 @@ import (
 const (
 	// DefaultQKey is MHVTL_DEFAULT_QKEY: ASCII "Mark".
 	DefaultQKey = 0x4d61726b
-	// VTLCMDQ is VTLCMD_Q, the mtype used for control commands and replies.
+	// VTLCMDQ is VTLCMD_Q, the snd_id vtlcmd sends with and so the mtype
+	// its replies come back on. Device ids are below it.
 	VTLCMDQ = 32768
 	// MaxText is MAXTEXTLEN, the usable command/reply length.
 	MaxText = 1024
@@ -68,10 +69,29 @@ func QKey() int {
 	return DefaultQKey
 }
 
+// ReplyType returns the private reply mtype of process pid: VTLCMDQ + pid.
+// vtllibrary and vtltape answer a command on the mtype named by its snd_id,
+// so a client that sends with its own snd_id reads only its own replies,
+// never those meant for vtlcmd or another client. Device ids are below
+// VTLCMDQ, so the value can't name a device either.
+func ReplyType(pid int) int64 {
+	return VTLCMDQ + int64(pid)
+}
+
 // Client is the low-level msgsnd/msgrcv client for one queue.
 type Client struct {
 	qid int
 	key int
+	// Reply is the snd_id commands are sent with, and so the mtype their
+	// replies are read from. Zero means VTLCMDQ, the channel vtlcmd shares.
+	Reply int64
+}
+
+func (c *Client) reply() int64 {
+	if c.Reply == 0 {
+		return VTLCMDQ
+	}
+	return c.Reply
 }
 
 // OpenQueue opens (or, when create, creates) the SysV message queue for key.
@@ -131,9 +151,9 @@ func cstr(b []byte) string {
 	return string(b)
 }
 
-// Send delivers text to device deviceNo: mtype=deviceNo, snd_id=VTLCMDQ.
+// Send delivers text to device deviceNo: mtype=deviceNo, snd_id=c.Reply.
 func (c *Client) Send(deviceNo int64, text string) error {
-	buf := marshalFrame(deviceNo, VTLCMDQ, text)
+	buf := marshalFrame(deviceNo, c.reply(), text)
 	_, _, errno := syscall.Syscall6(syscall.SYS_MSGSND, uintptr(c.qid),
 		uintptr(unsafe.Pointer(&buf[0])), uintptr(qMsgSize), 0, 0, 0)
 	if errno != 0 {
@@ -142,7 +162,7 @@ func (c *Client) Send(deviceNo int64, text string) error {
 	return nil
 }
 
-// Receive reads the next reply (mtype == VTLCMDQ) and returns its snd_id and
+// Receive reads the next reply (mtype == c.Reply) and returns its snd_id and
 // text. It polls with IPC_NOWAIT until timeoutMs elapses so the wait is
 // cancellable; a non-positive timeoutMs makes a single attempt.
 func (c *Client) Receive(timeoutMs int) (snd int64, text string, err error) {
@@ -151,7 +171,7 @@ func (c *Client) Receive(timeoutMs int) (snd int64, text string, err error) {
 	for {
 		_, _, errno := syscall.Syscall6(syscall.SYS_MSGRCV, uintptr(c.qid),
 			uintptr(unsafe.Pointer(&buf[0])), uintptr(qMsgSize),
-			uintptr(VTLCMDQ), uintptr(ipcNowait), 0)
+			uintptr(c.reply()), uintptr(ipcNowait), 0)
 		if errno == 0 {
 			snd = int64(getU64LE(buf[8:16]))
 			text = cstr(buf[16 : 16+TextLen])
