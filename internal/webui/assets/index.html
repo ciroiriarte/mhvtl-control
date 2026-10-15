@@ -63,6 +63,25 @@
         <div class="body" id="system-status"><p class="muted">Loading…</p></div>
       </section>
 
+      <!-- Media of the library selected in the rack: create, edit, import/export. -->
+      <section class="panel col-12" id="media-panel" aria-busy="false">
+        <header>Media <span class="count" id="media-count"></span></header>
+        <div class="panel-status" id="media-status" data-panel-status role="alert" aria-live="polite"></div>
+        <div class="lib-toolbar" id="media-toolbar">
+          <input type="search" id="media-search" class="slot-search"
+                 placeholder="Search barcode…" aria-label="Filter media by barcode substring" autocomplete="off">
+          <label class="ctl">Location
+            <select id="media-where" aria-label="Filter media by location">
+              <option value="all">All</option>
+              <option value="library">In library</option>
+              <option value="shelf">Shelf</option>
+            </select>
+          </label>
+          <button class="btn sm" type="button" id="media-new-btn">New media…</button>
+        </div>
+        <div class="body" id="media-list"><p class="muted">Loading media…</p></div>
+      </section>
+
       <section class="panel col-12" id="disk-panel" aria-busy="false">
         <header>Raw Disk Dock <span class="count" id="disk-count"></span></header>
         <div class="panel-status" id="disk-status" data-panel-status role="alert" aria-live="polite"></div>
@@ -132,6 +151,121 @@
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
         <button class="btn" value="cancel">Cancel</button>
         <button class="btn primary" id="format-confirm-btn" value="confirm" disabled>Format (erase)</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Create media: one barcode or a numbered range, optionally placed into the library. -->
+  <dialog id="media-create-dialog" aria-labelledby="media-create-title">
+    <form method="dialog" id="media-create-form">
+      <h3 id="media-create-title" style="margin:0 0 6px">New media</h3>
+      <p class="muted" id="media-create-target" style="margin:0 0 12px"></p>
+      <div class="form-grid">
+        <fieldset class="mode-pick">
+          <legend>Create</legend>
+          <label class="inline-check"><input type="radio" name="mc-mode" id="mc-mode-single" value="single" checked> One barcode</label>
+          <label class="inline-check"><input type="radio" name="mc-mode" id="mc-mode-range" value="range"> A range</label>
+        </fieldset>
+        <div id="mc-single">
+          <label>Barcode
+            <input type="text" id="mc-barcode" autocomplete="off" spellcheck="false" placeholder="e.g. ZT010L8" maxlength="16">
+          </label>
+        </div>
+        <div id="mc-range" class="range-grid" hidden>
+          <label>Prefix <input type="text" id="mc-prefix" autocomplete="off" spellcheck="false" placeholder="ZT"></label>
+          <label>Start <input type="number" id="mc-start" min="0" value="1"></label>
+          <label>Count <input type="number" id="mc-count" min="1" max="500" value="10"></label>
+          <label>Width <input type="number" id="mc-width" min="0" max="16" value="3" title="Zero-pad digits; 0 = digits of the last number"></label>
+          <label>Suffix <input type="text" id="mc-suffix" autocomplete="off" spellcheck="false" placeholder="L8"></label>
+        </div>
+        <div class="range-grid">
+          <label>Type <select id="mc-type"></select></label>
+          <label>Density <select id="mc-density"></select></label>
+          <label>Size MB <input type="number" id="mc-size" min="0" placeholder="0 = native capacity"></label>
+        </div>
+        <label class="inline-check"><input type="checkbox" id="mc-place" checked> Place into empty slots (through the MAP)</label>
+        <div class="preview" id="mc-preview" aria-live="polite"></div>
+        <p class="dialog-error" id="mc-error" role="alert"></p>
+      </div>
+      <div class="dialog-buttons">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" type="button" id="mc-submit">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Edit media: write protect, type, density, size. Blank / "keep" fields are not sent. -->
+  <dialog id="media-edit-dialog" aria-labelledby="media-edit-title">
+    <form method="dialog" id="media-edit-form">
+      <h3 id="media-edit-title" style="margin:0 0 6px">Edit media</h3>
+      <p class="muted" id="me-current" style="margin:0 0 12px"></p>
+      <div class="form-grid">
+        <label class="inline-check"><input type="checkbox" id="me-wp"> Write protected</label>
+        <div class="range-grid">
+          <label>Type <select id="me-type"></select></label>
+          <label>Density <select id="me-density"></select></label>
+          <label>Size MB <input type="number" id="me-size" min="0" placeholder="blank = keep, 0 = native"></label>
+        </div>
+        <p class="dialog-error" id="me-error" role="alert"></p>
+      </div>
+      <div class="dialog-buttons">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" type="button" id="me-submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Import: put a shelf cartridge into the MAP, optionally on into a free storage slot. -->
+  <dialog id="import-dialog" aria-labelledby="import-dialog-title">
+    <form method="dialog" id="import-form">
+      <h3 id="import-dialog-title" style="margin:0 0 6px">Import cartridge</h3>
+      <p class="muted" id="import-dialog-target" style="margin:0 0 12px"></p>
+      <label class="inline-check" style="margin-bottom:10px"><input type="checkbox" id="import-store" checked> Store in a free slot</label>
+      <div id="import-list" class="mount-slot-list"></div>
+      <p class="dialog-error" id="import-error" role="alert"></p>
+      <div class="dialog-buttons">
+        <button class="btn" value="cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Move a cartridge between storage and MAP slots. -->
+  <dialog id="move-dialog" aria-labelledby="move-dialog-title">
+    <form method="dialog" id="move-form">
+      <h3 id="move-dialog-title" style="margin:0 0 6px">Move cartridge</h3>
+      <p class="muted" id="move-dialog-source" style="margin:0 0 12px"></p>
+      <label>Destination
+        <select id="move-dest" style="width:100%"></select>
+      </label>
+      <p class="dialog-error" id="move-error" role="alert"></p>
+      <div class="dialog-buttons">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" type="button" id="move-submit">Move</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Generic confirmation (no window.confirm). -->
+  <dialog id="confirm-dialog" aria-labelledby="confirm-dialog-title">
+    <form method="dialog" id="confirm-form">
+      <h3 id="confirm-dialog-title" style="margin:0 0 6px"></h3>
+      <p id="confirm-dialog-msg" style="margin:0 0 12px"></p>
+      <div class="dialog-buttons">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" id="confirm-ok" value="confirm">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Drive statistics from LOG SENSE. -->
+  <dialog id="stats-dialog" class="wide" aria-labelledby="stats-dialog-title">
+    <form method="dialog" id="stats-form">
+      <h3 id="stats-dialog-title" style="margin:0 0 6px">Drive statistics</h3>
+      <div id="stats-body" class="stats-body"></div>
+      <p class="muted footnote">TapeAlert flags are not read: reading them clears them for the backup application.</p>
+      <div class="dialog-buttons">
+        <button class="btn" type="button" id="stats-refresh">Refresh</button>
+        <button class="btn" value="cancel">Close</button>
       </div>
     </form>
   </dialog>

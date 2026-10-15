@@ -1,19 +1,15 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strconv"
 
 	"mhvtld/internal/changer"
 	"mhvtld/internal/config"
-	"mhvtld/internal/ipc"
 	"mhvtld/internal/scsi"
 )
 
@@ -69,6 +65,8 @@ type libraryDTO struct {
 	Slots     []slotDTO  `json:"slots"`
 	MAPs      []slotDTO  `json:"maps"`
 	Pickers   []int      `json:"pickers"`
+	// MAPOpen is the MAP door state, live libraries with a MAP only.
+	MAPOpen *bool `json:"map_open,omitempty"`
 }
 
 func toLibraryDTO(l config.Library) libraryDTO {
@@ -135,6 +133,7 @@ func applyLive(dto *libraryDTO, inv changer.Inventory) {
 	}
 	dto.Slots = liveSlots(inv.Slots)
 	dto.MAPs = liveSlots(inv.MAPs)
+	dto.MAPOpen = inv.MAPOpen
 }
 
 func liveSlots(in []changer.SlotState) []slotDTO {
@@ -221,9 +220,13 @@ func writeChangerError(w http.ResponseWriter, op string, err error) {
 	switch {
 	case errors.Is(err, changer.ErrUnavailable), errors.As(err, &te):
 		writeError(w, http.StatusServiceUnavailable, "changer_unavailable", err.Error())
-	case errors.Is(err, changer.ErrUnknownDrive), errors.Is(err, changer.ErrOutOfRange):
+	case errors.Is(err, changer.ErrUnknownDrive), errors.Is(err, changer.ErrOutOfRange), errors.Is(err, changer.ErrBadLocation),
+		errors.Is(err, changer.ErrNoMAP):
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-	case errors.Is(err, changer.ErrDriveEmpty), errors.Is(err, changer.ErrNoEmptySlot):
+	case errors.Is(err, changer.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", op+": "+err.Error())
+	case errors.Is(err, changer.ErrDriveEmpty), errors.Is(err, changer.ErrNoEmptySlot),
+		errors.Is(err, changer.ErrMAPFull), errors.Is(err, changer.ErrMAPOpen):
 		writeError(w, http.StatusConflict, "conflict", op+": "+err.Error())
 	case errors.As(err, &se) && conflictSense(se):
 		writeError(w, http.StatusConflict, "conflict", op+": "+se.Error())
@@ -265,8 +268,9 @@ func (s *Server) handleMount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	defer s.lockLibrary(lib.ID)()
 	var req mountRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -306,8 +310,9 @@ func (s *Server) handleUnmount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	defer s.lockLibrary(lib.ID)()
 	var req unmountRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -329,61 +334,4 @@ func (s *Server) handleUnmount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "move": mv})
-}
-
-// barcodeRE bounds an imported barcode to MAX_BARCODE_LEN (16) alphanumerics.
-// vtllibrary takes everything from the first alphanumeric to the end of the
-// message as the barcode, so spaces or other text must never reach it.
-var barcodeRE = regexp.MustCompile(`^[A-Za-z0-9]{1,16}$`)
-
-type mapImportRequest struct {
-	Barcode string `json:"barcode"`
-}
-
-// handleMapImport places a cartridge into an empty MAP slot of the library
-// (vtllibrary "open map" / "load map <barcode>" / "close map"). The
-// cartridge can then be mounted with {drive, map}.
-func (s *Server) handleMapImport(w http.ResponseWriter, r *http.Request) {
-	lib, ok := s.lookupLibrary(w, r)
-	if !ok {
-		return
-	}
-	var req mapImportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
-		return
-	}
-	if !barcodeRE.MatchString(req.Barcode) {
-		writeError(w, http.StatusBadRequest, "bad_request", "barcode must be 1-16 letters or digits")
-		return
-	}
-	if s.cfg.Controller == nil {
-		writeError(w, http.StatusServiceUnavailable, "ipc_unavailable", "mhvtl control queue not configured")
-		return
-	}
-	// The library accepts any barcode into the MAP; a cartridge with no media
-	// only fails once a drive tries to load it. Refuse it up front, as vtlcmd
-	// does. A cartridge is <home>/<barcode>: a directory of stream files, or a
-	// symlink to a raw block device.
-	if lib.HomeDir != "" {
-		if _, err := os.Stat(filepath.Join(lib.HomeDir, req.Barcode)); err != nil {
-			writeError(w, http.StatusConflict, "conflict", fmt.Sprintf(
-				"no media for %s in %s (create it with mktape first)", req.Barcode, lib.HomeDir))
-			return
-		}
-	}
-	err := s.cfg.Controller.ImportMap(int64(lib.ID), req.Barcode)
-	var re *ipc.ReplyError
-	switch {
-	case err == nil:
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	case errors.Is(err, ipc.ErrUnavailable):
-		writeError(w, http.StatusServiceUnavailable, "ipc_unavailable", err.Error())
-	case errors.Is(err, ipc.ErrTimeout):
-		writeError(w, http.StatusGatewayTimeout, "ipc_timeout", fmt.Sprintf("library %d did not reply: %v", lib.ID, err))
-	case errors.As(err, &re):
-		writeError(w, http.StatusConflict, "conflict", "MAP import refused: "+re.Error())
-	default:
-		writeError(w, http.StatusInternalServerError, "control_error", err.Error())
-	}
 }

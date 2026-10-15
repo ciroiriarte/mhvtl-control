@@ -18,7 +18,9 @@ import (
 
 	"mhvtld/internal/api"
 	"mhvtld/internal/changer"
+	"mhvtld/internal/drivestats"
 	"mhvtld/internal/ipc"
+	"mhvtld/internal/media"
 	"mhvtld/internal/rawdisk"
 	"mhvtld/internal/webui"
 )
@@ -42,6 +44,13 @@ func main() {
 	flag.Func("changer", "pin a library's changer node, <libid>=/dev/sgN, skipping sysfs discovery (repeatable)", func(v string) error {
 		return parseChangerFlag(changers, v)
 	})
+	drives := map[int]string{}
+	flag.Func("drive", "pin a tape drive's node for statistics, <driveid>=/dev/sgN, skipping sysfs discovery (repeatable)", func(v string) error {
+		return parseChangerFlag(drives, v)
+	})
+	mktape := flag.String("mktape", "mktape", "path to mhVTL's mktape (creates media)")
+	editTape := flag.String("edit-tape", "edit_tape", "path to mhVTL's edit_tape (edits media)")
+	homeDir := flag.String("home-dir", "/var/lib/mhvtl", "media home of a library device.conf and mhvtl.conf give none for")
 	flag.Parse()
 
 	token := *apiToken
@@ -57,15 +66,19 @@ func main() {
 		log.Fatalf("refusing to bind non-loopback %s without --api-token; pass --insecure to override", *listen)
 	}
 
+	locator := &changer.Locator{
+		SysRoot:   "/sys",
+		DevRoot:   "/dev",
+		Overrides: changers,
+		Open:      changer.OpenSG,
+	}
 	cfg := api.Config{
-		ConfigDir:  *configDir,
-		Controller: ipc.NewIPCController(),
-		Changers: changer.NewManager(&changer.Locator{
-			SysRoot:   "/sys",
-			DevRoot:   "/dev",
-			Overrides: changers,
-			Open:      changer.OpenSG,
-		}, changer.OpenSG),
+		ConfigDir:   *configDir,
+		Controller:  ipc.NewIPCController(),
+		Changers:    changer.NewManager(locator, changer.OpenSG),
+		Media:       media.Tools{Mktape: *mktape, EditTape: *editTape, ConfigDir: *configDir},
+		DefaultHome: *homeDir,
+		Drives:      &drivestats.Reader{Locator: locator, Overrides: drives, Open: changer.OpenSG},
 		DiskOptions: rawdisk.Options{IncludeVirtual: *includeVirtual, ScanPaths: scanPaths},
 		Formatter:   rawdisk.ToolFormatter{ToolPath: *formatTool},
 		Token:       token,
@@ -132,7 +145,8 @@ func bindRefused(host, token string, insecure bool) bool {
 	return !isLoopbackHost(host) && token == "" && !insecure
 }
 
-// parseChangerFlag records one --changer <libid>=<path> override.
+// parseChangerFlag records one --changer <libid>=<path> or --drive
+// <driveid>=<path> override.
 func parseChangerFlag(m map[int]string, v string) error {
 	id, path, ok := strings.Cut(v, "=")
 	if !ok || path == "" {
@@ -140,7 +154,7 @@ func parseChangerFlag(m map[int]string, v string) error {
 	}
 	n, err := strconv.Atoi(id)
 	if err != nil || n < 0 {
-		return fmt.Errorf("bad library id %q", id)
+		return fmt.Errorf("bad id %q", id)
 	}
 	m[n] = path
 	return nil

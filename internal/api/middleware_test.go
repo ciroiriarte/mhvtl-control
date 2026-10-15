@@ -66,7 +66,7 @@ func TestCORSPreflight(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://ui.example" {
 		t.Errorf("Allow-Origin = %q, want https://ui.example", got)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET,POST,OPTIONS" {
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); got != "GET,POST,PATCH,OPTIONS" {
 		t.Errorf("Allow-Methods = %q", got)
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "Authorization,Content-Type" {

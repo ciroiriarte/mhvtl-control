@@ -179,7 +179,8 @@
 :root[data-theme="classic"] select,
 :root[data-theme="classic"] input[type="text"],
 :root[data-theme="classic"] input[type="search"],
-:root[data-theme="classic"] input[type="password"] {
+:root[data-theme="classic"] input[type="password"],
+:root[data-theme="classic"] input[type="number"] {
   background: #fff; color: #000;
   border: 2px inset #d4d0c8; border-radius: 0;
 }
@@ -265,7 +266,7 @@ code, .mono, .num { font-family: var(--font-mono); }
 .topbar {
   display: flex; align-items: center; gap: 16px;
   flex-wrap: wrap; /* US-F10: wrap on narrow screens, no horizontal overflow */
-  padding: 12px 16px; margin: 0 -16px 18px;
+  padding: 12px 16px; margin: 0 0 18px; /* full-width bar outside .app: no negative gutter */
   background: var(--panel-head);
   border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 10;
@@ -279,7 +280,7 @@ code, .mono, .num { font-family: var(--font-mono); }
 /* theme + target controls */
 .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .controls label { color: var(--text-dim); font-size: 12px; }
-select, input[type="text"], input[type="password"] {
+select, input[type="text"], input[type="password"], input[type="number"], input[type="search"] {
   background: var(--bg-elev);
   color: var(--text);
   border: 1px solid var(--border);
@@ -519,3 +520,49 @@ dialog h3 { font-size: 15px; }
   box-shadow: var(--shadow); opacity: 1; transition: opacity .3s ease;
 }
 .toast.leaving { opacity: 0; }
+
+/* ---- Media panel ------------------------------------------------------ */
+.media-scroll { max-height: 460px; overflow: auto; }
+.media-table td { font-size: 12px; vertical-align: middle; }
+.media-table td.acts { white-space: nowrap; }
+.media-table td.acts .btn + .btn { margin-left: 4px; }
+.media-table .cap { min-width: 150px; }
+.media-table .cap .bar { margin-top: 3px; height: 6px; }
+.media-table tr.row-note td { border-top: 0; padding-top: 0; font-size: 11px; color: var(--warn); }
+.media-table tr.has-note td { border-bottom: 0; }
+.badge.wp { color: var(--warn); border-color: var(--warn); }
+.badge.loc-shelf { color: var(--text-faint); }
+.badge.loc-drive { background: var(--drive-load); color: var(--text); border-color: var(--accent); }
+
+/* ---- MAP state + controls --------------------------------------------- */
+.map-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.map-top .map-head { margin-bottom: 0; }
+.map-top .spacer { flex: 1; }
+.map-state { font-size: 11px; color: var(--text-dim); }
+.map-state.open { color: var(--warn); font-weight: 700; }
+
+/* ---- Form dialogs ----------------------------------------------------- */
+.form-grid { display: flex; flex-direction: column; gap: 10px; }
+.form-grid label, #move-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-dim); }
+.form-grid label.inline-check { flex-direction: row; font-size: 13px; }
+.range-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+.range-grid[hidden], #mc-single[hidden] { display: none; }
+.range-grid input, .range-grid select, #mc-single input { width: 100%; }
+fieldset.mode-pick { display: flex; gap: 16px; border: 0; padding: 0; margin: 0; }
+fieldset.mode-pick legend { font-size: 12px; color: var(--text-dim); padding: 0; margin-bottom: 4px; }
+.preview { font-size: 12px; font-family: var(--font-mono); color: var(--text-dim); min-height: 1.4em; }
+.preview.err { color: var(--err); font-family: var(--font-sans); }
+.dialog-error { color: var(--err); font-size: 12px; margin: 8px 0 0; }
+.dialog-error:empty { display: none; }
+.dialog-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+dialog.wide { max-width: 720px; }
+
+/* ---- Drive statistics ------------------------------------------------- */
+.stats-body { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); max-height: 65vh; overflow: auto; }
+.stats-body section h4 {
+  margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--accent-2);
+}
+.stats-body table td { font-family: var(--font-mono); font-size: 12px; }
+.stats-body table th { text-transform: none; letter-spacing: 0; font-size: 12px; }
+.stats-body .full { grid-column: 1 / -1; }
+.footnote { font-size: 11px; margin: 10px 0 0; }

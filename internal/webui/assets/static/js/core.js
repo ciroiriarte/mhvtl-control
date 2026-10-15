@@ -122,6 +122,22 @@
     return out;
   }
 
+  // emptyLocations lists where a cartridge can be moved in a live library:
+  // empty storage slots, then empty MAP slots, as {kind, number}. Like
+  // mountCandidates it offers nothing without live state.
+  function emptyLocations(lib) {
+    if (!lib || lib.live !== true) { return []; }
+    var out = [];
+    [["slot", lib.slots], ["map", lib.maps]].forEach(function (pair) {
+      coerceArray(pair[1]).forEach(function (sl) {
+        if (sl && !slotIsOccupied(sl) && coerceNumber(sl.number) > 0) {
+          out.push({ kind: pair[0], number: coerceNumber(sl.number) });
+        }
+      });
+    });
+    return out;
+  }
+
   // isStale reports whether a response captured at requestGen should be
   // discarded because the active node generation has since advanced.
   function isStale(requestGen, currentGen) {
@@ -182,13 +198,139 @@
     return { total: arr.length, occupied: occupied, empty: arr.length - occupied };
   }
 
+  // fmtRatio renders a compression ratio as "x.xx:1"; absent or non-positive
+  // ratios (no data moved yet) render as "—".
+  function fmtRatio(x) {
+    if (x == null) { return "—"; }
+    var n = Number(x);
+    if (!Number.isFinite(n) || n <= 0) { return "—"; }
+    return n.toFixed(2) + ":1";
+  }
+
+  // validBarcode mirrors the server rule: 1-16 ASCII letters and digits.
+  function validBarcode(s) {
+    return typeof s === "string" && /^[A-Za-z0-9]{1,16}$/.test(s);
+  }
+
+  // intField reads a form value as an integer: blank -> 0, otherwise it must
+  // be an integer. Returns NaN when it is not.
+  function intField(v) {
+    if (v == null || String(v).trim() === "") { return 0; }
+    var n = Number(String(v).trim());
+    return Number.isInteger(n) ? n : NaN;
+  }
+
+  // expandBarcodes mirrors the server's range expansion for POST /media:
+  // prefix + start..start+count-1 zero-padded to width + suffix, where width is
+  // max(width, digits of the last number). Returns {barcodes, error}; on error
+  // barcodes is empty and error carries the server's wording.
+  function expandBarcodes(o) {
+    o = o || {};
+    var prefix = o.prefix == null ? "" : String(o.prefix);
+    var suffix = o.suffix == null ? "" : String(o.suffix);
+    var start = intField(o.start), count = intField(o.count), width = intField(o.width);
+    function fail(msg) { return { barcodes: [], error: msg }; }
+    if (Number.isNaN(start) || Number.isNaN(count) || Number.isNaN(width)) {
+      return fail("start, count and width must be whole numbers");
+    }
+    if (count < 1 || count > 500) { return fail("count must be 1-500"); }
+    if (start < 0) { return fail("start must not be negative"); }
+    if (width < 0 || width > 16) { return fail("width must be 0-16"); }
+    var w = Math.max(width, String(start + count - 1).length);
+    var out = [];
+    for (var i = 0; i < count; i++) {
+      var num = String(start + i);
+      while (num.length < w) { num = "0" + num; }
+      var bc = prefix + num + suffix;
+      if (!validBarcode(bc)) {
+        return fail("barcode \"" + bc + "\" is not 1-16 letters or digits");
+      }
+      out.push(bc);
+    }
+    return { barcodes: out, error: null };
+  }
+
+  // parseSizeMB reads a "size MB" form field: blank -> value null (keep /
+  // unset), otherwise a non-negative integer (0 = the density's native
+  // capacity). Returns {value, error}.
+  function parseSizeMB(s) {
+    var t = s == null ? "" : String(s).trim();
+    if (t === "") { return { value: null, error: null }; }
+    if (!/^[0-9]+$/.test(t)) { return { value: null, error: "size must be a whole number of MB (0 = native)" }; }
+    return { value: Number(t), error: null };
+  }
+
+  // buildMediaPatch returns the PATCH body for a cartridge edit holding only
+  // the fields that change, or null when nothing does. form is
+  // {write_protect: bool, type: "" (keep) | name, density: "" (keep) | mktape
+  // name, size_mb: "" (keep) | digits}. The cartridge reports its MAM density
+  // ("U-832"), never the mktape name, so any chosen density is sent. Throws
+  // RangeError on an invalid size.
+  function buildMediaPatch(original, form) {
+    original = original || {};
+    form = form || {};
+    var body = {};
+    if (typeof form.write_protect === "boolean" && form.write_protect !== !!original.write_protected) {
+      body.write_protect = form.write_protect;
+    }
+    if (form.type && form.type !== original.type) { body.type = String(form.type); }
+    if (form.density) { body.density = String(form.density); }
+    var size = parseSizeMB(form.size_mb);
+    if (size.error) { throw new RangeError(size.error); }
+    if (size.value !== null) { body.size_mb = size.value; }
+    return Object.keys(body).length ? body : null;
+  }
+
+  // mediaLocText renders a cartridge location from GET /media. Drive locations
+  // carry the drive POSITION; drives (the library's drives[]) maps it to the
+  // drive id when known.
+  function mediaLocText(loc, drives) {
+    if (!loc || !loc.kind) { return "—"; }
+    var n = coerceNumber(loc.number);
+    switch (loc.kind) {
+      case "slot": return "slot " + n;
+      case "map": return "MAP " + n;
+      case "shelf": return "shelf";
+      case "drive":
+        var id = null;
+        coerceArray(drives).forEach(function (d) {
+          if (id === null && d && coerceNumber(d.slot) === n) { id = coerceNumber(d.id); }
+        });
+        return id === null ? "drive position " + n : "drive " + id;
+      default: return String(loc.kind);
+    }
+  }
+
+  // filterMedia narrows cartridges by a barcode substring (case-insensitive)
+  // and where: "all" | "library" (slot, MAP or drive) | "shelf".
+  function filterMedia(carts, opts) {
+    opts = opts || {};
+    var query = String(opts.query == null ? "" : opts.query).trim().toLowerCase();
+    var where = opts.where === "library" || opts.where === "shelf" ? opts.where : "all";
+    return coerceArray(carts).filter(function (c) {
+      var kind = c && c.location ? c.location.kind : "";
+      if (where === "shelf" && kind !== "shelf") { return false; }
+      if (where === "library" && kind !== "slot" && kind !== "map" && kind !== "drive") { return false; }
+      if (query && String(c && c.barcode || "").toLowerCase().indexOf(query) < 0) { return false; }
+      return true;
+    });
+  }
+
   var API = {
     esc: esc,
+    fmtRatio: fmtRatio,
+    validBarcode: validBarcode,
+    expandBarcodes: expandBarcodes,
+    parseSizeMB: parseSizeMB,
+    buildMediaPatch: buildMediaPatch,
+    mediaLocText: mediaLocText,
+    filterMedia: filterMedia,
     attr: attr,
     buildMountBody: buildMountBody,
     driveState: driveState,
     firstEmptyDrive: firstEmptyDrive,
     mountCandidates: mountCandidates,
+    emptyLocations: emptyLocations,
     isStale: isStale,
     canSendMutation: canSendMutation,
     coerceArray: coerceArray,

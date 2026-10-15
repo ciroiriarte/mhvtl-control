@@ -31,9 +31,11 @@ const (
 	ElementDTE       = 4 // data transfer (drive)
 )
 
-// PeripheralMediumChanger is the INQUIRY peripheral device type of an SMC
-// device.
-const PeripheralMediumChanger = 0x08
+// INQUIRY peripheral device types mhvtld looks for.
+const (
+	PeripheralSequential    = 0x01 // SSC device (tape drive)
+	PeripheralMediumChanger = 0x08 // SMC device (medium changer)
+)
 
 // voltagIDLen is the primary volume tag identifier width inside the 36-byte
 // volume tag field.

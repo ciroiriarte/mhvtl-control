@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -9,12 +10,14 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"mhvtld/internal/changer"
 	"mhvtld/internal/config"
 	"mhvtld/internal/ipc"
+	"mhvtld/internal/media"
 	"mhvtld/internal/rawdisk"
 )
 
@@ -31,6 +34,15 @@ type Config struct {
 	// library's SCSI medium changer. Nil means changer access is not
 	// configured: mount/unmount return 503 and libraries are not live.
 	Changers ChangerService
+	// Media creates and edits cartridges (mktape, edit_tape). Nil means media
+	// changes are unavailable (503); listing still works.
+	Media MediaService
+	// DefaultHome is the media home directory of a library whose device.conf
+	// entry has none and when mhvtl.conf sets no MHVTL_HOME_PATH.
+	DefaultHome string
+	// Drives reads tape drive statistics. Nil means statistics are
+	// unavailable (503).
+	Drives DriveStatsService
 	// DiskOptions controls raw-disk enumeration for GET /storage/disks.
 	DiskOptions rawdisk.Options
 	// Formatter initializes raw disks. Nil means formatting is unavailable (503).
@@ -49,13 +61,69 @@ type ChangerService interface {
 	Inventory(lib config.Library) (changer.Inventory, error)
 	Mount(lib config.Library, driveID int, from changer.Source) (changer.Move, error)
 	Unmount(lib config.Library, driveID, toSlot int) (changer.Move, error)
+	Transfer(lib config.Library, from, to changer.Location) (changer.Move, error)
+	Export(lib config.Library, from changer.ExportSource) (changer.Move, error)
+	Store(lib config.Library, barcode string) (changer.Move, error)
 }
+
+// MediaService creates and edits cartridges; implemented by media.Tools.
+type MediaService interface {
+	Create(ctx context.Context, lib int, home string, s media.Spec) error
+	Edit(ctx context.Context, lib int, home, barcode string, c media.Change) error
+}
+
+var _ MediaService = media.Tools{}
 
 var _ ChangerService = (*changer.Manager)(nil)
 
 // Server is the dependency-injected API server.
 type Server struct {
 	cfg Config
+	// libs serializes the operations that move cartridges or command a
+	// library over the queue, per library id. vtllibrary waits for a drive's
+	// load/unload reply by reading any message addressed to the library, so
+	// a queue command sent while a move into or out of a drive is in flight
+	// would be taken as the drive's reply.
+	libs keyedMutex
+	// homes serializes media creation per home directory, so the check that a
+	// barcode is new and mktape cannot interleave with another creation.
+	homes keyedMutex
+}
+
+// keyedMutex is a set of mutexes created on first use.
+type keyedMutex struct {
+	mu sync.Mutex
+	m  map[string]*sync.Mutex
+}
+
+// lock locks the mutex for key and returns its unlock.
+func (k *keyedMutex) lock(key string) func() {
+	k.mu.Lock()
+	if k.m == nil {
+		k.m = map[string]*sync.Mutex{}
+	}
+	l, ok := k.m[key]
+	if !ok {
+		l = &sync.Mutex{}
+		k.m[key] = l
+	}
+	k.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
+
+// lockLibrary serializes cartridge moves and queue commands for library id.
+// Callers that need several libraries lock them in ascending id order.
+func (s *Server) lockLibrary(id int) func() {
+	return s.libs.lock(strconv.Itoa(id))
+}
+
+// maxBody bounds a JSON request body.
+const maxBody = 1 << 20
+
+// decodeJSON decodes the request body into v, refusing bodies over maxBody.
+func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
+	return json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(v)
 }
 
 // NewServer returns a Server configured with cfg.
@@ -73,6 +141,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/libraries/{id}/mount", s.handleMount)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/unmount", s.handleUnmount)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/map/import", s.handleMapImport)
+	mux.HandleFunc("POST /api/v1/libraries/{id}/map/export", s.handleMapExport)
+	mux.HandleFunc("POST /api/v1/libraries/{id}/map/{action}", s.handleMapAction)
+	mux.HandleFunc("POST /api/v1/libraries/{id}/move", s.handleMove)
+	mux.HandleFunc("GET /api/v1/libraries/{id}/media", s.handleMediaList)
+	mux.HandleFunc("POST /api/v1/libraries/{id}/media", s.handleMediaCreate)
+	mux.HandleFunc("PATCH /api/v1/libraries/{id}/media/{barcode}", s.handleMediaEdit)
+	mux.HandleFunc("GET /api/v1/libraries/{id}/drives/{drive}/stats", s.handleDriveStats)
 	mux.HandleFunc("GET /api/v1/storage/disks", s.handleDisks)
 	mux.HandleFunc("POST /api/v1/storage/disks/format", s.handleFormat)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)

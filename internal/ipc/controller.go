@@ -30,6 +30,9 @@ type Controller interface {
 	Online(lib int64) error
 	Offline(lib int64) error
 	ImportMap(lib int64, barcode string) error
+	OpenMap(lib int64) error
+	CloseMap(lib int64) error
+	EjectMap(lib int64) error
 }
 
 // IPCController drives libraries over the SysV queue keyed by QKey(). The
@@ -40,6 +43,9 @@ type IPCController struct {
 	key       int
 	client    *Client // nil until opened, and after the cached id went stale
 	timeoutMs int
+	// late holds devices whose last command timed out: their reply may
+	// still arrive, and must not be taken as the answer to the next one.
+	late map[int64]bool
 }
 
 var _ Controller = (*IPCController)(nil)
@@ -99,6 +105,16 @@ func (c *IPCController) send(dev int64, text string) error {
 // resend: the command was already delivered. Caller holds c.mu, so concurrent
 // requests never read each other's replies.
 func (c *IPCController) command(dev int64, text string, replies bool) (string, error) {
+	if c.late[dev] && c.client != nil {
+		// Replies carry no request id, so a late one from dev would be read
+		// as this command's answer. Drain whatever is queued first.
+		for {
+			if _, _, err := c.client.Receive(0); err != nil {
+				break
+			}
+		}
+		delete(c.late, dev)
+	}
 	if err := c.send(dev, text); err != nil {
 		return "", err
 	}
@@ -109,6 +125,7 @@ func (c *IPCController) command(dev int64, text string, replies bool) (string, e
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
+			c.markLate(dev)
 			return "", ErrTimeout
 		}
 		snd, reply, err := c.client.Receive(int(remaining.Milliseconds()))
@@ -116,12 +133,23 @@ func (c *IPCController) command(dev int64, text string, replies bool) (string, e
 			if staleQueue(err) {
 				c.client = nil
 			}
+			if errors.Is(err, ErrTimeout) {
+				c.markLate(dev)
+			}
 			return "", err
 		}
 		if snd == dev {
 			return reply, nil
 		}
 	}
+}
+
+// markLate records that dev's reply to a timed-out command may still come.
+func (c *IPCController) markLate(dev int64) {
+	if c.late == nil {
+		c.late = map[int64]bool{}
+	}
+	c.late[dev] = true
 }
 
 // Online brings a library online ("online"; vtllibrary sends no reply).
@@ -156,6 +184,39 @@ func (c *IPCController) ImportMap(lib int64, barcode string) error {
 		return err
 	}
 	return loadErr
+}
+
+// OpenMap opens the library's MAP ("open map"). While it is open the changer
+// cannot reach the MAP slots.
+func (c *IPCController) OpenMap(lib int64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.expectOK(lib, "open map")
+}
+
+// CloseMap closes the library's MAP ("close map").
+func (c *IPCController) CloseMap(lib int64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.expectOK(lib, "close map")
+}
+
+// EjectMap takes every cartridge out of the MAP, as an operator emptying it
+// would: "open map", "empty map", "close map". The cartridges leave the
+// library; their media stays in the home directory. vtllibrary only empties an
+// open MAP, and the MAP is closed again even when emptying is refused. The lock
+// is held across all three commands.
+func (c *IPCController) EjectMap(lib int64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.expectOK(lib, "open map"); err != nil {
+		return err
+	}
+	emptyErr := c.expectOK(lib, "empty map")
+	if err := c.expectOK(lib, "close map"); err != nil && emptyErr == nil {
+		return err
+	}
+	return emptyErr
 }
 
 // expectOK runs a replying command whose success reply is "OK". Caller holds
@@ -209,5 +270,23 @@ func (f *FakeController) Offline(lib int64) error {
 // ImportMap records an ImportMap call.
 func (f *FakeController) ImportMap(lib int64, barcode string) error {
 	f.record("ImportMap", lib, barcode)
+	return f.Err
+}
+
+// OpenMap records an OpenMap call.
+func (f *FakeController) OpenMap(lib int64) error {
+	f.record("OpenMap", lib, "")
+	return f.Err
+}
+
+// CloseMap records a CloseMap call.
+func (f *FakeController) CloseMap(lib int64) error {
+	f.record("CloseMap", lib, "")
+	return f.Err
+}
+
+// EjectMap records an EjectMap call.
+func (f *FakeController) EjectMap(lib int64) error {
+	f.record("EjectMap", lib, "")
 	return f.Err
 }

@@ -253,3 +253,118 @@ test("mountCandidates offers nothing without live state", () => {
   assert.deepStrictEqual(core.mountCandidates(null), []);
   assert.deepStrictEqual(core.mountCandidates({ live: true, slots: "nope", maps: null }), []);
 });
+
+test("fmtRatio renders x.xx:1 and a dash for absent or non-positive ratios", () => {
+  assert.strictEqual(core.fmtRatio(1.98), "1.98:1");
+  assert.strictEqual(core.fmtRatio(2), "2.00:1");
+  assert.strictEqual(core.fmtRatio(null), "—");
+  assert.strictEqual(core.fmtRatio(undefined), "—");
+  assert.strictEqual(core.fmtRatio(0), "—");
+  assert.strictEqual(core.fmtRatio(-1), "—");
+  assert.strictEqual(core.fmtRatio("abc"), "—");
+});
+
+test("validBarcode accepts 1-16 alphanumerics only", () => {
+  assert.strictEqual(core.validBarcode("ZT001L8"), true);
+  assert.strictEqual(core.validBarcode("A".repeat(16)), true);
+  assert.strictEqual(core.validBarcode("A".repeat(17)), false);
+  assert.strictEqual(core.validBarcode(""), false);
+  assert.strictEqual(core.validBarcode("ZT 01"), false);
+  assert.strictEqual(core.validBarcode("ZT-01"), false);
+  assert.strictEqual(core.validBarcode(null), false);
+});
+
+test("expandBarcodes pads to the given width", () => {
+  const r = core.expandBarcodes({ prefix: "ZT", start: 1, count: 3, width: 3, suffix: "L8" });
+  assert.strictEqual(r.error, null);
+  assert.deepStrictEqual(r.barcodes, ["ZT001L8", "ZT002L8", "ZT003L8"]);
+});
+
+test("expandBarcodes defaults the width to the digits of the last number", () => {
+  assert.deepStrictEqual(core.expandBarcodes({ prefix: "A", start: 7, count: 2, width: 0 }).barcodes, ["A7", "A8"]);
+  // 9 -> 10 grows the width: every barcode gets two digits, as on the server.
+  assert.deepStrictEqual(core.expandBarcodes({ prefix: "A", start: 9, count: 2 }).barcodes, ["A09", "A10"]);
+  // an explicit width smaller than the last number's digits is widened
+  assert.deepStrictEqual(core.expandBarcodes({ prefix: "B", start: 99, count: 2, width: 1 }).barcodes, ["B099", "B100"]);
+  // form strings are accepted
+  assert.deepStrictEqual(core.expandBarcodes({ prefix: "C", start: "0", count: "2", width: "", suffix: "" }).barcodes, ["C0", "C1"]);
+});
+
+test("expandBarcodes rejects invalid characters and over-long barcodes", () => {
+  const bad = core.expandBarcodes({ prefix: "ZT-", start: 1, count: 1 });
+  assert.match(bad.error, /not 1-16 letters or digits/);
+  assert.deepStrictEqual(bad.barcodes, []);
+  assert.match(core.expandBarcodes({ prefix: "ABCDEFGHIJKLMN", start: 1, count: 1, width: 3 }).error, /not 1-16/);
+  assert.strictEqual(core.expandBarcodes({ prefix: "ABCDEFGHIJKLMN", start: 1, count: 1, width: 2 }).error, null);
+});
+
+test("expandBarcodes enforces count, start and width bounds", () => {
+  assert.match(core.expandBarcodes({ prefix: "A", start: 1, count: 0 }).error, /count must be 1-500/);
+  assert.match(core.expandBarcodes({ prefix: "A", start: 1, count: 501 }).error, /count must be 1-500/);
+  assert.strictEqual(core.expandBarcodes({ prefix: "A", start: 1, count: 500 }).barcodes.length, 500);
+  assert.match(core.expandBarcodes({ prefix: "A", start: -1, count: 1 }).error, /start must not be negative/);
+  assert.match(core.expandBarcodes({ prefix: "A", start: 1, count: 1, width: 17 }).error, /width must be 0-16/);
+  assert.match(core.expandBarcodes({ prefix: "A", start: 1.5, count: 1 }).error, /whole numbers/);
+  assert.match(core.expandBarcodes({}).error, /count must be 1-500/);
+});
+
+test("parseSizeMB: blank keeps, digits parse, anything else errors", () => {
+  assert.deepStrictEqual(core.parseSizeMB(""), { value: null, error: null });
+  assert.deepStrictEqual(core.parseSizeMB("  "), { value: null, error: null });
+  assert.deepStrictEqual(core.parseSizeMB("0"), { value: 0, error: null });
+  assert.deepStrictEqual(core.parseSizeMB("2048"), { value: 2048, error: null });
+  assert.ok(core.parseSizeMB("-1").error);
+  assert.ok(core.parseSizeMB("1.5").error);
+  assert.ok(core.parseSizeMB("abc").error);
+});
+
+test("buildMediaPatch sends only changed fields", () => {
+  const orig = { barcode: "ZT001L8", write_protected: false, type: "data", density: "U-832" };
+  assert.strictEqual(core.buildMediaPatch(orig, { write_protect: false, type: "", density: "", size_mb: "" }), null);
+  // same type re-selected is not a change
+  assert.strictEqual(core.buildMediaPatch(orig, { write_protect: false, type: "data", density: "", size_mb: "" }), null);
+  assert.deepStrictEqual(core.buildMediaPatch(orig, { write_protect: true, type: "", density: "", size_mb: "" }), { write_protect: true });
+  assert.deepStrictEqual(core.buildMediaPatch({ write_protected: true }, { write_protect: false }), { write_protect: false });
+  assert.deepStrictEqual(core.buildMediaPatch(orig, { write_protect: false, type: "WORM", density: "LTO8", size_mb: "0" }),
+    { type: "WORM", density: "LTO8", size_mb: 0 });
+  assert.deepStrictEqual(core.buildMediaPatch(orig, { size_mb: "1024" }), { size_mb: 1024 });
+});
+
+test("buildMediaPatch throws on an invalid size", () => {
+  assert.throws(() => core.buildMediaPatch({}, { size_mb: "-5" }), RangeError);
+});
+
+test("mediaLocText names slots, MAP, shelf and drives by id", () => {
+  const drives = [{ id: 11, slot: 1 }, { id: 12, slot: 2 }];
+  assert.strictEqual(core.mediaLocText({ kind: "slot", number: 3 }, drives), "slot 3");
+  assert.strictEqual(core.mediaLocText({ kind: "map", number: 2 }, drives), "MAP 2");
+  assert.strictEqual(core.mediaLocText({ kind: "shelf" }, drives), "shelf");
+  assert.strictEqual(core.mediaLocText({ kind: "drive", number: 2 }, drives), "drive 12");
+  assert.strictEqual(core.mediaLocText({ kind: "drive", number: 9 }, drives), "drive position 9");
+  assert.strictEqual(core.mediaLocText(undefined, drives), "—");
+});
+
+test("filterMedia filters by barcode and location", () => {
+  const carts = [
+    { barcode: "ZT001L8", location: { kind: "slot", number: 1 } },
+    { barcode: "ZT002L8", location: { kind: "shelf" } },
+    { barcode: "E01001L8", location: { kind: "drive", number: 1 } },
+    { barcode: "X1" },
+  ];
+  assert.strictEqual(core.filterMedia(carts, {}).length, 4);
+  assert.deepStrictEqual(core.filterMedia(carts, { where: "shelf" }).map((c) => c.barcode), ["ZT002L8"]);
+  assert.deepStrictEqual(core.filterMedia(carts, { where: "library" }).map((c) => c.barcode), ["ZT001L8", "E01001L8"]);
+  assert.deepStrictEqual(core.filterMedia(carts, { query: "zt" }).map((c) => c.barcode), ["ZT001L8", "ZT002L8"]);
+  assert.deepStrictEqual(core.filterMedia("nope", {}), []);
+});
+
+test("emptyLocations lists empty live storage then MAP slots", () => {
+  const lib = {
+    live: true,
+    slots: [{ number: 1, barcode: "A", full: true }, { number: 2, barcode: "", full: false }],
+    maps: [{ number: 1, barcode: "", full: false }, { number: 2, barcode: "B", full: true }],
+  };
+  assert.deepStrictEqual(core.emptyLocations(lib), [{ kind: "slot", number: 2 }, { kind: "map", number: 1 }]);
+  assert.deepStrictEqual(core.emptyLocations({ live: false, slots: lib.slots }), []);
+  assert.deepStrictEqual(core.emptyLocations(null), []);
+});

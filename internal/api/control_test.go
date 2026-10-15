@@ -34,10 +34,17 @@ type fakeChangers struct {
 	invErr error
 	move   changer.Move
 	err    error
+	// storeErr is Store's result, so a place flow can fail after imports.
+	storeErr error
+	// invByLib overrides inv for the libraries it names.
+	invByLib map[int]changer.Inventory
 }
 
 func (f *fakeChangers) Inventory(lib config.Library) (changer.Inventory, error) {
 	f.calls = append(f.calls, fmt.Sprintf("Inventory lib=%d", lib.ID))
+	if inv, ok := f.invByLib[lib.ID]; ok {
+		return inv, f.invErr
+	}
 	return f.inv, f.invErr
 }
 
@@ -49,6 +56,21 @@ func (f *fakeChangers) Mount(lib config.Library, driveID int, from changer.Sourc
 func (f *fakeChangers) Unmount(lib config.Library, driveID, toSlot int) (changer.Move, error) {
 	f.calls = append(f.calls, fmt.Sprintf("Unmount lib=%d drive=%d slot=%d", lib.ID, driveID, toSlot))
 	return f.move, f.err
+}
+
+func (f *fakeChangers) Transfer(lib config.Library, from, to changer.Location) (changer.Move, error) {
+	f.calls = append(f.calls, fmt.Sprintf("Transfer lib=%d %s%d->%s%d", lib.ID, from.Kind, from.Number, to.Kind, to.Number))
+	return f.move, f.err
+}
+
+func (f *fakeChangers) Export(lib config.Library, from changer.ExportSource) (changer.Move, error) {
+	f.calls = append(f.calls, fmt.Sprintf("Export lib=%d slot=%d drive=%d barcode=%s", lib.ID, from.Slot, from.Drive, from.Barcode))
+	return f.move, f.err
+}
+
+func (f *fakeChangers) Store(lib config.Library, barcode string) (changer.Move, error) {
+	f.calls = append(f.calls, fmt.Sprintf("Store lib=%d %s", lib.ID, barcode))
+	return f.move, f.storeErr
 }
 
 func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {

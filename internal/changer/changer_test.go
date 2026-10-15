@@ -27,6 +27,9 @@ type sim struct {
 	uaLeft int
 	// noModeSense6 rejects MODE SENSE(6) with ILLEGAL REQUEST.
 	noModeSense6 bool
+	// mapOpen models an open MAP: its slots lose the access bit and moves
+	// into or out of them fail NOT READY, as in mhvtl's smc.c.
+	mapOpen bool
 	// busy detects overlapping commands (serialization check).
 	busy     int32
 	overlaps int32
@@ -119,8 +122,11 @@ func (s *sim) readElementStatus(cdb, buf []byte) int {
 	for a := max(start, rng.First); rng.Contains(a) && n < count; a++ {
 		d := make([]byte, dlen)
 		binary.BigEndian.PutUint16(d[0:2], a)
+		if typ != scsi.ElementIE || !s.mapOpen {
+			d[2] |= 0x08 // access
+		}
 		if bc, ok := s.full[a]; ok {
-			d[2] = 0x01
+			d[2] |= 0x01
 			copy(d[12:44], bc+strings.Repeat(" ", 32-len(bc)))
 			if src, ok := s.source[a]; ok {
 				d[9] = 0x80
@@ -152,6 +158,9 @@ func (s *sim) moveMedium(cdb []byte) error {
 	dst := binary.BigEndian.Uint16(cdb[6:8])
 	if !s.emap.Transport.Contains(tr) || !s.valid(src) || !s.valid(dst) {
 		return illegal(0x21, 0x01)
+	}
+	if s.mapOpen && (s.emap.IE.Contains(src) || s.emap.IE.Contains(dst)) {
+		return scsi.DecodeSense(scsi.FixedSense(scsi.KeyNotReady, 0x3a, 0x02))
 	}
 	bc, ok := s.full[src]
 	if !ok {

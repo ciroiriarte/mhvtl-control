@@ -87,6 +87,67 @@ func TestIndexHasHardeningStructure(t *testing.T) {
 	}
 }
 
+// TestIndexHasMediaAndMapStructure asserts the media panel and the dialogs
+// for media create/edit, MAP import, slot moves, confirmations and drive
+// statistics are declared in index.html.
+func TestIndexHasMediaAndMapStructure(t *testing.T) {
+	h := newServer()
+	_, body := get(t, h, "/")
+	for _, id := range []string{
+		"media-panel",
+		"media-list",
+		"media-status",
+		"media-create-dialog",
+		"media-edit-dialog",
+		"import-dialog",
+		"move-dialog",
+		"confirm-dialog",
+		"stats-dialog",
+	} {
+		if !strings.Contains(body, `id="`+id+`"`) {
+			t.Errorf("index.html missing element id %q", id)
+		}
+	}
+	// The media status region announces like the other panels.
+	if !strings.Contains(body, `id="media-status" data-panel-status`) {
+		t.Errorf("media-status is not a data-panel-status region")
+	}
+	if !strings.Contains(body, "TapeAlert flags are not read") {
+		t.Errorf("stats dialog missing the TapeAlert footnote")
+	}
+}
+
+func TestAppJSHasMediaAndMapBehavior(t *testing.T) {
+	h := newServer()
+	_, body := get(t, h, "/static/js/app.js")
+	for _, want := range []string{
+		"/media",      // media list / create / edit
+		"/map/export", // export from slot, drive or barcode
+		"/map/import", // import from the shelf
+		"/map/eject",  // eject the MAP to the shelf
+		"/move",       // slot <-> MAP moves
+		"/stats",      // drive statistics
+		"expandBarcodes",
+		"buildMediaPatch",
+		"fmtRatio",
+		"openConfirm",
+		// Partial failures (placing stopped, import not stored) survive the
+		// refresh that follows every action.
+		`mediaStatus.warn("Placing stopped`,
+		`mediaStatus.warn("Imported`,
+		"keepSticky",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("app.js missing marker %q", want)
+		}
+	}
+	for _, banned := range []string{"window.confirm", "alert(", "confirm(\"", ".innerHTML"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("app.js must not use %q", banned)
+		}
+	}
+}
+
 func TestAppJSHasHardeningBehavior(t *testing.T) {
 	h := newServer()
 	res, body := get(t, h, "/static/js/app.js")
@@ -178,16 +239,17 @@ func TestAppJSHasTelemetryAndTruthfulLabels(t *testing.T) {
 	h := newServer()
 	_, body := get(t, h, "/static/js/app.js")
 	for _, want := range []string{
-		"Import / Export (MAP)",                    // distinct MAP area (US-F7)
-		"export/eject not available in this build", // disabled export/eject
-		"compression",                              // drive compression telemetry badge (US-F7)
-		"scsi ",                                    // SCSI channel:target:lun badge
-		"naa ",                                     // NAA badge
-		"configured",                               // truthful "configured topology" qualifier
-		"provisioned ",                             // relabelled capacity (US-F7)
-		"progressbar",                              // capacity bar ARIA role (US-F9)
-		"aria-valuenow",                            // ...with value semantics
-		"MVTL cartridge",                           // US-F8 distinct disk-status labels
+		"Import / Export (MAP)", // distinct MAP area (US-F7)
+		"Eject all to shelf",    // MAP eject (confirmed in confirm-dialog)
+		"MAP OPEN",              // MAP door state
+		"compression",           // drive compression telemetry badge (US-F7)
+		"scsi ",                 // SCSI channel:target:lun badge
+		"naa ",                  // NAA badge
+		"configured",            // truthful "configured topology" qualifier
+		"provisioned ",          // relabelled capacity (US-F7)
+		"progressbar",           // capacity bar ARIA role (US-F9)
+		"aria-valuenow",         // ...with value semantics
+		"MVTL cartridge",        // US-F8 distinct disk-status labels
 		"No MVTL (unformatted)",
 		"Probe failed",
 		"In use (mounted)",
@@ -206,7 +268,7 @@ func TestAppJSHasTelemetryAndTruthfulLabels(t *testing.T) {
 func TestCoreJSHasSlotHelpers(t *testing.T) {
 	h := newServer()
 	_, body := get(t, h, "/static/js/core.js")
-	for _, want := range []string{"filterSlots", "countSlots", "slotIsOccupied", "driveState", "firstEmptyDrive", "mountCandidates"} {
+	for _, want := range []string{"filterSlots", "countSlots", "slotIsOccupied", "driveState", "firstEmptyDrive", "mountCandidates", "expandBarcodes", "buildMediaPatch", "fmtRatio", "emptyLocations"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("core.js missing exported helper %q", want)
 		}

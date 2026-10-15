@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -316,6 +317,41 @@ func TestControllerImportMap(t *testing.T) {
 	}
 }
 
+func TestControllerMapVerbs(t *testing.T) {
+	key := uniqueKey()
+	q := createQueue(t, key)
+	stop := make(chan struct{})
+	var emptyRefused atomic.Bool
+	cmds := library(t, q.qid, 10, func(cmd string) string {
+		if cmd == "empty map" && emptyRefused.Load() {
+			return "Can't empty map while MAP is closed"
+		}
+		return "OK"
+	}, stop)
+
+	c := newTestController(key)
+	if err := c.OpenMap(10); err != nil {
+		t.Fatalf("OpenMap: %v", err)
+	}
+	if err := c.CloseMap(10); err != nil {
+		t.Fatalf("CloseMap: %v", err)
+	}
+	if err := c.EjectMap(10); err != nil {
+		t.Fatalf("EjectMap: %v", err)
+	}
+	emptyRefused.Store(true)
+	err := c.EjectMap(10)
+	var re *ReplyError
+	if !errors.As(err, &re) || re.Command != "empty map" {
+		t.Fatalf("refused eject: err = %v, want ReplyError for empty map", err)
+	}
+	close(stop)
+	want := []string{"open map", "close map", "open map", "empty map", "close map", "open map", "empty map", "close map"}
+	if got := <-cmds; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("library received %q, want %q (MAP closed even after a refused empty)", got, want)
+	}
+}
+
 func TestControllerDiscardsStaleReply(t *testing.T) {
 	key := uniqueKey()
 	q := createQueue(t, key)
@@ -368,6 +404,30 @@ func TestControllerConcurrentCommandsGetOwnReplies(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+// A reply that arrives after its command timed out must not answer the next
+// command to the same library.
+func TestControllerDiscardsLateReplyFromSameDevice(t *testing.T) {
+	key := uniqueKey()
+	q := createQueue(t, key)
+	c := &IPCController{key: key, timeoutMs: 50}
+	if err := c.OpenMap(10); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("silent library: err = %v, want ErrTimeout", err)
+	}
+	deviceRecv(t, q.qid, 10, time.Second) // the timed-out "open map"
+	deviceReply(t, q.qid, 10, "late reply")
+
+	stop := make(chan struct{})
+	cmds := library(t, q.qid, 10, func(string) string { return "OK" }, stop)
+	c.timeoutMs = 2000
+	if err := c.CloseMap(10); err != nil {
+		t.Fatalf("CloseMap took the late reply: %v", err)
+	}
+	close(stop)
+	if got := <-cmds; strings.Join(got, "|") != "close map" {
+		t.Errorf("library received %q", got)
 	}
 }
 

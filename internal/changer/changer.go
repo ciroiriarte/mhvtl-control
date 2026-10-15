@@ -49,6 +49,18 @@ var (
 	// ErrNoEmptySlot means an unmount found no empty storage slot to return
 	// the cartridge to.
 	ErrNoEmptySlot = errors.New("no empty storage slot")
+	// ErrMAPFull means an export found no empty MAP slot.
+	ErrMAPFull = errors.New("no empty MAP slot")
+	// ErrNoMAP means the library has no import/export element.
+	ErrNoMAP = errors.New("library has no MAP")
+	// ErrMAPOpen means the MAP is open, so the changer cannot reach its slots.
+	ErrMAPOpen = errors.New("MAP is open: close it before moving cartridges in or out")
+	// ErrNotFound means no slot, MAP slot or drive of the library holds the
+	// barcode asked for.
+	ErrNotFound = errors.New("barcode not in library")
+	// ErrBadLocation means a location names a kind of element the operation
+	// does not move to or from.
+	ErrBadLocation = errors.New("unsupported location")
 )
 
 // Device is an open changer node.
@@ -112,11 +124,13 @@ type DriveState struct {
 }
 
 // Inventory is a live READ ELEMENT STATUS snapshot, indexed by 1-based number
-// (element i+1 at index i).
+// (element i+1 at index i). MAPOpen is nil when the library has no MAP; mhVTL
+// reports MAP slots accessible to the changer only while the MAP is closed.
 type Inventory struct {
-	Drives []DriveState
-	Slots  []SlotState
-	MAPs   []SlotState
+	Drives  []DriveState
+	Slots   []SlotState
+	MAPs    []SlotState
+	MAPOpen *bool
 }
 
 // Manager serves changer operations for all libraries. Each operation
@@ -243,6 +257,160 @@ func (m *Manager) Unmount(lib config.Library, driveID, toSlot int) (Move, error)
 	return mv, err
 }
 
+// Transfer moves a cartridge between storage and MAP slots (kinds "slot" and
+// "map"). Drives are loaded and emptied with Mount and Unmount.
+func (m *Manager) Transfer(lib config.Library, from, to Location) (Move, error) {
+	var mv Move
+	err := m.with(lib, func(s *session) error {
+		src, err := s.slotAddress(from)
+		if err != nil {
+			return err
+		}
+		dst, err := s.slotAddress(to)
+		if err != nil {
+			return err
+		}
+		if from.Kind == "map" || to.Kind == "map" {
+			if err := s.requireMAPClosed(); err != nil {
+				return err
+			}
+		}
+		mv = Move{From: from, To: to}
+		return s.move(src, dst)
+	})
+	return mv, err
+}
+
+// ExportSource selects the cartridge an export takes to the MAP: the one in
+// storage slot Slot, in drive Drive (a drive id), or wherever Barcode is.
+// Exactly one is set.
+type ExportSource struct {
+	Slot    int
+	Drive   int
+	Barcode string
+}
+
+// Export moves a cartridge to the first empty MAP slot, from where the
+// operator takes it out of the library.
+func (m *Manager) Export(lib config.Library, from ExportSource) (Move, error) {
+	var mv Move
+	err := m.with(lib, func(s *session) error {
+		if s.emap.IE.Count == 0 {
+			return ErrNoMAP
+		}
+		inv, err := s.inventory()
+		if err != nil {
+			return err
+		}
+		if inv.MAPOpen != nil && *inv.MAPOpen {
+			return ErrMAPOpen
+		}
+		var src uint16
+		switch {
+		case from.Slot > 0:
+			if src, err = s.slotAddress(Location{Kind: "slot", Number: from.Slot}); err != nil {
+				return err
+			}
+			mv.From, mv.Barcode = Location{Kind: "slot", Number: from.Slot}, inv.Slots[from.Slot-1].Barcode
+		case from.Drive > 0:
+			ord, err := driveOrdinal(lib, from.Drive)
+			if err != nil {
+				return err
+			}
+			if ord > len(inv.Drives) {
+				return fmt.Errorf("%w: drive position %d (changer has %d drives)", ErrOutOfRange, ord, len(inv.Drives))
+			}
+			src = inv.Drives[ord-1].Address
+			mv.From, mv.Barcode = Location{Kind: "drive", Number: ord}, inv.Drives[ord-1].Barcode
+		default:
+			loc, addr, ok := inv.find(from.Barcode)
+			if !ok {
+				return fmt.Errorf("%w: %s", ErrNotFound, from.Barcode)
+			}
+			if loc.Kind == "map" {
+				return fmt.Errorf("%w: %s is already in MAP slot %d", ErrBadLocation, from.Barcode, loc.Number)
+			}
+			src, mv.From, mv.Barcode = addr, loc, from.Barcode
+		}
+		for _, sl := range inv.MAPs {
+			if !sl.Full {
+				mv.To = Location{Kind: "map", Number: sl.Number}
+				return s.move(src, sl.Address)
+			}
+		}
+		return ErrMAPFull
+	})
+	return mv, err
+}
+
+// Store moves the cartridge with barcode from the MAP slot holding it to the
+// first empty storage slot: the second half of an import.
+func (m *Manager) Store(lib config.Library, barcode string) (Move, error) {
+	var mv Move
+	err := m.with(lib, func(s *session) error {
+		inv, err := s.inventory()
+		if err != nil {
+			return err
+		}
+		if inv.MAPOpen != nil && *inv.MAPOpen {
+			return ErrMAPOpen
+		}
+		var src *SlotState
+		for i := range inv.MAPs {
+			if inv.MAPs[i].Full && inv.MAPs[i].Barcode == barcode {
+				src = &inv.MAPs[i]
+				break
+			}
+		}
+		if src == nil {
+			return fmt.Errorf("%w: %s is in no MAP slot", ErrNotFound, barcode)
+		}
+		for _, sl := range inv.Slots {
+			if !sl.Full {
+				mv = Move{
+					From:    Location{Kind: "map", Number: src.Number},
+					To:      Location{Kind: "slot", Number: sl.Number},
+					Barcode: barcode,
+				}
+				return s.move(src.Address, sl.Address)
+			}
+		}
+		return ErrNoEmptySlot
+	})
+	return mv, err
+}
+
+// find returns where barcode is: a storage slot, MAP slot or drive (by
+// position), and that element's address.
+func (inv Inventory) find(barcode string) (Location, uint16, bool) {
+	if barcode == "" {
+		return Location{}, 0, false
+	}
+	for _, sl := range inv.Slots {
+		if sl.Full && sl.Barcode == barcode {
+			return Location{Kind: "slot", Number: sl.Number}, sl.Address, true
+		}
+	}
+	for _, sl := range inv.MAPs {
+		if sl.Full && sl.Barcode == barcode {
+			return Location{Kind: "map", Number: sl.Number}, sl.Address, true
+		}
+	}
+	for _, d := range inv.Drives {
+		if d.Full && d.Barcode == barcode {
+			return Location{Kind: "drive", Number: d.Number}, d.Address, true
+		}
+	}
+	return Location{}, 0, false
+}
+
+// Locate returns where barcode is in the inventory: a storage slot, MAP slot
+// or drive position.
+func (inv Inventory) Locate(barcode string) (Location, bool) {
+	loc, _, ok := inv.find(barcode)
+	return loc, ok
+}
+
 // driveOrdinal maps a drive id (the vtltape queue id) to its 1-based data
 // transfer element position: the "Slot" of "Library ID: <lib> Slot: <n>".
 func driveOrdinal(lib config.Library, driveID int) (int, error) {
@@ -353,6 +521,10 @@ func (s *session) inventory() (Inventory, error) {
 				inv.Slots[n-1].Full, inv.Slots[n-1].Barcode = e.Full, e.Barcode
 			default:
 				inv.MAPs[n-1].Full, inv.MAPs[n-1].Barcode = e.Full, e.Barcode
+				if inv.MAPOpen == nil {
+					open := !e.Access
+					inv.MAPOpen = &open
+				}
 			}
 		}
 	}
@@ -416,6 +588,42 @@ func (s *session) defaultDestination(addr uint16) (uint16, Location, string, err
 		}
 	}
 	return 0, Location{}, "", ErrNoEmptySlot
+}
+
+// slotAddress resolves a storage ("slot") or MAP ("map") location to its
+// element address.
+func (s *session) slotAddress(loc Location) (uint16, error) {
+	var rng scsi.ElementRange
+	var what string
+	switch loc.Kind {
+	case "slot":
+		rng, what = s.emap.Storage, "slot"
+	case "map":
+		rng, what = s.emap.IE, "MAP slot"
+	default:
+		return 0, fmt.Errorf("%w: %q (want slot or map)", ErrBadLocation, loc.Kind)
+	}
+	addr, ok := rng.Address(loc.Number)
+	if !ok {
+		return 0, fmt.Errorf("%w: %s %d (changer has %d)", ErrOutOfRange, what, loc.Number, rng.Count)
+	}
+	return addr, nil
+}
+
+// requireMAPClosed fails with ErrMAPOpen when the MAP is open. mhVTL refuses
+// such a move with NOT READY; checking first gives the operator a reason.
+func (s *session) requireMAPClosed() error {
+	if s.emap.IE.Count == 0 {
+		return nil
+	}
+	els, err := s.elements(scsi.ElementIE, scsi.ElementRange{First: s.emap.IE.First, Count: 1})
+	if err != nil {
+		return err
+	}
+	if len(els) == 1 && !els[0].Access {
+		return ErrMAPOpen
+	}
+	return nil
 }
 
 // move issues MOVE MEDIUM with the first medium transport element.

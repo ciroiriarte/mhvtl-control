@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +17,8 @@ import (
 // inquiryTimeout bounds the INQUIRY fallback used during discovery.
 const inquiryTimeout = 10 * time.Second
 
-// Locator finds the /dev/sgN node of a library's medium changer.
+// Locator finds the /dev/sgN node of a library's medium changer, or of any
+// SCSI device by its unit serial number.
 type Locator struct {
 	// SysRoot is the sysfs mount point ("/sys").
 	SysRoot string
@@ -37,9 +39,24 @@ func (l *Locator) Find(lib config.Library) (string, error) {
 	if p, ok := l.Overrides[lib.ID]; ok {
 		return p, nil
 	}
-	want := strings.TrimSpace(lib.Serial)
-	if want == "" {
+	if strings.TrimSpace(lib.Serial) == "" {
 		return "", fmt.Errorf("%w: library %d has no Unit serial number in device.conf", ErrUnavailable, lib.ID)
+	}
+	p, err := l.FindBySerial(lib.Serial, scsi.PeripheralMediumChanger)
+	if err != nil {
+		return "", fmt.Errorf("library %d: %w", lib.ID, err)
+	}
+	return p, nil
+}
+
+// FindBySerial returns the sg path of the device of peripheralType (sysfs
+// "type", else the INQUIRY peripheral device type) whose unit serial number
+// (sysfs vpd_pg80, else INQUIRY VPD 80h) equals serial. Errors wrap
+// ErrUnavailable.
+func (l *Locator) FindBySerial(serial string, peripheralType uint8) (string, error) {
+	want := strings.TrimSpace(serial)
+	if want == "" {
+		return "", fmt.Errorf("%w: empty serial number", ErrUnavailable)
 	}
 	classDir := filepath.Join(l.SysRoot, "class", "scsi_generic")
 	ents, err := os.ReadDir(classDir)
@@ -56,21 +73,32 @@ func (l *Locator) Find(lib config.Library) (string, error) {
 	for _, name := range names {
 		devDir := filepath.Join(classDir, name, "device")
 		node := filepath.Join(l.DevRoot, name)
-		if !l.isChanger(devDir, node) {
+		if !l.isType(devDir, node, peripheralType) {
 			continue
 		}
-		if serial, ok := l.serial(devDir, node); ok && serial == want {
+		if s, ok := l.serial(devDir, node); ok && s == want {
 			return node, nil
 		}
 	}
-	return "", fmt.Errorf("%w: no medium changer with serial %q (library %d) under %s", ErrUnavailable, want, lib.ID, classDir)
+	return "", fmt.Errorf("%w: no %s with serial %q under %s", ErrUnavailable, typeName(peripheralType), want, classDir)
 }
 
-// isChanger reports whether the device is a medium changer: sysfs "type",
-// falling back to the standard INQUIRY peripheral device type.
-func (l *Locator) isChanger(devDir, node string) bool {
+// typeName names a peripheral device type in discovery errors.
+func typeName(t uint8) string {
+	switch t {
+	case scsi.PeripheralMediumChanger:
+		return "medium changer"
+	case scsi.PeripheralSequential:
+		return "tape drive"
+	}
+	return fmt.Sprintf("device of type 0x%02x", t)
+}
+
+// isType reports whether the device has peripheral device type want: sysfs
+// "type", falling back to the standard INQUIRY peripheral device type.
+func (l *Locator) isType(devDir, node string, want uint8) bool {
 	if b, err := os.ReadFile(filepath.Join(devDir, "type")); err == nil {
-		return strings.TrimSpace(string(b)) == "8"
+		return strings.TrimSpace(string(b)) == strconv.Itoa(int(want))
 	}
 	buf := make([]byte, 96)
 	n, err := l.inquiry(node, scsi.InquiryCDB(false, 0, uint16(len(buf))), buf)
@@ -78,7 +106,7 @@ func (l *Locator) isChanger(devDir, node string) bool {
 		return false
 	}
 	inq, err := scsi.ParseStdInquiry(buf[:n])
-	return err == nil && inq.PeripheralType == scsi.PeripheralMediumChanger
+	return err == nil && inq.PeripheralType == want
 }
 
 // serial returns the unit serial number: sysfs vpd_pg80, falling back to

@@ -32,6 +32,9 @@
   var coerceArray = core.coerceArray, coerceNumber = core.coerceNumber, fmtBytes = core.fmtBytes;
   var filterSlots = core.filterSlots, countSlots = core.countSlots, slotIsOccupied = core.slotIsOccupied;
   var driveState = core.driveState, firstEmptyDrive = core.firstEmptyDrive, mountCandidates = core.mountCandidates;
+  var emptyLocations = core.emptyLocations, fmtRatio = core.fmtRatio, validBarcode = core.validBarcode;
+  var expandBarcodes = core.expandBarcodes, parseSizeMB = core.parseSizeMB, buildMediaPatch = core.buildMediaPatch;
+  var mediaLocText = core.mediaLocText, filterMedia = core.filterMedia;
 
   /* ---- library view state (US-F6: search / filter / table / multi-lib) --
    * These persist across refreshes so a running search/filter is not reset by
@@ -39,6 +42,11 @@
    * payload so the toolbar can re-render without a refetch.                  */
   var libView = { query: "", state: "all", table: false, selected: null };
   var lastLibData = null;
+
+  /* ---- media view state: search / location filter, and the last /media
+   * payload with the library and generation it was fetched for.           */
+  var mediaView = { query: "", where: "all" };
+  var lastMedia = null; // { libId, gen, data }
 
   /* ---- localStorage (errors surfaced, never silently implying success) -- */
   var LS_THEME = "mhvtld.theme";
@@ -112,6 +120,23 @@
    * successful refresh of the SAME panel — never auto-cleared before shown.  */
   function PanelStatus(regionId) {
     var region = $(regionId);
+    // sticky is a warning about a partly failed action (placing stopped, an
+    // import not stored). It outlives refreshes, which follow every action and
+    // would otherwise wipe it before it is read, until dismissed or the node
+    // changes.
+    var sticky = null;
+    function errorBox(msg, onDismiss) {
+      var box = mk("div", { class: "panel-error" });
+      box.appendChild(mk("span", { class: "msg", text: String(msg) }));
+      var x = mk("button", { class: "dismiss", text: "✕", attrs: { type: "button", "aria-label": "Dismiss" } });
+      x.addEventListener("click", function () {
+        if (box.parentNode) { box.parentNode.removeChild(box); }
+        if (onDismiss) { onDismiss(); }
+      });
+      box.appendChild(x);
+      return box;
+    }
+    function keepSticky() { if (sticky) { region.appendChild(sticky); } }
     return {
       loading: function () {
         if (!region) { return; }
@@ -129,20 +154,25 @@
           class: "status-line",
           text: "Updated " + now.toLocaleTimeString(),
         }));
+        keepSticky();
       },
       grey: function () {
         if (!region) { return; }
+        sticky = null;
         clear(region);
         region.appendChild(mk("span", { class: "status-line loading", text: "Switching node…" }));
       },
       error: function (msg) {
         if (!region) { return; }
         clear(region);
-        var box = mk("div", { class: "panel-error" });
-        box.appendChild(mk("span", { class: "msg", text: String(msg) }));
-        var x = mk("button", { class: "dismiss", text: "✕", attrs: { type: "button", "aria-label": "Dismiss" } });
-        x.addEventListener("click", function () { clear(region); });
-        box.appendChild(x);
+        region.appendChild(errorBox(msg, function () { clear(region); keepSticky(); }));
+        keepSticky();
+      },
+      warn: function (msg) {
+        if (!region) { return; }
+        if (sticky && sticky.parentNode) { sticky.parentNode.removeChild(sticky); }
+        var box = errorBox(msg, function () { if (sticky === box) { sticky = null; } });
+        sticky = box;
         region.appendChild(box);
       },
     };
@@ -150,6 +180,7 @@
   var sysStatus = PanelStatus("system-status-region");
   var libStatus = PanelStatus("lib-status");
   var diskStatus = PanelStatus("disk-status");
+  var mediaStatus = PanelStatus("media-status");
 
   // busy toggles aria-busy on a panel <section> for assistive tech during loads.
   function busy(panelId, on) {
@@ -333,6 +364,17 @@
       unmountBtn.disabled = !mutationsEnabled;
       unmountBtn.addEventListener("click", function () { doUnmount(lib.id, driveId, unmountBtn, renderGen); });
       actions.appendChild(unmountBtn);
+      var expBtn = mk("button", { class: "btn sm", text: "Export", attrs: { type: "button", "aria-label": "Export the cartridge in drive " + driveId + " to the MAP" } });
+      expBtn.disabled = !mutationsEnabled || lib.map_open === true;
+      expBtn.title = lib.map_open === true ? "the MAP is open: close it first" : "Unload and move the cartridge to the first empty MAP slot";
+      expBtn.addEventListener("click", function () {
+        mutate({
+          renderGen: renderGen, btn: expBtn, what: "export",
+          path: libPath(lib.id, "/map/export"), body: { drive: driveId },
+          done: function (res) { return "Exported" + moveText(res && res.move); },
+        });
+      });
+      actions.appendChild(expBtn);
     } else {
       var mountBtn = mk("button", { class: "btn sm", text: "Mount", attrs: { type: "button", "aria-label": "Mount a cartridge into drive " + driveId } });
       mountBtn.disabled = !mutationsEnabled || st.state !== "empty";
@@ -340,25 +382,92 @@
       mountBtn.addEventListener("click", function () { openMountPicker(lib, driveId, renderGen); });
       actions.appendChild(mountBtn);
     }
+    var statsBtn = mk("button", { class: "btn sm ghost", text: "Stats", attrs: { type: "button", "aria-label": "Show statistics for drive " + driveId } });
+    statsBtn.addEventListener("click", function () { openStats(lib, d); });
+    actions.appendChild(statsBtn);
     card.appendChild(actions);
     return card;
   }
 
   // mapArea renders a library's Import/Export (MAP) slots as a DISTINCT region
-  // (US-F7), visually separate from storage slots. "Load from MAP" mounts that
-  // MAP slot ({drive, map}) into the first drive the changer reports empty.
-  // Export/Eject has no REST endpoint in this build, so its control is rendered
-  // DISABLED with an explicit note.
+  // (US-F7), visually separate from storage slots, with the MAP door state
+  // and its controls: open/close, eject everything to the shelf, and import a
+  // shelf cartridge. "Load from MAP" mounts that MAP slot ({drive, map}) into
+  // the first drive the changer reports empty; "Move to slot" stores it in the
+  // first empty storage slot.
   function mapArea(lib) {
     var renderGen = NodeState.generation;
     var maps = coerceArray(lib.maps);
+    var live = lib.live === true;
+    var isOpen = lib.map_open === true;
     var box = mk("div", { class: "map-area" });
-    box.appendChild(mk("div", { class: "map-head", text: "Import / Export (MAP)" }));
+    var top = mk("div", { class: "map-top" });
+    top.appendChild(mk("div", { class: "map-head", text: "Import / Export (MAP)" }));
+    box.appendChild(top);
     if (!maps.length) {
       box.appendChild(mk("p", { class: "muted", text: "No import/export (MAP) slots." }));
       return box;
     }
+    if (typeof lib.map_open === "boolean") {
+      top.appendChild(mk("span", {
+        class: "map-state" + (isOpen ? " open" : ""),
+        text: isOpen ? "MAP OPEN — the robot cannot reach these slots" : "MAP closed",
+      }));
+    } else if (!live) {
+      top.appendChild(mk("span", { class: "map-state", text: "state unknown (changer not reachable)" }));
+    }
+    top.appendChild(mk("span", { class: "spacer" }));
+
+    var mapCounts = countSlots(maps);
+    var libId = coerceNumber(lib.id);
+    var doorBtn = mk("button", { class: "btn sm", text: isOpen ? "Close" : "Open", attrs: { type: "button", "aria-label": (isOpen ? "Close" : "Open") + " the MAP" } });
+    doorBtn.disabled = !mutationsEnabled || !live;
+    doorBtn.title = !live ? "changer not reachable"
+      : isOpen ? "Close the MAP so the robot can reach its slots again"
+        : "Open the MAP (the robot cannot reach its slots while it is open)";
+    doorBtn.addEventListener("click", function () {
+      mutate({
+        renderGen: renderGen, btn: doorBtn, what: isOpen ? "close MAP" : "open MAP",
+        path: libPath(libId, isOpen ? "/map/close" : "/map/open"),
+        done: function () { return "MAP " + (isOpen ? "closed" : "opened"); },
+      });
+    });
+    top.appendChild(doorBtn);
+
+    var ejectBtn = mk("button", { class: "btn sm", text: "Eject all to shelf", attrs: { type: "button" } });
+    ejectBtn.disabled = !mutationsEnabled || !live || mapCounts.occupied === 0;
+    ejectBtn.title = !live ? "changer not reachable"
+      : mapCounts.occupied === 0 ? "the MAP is empty"
+        : "Take every cartridge in the MAP out of the library (media stays on disk)";
+    ejectBtn.addEventListener("click", function () {
+      var bcs = [];
+      maps.forEach(function (m) { if (slotIsOccupied(m)) { bcs.push(String(m.barcode || "(no barcode)")); } });
+      openConfirm("Eject MAP to shelf",
+        "Take " + bcs.length + " cartridge" + (bcs.length === 1 ? "" : "s") + " (" + bcs.join(", ") +
+        ") out of library #" + libId + ". Their media stays on disk; import them again from the Media panel.",
+        "Eject", function () {
+          mutate({
+            renderGen: renderGen, btn: ejectBtn, what: "eject MAP",
+            path: libPath(libId, "/map/eject"),
+            done: function (res) {
+              var out = coerceArray(res && res.ejected).map(String);
+              return out.length ? "Ejected to shelf: " + out.join(", ") : "MAP emptied";
+            },
+          });
+        });
+    });
+    top.appendChild(ejectBtn);
+
+    var importBtn = mk("button", { class: "btn sm", text: "Import…", attrs: { type: "button", "aria-label": "Import a shelf cartridge through the MAP" } });
+    importBtn.disabled = !mutationsEnabled || !live || mapCounts.empty === 0;
+    importBtn.title = !live ? "changer not reachable"
+      : mapCounts.empty === 0 ? "the MAP is full" : "Put a shelf cartridge into the MAP";
+    importBtn.addEventListener("click", function () { openImportDialog(libId, renderGen, null); });
+    top.appendChild(importBtn);
+
     var emptyDrive = firstEmptyDrive(lib);
+    var freeSlot = null;
+    emptyLocations(lib).forEach(function (loc) { if (freeSlot === null && loc.kind === "slot") { freeSlot = loc.number; } });
     var list = mk("div", { class: "map-list" });
     maps.forEach(function (m) {
       var occ = slotIsOccupied(m);
@@ -369,22 +478,33 @@
 
       var acts = mk("div", { class: "map-actions" });
       var imp = mk("button", { class: "btn sm", text: "Load from MAP", attrs: { type: "button", "aria-label": "Import (load) the cartridge in MAP " + num + " into a drive" } });
-      imp.disabled = !mutationsEnabled || lib.live !== true || !occ || emptyDrive === null;
-      imp.title = lib.live !== true ? "changer not reachable"
+      imp.disabled = !mutationsEnabled || !live || !occ || emptyDrive === null || isOpen;
+      imp.title = !live ? "changer not reachable"
         : !occ ? "MAP slot is empty"
-          : (emptyDrive === null ? "no empty drive available to load into"
-            : "Load the cartridge in this MAP slot into drive " + emptyDrive);
+          : isOpen ? "the MAP is open: close it first"
+            : (emptyDrive === null ? "no empty drive available to load into"
+              : "Load the cartridge in this MAP slot into drive " + emptyDrive);
       imp.addEventListener("click", function () {
-        doMount({ libId: coerceNumber(lib.id), drive: emptyDrive }, { kind: "map", number: num }, imp, renderGen);
+        doMount({ libId: libId, drive: emptyDrive }, { kind: "map", number: num }, imp, renderGen);
       });
       acts.appendChild(imp);
 
-      var exp = mk("button", {
-        class: "btn sm ghost", text: "Export / Eject",
-        attrs: { type: "button", title: "export/eject not available in this build", "aria-label": "Export or eject MAP " + num + " (not available in this build)" },
-      });
-      exp.disabled = true; // No REST endpoint exists; do NOT fake-wire it.
-      acts.appendChild(exp);
+      if (occ) {
+        var mv = mk("button", { class: "btn sm ghost", text: "Move to slot", attrs: { type: "button", "aria-label": "Move the cartridge in MAP " + num + " to the first empty storage slot" } });
+        mv.disabled = !mutationsEnabled || !live || isOpen || freeSlot === null;
+        mv.title = !live ? "changer not reachable"
+          : isOpen ? "the MAP is open: close it first"
+            : freeSlot === null ? "no empty storage slot" : "Move to slot " + freeSlot;
+        mv.addEventListener("click", function () {
+          var from = { kind: "map", number: num }, to = { kind: "slot", number: freeSlot };
+          mutate({
+            renderGen: renderGen, btn: mv, what: "move",
+            path: libPath(libId, "/move"), body: { from: from, to: to },
+            done: function () { return "Moved " + String(m.barcode || "") + " from " + locText(from) + " to " + locText(to); },
+          });
+        });
+        acts.appendChild(mv);
+      }
       cell.appendChild(acts);
       list.appendChild(cell);
     });
@@ -405,36 +525,58 @@
     return grid;
   }
 
-  // slotTableView renders the compact table (slot, barcode, status, action)
-  // alternative for an already-filtered slot set. The action mounts an occupied
-  // slot into the first empty drive (disabled when none is available or the
-  // library has no live state).
+  // slotTableView renders the compact table (slot, barcode, status, actions)
+  // alternative for an already-filtered slot set. Mount loads an occupied slot
+  // into the first empty drive; Export takes it to the first empty MAP slot;
+  // Move… picks an empty storage or MAP slot. All need live state.
   function slotTableView(lib, slots) {
     var renderGen = NodeState.generation;
     var emptyDrive = firstEmptyDrive(lib);
+    var live = lib.live === true;
+    var libId = coerceNumber(lib.id);
     var rows = slots.map(function (sl) {
       var full = slotIsOccupied(sl);
       var num = coerceNumber(sl.number);
-      var actionCell = mk("td");
+      var bc = full ? String(sl.barcode || "") : "";
+      var actionCell = mk("td", { class: "acts" });
       if (full) {
         var b = mk("button", { class: "btn sm", text: "Mount", attrs: { type: "button", "aria-label": "Mount slot " + num + " into a drive" } });
         b.disabled = !mutationsEnabled || emptyDrive === null;
-        b.title = lib.live !== true ? "changer not reachable"
+        b.title = !live ? "changer not reachable"
           : (emptyDrive === null ? "no empty drive available" : "Mount this slot into drive " + emptyDrive);
-        b.addEventListener("click", function () { doMount({ libId: coerceNumber(lib.id), drive: emptyDrive }, { kind: "slot", number: num }, b, renderGen); });
+        b.addEventListener("click", function () { doMount({ libId: libId, drive: emptyDrive }, { kind: "slot", number: num }, b, renderGen); });
         actionCell.appendChild(b);
+
+        var ex = mk("button", { class: "btn sm", text: "Export", attrs: { type: "button", "aria-label": "Export slot " + num + " to the MAP" } });
+        ex.disabled = !mutationsEnabled || !live || lib.map_open === true;
+        ex.title = !live ? "changer not reachable"
+          : lib.map_open === true ? "the MAP is open: close it first" : "Move to the first empty MAP slot";
+        ex.addEventListener("click", function () {
+          mutate({
+            renderGen: renderGen, btn: ex, what: "export",
+            path: libPath(libId, "/map/export"), body: { slot: num },
+            done: function (res) { return "Exported" + moveText(res && res.move); },
+          });
+        });
+        actionCell.appendChild(ex);
+
+        var mv = mk("button", { class: "btn sm ghost", text: "Move…", attrs: { type: "button", "aria-label": "Move slot " + num + " to another slot" } });
+        mv.disabled = !mutationsEnabled || !live;
+        if (!live) { mv.title = "changer not reachable"; }
+        mv.addEventListener("click", function () { openMoveDialog(lib, { kind: "slot", number: num, barcode: bc }, renderGen); });
+        actionCell.appendChild(mv);
       } else {
         actionCell.appendChild(document.createTextNode("—"));
       }
       return mk("tr", { children: [
         mk("td", { class: "mono", text: String(num) }),
-        mk("td", { class: "mono", text: full ? String(sl.barcode || "(no barcode)") : "—" }),
+        mk("td", { class: "mono", text: full ? (bc || "(no barcode)") : "—" }),
         mk("td", { text: full ? "occupied" : "empty" }),
         actionCell,
       ] });
     });
     var thead = mk("thead", { children: [mk("tr", { children: [
-      mk("th", { text: "Slot" }), mk("th", { text: "Barcode" }), mk("th", { text: "Status" }), mk("th", { text: "Action" }),
+      mk("th", { text: "Slot" }), mk("th", { text: "Barcode" }), mk("th", { text: "Status" }), mk("th", { text: "Actions" }),
     ] })] });
     return mk("table", { class: "slot-table", children: [thead, mk("tbody", { children: rows })] });
   }
@@ -630,6 +772,597 @@
       }
       dock.appendChild(row);
     });
+  }
+
+  /* ---- changer / media mutations --------------------------------------- */
+  function libPath(libId, suffix) {
+    return "/api/v1/libraries/" + encodeURIComponent(coerceNumber(libId)) + suffix;
+  }
+
+  // moveText renders a {from, to, barcode} changer move for a toast.
+  function moveText(mv) {
+    if (!mv) { return ""; }
+    return (mv.barcode ? " " + String(mv.barcode) : "") +
+      (mv.from ? " from " + locText(mv.from) : "") + (mv.to ? " to " + locText(mv.to) : "");
+  }
+
+  function closeDialog(id) {
+    var dlg = $(id);
+    if (dlg && dlg.open && dlg.close) { dlg.close(); }
+  }
+
+  // mutate sends one library/media mutation behind the same generation gate
+  // as mount/unmount, then toasts and refreshes every panel. o is
+  // {renderGen, path, method (POST), body, btn, what, done(res) -> toast text,
+  // status (PanelStatus, default libStatus), errEl (dialog error line: errors
+  // stay in the open dialog), dialog (id closed on success)}.
+  function mutate(o) {
+    var status = o.status || libStatus;
+    if (!canSendMutation(o.renderGen, NodeState.generation, mutationsEnabled)) {
+      if (o.dialog) { closeDialog(o.dialog); }
+      status.error("Node changed — refresh before " + o.what + ".");
+      return;
+    }
+    var gen = NodeState.generation;
+    if (o.btn) { o.btn.disabled = true; }
+    if (o.errEl) { o.errEl.textContent = ""; }
+    api(o.path, { method: o.method || "POST", body: o.body })
+      .then(function (res) {
+        if (isStale(gen, NodeState.generation)) { return; }
+        if (o.dialog) { closeDialog(o.dialog); }
+        var msg = o.done ? o.done(res) : "";
+        if (msg) { toast(msg); }
+        refresh();
+      })
+      .catch(function (e) {
+        if (o.btn) { o.btn.disabled = false; }
+        if (isStale(gen, NodeState.generation)) { return; }
+        var m = o.what.charAt(0).toUpperCase() + o.what.slice(1) + " failed: " + e.message;
+        if (o.errEl) { o.errEl.textContent = m; } else { status.error(m); }
+      });
+  }
+
+  /* ---- confirm dialog (a <dialog>, never the browser prompt) ------------ */
+  var confirmCtx = null; // function run on confirm
+  function openConfirm(title, msg, okLabel, onOk) {
+    confirmCtx = onOk;
+    $("confirm-dialog-title").textContent = title;
+    $("confirm-dialog-msg").textContent = msg;
+    $("confirm-ok").textContent = okLabel || "OK";
+    var dlg = $("confirm-dialog");
+    if (dlg.showModal) { dlg.showModal(); }
+  }
+
+  /* ---- media panel ----------------------------------------------------- */
+  // activeLib returns the cached /libraries entry for the selected library.
+  function activeLib() {
+    var found = null;
+    coerceArray(lastLibData && lastLibData.libraries).forEach(function (lib) {
+      if (String(coerceNumber(lib.id)) === String(libView.selected)) { found = lib; }
+    });
+    return found;
+  }
+
+  function mediaButton(text, label, title, disabled, onClick) {
+    var b = mk("button", { class: "btn sm", text: text, attrs: { type: "button", "aria-label": label } });
+    b.disabled = !!disabled;
+    if (title) { b.title = title; }
+    b.addEventListener("click", function () { onClick(b); });
+    return b;
+  }
+
+  // renderMedia draws the cached /media payload of the selected library.
+  function renderMedia() {
+    var box = $("media-list");
+    clear(box);
+    var newBtn = $("media-new-btn");
+    if (!lastMedia) {
+      $("media-count").textContent = "";
+      if (newBtn) { newBtn.disabled = true; }
+      box.appendChild(mk("p", { class: "muted", text: "No library selected." }));
+      return;
+    }
+    var renderGen = lastMedia.gen;
+    var d = lastMedia.data || {};
+    var libId = lastMedia.libId;
+    var lib = activeLib();
+    var drives = lib ? lib.drives : [];
+    var live = d.live === true;
+    var mapOpen = !!(lib && lib.map_open === true);
+    var carts = coerceArray(d.cartridges);
+    $("media-count").textContent = "(" + carts.length + ")";
+    if (newBtn) { newBtn.disabled = !mutationsEnabled; }
+
+    var shown = filterMedia(carts, mediaView);
+    box.appendChild(mk("div", {
+      class: "slot-summary muted",
+      text: "library #" + libId + " · media in " + String(d.home_dir || "?") +
+        (shown.length !== carts.length ? " · showing " + shown.length : ""),
+    }));
+    if (!live) {
+      box.appendChild(mk("p", {
+        class: "muted",
+        text: "Live changer state unavailable" + (d.live_error ? ": " + String(d.live_error) : "") +
+          ". Locations are unknown; editing, import and export are disabled.",
+      }));
+    }
+    if (!carts.length) {
+      box.appendChild(mk("p", { class: "muted", text: "No media in this library's home directory." }));
+      return;
+    }
+    if (!shown.length) {
+      box.appendChild(mk("p", { class: "muted", text: "No media match the current search/filter." }));
+      return;
+    }
+    var rows = [];
+    shown.forEach(function (c) {
+      var bc = String(c.barcode || "");
+      var loc = c.location || null;
+      var kind = loc ? loc.kind : "";
+      var cap = coerceNumber(c.capacity_bytes);
+      var capCell = mk("td", { class: "cap mono" });
+      if (cap > 0) {
+        var used = Math.max(0, cap - coerceNumber(c.remaining_bytes));
+        capCell.appendChild(mk("div", { text: fmtBytes(used) + " / " + fmtBytes(cap), attrs: { title: "used as of the last unload" } }));
+        var bar = mk("div", { class: "bar", attrs: {
+          role: "progressbar", "aria-valuenow": String(used), "aria-valuemin": "0", "aria-valuemax": String(cap),
+          "aria-label": "capacity used by " + bc,
+        } });
+        bar.appendChild(mk("span", { attrs: { style: "width:" + Math.min(100, Math.round(used / cap * 100)) + "%" } }));
+        capCell.appendChild(bar);
+      } else {
+        capCell.textContent = "—";
+      }
+
+      var acts = mk("td", { class: "acts" });
+      var editWhy = !live ? "changer not reachable: cannot confirm the cartridge is not in a drive"
+        : kind === "drive" ? "in a drive: unload it first"
+          : !c.backend ? "no media on disk" : "";
+      acts.appendChild(mediaButton("Edit", "Edit " + bc, editWhy || "Change write protect, type, density or size",
+        !mutationsEnabled || !!editWhy, function () { openEditDialog(libId, c, renderGen); }));
+      if (kind === "shelf") {
+        acts.appendChild(mediaButton("Import", "Import " + bc + " into the library", c.backend ? "Put it into the MAP" : "no media on disk",
+          !mutationsEnabled || !c.backend, function () { openImportDialog(libId, renderGen, bc); }));
+      } else if (kind === "slot" || kind === "drive") {
+        acts.appendChild(mediaButton("Export", "Export " + bc + " to the MAP",
+          mapOpen ? "the MAP is open: close it first" : "Move to the first empty MAP slot",
+          !mutationsEnabled || !live || mapOpen, function (btn) {
+            mutate({
+              renderGen: renderGen, btn: btn, what: "export", status: mediaStatus,
+              path: libPath(libId, "/map/export"), body: { barcode: bc },
+              done: function (res) { return "Exported" + moveText(res && res.move); },
+            });
+          }));
+      }
+
+      var locBadge = mk("span", { class: "badge loc-" + (kind || "unknown"), text: mediaLocText(loc, drives) });
+      var tr = mk("tr", { class: c.error ? "has-note" : "", children: [
+        mk("td", { class: "mono", text: bc }),
+        mk("td", { text: c.type || "—" }),
+        mk("td", { class: "mono", text: c.density || "—", attrs: c.description ? { title: String(c.description) } : null }),
+        capCell,
+        mk("td", { children: [c.write_protected ? mk("span", { class: "badge wp", text: "WP", attrs: { title: "write protected" } }) : document.createTextNode("—")] }),
+        mk("td", { children: [locBadge] }),
+        mk("td", { class: "mono", text: String(coerceNumber(c.load_count)) }),
+        acts,
+      ] });
+      rows.push(tr);
+      if (c.error) {
+        rows.push(mk("tr", { class: "row-note", children: [mk("td", { text: "⚠ " + String(c.error), attrs: { colspan: "8" } })] }));
+      }
+    });
+    var thead = mk("thead", { children: [mk("tr", { children: [
+      mk("th", { text: "Barcode" }), mk("th", { text: "Type" }), mk("th", { text: "Density" }),
+      mk("th", { text: "Used / capacity" }), mk("th", { text: "WP" }), mk("th", { text: "Location" }),
+      mk("th", { text: "Loads" }), mk("th", { text: "Actions" }),
+    ] })] });
+    box.appendChild(mk("div", { class: "media-scroll", children: [
+      mk("table", { class: "slot-table media-table", children: [thead, mk("tbody", { children: rows })] }),
+    ] }));
+  }
+
+  /* ---- create media dialog --------------------------------------------- */
+  var createCtx = null; // { libId, renderGen }
+  function fillSelect(sel, values, first) {
+    clear(sel);
+    if (first) { sel.appendChild(mk("option", { text: first.text, attrs: { value: first.value } })); }
+    coerceArray(values).forEach(function (v) { sel.appendChild(mk("option", { text: String(v), attrs: { value: String(v) } })); });
+  }
+
+  function openCreateDialog() {
+    if (!lastMedia || !canSendMutation(lastMedia.gen, NodeState.generation, mutationsEnabled)) {
+      mediaStatus.error("Node changed — refresh before creating media.");
+      return;
+    }
+    var d = lastMedia.data || {};
+    createCtx = { libId: lastMedia.libId, renderGen: lastMedia.gen };
+    $("media-create-target").textContent = "Library #" + lastMedia.libId + " · media in " + String(d.home_dir || "?");
+    var typeSel = $("mc-type"), denSel = $("mc-density");
+    var keepType = typeSel.value, keepDen = denSel.value;
+    fillSelect(typeSel, d.types);
+    fillSelect(denSel, d.densities);
+    var types = coerceArray(d.types).map(String), dens = coerceArray(d.densities).map(String);
+    typeSel.value = types.indexOf(keepType) >= 0 ? keepType : (types.indexOf("data") >= 0 ? "data" : types[0] || "");
+    denSel.value = dens.indexOf(keepDen) >= 0 ? keepDen : (dens.indexOf("LTO8") >= 0 ? "LTO8" : dens[0] || "");
+    var place = $("mc-place");
+    place.disabled = d.live !== true;
+    if (d.live !== true) { place.checked = false; }
+    $("mc-error").textContent = "";
+    updateCreatePreview();
+    var dlg = $("media-create-dialog");
+    if (dlg.showModal) { dlg.showModal(); }
+  }
+
+  // createRequest reads the create form: {barcodes, error, body}.
+  function createRequest() {
+    var range = $("mc-mode-range").checked;
+    var res;
+    var body = {};
+    if (range) {
+      body = {
+        prefix: $("mc-prefix").value.trim(), suffix: $("mc-suffix").value.trim(),
+        start: Number($("mc-start").value || 0), count: Number($("mc-count").value || 0), width: Number($("mc-width").value || 0),
+      };
+      res = expandBarcodes({ prefix: body.prefix, suffix: body.suffix, start: $("mc-start").value, count: $("mc-count").value, width: $("mc-width").value });
+    } else {
+      var bc = $("mc-barcode").value.trim();
+      body.barcode = bc;
+      res = !bc ? { barcodes: [], error: "enter a barcode" }
+        : validBarcode(bc) ? { barcodes: [bc], error: null } : { barcodes: [], error: "barcode must be 1-16 letters or digits" };
+    }
+    var size = parseSizeMB($("mc-size").value);
+    if (!res.error && size.error) { res = { barcodes: [], error: size.error }; }
+    if (!res.error && !$("mc-density").value) { res = { barcodes: [], error: "choose a density" }; }
+    body.type = $("mc-type").value || "data";
+    body.density = $("mc-density").value;
+    body.size_mb = size.value || 0;
+    body.place = $("mc-place").checked && !$("mc-place").disabled;
+    return { barcodes: res.barcodes, error: res.error, body: body };
+  }
+
+  function updateCreatePreview() {
+    var range = $("mc-mode-range").checked;
+    $("mc-range").hidden = !range;
+    $("mc-single").hidden = range;
+    var req = createRequest();
+    var pv = $("mc-preview");
+    if (req.error) {
+      pv.className = "preview err";
+      pv.textContent = req.error;
+    } else {
+      var b = req.barcodes;
+      pv.className = "preview";
+      pv.textContent = (b.length === 1 ? "Will create " : "Will create " + b.length + ": ") +
+        (b.length <= 4 ? b.join(", ") : b.slice(0, 3).join(", ") + " … " + b[b.length - 1]);
+    }
+    $("mc-submit").disabled = !!req.error || !mutationsEnabled;
+  }
+
+  function doCreate() {
+    if (!createCtx) { return; }
+    var req = createRequest();
+    if (req.error) { updateCreatePreview(); return; }
+    mutate({
+      renderGen: createCtx.renderGen, btn: $("mc-submit"), what: "create media", status: mediaStatus,
+      errEl: $("mc-error"), dialog: "media-create-dialog",
+      path: libPath(createCtx.libId, "/media"), body: req.body,
+      done: function (res) {
+        var created = coerceArray(res && res.created);
+        var msg = "Created " + created.length + " cartridge" + (created.length === 1 ? "" : "s");
+        var pl = res && res.place;
+        if (pl) {
+          msg += ", placed " + coerceArray(pl.placed).length;
+          if (pl.error) { mediaStatus.warn("Placing stopped: " + String(pl.error)); }
+        }
+        return msg;
+      },
+    });
+  }
+
+  /* ---- edit media dialog ----------------------------------------------- */
+  var editCtx = null; // { libId, cart, renderGen }
+  function openEditDialog(libId, cart, renderGen) {
+    if (!canSendMutation(renderGen, NodeState.generation, mutationsEnabled)) {
+      mediaStatus.error("Node changed — refresh before editing media.");
+      return;
+    }
+    var d = (lastMedia && lastMedia.data) || {};
+    editCtx = { libId: libId, cart: cart, renderGen: renderGen };
+    $("media-edit-title").textContent = "Edit " + String(cart.barcode || "");
+    var cap = coerceNumber(cart.capacity_bytes);
+    $("me-current").textContent = "Now: " + (cart.type || "?") + " · " + (cart.density || "?") +
+      (cart.description ? " (" + String(cart.description) + ")" : "") +
+      (cap > 0 ? " · " + fmtBytes(cap) : "") + (cart.write_protected ? " · write protected" : "");
+    $("me-wp").checked = !!cart.write_protected;
+    fillSelect($("me-type"), d.types, { value: "", text: "keep current" + (cart.type ? " (" + cart.type + ")" : "") });
+    fillSelect($("me-density"), d.densities, { value: "", text: "keep current" + (cart.density ? " (" + cart.density + ")" : "") });
+    $("me-size").value = "";
+    $("me-error").textContent = "";
+    $("me-submit").disabled = !mutationsEnabled;
+    var dlg = $("media-edit-dialog");
+    if (dlg.showModal) { dlg.showModal(); }
+  }
+
+  function doEdit() {
+    if (!editCtx) { return; }
+    var ctx = editCtx;
+    var body;
+    try {
+      body = buildMediaPatch(ctx.cart, {
+        write_protect: $("me-wp").checked, type: $("me-type").value,
+        density: $("me-density").value, size_mb: $("me-size").value,
+      });
+    } catch (e) {
+      $("me-error").textContent = e.message;
+      return;
+    }
+    if (!body) { $("me-error").textContent = "Nothing changed."; return; }
+    var bc = String(ctx.cart.barcode || "");
+    mutate({
+      renderGen: ctx.renderGen, btn: $("me-submit"), what: "edit " + bc, status: mediaStatus,
+      errEl: $("me-error"), dialog: "media-edit-dialog", method: "PATCH",
+      path: libPath(ctx.libId, "/media/" + encodeURIComponent(bc)), body: body,
+      done: function () { return "Updated " + bc; },
+    });
+  }
+
+  /* ---- import dialog --------------------------------------------------- */
+  // openImportDialog lists shelf cartridges of libId (or just `only`) from the
+  // cached media list; picking one imports it through the MAP.
+  function openImportDialog(libId, renderGen, only) {
+    if (!canSendMutation(renderGen, NodeState.generation, mutationsEnabled)) {
+      libStatus.error("Node changed — refresh before importing.");
+      return;
+    }
+    libId = String(coerceNumber(libId));
+    $("import-dialog-target").textContent = only
+      ? "Put " + only + " into an empty MAP slot of library #" + libId + ". Pick it below to import it."
+      : "Pick a shelf cartridge to put into an empty MAP slot of library #" + libId + ".";
+    $("import-store").checked = true;
+    $("import-error").textContent = "";
+    var list = $("import-list");
+    clear(list);
+    var carts = lastMedia && lastMedia.libId === libId ? coerceArray(lastMedia.data && lastMedia.data.cartridges) : [];
+    var shelf = filterMedia(carts, { where: "shelf" }).filter(function (c) {
+      return c.backend && (!only || String(c.barcode) === only);
+    });
+    if (!lastMedia || lastMedia.libId !== libId) {
+      list.appendChild(mk("p", { class: "muted", text: "The media list of this library is not loaded yet; refresh and try again." }));
+    } else if (!shelf.length) {
+      list.appendChild(mk("p", { class: "muted", text: "No cartridges on the shelf. Create media, or eject cartridges from the MAP." }));
+    }
+    shelf.forEach(function (c) {
+      var bc = String(c.barcode);
+      var btn = mk("button", { class: "btn slot-pick", attrs: { type: "button", "aria-label": "Import " + bc }, children: [
+        mk("span", { class: "bc mono", text: bc }),
+        mk("span", { class: "n mono", text: (c.type || "") + " " + (c.density || "") }),
+      ] });
+      btn.addEventListener("click", function () {
+        var store = $("import-store").checked;
+        mutate({
+          renderGen: renderGen, btn: btn, what: "import " + bc, status: mediaStatus,
+          errEl: $("import-error"), dialog: "import-dialog",
+          path: libPath(libId, "/map/import"), body: { barcode: bc, store: store },
+          done: function (res) {
+            if (res && res.store_error) { mediaStatus.warn("Imported " + bc + " but not stored: " + String(res.store_error)); }
+            return res && res.move ? "Imported" + moveText(res.move) : "Imported " + bc + " into the MAP";
+          },
+        });
+      });
+      list.appendChild(btn);
+    });
+    var dlg = $("import-dialog");
+    if (dlg.showModal) { dlg.showModal(); }
+  }
+
+  /* ---- move dialog ----------------------------------------------------- */
+  var moveCtx = null; // { libId, from, barcode, renderGen }
+  function openMoveDialog(lib, from, renderGen) {
+    if (!canSendMutation(renderGen, NodeState.generation, mutationsEnabled)) {
+      libStatus.error("Node changed — refresh before moving.");
+      return;
+    }
+    moveCtx = { libId: coerceNumber(lib.id), from: { kind: from.kind, number: from.number }, barcode: from.barcode, renderGen: renderGen };
+    $("move-dialog-source").textContent = "Library #" + moveCtx.libId + ": " + (from.barcode || "(no barcode)") + " in " + locText(from) + ".";
+    var sel = $("move-dest");
+    clear(sel);
+    var dests = emptyLocations(lib);
+    dests.forEach(function (loc) {
+      sel.appendChild(mk("option", { text: loc.kind === "map" ? "MAP " + loc.number + " (import/export)" : "slot " + loc.number, attrs: { value: loc.kind + ":" + loc.number } }));
+    });
+    $("move-error").textContent = dests.length ? "" : "No empty storage or MAP slot.";
+    $("move-submit").disabled = !dests.length || !mutationsEnabled;
+    var dlg = $("move-dialog");
+    if (dlg.showModal) { dlg.showModal(); }
+  }
+
+  function doMove() {
+    if (!moveCtx) { return; }
+    var ctx = moveCtx;
+    var parts = String($("move-dest").value).split(":");
+    var to = { kind: parts[0], number: coerceNumber(parts[1]) };
+    if ((to.kind !== "slot" && to.kind !== "map") || to.number <= 0) { return; }
+    mutate({
+      renderGen: ctx.renderGen, btn: $("move-submit"), what: "move",
+      errEl: $("move-error"), dialog: "move-dialog",
+      path: libPath(ctx.libId, "/move"), body: { from: ctx.from, to: to },
+      done: function () { return "Moved " + (ctx.barcode || "") + " from " + locText(ctx.from) + " to " + locText(to); },
+    });
+  }
+
+  /* ---- drive statistics ------------------------------------------------ */
+  var statsCtx = null; // { libId, driveId, loaded, seq }
+  var statsSeq = 0;
+  // setStatsDrive records whether the drive holds a cartridge (its volume
+  // statistics are stale otherwise) and titles the dialog accordingly.
+  function setStatsDrive(lib, d) {
+    var st = driveState(lib, d);
+    statsCtx.loaded = st.state === "loaded";
+    $("stats-dialog-title").textContent = "Drive " + statsCtx.driveId + " statistics" +
+      (st.state === "loaded" ? " · " + (st.barcode || "(no barcode)") : st.state === "empty" ? " · empty" : "");
+  }
+  function openStats(lib, d) {
+    statsCtx = { libId: coerceNumber(lib.id), driveId: coerceNumber(d.id), loaded: false };
+    setStatsDrive(lib, d);
+    var dlg = $("stats-dialog");
+    if (dlg.showModal && !dlg.open) { dlg.showModal(); }
+    loadStats();
+  }
+
+  function loadStats() {
+    if (!statsCtx) { return; }
+    var ctx = statsCtx;
+    var seq = ++statsSeq;
+    var gen = NodeState.generation;
+    var body = $("stats-body");
+    clear(body);
+    body.appendChild(mk("p", { class: "muted", text: "Reading log pages…" }));
+    // Re-read the drive's load state first: the cartridge may have been
+    // unloaded since the dialog opened, and an empty drive's volume page
+    // still carries the last cartridge's figures.
+    api("/api/v1/libraries")
+      .then(function (data) {
+        if (isStale(gen, NodeState.generation) || seq !== statsSeq) { return; }
+        coerceArray(data && data.libraries).forEach(function (lib) {
+          if (coerceNumber(lib.id) !== ctx.libId) { return; }
+          coerceArray(lib.drives).forEach(function (d) {
+            if (coerceNumber(d.id) === ctx.driveId) { setStatsDrive(lib, d); }
+          });
+        });
+      }, function () { /* keep the state the dialog opened with */ })
+      .then(function () {
+        if (isStale(gen, NodeState.generation) || seq !== statsSeq) { return null; }
+        return api(libPath(ctx.libId, "/drives/" + encodeURIComponent(ctx.driveId) + "/stats"));
+      })
+      .then(function (s) {
+        if (s === null || isStale(gen, NodeState.generation) || seq !== statsSeq) { return; }
+        renderStats(s || {}, ctx.loaded);
+      })
+      .catch(function (e) {
+        if (isStale(gen, NodeState.generation) || seq !== statsSeq) { return; }
+        clear(body);
+        var msg = e.status === 409 ? "The drive is reserved by another initiator: " + e.message
+          : e.status === 503 ? "Statistics unavailable: " + e.message : "Reading statistics failed: " + e.message;
+        body.appendChild(mk("p", { class: "error full", text: msg }));
+      });
+  }
+
+  // statNum formats an optional counter; null when absent.
+  function statNum(x) { return x == null ? null : coerceNumber(x).toLocaleString(); }
+  function statMiB(x) { return x == null ? null : fmtBytes(coerceNumber(x) * 1048576); }
+  function statBytes(x) { return x == null ? null : fmtBytes(x); }
+  function statMB(x) { return x == null ? null : coerceNumber(x).toLocaleString() + " MB"; }
+  function statBool(x) { return x == null ? null : (x ? "yes" : "no"); }
+
+  // statsSection builds one titled key/value table, skipping absent values;
+  // null when nothing is present.
+  function statsSection(title, rows, extra) {
+    var present = rows.filter(function (r) { return r[1] != null; });
+    if (!present.length && !extra) { return null; }
+    var sec = mk("section");
+    sec.appendChild(mk("h4", { text: title }));
+    if (present.length) {
+      sec.appendChild(mk("table", { children: [mk("tbody", { children: present.map(function (r) { return kvRow(r[0], r[1]); }) })] }));
+    }
+    if (extra) { sec.appendChild(extra); }
+    return sec;
+  }
+
+  function renderStats(s, loaded) {
+    var body = $("stats-body");
+    clear(body);
+    var seq = s.sequential || {};
+    var sections = [];
+    sections.push(statsSection("Data", [
+      ["Host written", statBytes(seq.host_bytes_written)],
+      ["Medium written", statBytes(seq.medium_bytes_written)],
+      ["Write compression", seq.host_bytes_written != null || seq.write_compression_ratio != null ? fmtRatio(seq.write_compression_ratio) : null],
+      ["Host read", statBytes(seq.host_bytes_read)],
+      ["Medium read", statBytes(seq.medium_bytes_read)],
+      ["Read compression", seq.host_bytes_read != null || seq.read_compression_ratio != null ? fmtRatio(seq.read_compression_ratio) : null],
+    ]));
+
+    var posBar = null;
+    if (seq.capacity_mib != null && seq.position_mib != null && coerceNumber(seq.capacity_mib) > 0) {
+      var capM = coerceNumber(seq.capacity_mib), posM = coerceNumber(seq.position_mib);
+      posBar = mk("div", { class: "bar", attrs: {
+        role: "progressbar", "aria-valuenow": String(posM), "aria-valuemin": "0", "aria-valuemax": String(capM),
+        "aria-label": "tape position relative to capacity",
+      } });
+      posBar.appendChild(mk("span", { attrs: { style: "width:" + Math.min(100, Math.round(posM / capM * 100)) + "%" } }));
+    }
+    sections.push(statsSection("Position / capacity", [
+      ["Position", statMiB(seq.position_mib)],
+      ["Capacity", statMiB(seq.capacity_mib)],
+      ["To early warning", statMiB(seq.capacity_to_ew_mib)],
+      ["Early warning to LEOP", statMiB(seq.ew_to_leop_mib)],
+    ], posBar));
+
+    if (loaded) {
+      var v = s.volume || {};
+      sections.push(statsSection("Volume", [
+        ["Barcode", v.barcode || null],
+        ["Serial", v.serial_number || null],
+        ["Mounts", statNum(v.mounts)],
+        ["Datasets written / read", v.datasets_written != null || v.datasets_read != null
+          ? (statNum(v.datasets_written) || "—") + " / " + (statNum(v.datasets_read) || "—") : null],
+        ["Last mount written", statMB(v.last_mount_mb_written)],
+        ["Last mount read", statMB(v.last_mount_mb_read)],
+        ["Lifetime written", statMB(v.lifetime_mb_written)],
+        ["Lifetime read", statMB(v.lifetime_mb_read)],
+        ["Native capacity", statMiB(v.native_capacity)],
+        ["Used native capacity", statMiB(v.used_native_capacity)],
+        ["Write protected", statBool(v.write_protect)],
+        ["WORM", statBool(v.worm)],
+      ]));
+    } else if (s.volume) {
+      sections.push(statsSection("Volume", [], mk("p", { class: "muted", text: "No cartridge loaded: the drive still reports the previous cartridge's volume statistics, so they are not shown." })));
+    }
+
+    var we = s.write_errors, re = s.read_errors;
+    if (we || re) {
+      var counters = [
+        ["Corrected without delay", "corrected_without_delay"], ["Corrected with delay", "corrected_with_delay"],
+        ["Retries", "retries"], ["Corrected", "corrected"], ["Algorithm invocations", "algorithm_invocations"],
+        ["Bytes processed", "bytes_processed"], ["Uncorrected", "uncorrected"],
+      ];
+      var rows = counters.map(function (c) {
+        return mk("tr", { children: [
+          mk("th", { text: c[0] }),
+          mk("td", { text: (we && statNum(we[c[1]])) || "—" }),
+          mk("td", { text: (re && statNum(re[c[1]])) || "—" }),
+        ] });
+      });
+      var errSec = mk("section");
+      errSec.appendChild(mk("h4", { text: "Errors" }));
+      errSec.appendChild(mk("table", { children: [
+        mk("thead", { children: [mk("tr", { children: [mk("th", { text: "" }), mk("th", { text: "Write" }), mk("th", { text: "Read" })] })] }),
+        mk("tbody", { children: rows }),
+      ] }));
+      sections.push(errSec);
+    }
+
+    var dev = s.device_statistics || {};
+    sections.push(statsSection("Device", [
+      ["Volume loads", statNum(dev.volume_loads)],
+      ["Cleaning operations", statNum(dev.cleaning_operations)],
+      ["Power-on hours", statNum(dev.power_on_hours)],
+      ["Medium motion hours", statNum(dev.medium_motion_hours)],
+      ["Metres processed", statNum(dev.metres_processed)],
+      ["Temperature", s.temperature_c != null ? coerceNumber(s.temperature_c) + " °C" : null],
+    ]));
+
+    var pe = s.page_errors && typeof s.page_errors === "object" ? s.page_errors : null;
+    if (pe && Object.keys(pe).length) {
+      sections.push(statsSection("Unreadable log pages", Object.keys(pe).sort().map(function (k) { return ["page " + k, String(pe[k])]; })));
+    }
+
+    sections.forEach(function (sec) { if (sec) { body.appendChild(sec); } });
+    if (!body.firstChild) { body.appendChild(mk("p", { class: "muted", text: "The drive reported no statistics." })); }
+    body.appendChild(mk("p", {
+      class: "muted full footnote",
+      text: "device " + String(s.device || "?") + " · log pages " + coerceArray(s.supported_pages).map(String).join(" "),
+    }));
   }
 
   /* ---- mount picker ---------------------------------------------------- */
@@ -884,14 +1617,43 @@
     });
   }
 
+  // refreshMedia reads the media of the library selected in the rack. A
+  // response for a library that is no longer selected is dropped.
+  function refreshMedia(gen, signal) {
+    if (gen === undefined) { gen = NodeState.generation; }
+    if (isStale(gen, NodeState.generation) || (signal && signal.aborted)) { return Promise.resolve(); }
+    var libId = libView.selected == null ? null : String(libView.selected);
+    if (libId === null) {
+      lastMedia = null;
+      renderMedia();
+      return Promise.resolve();
+    }
+    mediaStatus.loading();
+    setPanelGrey("media-list", true);
+    busy("media-panel", true);
+    return api(libPath(libId, "/media"), { signal: signal }).then(function (d) {
+      busy("media-panel", false);
+      if (isStale(gen, NodeState.generation) || String(libView.selected) !== libId) { return; }
+      lastMedia = { libId: libId, gen: gen, data: d || {} };
+      renderMedia();
+      setPanelGrey("media-list", false);
+      mediaStatus.ok();
+    }).catch(function (e) {
+      busy("media-panel", false);
+      if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      mediaStatus.error("media: " + e.message);
+    });
+  }
+
   function refresh() {
     var gen = NodeState.generation;
     if (currentAbort) { currentAbort.abort(); }
     currentAbort = new AbortController();
     var signal = currentAbort.signal;
-    // Three concurrent, independently-reported refreshes.
+    // Concurrent, independently-reported refreshes. Media follows the
+    // libraries because it is read for the library they resolve as selected.
     refreshSystem(gen, signal);
-    refreshLibraries(gen, signal);
+    refreshLibraries(gen, signal).then(function () { return refreshMedia(gen, signal); });
     refreshDisks(gen, signal);
   }
 
@@ -906,10 +1668,12 @@
     if (p) { p.classList.toggle("greyed", !!on); }
   }
   function greyPanels() {
-    sysStatus.grey(); libStatus.grey(); diskStatus.grey();
+    sysStatus.grey(); libStatus.grey(); diskStatus.grey(); mediaStatus.grey();
     setPanelGrey("system-status", true);
     setPanelGrey("library-rack", true);
     setPanelGrey("disk-dock", true);
+    setPanelGrey("media-list", true);
+    ["media-create-dialog", "media-edit-dialog", "import-dialog", "move-dialog", "confirm-dialog", "stats-dialog"].forEach(closeDialog);
   }
 
   // Probe a candidate node WITHOUT mutating NodeState. Resolves true/false.
@@ -958,7 +1722,7 @@
         updateBadge();
         // Panels stay greyed (controls uninteractive) while the node is down.
         var m = "node unreachable — controls disabled until it responds";
-        sysStatus.error(m); libStatus.error(m); diskStatus.error(m);
+        sysStatus.error(m); libStatus.error(m); diskStatus.error(m); mediaStatus.error(m);
       }
     });
   }
@@ -1013,7 +1777,40 @@
     var viewToggle = $("view-mode-toggle");
     if (viewToggle) { viewToggle.addEventListener("change", function (e) { libView.table = !!e.target.checked; rerenderLibraries(); }); }
     var librarySelector = $("library-selector");
-    if (librarySelector) { librarySelector.addEventListener("change", function (e) { libView.selected = e.target.value; rerenderLibraries(); }); }
+    if (librarySelector) {
+      librarySelector.addEventListener("change", function (e) {
+        libView.selected = e.target.value;
+        rerenderLibraries();
+        refreshMedia(NodeState.generation, currentAbort ? currentAbort.signal : undefined);
+      });
+    }
+
+    // Media panel toolbar: search / location filter re-render from cache.
+    $("media-search").addEventListener("input", function (e) { mediaView.query = e.target.value; renderMedia(); });
+    $("media-where").addEventListener("change", function (e) { mediaView.where = e.target.value; renderMedia(); });
+    $("media-new-btn").addEventListener("click", openCreateDialog);
+
+    // Enter in a text field runs the dialog's primary action instead of the
+    // form's default (first) button, which is Cancel.
+    [["media-create-form", "mc-submit"], ["media-edit-form", "me-submit"], ["move-form", "move-submit"]].forEach(function (p) {
+      $(p[0]).addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && e.target && e.target.tagName === "INPUT") {
+          e.preventDefault();
+          if (!$(p[1]).disabled) { $(p[1]).click(); }
+        }
+      });
+    });
+    $("media-create-form").addEventListener("input", updateCreatePreview);
+    $("media-create-form").addEventListener("change", updateCreatePreview);
+    $("mc-submit").addEventListener("click", doCreate);
+    $("me-submit").addEventListener("click", doEdit);
+    $("move-submit").addEventListener("click", doMove);
+    $("stats-refresh").addEventListener("click", loadStats);
+    $("confirm-form").addEventListener("submit", function (e) {
+      var fn = confirmCtx;
+      confirmCtx = null;
+      if (fn && e.submitter && e.submitter.value === "confirm") { fn(); }
+    });
 
     restoreTarget();
     updateBadge();
