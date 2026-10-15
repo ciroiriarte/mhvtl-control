@@ -59,7 +59,7 @@ func main() {
 
 	cfg := api.Config{
 		ConfigDir:  *configDir,
-		Controller: tryNewController(),
+		Controller: ipc.NewIPCController(),
 		Changers: changer.NewManager(&changer.Locator{
 			SysRoot:   "/sys",
 			DevRoot:   "/dev",
@@ -106,18 +106,6 @@ func main() {
 			log.Fatalf("shutdown error: %v", err)
 		}
 	}
-}
-
-// tryNewController opens the mhvtl control queue. On failure it logs a warning
-// and returns a nil Controller so the daemon still serves read endpoints while
-// mount/unmount return 503.
-func tryNewController() ipc.Controller {
-	c, err := ipc.NewIPCController()
-	if err != nil {
-		log.Printf("warning: mhvtl control queue unavailable: %v (mount/unmount will return 503)", err)
-		return nil
-	}
-	return c
 }
 
 // isLoopbackHost reports whether host is treated as loopback for bind safety.

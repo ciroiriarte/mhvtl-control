@@ -1,11 +1,14 @@
 package ipc
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -191,4 +194,188 @@ func TestCrossLanguageFrame(t *testing.T) {
 		t.Fatalf("round-tripped text = %q, want %q", text, want)
 	}
 	t.Logf("cross-language round-trip text = %q", text)
+}
+
+// newTestController returns a controller for key with a short reply timeout.
+func newTestController(key int) *IPCController {
+	return &IPCController{key: key, timeoutMs: 1000}
+}
+
+// createQueue creates the queue for key, as the mhvtl daemons do, and
+// removes it at test end.
+func createQueue(t *testing.T, key int) *Client {
+	t.Helper()
+	c := &Client{}
+	if err := c.OpenQueue(key, true); err != nil {
+		t.Fatalf("OpenQueue: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Remove() })
+	return c
+}
+
+// library answers every replying command for dev the way vtllibrary does,
+// recording the command texts, until stop is closed.
+func library(t *testing.T, qid int, dev int64, answer func(cmd string) string, stop <-chan struct{}) <-chan []string {
+	t.Helper()
+	got := make(chan []string, 1)
+	go func() {
+		var cmds []string
+		buf := make([]byte, frameSize)
+		for {
+			select {
+			case <-stop:
+				got <- cmds
+				return
+			default:
+			}
+			_, _, errno := syscall.Syscall6(syscall.SYS_MSGRCV, uintptr(qid),
+				uintptr(unsafe.Pointer(&buf[0])), uintptr(qMsgSize),
+				uintptr(dev), uintptr(ipcNowait), 0)
+			if errno != 0 {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			cmd := cstr(buf[16 : 16+TextLen])
+			cmds = append(cmds, cmd)
+			if reply := answer(cmd); reply != "" {
+				r := marshalFrame(VTLCMDQ, dev, reply)
+				syscall.Syscall6(syscall.SYS_MSGSND, uintptr(qid),
+					uintptr(unsafe.Pointer(&r[0])), uintptr(qMsgSize), 0, 0, 0)
+			}
+		}
+	}()
+	return got
+}
+
+func TestControllerQueueAbsent(t *testing.T) {
+	c := newTestController(uniqueKey())
+	if err := c.Online(10); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Online with no queue: err = %v, want ErrUnavailable", err)
+	}
+	if err := c.ImportMap(10, "A00001L8"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("ImportMap with no queue: err = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestControllerOpensLazilyAndSurvivesQueueRecreation(t *testing.T) {
+	key := uniqueKey()
+	c := newTestController(key)
+	// mhVTL starts after mhvtld: the first command finds no queue...
+	if err := c.Offline(10); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("before mhVTL: err = %v, want ErrUnavailable", err)
+	}
+	// ...and a later one finds it without a daemon restart.
+	q1 := createQueue(t, key)
+	if err := c.Offline(10); err != nil {
+		t.Fatalf("after mhVTL start: %v", err)
+	}
+	if got := deviceRecv(t, q1.qid, 10, time.Second); got != "offline" {
+		t.Fatalf("library received %q, want offline", got)
+	}
+
+	// mhVTL restarts: the queue is removed and recreated under a new id.
+	if err := q1.Remove(); err != nil {
+		t.Fatal(err)
+	}
+	q2 := createQueue(t, key)
+	if q2.qid == q1.qid {
+		t.Skip("kernel reused the queue id; cannot exercise a stale id")
+	}
+	if err := c.Online(10); err != nil {
+		t.Fatalf("after mhVTL restart: %v", err)
+	}
+	if got := deviceRecv(t, q2.qid, 10, time.Second); got != "online" {
+		t.Fatalf("library received %q on the new queue, want online", got)
+	}
+}
+
+func TestControllerImportMap(t *testing.T) {
+	key := uniqueKey()
+	q := createQueue(t, key)
+	stop := make(chan struct{})
+	cmds := library(t, q.qid, 10, func(cmd string) string {
+		if cmd == "load map DUP001L8" {
+			return "barcode already in library"
+		}
+		return "OK"
+	}, stop)
+
+	c := newTestController(key)
+	if err := c.ImportMap(10, "A00001L8"); err != nil {
+		t.Fatalf("ImportMap: %v", err)
+	}
+	err := c.ImportMap(10, "DUP001L8")
+	var re *ReplyError
+	if !errors.As(err, &re) || re.Reply != "barcode already in library" {
+		t.Fatalf("refused import: err = %v, want ReplyError with the library's reply", err)
+	}
+	close(stop)
+	want := []string{"open map", "load map A00001L8", "close map", "open map", "load map DUP001L8", "close map"}
+	if got := <-cmds; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("library received %q, want %q (MAP closed even after a refused load)", got, want)
+	}
+}
+
+func TestControllerDiscardsStaleReply(t *testing.T) {
+	key := uniqueKey()
+	q := createQueue(t, key)
+	// A late reply from library 30 to an earlier, timed-out request.
+	deviceReply(t, q.qid, 30, "MAP Full")
+
+	stop := make(chan struct{})
+	defer close(stop)
+	library(t, q.qid, 10, func(string) string { return "OK" }, stop)
+
+	c := newTestController(key)
+	if err := c.ImportMap(10, "A00001L8"); err != nil {
+		t.Fatalf("ImportMap took another device's reply: %v", err)
+	}
+}
+
+func TestControllerConcurrentCommandsGetOwnReplies(t *testing.T) {
+	key := uniqueKey()
+	q := createQueue(t, key)
+	stop := make(chan struct{})
+	defer close(stop)
+	for _, dev := range []int64{10, 30} {
+		dev := dev
+		library(t, q.qid, dev, func(cmd string) string {
+			return cmd + " from " + strconv.FormatInt(dev, 10)
+		}, stop)
+	}
+
+	c := newTestController(key)
+	listMap := func(dev int64) (string, error) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.command(dev, "list map", true)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 40)
+	for i := 0; i < 20; i++ {
+		for _, dev := range []int64{10, 30} {
+			wg.Add(1)
+			go func(dev int64) {
+				defer wg.Done()
+				reply, err := listMap(dev)
+				if want := "list map from " + strconv.FormatInt(dev, 10); err != nil || reply != want {
+					errs <- fmt.Errorf("library %d: reply %q, %v; want %q", dev, reply, err, want)
+				}
+			}(dev)
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+}
+
+func TestControllerNoReplyTimesOut(t *testing.T) {
+	key := uniqueKey()
+	createQueue(t, key)
+	c := &IPCController{key: key, timeoutMs: 50}
+	if err := c.ImportMap(10, "A00001L8"); !errors.Is(err, ErrTimeout) {
+		t.Fatalf("silent library: err = %v, want ErrTimeout", err)
+	}
 }

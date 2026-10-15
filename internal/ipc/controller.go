@@ -1,135 +1,213 @@
 package ipc
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"sync"
+	"syscall"
+	"time"
+)
 
-// Controller is the high-level library/drive control surface. Verb strings
-// match those vtlcmd sends on the queue (see mhvtl usr/cmd/vtlcmd.c).
-type Controller interface {
-	Load(dev int64, slot int) error
-	LoadMap(dev int64) error
-	Unload(dev int64) error
-	Online(dev int64) error
-	Offline(dev int64) error
-	List(dev int64) (string, error)
+// ErrUnavailable means the mhvtl control queue does not exist (mhVTL is not
+// running) or cannot be opened.
+var ErrUnavailable = errors.New("ipc: mhvtl control queue unavailable")
+
+// ReplyError is a library's refusal of a command, carrying its reply text
+// verbatim (e.g. "MAP Full", "barcode already in library").
+type ReplyError struct {
+	Command string
+	Reply   string
 }
 
-// IPCController drives devices over a real SysV queue keyed by QKey().
+func (e *ReplyError) Error() string {
+	return fmt.Sprintf("%s: %s", e.Command, e.Reply)
+}
+
+// Controller is the library control surface carried by the message queue.
+// Moving cartridges between slots and drives is NOT a queue operation: it is
+// SCSI MOVE MEDIUM to the changer (see internal/changer).
+type Controller interface {
+	Online(lib int64) error
+	Offline(lib int64) error
+	ImportMap(lib int64, barcode string) error
+}
+
+// IPCController drives libraries over the SysV queue keyed by QKey(). The
+// queue is opened lazily and reopened when mhVTL recreates it, so the daemon
+// may start before mhVTL and survives mhVTL restarts.
 type IPCController struct {
-	client    *Client
+	mu        sync.Mutex
+	key       int
+	client    *Client // nil until opened, and after the cached id went stale
 	timeoutMs int
 }
 
 var _ Controller = (*IPCController)(nil)
 
-// NewIPCController opens the control queue (keyed by QKey()) without creating
-// it: the mhvtl daemons own queue creation.
-func NewIPCController() (*IPCController, error) {
-	c := &Client{}
-	if err := c.OpenQueue(QKey(), false); err != nil {
-		return nil, err
-	}
-	return &IPCController{client: c, timeoutMs: 5000}, nil
+// NewIPCController returns a controller for the queue keyed by QKey(). It
+// never fails: the queue is opened on first use.
+func NewIPCController() *IPCController {
+	return &IPCController{key: QKey(), timeoutMs: 5000}
 }
 
-// command sends text to dev and returns the device's reply text.
-func (c *IPCController) command(dev int64, text string) (string, error) {
-	if err := c.client.Send(dev, text); err != nil {
+// staleQueue reports whether err means the cached queue id no longer names a
+// live queue (removed, or removed and recreated under a new id).
+func staleQueue(err error) bool {
+	return errors.Is(err, syscall.EIDRM) || errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOENT)
+}
+
+// open opens the queue (without creating it: the mhvtl daemons own it) unless
+// a live id is cached. Caller holds c.mu.
+func (c *IPCController) open() error {
+	if c.client != nil {
+		return nil
+	}
+	cl := &Client{}
+	if err := cl.OpenQueue(c.key, false); err != nil {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	c.client = cl
+	return nil
+}
+
+// send delivers text to dev. A send that fails because the cached id went
+// stale did not happen, so it is retried once on a freshly opened queue.
+// Caller holds c.mu.
+func (c *IPCController) send(dev int64, text string) error {
+	for attempt := 0; ; attempt++ {
+		if err := c.open(); err != nil {
+			return err
+		}
+		err := c.client.Send(dev, text)
+		if err == nil {
+			return nil
+		}
+		if !staleQueue(err) {
+			return err
+		}
+		c.client = nil
+		if attempt > 0 {
+			return fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
+	}
+}
+
+// command sends text to dev and, when the C handler replies, returns dev's
+// reply. Replies share one message type (VTLCMD_Q), so one from any other
+// device (a leftover from an earlier timed-out request) is discarded and the
+// wait continues until the deadline. A receive error is never followed by a
+// resend: the command was already delivered. Caller holds c.mu, so concurrent
+// requests never read each other's replies.
+func (c *IPCController) command(dev int64, text string, replies bool) (string, error) {
+	if err := c.send(dev, text); err != nil {
 		return "", err
 	}
-	_, reply, err := c.client.Receive(c.timeoutMs)
-	return reply, err
+	if !replies {
+		return "", nil
+	}
+	deadline := time.Now().Add(time.Duration(c.timeoutMs) * time.Millisecond)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "", ErrTimeout
+		}
+		snd, reply, err := c.client.Receive(int(remaining.Milliseconds()))
+		if err != nil {
+			if staleQueue(err) {
+				c.client = nil
+			}
+			return "", err
+		}
+		if snd == dev {
+			return reply, nil
+		}
+	}
 }
 
-// Load loads the cartridge in the given storage slot into drive dev
-// ("load <slot>").
-func (c *IPCController) Load(dev int64, slot int) error {
-	_, err := c.command(dev, fmt.Sprintf("load %d", slot))
+// Online brings a library online ("online"; vtllibrary sends no reply).
+func (c *IPCController) Online(lib int64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := c.command(lib, "online", false)
 	return err
 }
 
-// LoadMap loads media from the import/export map ("load map").
-func (c *IPCController) LoadMap(dev int64) error {
-	_, err := c.command(dev, "load map")
+// Offline takes a library offline ("offline"; vtllibrary sends no reply).
+func (c *IPCController) Offline(lib int64) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := c.command(lib, "offline", false)
 	return err
 }
 
-// Unload unloads the cartridge from drive dev ("unload").
-func (c *IPCController) Unload(dev int64) error {
-	_, err := c.command(dev, "unload")
-	return err
+// ImportMap places a cartridge into an empty MAP slot, as an operator would:
+// "open map", "load map <barcode>", "close map", each answered by the library.
+// vtllibrary refuses a load into a closed MAP, and the changer only reaches
+// MAP slots while the MAP is closed, so the MAP is closed again even when the
+// load is refused. The lock is held across all three commands.
+func (c *IPCController) ImportMap(lib int64, barcode string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.expectOK(lib, "open map"); err != nil {
+		return err
+	}
+	loadErr := c.expectOK(lib, "load map "+barcode)
+	if err := c.expectOK(lib, "close map"); err != nil && loadErr == nil {
+		return err
+	}
+	return loadErr
 }
 
-// Online brings a library online ("online").
-func (c *IPCController) Online(dev int64) error {
-	_, err := c.command(dev, "online")
-	return err
+// expectOK runs a replying command whose success reply is "OK". Caller holds
+// c.mu.
+func (c *IPCController) expectOK(lib int64, text string) error {
+	reply, err := c.command(lib, text, true)
+	if err != nil {
+		return err
+	}
+	if reply != "OK" {
+		return &ReplyError{Command: text, Reply: reply}
+	}
+	return nil
 }
 
-// Offline takes a library offline ("offline").
-func (c *IPCController) Offline(dev int64) error {
-	_, err := c.command(dev, "offline")
-	return err
-}
-
-// List returns the device's listing reply ("list").
-func (c *IPCController) List(dev int64) (string, error) {
-	return c.command(dev, "list")
-}
-
-// Call records one FakeController invocation. Arg carries the slot for Load
-// and is 0 for verbs that take no numeric argument.
+// Call records one FakeController invocation.
 type Call struct {
 	Method string
 	Dev    int64
-	Arg    int
+	Arg    string
 }
 
 // FakeController is an in-memory Controller for api-layer tests. It records
-// every call and returns its configured Reply/Err.
+// every call and returns its configured Err.
 type FakeController struct {
+	mu    sync.Mutex
 	Calls []Call
-	Reply string
 	Err   error
 }
 
 var _ Controller = (*FakeController)(nil)
 
-func (f *FakeController) record(method string, dev int64, arg int) {
+func (f *FakeController) record(method string, dev int64, arg string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, Call{Method: method, Dev: dev, Arg: arg})
 }
 
-// Load records a Load call.
-func (f *FakeController) Load(dev int64, slot int) error {
-	f.record("Load", dev, slot)
-	return f.Err
-}
-
-// LoadMap records a LoadMap call.
-func (f *FakeController) LoadMap(dev int64) error {
-	f.record("LoadMap", dev, 0)
-	return f.Err
-}
-
-// Unload records an Unload call.
-func (f *FakeController) Unload(dev int64) error {
-	f.record("Unload", dev, 0)
-	return f.Err
-}
-
 // Online records an Online call.
-func (f *FakeController) Online(dev int64) error {
-	f.record("Online", dev, 0)
+func (f *FakeController) Online(lib int64) error {
+	f.record("Online", lib, "")
 	return f.Err
 }
 
 // Offline records an Offline call.
-func (f *FakeController) Offline(dev int64) error {
-	f.record("Offline", dev, 0)
+func (f *FakeController) Offline(lib int64) error {
+	f.record("Offline", lib, "")
 	return f.Err
 }
 
-// List records a List call and returns the configured Reply.
-func (f *FakeController) List(dev int64) (string, error) {
-	f.record("List", dev, 0)
-	return f.Reply, f.Err
+// ImportMap records an ImportMap call.
+func (f *FakeController) ImportMap(lib int64, barcode string) error {
+	f.record("ImportMap", lib, barcode)
+	return f.Err
 }

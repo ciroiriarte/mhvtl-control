@@ -7,10 +7,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 
 	"mhvtld/internal/changer"
 	"mhvtld/internal/config"
+	"mhvtld/internal/ipc"
 	"mhvtld/internal/scsi"
 )
 
@@ -311,4 +313,50 @@ func (s *Server) handleUnmount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "move": mv})
+}
+
+// barcodeRE bounds an imported barcode to MAX_BARCODE_LEN (16) alphanumerics.
+// vtllibrary takes everything from the first alphanumeric to the end of the
+// message as the barcode, so spaces or other text must never reach it.
+var barcodeRE = regexp.MustCompile(`^[A-Za-z0-9]{1,16}$`)
+
+type mapImportRequest struct {
+	Barcode string `json:"barcode"`
+}
+
+// handleMapImport places a cartridge into an empty MAP slot of the library
+// (vtllibrary "open map" / "load map <barcode>" / "close map"). The
+// cartridge can then be mounted with {drive, map}.
+func (s *Server) handleMapImport(w http.ResponseWriter, r *http.Request) {
+	lib, ok := s.lookupLibrary(w, r)
+	if !ok {
+		return
+	}
+	var req mapImportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if !barcodeRE.MatchString(req.Barcode) {
+		writeError(w, http.StatusBadRequest, "bad_request", "barcode must be 1-16 letters or digits")
+		return
+	}
+	if s.cfg.Controller == nil {
+		writeError(w, http.StatusServiceUnavailable, "ipc_unavailable", "mhvtl control queue not configured")
+		return
+	}
+	err := s.cfg.Controller.ImportMap(int64(lib.ID), req.Barcode)
+	var re *ipc.ReplyError
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case errors.Is(err, ipc.ErrUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "ipc_unavailable", err.Error())
+	case errors.Is(err, ipc.ErrTimeout):
+		writeError(w, http.StatusGatewayTimeout, "ipc_timeout", fmt.Sprintf("library %d did not reply: %v", lib.ID, err))
+	case errors.As(err, &re):
+		writeError(w, http.StatusConflict, "conflict", "MAP import refused: "+re.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "control_error", err.Error())
+	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"mhvtld/internal/changer"
 	"mhvtld/internal/config"
+	"mhvtld/internal/ipc"
 	"mhvtld/internal/scsi"
 )
 
@@ -176,5 +177,57 @@ func TestMountMissingConfigIsNotFound(t *testing.T) {
 	rec := postJSON(t, h, "/api/v1/libraries/10/mount", `{"drive":11,"slot":3}`)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestMapImport(t *testing.T) {
+	fc := &ipc.FakeController{}
+	h := NewServer(Config{ConfigDir: writeConfigDir(t), Controller: fc}).Handler()
+	rec := postJSON(t, h, "/api/v1/libraries/30/map/import", `{"barcode":"E01009L8"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if len(fc.Calls) != 1 || fc.Calls[0] != (ipc.Call{Method: "ImportMap", Dev: 30, Arg: "E01009L8"}) {
+		t.Errorf("calls = %+v, want ImportMap lib 30 E01009L8", fc.Calls)
+	}
+
+	for _, body := range []string{`{"barcode":""}`, `{"barcode":"A B"}`, `{"barcode":"ABCDEFGHIJKLMNOPQ"}`, `{"barcode":"x;exit"}`, `{`} {
+		fc := &ipc.FakeController{}
+		h := NewServer(Config{ConfigDir: writeConfigDir(t), Controller: fc}).Handler()
+		if rec := postJSON(t, h, "/api/v1/libraries/30/map/import", body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", body, rec.Code)
+		}
+		if len(fc.Calls) != 0 {
+			t.Errorf("%s: controller called: %+v", body, fc.Calls)
+		}
+	}
+}
+
+func TestMapImportErrorMapping(t *testing.T) {
+	cases := []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{fmt.Errorf("%w: no such file or directory", ipc.ErrUnavailable), 503, "ipc_unavailable"},
+		{ipc.ErrTimeout, 504, "ipc_timeout"},
+		{&ipc.ReplyError{Command: "load map A", Reply: "MAP Full"}, 409, "conflict"},
+		{errors.New("boom"), 500, "control_error"},
+	}
+	for _, c := range cases {
+		h := NewServer(Config{ConfigDir: writeConfigDir(t), Controller: &ipc.FakeController{Err: c.err}}).Handler()
+		rec := postJSON(t, h, "/api/v1/libraries/10/map/import", `{"barcode":"A00001L8"}`)
+		if rec.Code != c.status {
+			t.Errorf("%v: status = %d, want %d", c.err, rec.Code, c.status)
+			continue
+		}
+		if code := errorCode(t, rec); code != c.code {
+			t.Errorf("%v: code = %q, want %q", c.err, code, c.code)
+		}
+	}
+
+	h := NewServer(Config{ConfigDir: writeConfigDir(t)}).Handler()
+	if rec := postJSON(t, h, "/api/v1/libraries/10/map/import", `{"barcode":"A00001L8"}`); rec.Code != 503 {
+		t.Errorf("nil controller: status = %d, want 503", rec.Code)
 	}
 }

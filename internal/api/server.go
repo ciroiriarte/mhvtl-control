@@ -24,8 +24,8 @@ var startTime = time.Now()
 type Config struct {
 	// ConfigDir is the directory holding device.conf and library_contents.<id>.
 	ConfigDir string
-	// Controller sends library commands over the mhvtl message queue. Nil
-	// means the queue is unavailable.
+	// Controller sends library commands over the mhvtl message queue (MAP
+	// import). Nil means queue access is not configured (503).
 	Controller ipc.Controller
 	// Changers moves cartridges and reads live library state through each
 	// library's SCSI medium changer. Nil means changer access is not
@@ -72,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/libraries", s.handleLibraries)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/mount", s.handleMount)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/unmount", s.handleUnmount)
+	mux.HandleFunc("POST /api/v1/libraries/{id}/map/import", s.handleMapImport)
 	mux.HandleFunc("GET /api/v1/storage/disks", s.handleDisks)
 	mux.HandleFunc("POST /api/v1/storage/disks/format", s.handleFormat)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
