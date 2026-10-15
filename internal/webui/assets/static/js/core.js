@@ -51,20 +51,75 @@
     return Array.isArray(x) ? x : [];
   }
 
-  // buildMountBody returns the POST body for a drive/slot MOUNT. A mount MUST
-  // always carry a real, positive slot: a slot-less load is a MAP load, which is
-  // a different call and must never be produced here. Throws when slot is not a
-  // positive integer so a caller can never silently issue a MAP load by mistake.
-  function buildMountBody(drive, slot) {
+  // buildMountBody returns the POST body for a MOUNT: the cartridge in storage
+  // slot n ({drive, slot}) or, with kind "map", in MAP slot n ({drive, map}).
+  // n MUST be a positive integer: the API refuses a mount that names no
+  // source, and a body is never produced for one. Throws RangeError otherwise.
+  function buildMountBody(drive, n, kind) {
     var d = Number(drive);
-    var sl = Number(slot);
-    if (!Number.isInteger(sl) || sl <= 0) {
-      throw new RangeError("mount requires a positive integer slot; got " + String(slot));
+    var num = Number(n);
+    var k = kind == null ? "slot" : kind;
+    if (k !== "slot" && k !== "map") {
+      throw new RangeError("mount source must be \"slot\" or \"map\"; got " + String(kind));
+    }
+    if (!Number.isInteger(num) || num <= 0) {
+      throw new RangeError("mount requires a positive integer " + k + "; got " + String(n));
     }
     if (!Number.isInteger(d) || d < 0) {
       throw new RangeError("mount requires a valid drive id; got " + String(drive));
     }
-    return { drive: d, slot: sl };
+    var body = { drive: d };
+    body[k] = num;
+    return body;
+  }
+
+  // driveState derives a drive's load state from a /libraries entry. Only a
+  // live library (changer reachable) reports load state; otherwise the state
+  // is "unknown" and nothing is claimed. drive.slot is the drive's POSITION in
+  // the library, never a storage slot, and is not used here.
+  // Returns {state: "loaded"|"empty"|"unknown", barcode, source} where source
+  // is {kind: "slot"|"map", number} or null.
+  function driveState(lib, d) {
+    if (!lib || lib.live !== true || !d || typeof d.loaded !== "boolean") {
+      return { state: "unknown", barcode: "", source: null };
+    }
+    if (!d.loaded) {
+      return { state: "empty", barcode: "", source: null };
+    }
+    var source = null;
+    if (coerceNumber(d.source_slot) > 0) {
+      source = { kind: "slot", number: coerceNumber(d.source_slot) };
+    } else if (coerceNumber(d.source_map) > 0) {
+      source = { kind: "map", number: coerceNumber(d.source_map) };
+    }
+    return { state: "loaded", barcode: d.barcode == null ? "" : String(d.barcode), source: source };
+  }
+
+  // firstEmptyDrive returns the id of the first drive the changer reports
+  // empty, or null when none is (or the library is not live).
+  function firstEmptyDrive(lib) {
+    var found = null;
+    coerceArray(lib && lib.drives).forEach(function (d) {
+      if (found === null && driveState(lib, d).state === "empty") { found = coerceNumber(d.id); }
+    });
+    return found;
+  }
+
+  // mountCandidates lists what can be mounted from a live library: occupied
+  // storage slots, then occupied MAP slots, as {kind, number, barcode}. A
+  // library without live state yields none, so the UI never offers a mount
+  // based on configured (possibly stale) contents.
+  function mountCandidates(lib) {
+    if (!lib || lib.live !== true) { return []; }
+    var out = [];
+    [["slot", lib.slots], ["map", lib.maps]].forEach(function (pair) {
+      coerceArray(pair[1]).forEach(function (sl) {
+        if (slotIsOccupied(sl) && coerceNumber(sl.number) > 0) {
+          out.push({ kind: pair[0], number: coerceNumber(sl.number), barcode: sl.barcode == null ? "" : String(sl.barcode) });
+        }
+      });
+    });
+    return out;
   }
 
   // isStale reports whether a response captured at requestGen should be
@@ -91,10 +146,13 @@
   }
 
   // slotIsOccupied is the single source of truth for "a slot holds a cartridge":
-  // a non-empty barcode string. Used by filterSlots and countSlots so the grid,
-  // table, summary counts, and filters never disagree.
+  // the live `full` flag when the changer reported one (a full slot may carry
+  // no readable barcode), else a non-empty configured barcode. Used by
+  // filterSlots, countSlots and mountCandidates so they never disagree.
   function slotIsOccupied(sl) {
-    return !!(sl && sl.barcode != null && String(sl.barcode).length > 0);
+    if (!sl) { return false; }
+    if (typeof sl.full === "boolean") { return sl.full; }
+    return sl.barcode != null && String(sl.barcode).length > 0;
   }
 
   // filterSlots narrows an (untrusted) slot array by a barcode substring query
@@ -128,6 +186,9 @@
     esc: esc,
     attr: attr,
     buildMountBody: buildMountBody,
+    driveState: driveState,
+    firstEmptyDrive: firstEmptyDrive,
+    mountCandidates: mountCandidates,
     isStale: isStale,
     canSendMutation: canSendMutation,
     coerceArray: coerceArray,

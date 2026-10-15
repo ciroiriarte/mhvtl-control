@@ -53,8 +53,18 @@ test("buildMountBody rejects a non-integer slot", () => {
 
 test("buildMountBody accepts a positive slot and returns {drive,slot}", () => {
   assert.deepStrictEqual(core.buildMountBody(2, 7), { drive: 2, slot: 7 });
+  assert.deepStrictEqual(core.buildMountBody(2, 7, "slot"), { drive: 2, slot: 7 });
   // string-coercible inputs are accepted and returned as numbers
   assert.deepStrictEqual(core.buildMountBody("0", "3"), { drive: 0, slot: 3 });
+});
+
+test("buildMountBody with kind map returns {drive,map}", () => {
+  assert.deepStrictEqual(core.buildMountBody(11, 2, "map"), { drive: 11, map: 2 });
+  assert.throws(() => core.buildMountBody(11, 0, "map"), RangeError);
+});
+
+test("buildMountBody rejects an unknown source kind", () => {
+  assert.throws(() => core.buildMountBody(11, 2, "drive"), RangeError);
 });
 
 test("isStale is true when generations differ, false when equal", () => {
@@ -128,6 +138,14 @@ test("slotIsOccupied is true only for a non-empty barcode", () => {
   assert.strictEqual(core.slotIsOccupied({ barcode: null }), false);
 });
 
+test("slotIsOccupied prefers the live full flag over the barcode", () => {
+  // A full slot whose cartridge has no readable barcode is still occupied.
+  assert.strictEqual(core.slotIsOccupied({ barcode: "", full: true }), true);
+  assert.strictEqual(core.slotIsOccupied({ barcode: "STALE", full: false }), false);
+  // Only a real boolean counts as the live flag.
+  assert.strictEqual(core.slotIsOccupied({ barcode: "", full: "yes" }), false);
+});
+
 test("filterSlots barcode query is a case-insensitive substring match", () => {
   const out = core.filterSlots(SLOTS, { query: "vol" });
   assert.deepStrictEqual(out.map((s) => s.number), [1, 5]);
@@ -165,4 +183,73 @@ test("countSlots returns total/occupied/empty", () => {
   assert.deepStrictEqual(core.countSlots(SLOTS), { total: 5, occupied: 3, empty: 2 });
   assert.deepStrictEqual(core.countSlots([]), { total: 0, occupied: 0, empty: 0 });
   assert.deepStrictEqual(core.countSlots(null), { total: 0, occupied: 0, empty: 0 });
+});
+
+/* ---- live changer state ---------------------------------------------- */
+const LIVE = {
+  id: 10,
+  live: true,
+  drives: [
+    { id: 11, slot: 1, loaded: true, barcode: "E01005L8", source_slot: 5 },
+    { id: 12, slot: 2, loaded: false },
+    { id: 13, slot: 3, loaded: true, barcode: "IMP001L8", source_map: 2 },
+    { id: 14, slot: 4, loaded: true, barcode: "" },
+  ],
+  slots: [
+    { number: 1, barcode: "E01001L8", full: true },
+    { number: 2, barcode: "", full: false },
+    { number: 3, barcode: "", full: true },
+  ],
+  maps: [
+    { number: 1, barcode: "", full: false },
+    { number: 2, barcode: "IMP002L8", full: true },
+  ],
+};
+// Same topology from device.conf only: drive.slot is a POSITION, and the
+// configured slot barcodes must never be offered for mounting.
+const CONFIG_ONLY = {
+  id: 10,
+  live: false,
+  live_error: "changer unavailable",
+  drives: [{ id: 11, slot: 1 }, { id: 12, slot: 2 }],
+  slots: [{ number: 1, barcode: "E01001L8" }],
+  maps: [],
+};
+
+test("driveState reads live load state and source", () => {
+  assert.deepStrictEqual(core.driveState(LIVE, LIVE.drives[0]),
+    { state: "loaded", barcode: "E01005L8", source: { kind: "slot", number: 5 } });
+  assert.deepStrictEqual(core.driveState(LIVE, LIVE.drives[1]), { state: "empty", barcode: "", source: null });
+  assert.deepStrictEqual(core.driveState(LIVE, LIVE.drives[2]).source, { kind: "map", number: 2 });
+  assert.deepStrictEqual(core.driveState(LIVE, LIVE.drives[3]), { state: "loaded", barcode: "", source: null });
+});
+
+test("driveState never derives a load from drive.slot", () => {
+  for (const d of CONFIG_ONLY.drives) {
+    assert.strictEqual(core.driveState(CONFIG_ONLY, d).state, "unknown");
+  }
+  // live:true but no boolean loaded field is still unknown
+  assert.strictEqual(core.driveState({ live: true }, { id: 1, slot: 3 }).state, "unknown");
+  assert.strictEqual(core.driveState(null, null).state, "unknown");
+});
+
+test("firstEmptyDrive picks the first live-empty drive, null otherwise", () => {
+  assert.strictEqual(core.firstEmptyDrive(LIVE), 12);
+  assert.strictEqual(core.firstEmptyDrive(CONFIG_ONLY), null);
+  assert.strictEqual(core.firstEmptyDrive({ live: true, drives: [{ id: 1, loaded: true }] }), null);
+  assert.strictEqual(core.firstEmptyDrive(null), null);
+});
+
+test("mountCandidates lists occupied live storage then MAP slots", () => {
+  assert.deepStrictEqual(core.mountCandidates(LIVE), [
+    { kind: "slot", number: 1, barcode: "E01001L8" },
+    { kind: "slot", number: 3, barcode: "" },
+    { kind: "map", number: 2, barcode: "IMP002L8" },
+  ]);
+});
+
+test("mountCandidates offers nothing without live state", () => {
+  assert.deepStrictEqual(core.mountCandidates(CONFIG_ONLY), []);
+  assert.deepStrictEqual(core.mountCandidates(null), []);
+  assert.deepStrictEqual(core.mountCandidates({ live: true, slots: "nope", maps: null }), []);
 });

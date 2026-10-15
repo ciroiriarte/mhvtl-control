@@ -193,6 +193,9 @@ func TestAppJSHasTelemetryAndTruthfulLabels(t *testing.T) {
 		"In use (mounted)",
 		"filterSlots", // US-F6 pure helpers are wired into the client
 		"countSlots",
+		"unknown (changer not reachable)", // no load claimed without live changer state
+		"driveState",                      // load state only from the live view
+		"mountCandidates",                 // picker lists live storage + MAP slots
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("app.js missing marker %q", want)
@@ -203,7 +206,7 @@ func TestAppJSHasTelemetryAndTruthfulLabels(t *testing.T) {
 func TestCoreJSHasSlotHelpers(t *testing.T) {
 	h := newServer()
 	_, body := get(t, h, "/static/js/core.js")
-	for _, want := range []string{"filterSlots", "countSlots", "slotIsOccupied"} {
+	for _, want := range []string{"filterSlots", "countSlots", "slotIsOccupied", "driveState", "firstEmptyDrive", "mountCandidates"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("core.js missing exported helper %q", want)
 		}

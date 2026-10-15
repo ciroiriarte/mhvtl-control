@@ -387,7 +387,7 @@ select, input[type="text"], input[type="password"] {
   background: var(--bg-elev-2); color: var(--text-dim); border: 1px solid var(--border-soft);
 }
 .badge.comp.on { background: var(--slot-full); color: var(--text); border-color: var(--slot-full-br); }
-.badge.configured { background: var(--drive-load); color: var(--text); border-color: var(--accent); }
+.badge.unknown { color: var(--warn); border-color: var(--warn); }
 .cap-line { font-size: 11px; margin: 6px 0 2px; }
 
 /* ---- Disk dock -------------------------------------------------------- */

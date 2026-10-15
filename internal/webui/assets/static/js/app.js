@@ -31,6 +31,7 @@
   var canSendMutation = core.canSendMutation;
   var coerceArray = core.coerceArray, coerceNumber = core.coerceNumber, fmtBytes = core.fmtBytes;
   var filterSlots = core.filterSlots, countSlots = core.countSlots, slotIsOccupied = core.slotIsOccupied;
+  var driveState = core.driveState, firstEmptyDrive = core.firstEmptyDrive, mountCandidates = core.mountCandidates;
 
   /* ---- library view state (US-F6: search / filter / table / multi-lib) --
    * These persist across refreshes so a running search/filter is not reset by
@@ -243,16 +244,6 @@
     body.appendChild(mk("table", { children: [tbody] }));
   }
 
-  // firstEmptyDrive returns the id of the first drive with no configured slot
-  // (a load target), or null when every drive is already loaded.
-  function firstEmptyDrive(drives) {
-    var found = null;
-    coerceArray(drives).forEach(function (d) {
-      if (found === null && coerceNumber(d.slot) <= 0) { found = coerceNumber(d.id); }
-    });
-    return found;
-  }
-
   // scsiAddr resolves SCSI addressing for a drive. The drive DTO is preferred
   // (forward-compatible) and the library's changer addressing is the fallback.
   // Returns {addr, naa} where either may be "" when unknown.
@@ -294,60 +285,75 @@
     return wrap;
   }
 
-  // Build a drive card. `lib` is the raw library object; `slotByNum` maps slot
-  // number -> barcode for resolving the loaded cartridge label.
-  function driveCard(lib, d, slotByNum) {
+  // locText renders a {kind, number} source location for display.
+  function locText(loc) {
+    return (loc.kind === "map" ? "MAP " : "slot ") + coerceNumber(loc.number);
+  }
+
+  // Build a drive card. `lib` is the raw library object. Load state comes
+  // ONLY from the live changer view (core.driveState); without it the card
+  // shows the configured topology and claims nothing about the drive's media.
+  function driveCard(lib, d) {
     // Generation this control is built under. Every mutation launched from this
     // card captures it so canSendMutation() can reject a click that lands after
     // the node was switched (belt to the grey-until-render braces).
     var renderGen = NodeState.generation;
     var driveId = coerceNumber(d.id);
-    var loaded = coerceNumber(d.slot) > 0;
-    var card = mk("div", { class: "drive" + (loaded ? " loaded" : "") });
+    var st = driveState(lib, d);
+    var card = mk("div", { class: "drive" + (st.state === "loaded" ? " loaded" : "") });
 
     card.appendChild(mk("span", { class: "id", text: "drive " + driveId }));
     card.appendChild(mk("br"));
     card.appendChild(mk("span", { class: "pid", text: d.product || "" }));
 
-    if (loaded) {
-      var bc = slotByNum[coerceNumber(d.slot)] || "";
-      // TRUTHFUL LABELING (US-F7): this reflects the CONFIGURED device.conf
-      // topology (drive's configured slot), NOT an observed live mount — the
-      // REST API does not report runtime media state. Say so explicitly.
-      card.appendChild(mk("span", {
-        class: "badge configured",
-        text: "configured",
-        attrs: { title: "Topology from device.conf (configured slot) — not a verified live mount" },
-      }));
+    // drive.slot is the drive's configured POSITION in the library (its data
+    // transfer element number), not a storage slot.
+    if (coerceNumber(d.slot) > 0) {
       card.appendChild(mk("div", {
         class: "loaded-info mono",
-        text: "configured slot " + coerceNumber(d.slot) + " · " + (bc || "?"),
+        text: "configured position " + coerceNumber(d.slot),
+        attrs: { title: "Drive position in the library from device.conf (Library ID … Slot)" },
+      }));
+    }
+    if (st.state === "loaded") {
+      card.appendChild(mk("div", {
+        class: "loaded-info mono",
+        text: (st.barcode || "(no barcode)") + (st.source ? " · from " + locText(st.source) : ""),
+      }));
+    } else if (st.state === "empty") {
+      card.appendChild(mk("div", { class: "loaded-info", text: "empty" }));
+    } else {
+      card.appendChild(mk("span", {
+        class: "badge unknown",
+        text: "unknown (changer not reachable)",
+        attrs: { title: lib.live_error ? String(lib.live_error) : "Live changer state unavailable" },
       }));
     }
 
     card.appendChild(telemetryBadges(lib, d));
 
     var actions = mk("div", { class: "drive-actions" });
-    if (!loaded) {
-      var mountBtn = mk("button", { class: "btn sm", text: "Mount", attrs: { type: "button", "aria-label": "Mount a cartridge into drive " + driveId } });
-      mountBtn.disabled = !mutationsEnabled;
-      mountBtn.addEventListener("click", function () { openMountPicker(lib, driveId, renderGen); });
-      actions.appendChild(mountBtn);
-    } else {
-      var loadedBc = slotByNum[coerceNumber(d.slot)] || "";
+    if (st.state === "loaded") {
       var unmountBtn = mk("button", { class: "btn sm", text: "Unmount", attrs: { type: "button", "aria-label": "Unmount drive " + driveId } });
       unmountBtn.disabled = !mutationsEnabled;
-      unmountBtn.addEventListener("click", function () { doUnmount(lib.id, driveId, loadedBc, unmountBtn, renderGen); });
+      unmountBtn.addEventListener("click", function () { doUnmount(lib.id, driveId, unmountBtn, renderGen); });
       actions.appendChild(unmountBtn);
+    } else {
+      var mountBtn = mk("button", { class: "btn sm", text: "Mount", attrs: { type: "button", "aria-label": "Mount a cartridge into drive " + driveId } });
+      mountBtn.disabled = !mutationsEnabled || st.state !== "empty";
+      if (st.state !== "empty") { mountBtn.title = "drive state unknown: changer not reachable"; }
+      mountBtn.addEventListener("click", function () { openMountPicker(lib, driveId, renderGen); });
+      actions.appendChild(mountBtn);
     }
     card.appendChild(actions);
     return card;
   }
 
   // mapArea renders a library's Import/Export (MAP) slots as a DISTINCT region
-  // (US-F7), visually separate from storage slots. Import is wired to the
-  // EXISTING slot-less mount -> LoadMap path. Export/Eject has no REST endpoint
-  // in this build, so its control is rendered DISABLED with an explicit note.
+  // (US-F7), visually separate from storage slots. "Load from MAP" mounts that
+  // MAP slot ({drive, map}) into the first drive the changer reports empty.
+  // Export/Eject has no REST endpoint in this build, so its control is rendered
+  // DISABLED with an explicit note.
   function mapArea(lib) {
     var renderGen = NodeState.generation;
     var maps = coerceArray(lib.maps);
@@ -357,22 +363,25 @@
       box.appendChild(mk("p", { class: "muted", text: "No import/export (MAP) slots." }));
       return box;
     }
-    var emptyDrive = firstEmptyDrive(lib.drives);
+    var emptyDrive = firstEmptyDrive(lib);
     var list = mk("div", { class: "map-list" });
     maps.forEach(function (m) {
       var occ = slotIsOccupied(m);
       var num = coerceNumber(m.number);
       var cell = mk("div", { class: "map-slot" + (occ ? " full" : "") });
       cell.appendChild(mk("span", { class: "n mono", text: "MAP " + num }));
-      cell.appendChild(mk("span", { class: "bc mono", text: occ ? String(m.barcode) : "—" }));
+      cell.appendChild(mk("span", { class: "bc mono", text: occ ? String(m.barcode || "(no barcode)") : "—" }));
 
       var acts = mk("div", { class: "map-actions" });
       var imp = mk("button", { class: "btn sm", text: "Load from MAP", attrs: { type: "button", "aria-label": "Import (load) the cartridge in MAP " + num + " into a drive" } });
-      imp.disabled = !mutationsEnabled || !occ || emptyDrive === null;
-      imp.title = !occ ? "MAP slot is empty"
-        : (emptyDrive === null ? "no empty drive available to load into"
-          : "Load the cartridge in this MAP slot into drive " + emptyDrive);
-      imp.addEventListener("click", function () { doMapLoad(lib.id, emptyDrive, imp, renderGen); });
+      imp.disabled = !mutationsEnabled || lib.live !== true || !occ || emptyDrive === null;
+      imp.title = lib.live !== true ? "changer not reachable"
+        : !occ ? "MAP slot is empty"
+          : (emptyDrive === null ? "no empty drive available to load into"
+            : "Load the cartridge in this MAP slot into drive " + emptyDrive);
+      imp.addEventListener("click", function () {
+        doMount({ libId: coerceNumber(lib.id), drive: emptyDrive }, { kind: "map", number: num }, imp, renderGen);
+      });
       acts.appendChild(imp);
 
       var exp = mk("button", {
@@ -395,7 +404,7 @@
       var full = slotIsOccupied(sl);
       var cell = mk("div", { class: "slot" + (full ? " full" : "") });
       cell.appendChild(mk("span", { class: "n", text: "slot " + coerceNumber(sl.number) }));
-      cell.appendChild(mk("span", { class: "bc", text: full ? String(sl.barcode) : "—" }));
+      cell.appendChild(mk("span", { class: "bc", text: full ? String(sl.barcode || "(no barcode)") : "—" }));
       grid.appendChild(cell);
     });
     return grid;
@@ -403,10 +412,11 @@
 
   // slotTableView renders the compact table (slot, barcode, status, action)
   // alternative for an already-filtered slot set. The action mounts an occupied
-  // slot into the first empty drive (disabled when none is available).
+  // slot into the first empty drive (disabled when none is available or the
+  // library has no live state).
   function slotTableView(lib, slots) {
     var renderGen = NodeState.generation;
-    var emptyDrive = firstEmptyDrive(lib.drives);
+    var emptyDrive = firstEmptyDrive(lib);
     var rows = slots.map(function (sl) {
       var full = slotIsOccupied(sl);
       var num = coerceNumber(sl.number);
@@ -414,15 +424,16 @@
       if (full) {
         var b = mk("button", { class: "btn sm", text: "Mount", attrs: { type: "button", "aria-label": "Mount slot " + num + " into a drive" } });
         b.disabled = !mutationsEnabled || emptyDrive === null;
-        b.title = emptyDrive === null ? "no empty drive available" : "Mount this slot into drive " + emptyDrive;
-        b.addEventListener("click", function () { doMount({ libId: coerceNumber(lib.id), drive: emptyDrive }, num, b, renderGen); });
+        b.title = lib.live !== true ? "changer not reachable"
+          : (emptyDrive === null ? "no empty drive available" : "Mount this slot into drive " + emptyDrive);
+        b.addEventListener("click", function () { doMount({ libId: coerceNumber(lib.id), drive: emptyDrive }, { kind: "slot", number: num }, b, renderGen); });
         actionCell.appendChild(b);
       } else {
         actionCell.appendChild(document.createTextNode("—"));
       }
       return mk("tr", { children: [
         mk("td", { class: "mono", text: String(num) }),
-        mk("td", { class: "mono", text: full ? String(sl.barcode) : "—" }),
+        mk("td", { class: "mono", text: full ? String(sl.barcode || "(no barcode)") : "—" }),
         mk("td", { text: full ? "occupied" : "empty" }),
         actionCell,
       ] });
@@ -437,10 +448,6 @@
   // bounded/filtered slot view with summary counts).
   function renderActiveLibrary(lib) {
     var slots = coerceArray(lib.slots);
-    var slotByNum = {};
-    slots.forEach(function (sl) {
-      if (slotIsOccupied(sl)) { slotByNum[coerceNumber(sl.number)] = String(sl.barcode); }
-    });
 
     var block = mk("div", { class: "rack" });
     var title = mk("div");
@@ -448,9 +455,18 @@
     title.appendChild(document.createTextNode(" "));
     title.appendChild(mk("span", { class: "muted mono", text: "#" + coerceNumber(lib.id) + " · " + (lib.serial || "") }));
     block.appendChild(title);
+    if (lib.live !== true) {
+      // Without the changer, slots show configured initial contents
+      // (library_contents) and drives show no load state.
+      block.appendChild(mk("p", {
+        class: "muted",
+        text: "Live changer state unavailable" + (lib.live_error ? ": " + String(lib.live_error) : "") +
+          ". Showing configured contents; mounting is disabled.",
+      }));
+    }
 
     var driveRow = mk("div", { class: "drive-row" });
-    coerceArray(lib.drives).forEach(function (d) { driveRow.appendChild(driveCard(lib, d, slotByNum)); });
+    coerceArray(lib.drives).forEach(function (d) { driveRow.appendChild(driveCard(lib, d)); });
     block.appendChild(driveRow);
 
     block.appendChild(mapArea(lib));
@@ -634,31 +650,32 @@
     var dlg = $("mount-dialog");
     $("mount-dialog-target").textContent =
       "Library #" + coerceNumber(lib.id) + " → drive " + coerceNumber(drive) +
-      ". Choose an occupied slot to load.";
+      ". Choose an occupied storage or MAP slot to load.";
     var list = $("mount-slot-list");
     clear(list);
-    var occupied = coerceArray(lib.slots).filter(function (sl) { return sl && sl.barcode && String(sl.barcode).length; });
-    if (!occupied.length) {
-      list.appendChild(mk("p", { class: "muted", text: "No occupied storage slots to mount." }));
+    var candidates = mountCandidates(lib); // live changer view only
+    if (!candidates.length) {
+      list.appendChild(mk("p", { class: "muted", text: "No occupied storage or MAP slots to mount." }));
     } else {
-      occupied.forEach(function (sl) {
-        var num = coerceNumber(sl.number);
+      candidates.forEach(function (c) {
         var btn = mk("button", {
           class: "btn slot-pick",
           attrs: { type: "button" },
           children: [
-            mk("span", { class: "n mono", text: "slot " + num }),
-            mk("span", { class: "bc mono", text: String(sl.barcode) }),
+            mk("span", { class: "n mono", text: locText(c) }),
+            mk("span", { class: "bc mono", text: c.barcode || "(no barcode)" }),
           ],
         });
-        btn.addEventListener("click", function () { doMount(mountCtx, num, btn, mountCtx.renderGen); });
+        btn.addEventListener("click", function () { doMount(mountCtx, c, btn, mountCtx.renderGen); });
         list.appendChild(btn);
       });
     }
     if (dlg.showModal) { dlg.showModal(); }
   }
 
-  function doMount(ctx, slot, btn, renderGen) {
+  // doMount moves the cartridge at source ({kind: "slot"|"map", number}) into
+  // ctx.drive through the library's changer.
+  function doMount(ctx, source, btn, renderGen) {
     if (!ctx) { return; }
     // Hard generation gate: drop the send if the node switched after this
     // control was rendered, so a stale previous-node button can never mount on
@@ -671,7 +688,7 @@
     var libId = ctx.libId, drive = ctx.drive;
     var bodyObj;
     try {
-      bodyObj = buildMountBody(drive, slot); // throws unless slot > 0
+      bodyObj = buildMountBody(drive, source.number, source.kind); // throws unless number > 0
     } catch (e) {
       libStatus.error("Mount aborted: " + e.message);
       return;
@@ -681,8 +698,8 @@
       .then(function () {
         if (isStale(gen, NodeState.generation)) { return; } // dropped: node changed
         var dlg = $("mount-dialog");
-        if (dlg.close) { dlg.close(); }
-        toast("Drive " + drive + " mounted slot " + slot);
+        if (dlg.open && dlg.close) { dlg.close(); }
+        toast("Drive " + drive + " mounted " + locText(source));
         refresh();
       })
       .catch(function (e) {
@@ -692,28 +709,9 @@
       });
   }
 
-  function doMapLoad(libId, drive, btn, renderGen) {
-    if (!canSendMutation(renderGen, NodeState.generation, mutationsEnabled)) {
-      libStatus.error("Node changed — refresh before loading.");
-      return;
-    }
-    var gen = NodeState.generation;
-    btn.disabled = true;
-    // The MAP load is the slot-LESS call; it must never go through buildMountBody.
-    api("/api/v1/libraries/" + encodeURIComponent(coerceNumber(libId)) + "/mount", { method: "POST", body: { drive: coerceNumber(drive) } })
-      .then(function () {
-        if (isStale(gen, NodeState.generation)) { return; }
-        toast("Drive " + coerceNumber(drive) + " loaded from MAP");
-        refresh();
-      })
-      .catch(function (e) {
-        btn.disabled = false;
-        if (isStale(gen, NodeState.generation)) { return; }
-        libStatus.error("MAP load failed: " + e.message);
-      });
-  }
-
-  function doUnmount(libId, drive, loadedBarcode, btn, renderGen) {
+  // doUnmount returns the drive's cartridge through the changer; the server
+  // picks the destination (its source slot, else the first empty slot).
+  function doUnmount(libId, drive, btn, renderGen) {
     if (!canSendMutation(renderGen, NodeState.generation, mutationsEnabled)) {
       libStatus.error("Node changed — refresh before unmounting.");
       return;
@@ -721,9 +719,12 @@
     var gen = NodeState.generation;
     btn.disabled = true;
     api("/api/v1/libraries/" + encodeURIComponent(coerceNumber(libId)) + "/unmount", { method: "POST", body: { drive: coerceNumber(drive) } })
-      .then(function () {
+      .then(function (res) {
         if (isStale(gen, NodeState.generation)) { return; }
-        toast("Drive " + coerceNumber(drive) + " unloaded" + (loadedBarcode ? " " + loadedBarcode : ""));
+        var mv = res && res.move;
+        var dest = mv && mv.to ? " to " + locText(mv.to) : "";
+        var bc = mv && mv.barcode ? " " + String(mv.barcode) : "";
+        toast("Drive " + coerceNumber(drive) + " unloaded" + bc + dest);
         refresh();
       })
       .catch(function (e) {
