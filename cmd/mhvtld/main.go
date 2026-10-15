@@ -5,15 +5,19 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"mhvtld/internal/api"
+	"mhvtld/internal/changer"
 	"mhvtld/internal/ipc"
 	"mhvtld/internal/rawdisk"
 	"mhvtld/internal/webui"
@@ -34,6 +38,10 @@ func main() {
 		scanPaths = append(scanPaths, v)
 		return nil
 	})
+	changers := map[int]string{}
+	flag.Func("changer", "pin a library's changer node, <libid>=/dev/sgN, skipping sysfs discovery (repeatable)", func(v string) error {
+		return parseChangerFlag(changers, v)
+	})
 	flag.Parse()
 
 	token := *apiToken
@@ -50,8 +58,14 @@ func main() {
 	}
 
 	cfg := api.Config{
-		ConfigDir:   *configDir,
-		Controller:  tryNewController(),
+		ConfigDir:  *configDir,
+		Controller: tryNewController(),
+		Changers: changer.NewManager(&changer.Locator{
+			SysRoot:   "/sys",
+			DevRoot:   "/dev",
+			Overrides: changers,
+			Open:      changer.OpenSG,
+		}, changer.OpenSG),
 		DiskOptions: rawdisk.Options{IncludeVirtual: *includeVirtual, ScanPaths: scanPaths},
 		Formatter:   rawdisk.ToolFormatter{ToolPath: *formatTool},
 		Token:       token,
@@ -128,4 +142,18 @@ func isLoopbackHost(host string) bool {
 // bind with no token and without the --insecure override.
 func bindRefused(host, token string, insecure bool) bool {
 	return !isLoopbackHost(host) && token == "" && !insecure
+}
+
+// parseChangerFlag records one --changer <libid>=<path> override.
+func parseChangerFlag(m map[int]string, v string) error {
+	id, path, ok := strings.Cut(v, "=")
+	if !ok || path == "" {
+		return fmt.Errorf("want <libid>=/dev/sgN, got %q", v)
+	}
+	n, err := strconv.Atoi(id)
+	if err != nil || n < 0 {
+		return fmt.Errorf("bad library id %q", id)
+	}
+	m[n] = path
+	return nil
 }

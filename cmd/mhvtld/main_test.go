@@ -43,3 +43,20 @@ func TestBindRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestParseChangerFlag(t *testing.T) {
+	m := map[int]string{}
+	for _, v := range []string{"10=/dev/sg3", "30=/dev/sg7"} {
+		if err := parseChangerFlag(m, v); err != nil {
+			t.Fatalf("parseChangerFlag(%q): %v", v, err)
+		}
+	}
+	if m[10] != "/dev/sg3" || m[30] != "/dev/sg7" || len(m) != 2 {
+		t.Errorf("overrides = %v", m)
+	}
+	for _, bad := range []string{"/dev/sg3", "10=", "x=/dev/sg3", "-1=/dev/sg3"} {
+		if err := parseChangerFlag(map[int]string{}, bad); err == nil {
+			t.Errorf("parseChangerFlag(%q) accepted", bad)
+		}
+	}
+}

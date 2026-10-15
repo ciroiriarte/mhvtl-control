@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"mhvtld/internal/changer"
+	"mhvtld/internal/config"
 	"mhvtld/internal/ipc"
 	"mhvtld/internal/rawdisk"
 )
@@ -22,9 +24,13 @@ var startTime = time.Now()
 type Config struct {
 	// ConfigDir is the directory holding device.conf and library_contents.<id>.
 	ConfigDir string
-	// Controller drives library/drive load/unload over IPC. Nil means the mhvtl
-	// control queue is unavailable; mount/unmount then return 503.
+	// Controller sends library commands over the mhvtl message queue. Nil
+	// means the queue is unavailable.
 	Controller ipc.Controller
+	// Changers moves cartridges and reads live library state through each
+	// library's SCSI medium changer. Nil means changer access is not
+	// configured: mount/unmount return 503 and libraries are not live.
+	Changers ChangerService
 	// DiskOptions controls raw-disk enumeration for GET /storage/disks.
 	DiskOptions rawdisk.Options
 	// Formatter initializes raw disks. Nil means formatting is unavailable (503).
@@ -36,6 +42,16 @@ type Config struct {
 	// StaticFS, when non-nil, serves the web UI at "/" and "/static/".
 	StaticFS fs.FS
 }
+
+// ChangerService is the medium-changer surface the API uses; implemented by
+// *changer.Manager.
+type ChangerService interface {
+	Inventory(lib config.Library) (changer.Inventory, error)
+	Mount(lib config.Library, driveID int, from changer.Source) (changer.Move, error)
+	Unmount(lib config.Library, driveID, toSlot int) (changer.Move, error)
+}
+
+var _ ChangerService = (*changer.Manager)(nil)
 
 // Server is the dependency-injected API server.
 type Server struct {

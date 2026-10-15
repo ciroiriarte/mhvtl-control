@@ -3,20 +3,30 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
+	"mhvtld/internal/changer"
 	"mhvtld/internal/config"
+	"mhvtld/internal/scsi"
 )
 
-// slotDTO is a storage slot or MAP (mail) slot.
+// slotDTO is a storage slot or MAP (mail) slot. Without live changer state,
+// Barcode is the configured initial content from library_contents.<id> and
+// Full is omitted; with it, both come from READ ELEMENT STATUS.
 type slotDTO struct {
 	Number  int    `json:"number"`
 	Barcode string `json:"barcode"`
+	Full    *bool  `json:"full,omitempty"`
 }
 
-// driveDTO is a virtual tape drive within a library.
+// driveDTO is a virtual tape drive within a library. Slot is the drive's
+// position in the library (its data transfer element number, from
+// "Library ID: <lib> Slot: <n>"), not a storage slot. Loaded, Barcode,
+// SourceSlot and SourceMAP are present only when the library is live.
 type driveDTO struct {
 	ID                 int    `json:"id"`
 	Vendor             string `json:"vendor"`
@@ -27,23 +37,31 @@ type driveDTO struct {
 	CompressionEnabled bool   `json:"compression_enabled"`
 	CompressionType    string `json:"compression_type"`
 	CompressionFactor  int    `json:"compression_factor"`
+	Loaded             *bool  `json:"loaded,omitempty"`
+	Barcode            string `json:"barcode,omitempty"`
+	SourceSlot         int    `json:"source_slot,omitempty"`
+	SourceMAP          int    `json:"source_map,omitempty"`
 }
 
 // libraryDTO is a virtual medium changer with its drives, slots, and maps.
+// Live reports whether drives/slots/maps reflect the changer's live element
+// status; when false, LiveError says why and the view is config-derived.
 type libraryDTO struct {
-	ID      int        `json:"id"`
-	Vendor  string     `json:"vendor"`
-	Product string     `json:"product"`
-	Serial  string     `json:"serial"`
-	Channel int        `json:"channel"`
-	Target  int        `json:"target"`
-	LUN     int        `json:"lun"`
-	NAA     string     `json:"naa"`
-	HomeDir string     `json:"home_dir"`
-	Drives  []driveDTO `json:"drives"`
-	Slots   []slotDTO  `json:"slots"`
-	MAPs    []slotDTO  `json:"maps"`
-	Pickers []int      `json:"pickers"`
+	ID        int        `json:"id"`
+	Vendor    string     `json:"vendor"`
+	Product   string     `json:"product"`
+	Serial    string     `json:"serial"`
+	Channel   int        `json:"channel"`
+	Target    int        `json:"target"`
+	LUN       int        `json:"lun"`
+	NAA       string     `json:"naa"`
+	HomeDir   string     `json:"home_dir"`
+	Live      bool       `json:"live"`
+	LiveError string     `json:"live_error,omitempty"`
+	Drives    []driveDTO `json:"drives"`
+	Slots     []slotDTO  `json:"slots"`
+	MAPs      []slotDTO  `json:"maps"`
+	Pickers   []int      `json:"pickers"`
 }
 
 func toLibraryDTO(l config.Library) libraryDTO {
@@ -90,6 +108,33 @@ func toLibraryDTO(l config.Library) libraryDTO {
 	}
 }
 
+// applyLive overlays a live changer inventory: drive load state by drive
+// position, and slots/MAP replaced by the changer's view.
+func applyLive(dto *libraryDTO, inv changer.Inventory) {
+	dto.Live = true
+	for i := range dto.Drives {
+		d := &dto.Drives[i]
+		if d.Slot < 1 || d.Slot > len(inv.Drives) {
+			continue
+		}
+		st := inv.Drives[d.Slot-1]
+		loaded := st.Full
+		d.Loaded = &loaded
+		d.Barcode, d.SourceSlot, d.SourceMAP = st.Barcode, st.SourceSlot, st.SourceMAP
+	}
+	dto.Slots = liveSlots(inv.Slots)
+	dto.MAPs = liveSlots(inv.MAPs)
+}
+
+func liveSlots(in []changer.SlotState) []slotDTO {
+	out := make([]slotDTO, 0, len(in))
+	for _, sl := range in {
+		full := sl.Full
+		out = append(out, slotDTO{Number: sl.Number, Barcode: sl.Barcode, Full: &full})
+	}
+	return out
+}
+
 func (s *Server) handleLibraries(w http.ResponseWriter, _ *http.Request) {
 	inv, err := config.LoadInventory(s.cfg.ConfigDir)
 	if err != nil {
@@ -105,20 +150,101 @@ func (s *Server) handleLibraries(w http.ResponseWriter, _ *http.Request) {
 	}
 	libs := make([]libraryDTO, 0, len(inv.Libraries))
 	for _, l := range inv.Libraries {
-		libs = append(libs, toLibraryDTO(l))
+		dto := toLibraryDTO(l)
+		if s.cfg.Changers == nil {
+			dto.LiveError = "changer access not configured"
+		} else if live, err := s.cfg.Changers.Inventory(l); err != nil {
+			dto.LiveError = err.Error()
+		} else {
+			applyLive(&dto, live)
+		}
+		libs = append(libs, dto)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"libraries": libs})
 }
 
+// lookupLibrary resolves the {id} path value against device.conf, writing the
+// error response itself when it fails.
+func (s *Server) lookupLibrary(w http.ResponseWriter, r *http.Request) (config.Library, bool) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "library id must be an integer")
+		return config.Library{}, false
+	}
+	inv, err := config.LoadInventory(s.cfg.ConfigDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("library %d not found (no device.conf)", id))
+		} else {
+			writeError(w, http.StatusInternalServerError, "config_error", err.Error())
+		}
+		return config.Library{}, false
+	}
+	for _, l := range inv.Libraries {
+		if l.ID == id {
+			return l, true
+		}
+	}
+	writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("library %d not found", id))
+	return config.Library{}, false
+}
+
+// hasDrive reports whether drive id belongs to lib.
+func hasDrive(lib config.Library, id int) bool {
+	for _, d := range lib.Drives {
+		if d.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// writeChangerError maps a changer failure to an HTTP response: an
+// unreachable changer is 503, a request the changer's state refuses (sense
+// NOT READY, or ILLEGAL REQUEST for an empty source, a full destination or an
+// invalid element) is 409, anything else is 500.
+func writeChangerError(w http.ResponseWriter, op string, err error) {
+	var se *scsi.SenseError
+	var te *scsi.TransportError
+	switch {
+	case errors.Is(err, changer.ErrUnavailable), errors.As(err, &te):
+		writeError(w, http.StatusServiceUnavailable, "changer_unavailable", err.Error())
+	case errors.Is(err, changer.ErrUnknownDrive), errors.Is(err, changer.ErrOutOfRange):
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+	case errors.Is(err, changer.ErrDriveEmpty), errors.Is(err, changer.ErrNoEmptySlot):
+		writeError(w, http.StatusConflict, "conflict", op+": "+err.Error())
+	case errors.As(err, &se) && conflictSense(se):
+		writeError(w, http.StatusConflict, "conflict", op+": "+se.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "scsi_error", op+": "+err.Error())
+	}
+}
+
+func conflictSense(se *scsi.SenseError) bool {
+	if se.Key == scsi.KeyNotReady {
+		return true
+	}
+	if se.Key != scsi.KeyIllegalRequest {
+		return false
+	}
+	switch se.Code() {
+	case scsi.ASCMediumSrcEmpty, scsi.ASCMediumDestFull, scsi.ASCInvalidElement, scsi.ASCMediumRemovalPrevnt:
+		return true
+	}
+	return false
+}
+
+// mountRequest selects the cartridge for a drive: a storage slot or a MAP
+// slot (both 1-based). The pre-changer shape {drive, slot} is still valid.
 type mountRequest struct {
-	Drive   int    `json:"drive"`
-	Slot    int    `json:"slot"`
-	Barcode string `json:"barcode"`
+	Drive int `json:"drive"`
+	Slot  int `json:"slot"`
+	MAP   int `json:"map"`
 }
 
 func (s *Server) handleMount(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Controller == nil {
-		writeError(w, http.StatusServiceUnavailable, "ipc_unavailable", "mhvtl control queue unavailable")
+	lib, ok := s.lookupLibrary(w, r)
+	if !ok {
 		return
 	}
 	var req mountRequest
@@ -126,26 +252,40 @@ func (s *Server) handleMount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	var err error
-	if req.Slot > 0 {
-		err = s.cfg.Controller.Load(int64(req.Drive), req.Slot)
-	} else {
-		err = s.cfg.Controller.LoadMap(int64(req.Drive))
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "control_error", err.Error())
+	switch {
+	case req.Slot > 0 && req.MAP > 0:
+		writeError(w, http.StatusBadRequest, "bad_request", "give either slot or map, not both")
+		return
+	case req.Slot <= 0 && req.MAP <= 0:
+		writeError(w, http.StatusBadRequest, "bad_request", "a positive slot or map number is required")
+		return
+	case !hasDrive(lib, req.Drive):
+		writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("drive %d is not in library %d", req.Drive, lib.ID))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	if s.cfg.Changers == nil {
+		writeError(w, http.StatusServiceUnavailable, "changer_unavailable", "changer access not configured")
+		return
+	}
+	mv, err := s.cfg.Changers.Mount(lib, req.Drive, changer.Source{Slot: req.Slot, MAP: req.MAP})
+	if err != nil {
+		writeChangerError(w, "mount", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "move": mv})
 }
 
+// unmountRequest names the drive to empty and, optionally, the storage slot
+// to put its cartridge in (default: where it came from, else the first empty
+// slot).
 type unmountRequest struct {
 	Drive int `json:"drive"`
+	Slot  int `json:"slot"`
 }
 
 func (s *Server) handleUnmount(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.Controller == nil {
-		writeError(w, http.StatusServiceUnavailable, "ipc_unavailable", "mhvtl control queue unavailable")
+	lib, ok := s.lookupLibrary(w, r)
+	if !ok {
 		return
 	}
 	var req unmountRequest
@@ -153,9 +293,22 @@ func (s *Server) handleUnmount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	if err := s.cfg.Controller.Unload(int64(req.Drive)); err != nil {
-		writeError(w, http.StatusInternalServerError, "control_error", err.Error())
+	switch {
+	case req.Slot < 0:
+		writeError(w, http.StatusBadRequest, "bad_request", "slot must be positive when given")
+		return
+	case !hasDrive(lib, req.Drive):
+		writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("drive %d is not in library %d", req.Drive, lib.ID))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	if s.cfg.Changers == nil {
+		writeError(w, http.StatusServiceUnavailable, "changer_unavailable", "changer access not configured")
+		return
+	}
+	mv, err := s.cfg.Changers.Unmount(lib, req.Drive, req.Slot)
+	if err != nil {
+		writeChangerError(w, "unmount", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "move": mv})
 }

@@ -1,12 +1,18 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"mhvtld/internal/ipc"
+	"mhvtld/internal/changer"
+	"mhvtld/internal/config"
+	"mhvtld/internal/scsi"
 )
 
 func postJSON(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
@@ -17,59 +23,158 @@ func postJSON(t *testing.T, h http.Handler, path, body string) *httptest.Respons
 	return rec
 }
 
-func TestMountLoadsSlot(t *testing.T) {
-	fc := &ipc.FakeController{}
-	h := NewServer(Config{Controller: fc}).Handler()
+// fakeChangers is a ChangerService that records calls and returns canned
+// results.
+type fakeChangers struct {
+	calls  []string
+	inv    changer.Inventory
+	invErr error
+	move   changer.Move
+	err    error
+}
 
+func (f *fakeChangers) Inventory(lib config.Library) (changer.Inventory, error) {
+	f.calls = append(f.calls, fmt.Sprintf("Inventory lib=%d", lib.ID))
+	return f.inv, f.invErr
+}
+
+func (f *fakeChangers) Mount(lib config.Library, driveID int, from changer.Source) (changer.Move, error) {
+	f.calls = append(f.calls, fmt.Sprintf("Mount lib=%d drive=%d slot=%d map=%d", lib.ID, driveID, from.Slot, from.MAP))
+	return f.move, f.err
+}
+
+func (f *fakeChangers) Unmount(lib config.Library, driveID, toSlot int) (changer.Move, error) {
+	f.calls = append(f.calls, fmt.Sprintf("Unmount lib=%d drive=%d slot=%d", lib.ID, driveID, toSlot))
+	return f.move, f.err
+}
+
+func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var env errorEnvelope
+	if err := json.NewDecoder(rec.Body).Decode(&env); err != nil {
+		t.Fatalf("decode error envelope: %v", err)
+	}
+	return env.Error.Code
+}
+
+func TestMountUsesChanger(t *testing.T) {
+	cases := []struct {
+		body string
+		want string
+	}{
+		{`{"drive":11,"slot":3}`, "Mount lib=10 drive=11 slot=3 map=0"},
+		{`{"drive":12,"map":2}`, "Mount lib=10 drive=12 slot=0 map=2"},
+	}
+	for _, c := range cases {
+		fc := &fakeChangers{move: changer.Move{From: changer.Location{Kind: "slot", Number: 3}, To: changer.Location{Kind: "drive", Number: 1}}}
+		h := NewServer(Config{ConfigDir: writeConfigDir(t), Changers: fc}).Handler()
+		rec := postJSON(t, h, "/api/v1/libraries/10/mount", c.body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200 (body %s)", c.body, rec.Code, rec.Body.String())
+		}
+		if len(fc.calls) != 1 || fc.calls[0] != c.want {
+			t.Errorf("%s: calls = %q, want [%q]", c.body, fc.calls, c.want)
+		}
+		if !strings.Contains(rec.Body.String(), `"move":{"from":{"kind":"slot","number":3}`) {
+			t.Errorf("%s: body %s lacks the move", c.body, rec.Body.String())
+		}
+	}
+}
+
+func TestMountValidation(t *testing.T) {
+	cases := []struct {
+		name, path, body string
+		status           int
+	}{
+		{"neither slot nor map", "/api/v1/libraries/10/mount", `{"drive":11}`, http.StatusBadRequest},
+		{"both slot and map", "/api/v1/libraries/10/mount", `{"drive":11,"slot":1,"map":1}`, http.StatusBadRequest},
+		{"drive of another library", "/api/v1/libraries/10/mount", `{"drive":31,"slot":1}`, http.StatusBadRequest},
+		{"bad json", "/api/v1/libraries/10/mount", `{`, http.StatusBadRequest},
+		{"unknown library", "/api/v1/libraries/99/mount", `{"drive":11,"slot":1}`, http.StatusNotFound},
+		{"non-numeric library", "/api/v1/libraries/x/mount", `{"drive":11,"slot":1}`, http.StatusBadRequest},
+		{"unmount drive of another library", "/api/v1/libraries/10/unmount", `{"drive":31}`, http.StatusBadRequest},
+		{"unmount negative slot", "/api/v1/libraries/10/unmount", `{"drive":11,"slot":-1}`, http.StatusBadRequest},
+	}
+	for _, c := range cases {
+		fc := &fakeChangers{}
+		h := NewServer(Config{ConfigDir: writeConfigDir(t), Changers: fc}).Handler()
+		rec := postJSON(t, h, c.path, c.body)
+		if rec.Code != c.status {
+			t.Errorf("%s: status = %d, want %d (body %s)", c.name, rec.Code, c.status, rec.Body.String())
+		}
+		if len(fc.calls) != 0 {
+			t.Errorf("%s: changer called for an invalid request: %q", c.name, fc.calls)
+		}
+	}
+}
+
+func TestUnmountUsesChanger(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"drive":11}`:          "Unmount lib=10 drive=11 slot=0",
+		`{"drive":12,"slot":7}`: "Unmount lib=10 drive=12 slot=7",
+	} {
+		fc := &fakeChangers{}
+		h := NewServer(Config{ConfigDir: writeConfigDir(t), Changers: fc}).Handler()
+		rec := postJSON(t, h, "/api/v1/libraries/10/unmount", body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200 (body %s)", body, rec.Code, rec.Body.String())
+		}
+		if len(fc.calls) != 1 || fc.calls[0] != want {
+			t.Errorf("%s: calls = %q, want [%q]", body, fc.calls, want)
+		}
+	}
+}
+
+func TestChangerErrorMapping(t *testing.T) {
+	sense := func(key, asc, ascq uint8) error {
+		return fmt.Errorf("move: %w", scsi.DecodeSense(scsi.FixedSense(key, asc, ascq)))
+	}
+	cases := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{"not found", fmt.Errorf("%w: no medium changer", changer.ErrUnavailable), 503, "changer_unavailable"},
+		{"transport", &scsi.TransportError{HostStatus: 1}, 503, "changer_unavailable"},
+		{"source empty", sense(scsi.KeyIllegalRequest, 0x3b, 0x0e), 409, "conflict"},
+		{"destination full", sense(scsi.KeyIllegalRequest, 0x3b, 0x0d), 409, "conflict"},
+		{"invalid element", sense(scsi.KeyIllegalRequest, 0x21, 0x01), 409, "conflict"},
+		{"MAP open", sense(scsi.KeyNotReady, 0x3a, 0x02), 409, "conflict"},
+		{"library offline", sense(scsi.KeyNotReady, 0x04, 0x12), 409, "conflict"},
+		{"invalid field", sense(scsi.KeyIllegalRequest, 0x24, 0x00), 500, "scsi_error"},
+		{"hardware", sense(scsi.KeyHardwareError, 0x04, 0x03), 500, "scsi_error"},
+		{"drive empty", changer.ErrDriveEmpty, 409, "conflict"},
+		{"no empty slot", changer.ErrNoEmptySlot, 409, "conflict"},
+		{"out of range", fmt.Errorf("%w: slot 99", changer.ErrOutOfRange), 400, "bad_request"},
+		{"other", errors.New("boom"), 500, "scsi_error"},
+	}
+	for _, c := range cases {
+		fc := &fakeChangers{err: c.err}
+		h := NewServer(Config{ConfigDir: writeConfigDir(t), Changers: fc}).Handler()
+		rec := postJSON(t, h, "/api/v1/libraries/10/mount", `{"drive":11,"slot":1}`)
+		if rec.Code != c.status {
+			t.Errorf("%s: status = %d, want %d (body %s)", c.name, rec.Code, c.status, rec.Body.String())
+			continue
+		}
+		if code := errorCode(t, rec); code != c.code {
+			t.Errorf("%s: code = %q, want %q", c.name, code, c.code)
+		}
+	}
+}
+
+func TestMountWithoutChangerIsUnavailable(t *testing.T) {
+	h := NewServer(Config{ConfigDir: writeConfigDir(t)}).Handler()
 	rec := postJSON(t, h, "/api/v1/libraries/10/mount", `{"drive":11,"slot":3}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
-	}
-	if len(fc.Calls) != 1 {
-		t.Fatalf("calls = %d, want 1: %+v", len(fc.Calls), fc.Calls)
-	}
-	if c := fc.Calls[0]; c.Method != "Load" || c.Dev != 11 || c.Arg != 3 {
-		t.Errorf("call = %+v, want Load dev 11 arg 3", c)
+	if rec.Code != http.StatusServiceUnavailable || errorCode(t, rec) != "changer_unavailable" {
+		t.Fatalf("status = %d, want 503 changer_unavailable", rec.Code)
 	}
 }
 
-func TestMountLoadsMapWhenNoSlot(t *testing.T) {
-	fc := &ipc.FakeController{}
-	h := NewServer(Config{Controller: fc}).Handler()
-
-	rec := postJSON(t, h, "/api/v1/libraries/10/mount", `{"drive":11}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
-	}
-	if len(fc.Calls) != 1 {
-		t.Fatalf("calls = %d, want 1: %+v", len(fc.Calls), fc.Calls)
-	}
-	if c := fc.Calls[0]; c.Method != "LoadMap" || c.Dev != 11 {
-		t.Errorf("call = %+v, want LoadMap dev 11", c)
-	}
-}
-
-func TestUnmountUnloads(t *testing.T) {
-	fc := &ipc.FakeController{}
-	h := NewServer(Config{Controller: fc}).Handler()
-
-	rec := postJSON(t, h, "/api/v1/libraries/10/unmount", `{"drive":11}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
-	}
-	if len(fc.Calls) != 1 {
-		t.Fatalf("calls = %d, want 1: %+v", len(fc.Calls), fc.Calls)
-	}
-	if c := fc.Calls[0]; c.Method != "Unload" || c.Dev != 11 {
-		t.Errorf("call = %+v, want Unload dev 11", c)
-	}
-}
-
-func TestMountNilControllerIsUnavailable(t *testing.T) {
-	h := NewServer(Config{}).Handler()
-
+func TestMountMissingConfigIsNotFound(t *testing.T) {
+	h := NewServer(Config{ConfigDir: filepath.Join(t.TempDir(), "none"), Changers: &fakeChangers{}}).Handler()
 	rec := postJSON(t, h, "/api/v1/libraries/10/mount", `{"drive":11,"slot":3}`)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 (body %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
