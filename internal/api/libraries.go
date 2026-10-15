@@ -44,6 +44,8 @@ type driveDTO struct {
 	Barcode            string `json:"barcode,omitempty"`
 	SourceSlot         int    `json:"source_slot,omitempty"`
 	SourceMAP          int    `json:"source_map,omitempty"`
+	// Nodes are the drive's device nodes, when it is found on this host.
+	Nodes *changer.Nodes `json:"nodes,omitempty"`
 }
 
 // libraryDTO is a virtual medium changer with its drives, slots, and maps.
@@ -67,6 +69,8 @@ type libraryDTO struct {
 	Pickers   []int      `json:"pickers"`
 	// MAPOpen is the MAP door state, live libraries with a MAP only.
 	MAPOpen *bool `json:"map_open,omitempty"`
+	// Nodes are the changer's device nodes, when it is found on this host.
+	Nodes *changer.Nodes `json:"nodes,omitempty"`
 }
 
 func toLibraryDTO(l config.Library) libraryDTO {
@@ -136,6 +140,27 @@ func applyLive(dto *libraryDTO, inv changer.Inventory) {
 	dto.MAPOpen = inv.MAPOpen
 }
 
+// applyNodes adds the device nodes of lib's changer and drives. A device
+// that isn't found (mhVTL stopped) is left without nodes; other failures,
+// such as an override that isn't an sg node, are logged too.
+func (s *Server) applyNodes(dto *libraryDTO, lib config.Library) {
+	if s.cfg.Nodes == nil {
+		return
+	}
+	if n, err := s.cfg.Nodes.LibraryNodes(lib); err == nil {
+		dto.Nodes = &n
+	} else if !errors.Is(err, changer.ErrUnavailable) {
+		log.Printf("libraries: library %d nodes: %v", lib.ID, err)
+	}
+	for i, d := range lib.Drives {
+		if n, err := s.cfg.Nodes.DriveNodes(d); err == nil {
+			dto.Drives[i].Nodes = &n
+		} else if !errors.Is(err, changer.ErrUnavailable) {
+			log.Printf("libraries: drive %d nodes: %v", d.ID, err)
+		}
+	}
+}
+
 func liveSlots(in []changer.SlotState) []slotDTO {
 	out := make([]slotDTO, 0, len(in))
 	for _, sl := range in {
@@ -168,6 +193,7 @@ func (s *Server) handleLibraries(w http.ResponseWriter, _ *http.Request) {
 		} else {
 			applyLive(&dto, live)
 		}
+		s.applyNodes(&dto, l)
 		libs = append(libs, dto)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"libraries": libs})

@@ -389,6 +389,20 @@ select, input[type="text"], input[type="password"], input[type="number"], input[
 }
 .badge.comp.on { background: var(--slot-full); color: var(--text); border-color: var(--slot-full-br); }
 .badge.unknown { color: var(--warn); border-color: var(--warn); }
+/* ---- Device nodes (st/nst/sg/sch, /dev/tape links) -------------------- */
+.nodes { margin-top: 6px; font-size: 11px; max-width: 260px; }
+.node-row { display: flex; align-items: center; gap: 6px; min-height: 26px; }
+.node-k { color: var(--text-faint); min-width: 3.2em; }
+.node-v {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  user-select: all;
+}
+.btn.xs { padding: 0 6px; font-size: 10px; min-height: 24px; }
+.node-links summary { cursor: pointer; color: var(--text-dim); margin-top: 2px; }
+.node-links .node-row { padding-left: 8px; }
+.nodes.changer-nodes { max-width: none; display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: flex-start; margin-top: 0; }
+.nodes.changer-nodes .node-links { flex-basis: 100%; }
+.nodes.changer-nodes .node-links .node-v { max-width: 360px; }
 .cap-line { font-size: 11px; margin: 6px 0 2px; }
 
 /* ---- Disk dock -------------------------------------------------------- */

@@ -43,6 +43,9 @@ type Config struct {
 	// Drives reads tape drive statistics. Nil means statistics are
 	// unavailable (503).
 	Drives DriveStatsService
+	// Nodes resolves the device nodes of changers and drives for GET
+	// /libraries. Nil means no nodes are reported.
+	Nodes NodeService
 	// DiskOptions controls raw-disk enumeration for GET /storage/disks.
 	DiskOptions rawdisk.Options
 	// Formatter initializes raw disks. Nil means formatting is unavailable (503).
@@ -65,6 +68,14 @@ type ChangerService interface {
 	Export(lib config.Library, from changer.ExportSource) (changer.Move, error)
 	Store(lib config.Library, barcode string) (changer.Move, error)
 }
+
+// NodeService resolves device nodes; implemented by changer.NodeResolver.
+type NodeService interface {
+	LibraryNodes(lib config.Library) (changer.Nodes, error)
+	DriveNodes(d config.Drive) (changer.Nodes, error)
+}
+
+var _ NodeService = changer.NodeResolver{}
 
 // MediaService creates and edits cartridges; implemented by media.Tools.
 type MediaService interface {

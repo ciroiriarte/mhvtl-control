@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"mhvtld/internal/changer"
+	"mhvtld/internal/config"
 )
 
 const etcDir = "/home/ciro/code/vtl/mhvtl/etc"
@@ -213,5 +214,44 @@ func TestLibrariesDriveIdentity(t *testing.T) {
 	}
 	if d.NAA == lib.NAA {
 		t.Errorf("drive NAA equals the library's %q", lib.NAA)
+	}
+}
+
+type fakeNodes struct{}
+
+func (fakeNodes) LibraryNodes(lib config.Library) (changer.Nodes, error) {
+	return changer.Nodes{SG: "/dev/sg10", SCH: "/dev/sch0", ByID: []string{"/dev/tape/by-id/scsi-SSTK_L700_XYZZY_A-changer"}}, nil
+}
+
+func (fakeNodes) DriveNodes(d config.Drive) (changer.Nodes, error) {
+	if d.ID != 11 {
+		return changer.Nodes{}, changer.ErrUnavailable
+	}
+	return changer.Nodes{SG: "/dev/sg8", ST: "/dev/st2", NST: "/dev/nst2"}, nil
+}
+
+// Changers and drives carry their device nodes when found; a drive that isn't
+// found has no nodes field.
+func TestLibrariesNodes(t *testing.T) {
+	lib := getLibraries(t, Config{ConfigDir: writeConfigDir(t), Nodes: fakeNodes{}})[10]
+	ln, ok := lib["nodes"].(map[string]any)
+	if !ok || ln["sch"] != "/dev/sch0" || ln["sg"] != "/dev/sg10" || len(ln["by_id"].([]any)) != 1 {
+		t.Errorf("library nodes = %v", lib["nodes"])
+	}
+	if _, ok := ln["st"]; ok {
+		t.Errorf("library nodes report an st node: %v", ln)
+	}
+	drives := lib["drives"].([]any)
+	dn, ok := drives[0].(map[string]any)["nodes"].(map[string]any)
+	if !ok || dn["nst"] != "/dev/nst2" || dn["st"] != "/dev/st2" || dn["sg"] != "/dev/sg8" {
+		t.Errorf("drive 11 nodes = %v", drives[0])
+	}
+	if _, ok := drives[1].(map[string]any)["nodes"]; ok {
+		t.Errorf("drive 12 has nodes though it wasn't found: %v", drives[1])
+	}
+
+	lib = getLibraries(t, Config{ConfigDir: writeConfigDir(t)})[10]
+	if _, ok := lib["nodes"]; ok {
+		t.Errorf("nodes reported without a node service: %v", lib["nodes"])
 	}
 }

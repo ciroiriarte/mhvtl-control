@@ -35,6 +35,7 @@
   var emptyLocations = core.emptyLocations, fmtRatio = core.fmtRatio, validBarcode = core.validBarcode;
   var expandBarcodes = core.expandBarcodes, parseSizeMB = core.parseSizeMB, buildMediaPatch = core.buildMediaPatch;
   var mediaLocText = core.mediaLocText, filterMedia = core.filterMedia;
+  var nodeRows = core.nodeRows;
 
   /* ---- library view state (US-F6: search / filter / table / multi-lib) --
    * These persist across refreshes so a running search/filter is not reset by
@@ -42,6 +43,7 @@
    * payload so the toolbar can re-render without a refetch.                  */
   var libView = { query: "", state: "all", table: false, selected: null };
   var lastLibData = null;
+  var openNodeLinks = {}; // device key -> true while its /dev/tape links are expanded
 
   /* ---- media view state: search / location filter, and the last /media
    * payload with the library and generation it was fetched for.           */
@@ -311,6 +313,61 @@
     return wrap;
   }
 
+  // copyText puts text on the clipboard. navigator.clipboard needs a secure
+  // context (HTTPS or localhost); elsewhere fall back to a hidden textarea.
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(
+        function () { toast("Copied " + text); },
+        function () { toast("Copy failed; select the path instead"); });
+      return;
+    }
+    var ta = mk("textarea", { attrs: { readonly: "", "aria-hidden": "true" } });
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    toast(ok ? "Copied " + text : "Copy failed; select the path instead");
+  }
+
+  // nodeRow shows one node path (shortened to `shown` when given) with a
+  // button that copies the full path.
+  function nodeRow(label, path, shown) {
+    var btn = mk("button", { class: "btn xs ghost copy", text: "copy", attrs: { type: "button", "aria-label": "Copy " + path } });
+    btn.addEventListener("click", function () { copyText(path); });
+    return mk("div", { class: "node-row", children: [
+      mk("span", { class: "node-k", text: label }),
+      mk("code", { class: "node-v", text: shown || path, attrs: { title: path } }),
+      btn,
+    ] });
+  }
+
+  // nodesBlock shows a device's nodes (st/nst/sg/sch) with copy buttons and
+  // its /dev/tape links in a collapsed list. Returns null when the device
+  // wasn't found on this host (no "nodes" in the API entry). `key` keeps
+  // the link list open across re-renders.
+  function nodesBlock(nodes, what, key) {
+    var nr = nodeRows(nodes);
+    if (!nr.rows.length && !nr.links.length) { return null; }
+    var box = mk("div", { class: "nodes", attrs: { role: "group", "aria-label": what + " device nodes" } });
+    nr.rows.forEach(function (r) { box.appendChild(nodeRow(r.label, r.path)); });
+    if (nr.links.length) {
+      var det = mk("details", { class: "node-links" });
+      det.open = openNodeLinks[key] === true;
+      det.addEventListener("toggle", function () { openNodeLinks[key] = det.open; });
+      det.appendChild(mk("summary", { text: "/dev/tape links (" + nr.links.length + ")" }));
+      nr.links.forEach(function (l) {
+        det.appendChild(nodeRow(l.label, l.path, l.path.replace(/^.*\//, "")));
+      });
+      box.appendChild(det);
+    }
+    return box;
+  }
+
   // locText renders a {kind, number} source location for display.
   function locText(loc) {
     return (loc.kind === "map" ? "MAP " : "slot ") + coerceNumber(loc.number);
@@ -357,6 +414,8 @@
     }
 
     card.appendChild(telemetryBadges(lib, d));
+    var dn = nodesBlock(d.nodes, "drive " + driveId, "lib" + coerceNumber(lib.id) + "/drive" + driveId);
+    if (dn) { card.appendChild(dn); }
 
     var actions = mk("div", { class: "drive-actions" });
     if (st.state === "loaded") {
@@ -592,6 +651,8 @@
     title.appendChild(document.createTextNode(" "));
     title.appendChild(mk("span", { class: "muted mono", text: "#" + coerceNumber(lib.id) + " · " + (lib.serial || "") }));
     block.appendChild(title);
+    var ln = nodesBlock(lib.nodes, "changer", "lib" + coerceNumber(lib.id));
+    if (ln) { ln.classList.add("changer-nodes"); block.appendChild(ln); }
     if (lib.live !== true) {
       // Without the changer, slots show configured initial contents
       // (library_contents) and drives show no load state.

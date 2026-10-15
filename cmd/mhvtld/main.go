@@ -45,7 +45,7 @@ func main() {
 		return parseChangerFlag(changers, v)
 	})
 	drives := map[int]string{}
-	flag.Func("drive", "pin a tape drive's node for statistics, <driveid>=/dev/sgN, skipping sysfs discovery (repeatable)", func(v string) error {
+	flag.Func("drive", "pin a tape drive's node for statistics and node display, <driveid>=/dev/sgN or a link to it, skipping sysfs discovery (repeatable)", func(v string) error {
 		return parseChangerFlag(drives, v)
 	})
 	mktape := flag.String("mktape", "mktape", "path to mhVTL's mktape (creates media)")
@@ -72,13 +72,20 @@ func main() {
 		Overrides: changers,
 		Open:      changer.OpenSG,
 	}
+	stats := &drivestats.Reader{Locator: locator, Overrides: drives, Open: changer.OpenSG}
+	// Node display reads sysfs only: an INQUIRY fallback per drive on every
+	// GET /libraries could stall on a hung physical drive.
+	sysfsOnly := *locator
+	sysfsOnly.Open = nil
+	nodeDrives := &drivestats.Reader{Locator: &sysfsOnly, Overrides: drives}
 	cfg := api.Config{
 		ConfigDir:   *configDir,
 		Controller:  ipc.NewIPCController(),
 		Changers:    changer.NewManager(locator, changer.OpenSG),
 		Media:       media.Tools{Mktape: *mktape, EditTape: *editTape, ConfigDir: *configDir},
 		DefaultHome: *homeDir,
-		Drives:      &drivestats.Reader{Locator: locator, Overrides: drives, Open: changer.OpenSG},
+		Drives:      stats,
+		Nodes:       changer.NodeResolver{Locator: &sysfsOnly, Drive: nodeDrives.Locate},
 		DiskOptions: rawdisk.Options{IncludeVirtual: *includeVirtual, ScanPaths: scanPaths},
 		Formatter:   rawdisk.ToolFormatter{ToolPath: *formatTool},
 		Token:       token,

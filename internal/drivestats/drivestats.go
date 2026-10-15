@@ -156,7 +156,7 @@ type DeviceStatistics struct {
 // plus changer.ErrUnavailable when discovery failed) or to read page 00h
 // fails the read. RESERVATION CONFLICT on page 00h wraps ErrReserved.
 func (r *Reader) Read(d config.Drive) (Stats, error) {
-	path, err := r.locate(d)
+	path, err := r.Locate(d)
 	if err != nil {
 		return Stats{}, err
 	}
@@ -199,8 +199,8 @@ func (r *Reader) Read(d config.Drive) (Stats, error) {
 	return st, nil
 }
 
-// locate returns d's sg path: the override, else discovery by serial.
-func (r *Reader) locate(d config.Drive) (string, error) {
+// Locate returns d's sg path: the override, else discovery by serial.
+func (r *Reader) Locate(d config.Drive) (string, error) {
 	if p, ok := r.Overrides[d.ID]; ok {
 		return p, nil
 	}

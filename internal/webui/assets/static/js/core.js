@@ -198,6 +198,26 @@
     return { total: arr.length, occupied: occupied, empty: arr.length - occupied };
   }
 
+  // nodeRows lists a device's nodes (API "nodes": sg, st, nst, sch, by_id,
+  // by_path) as {label, path} in the order a backup application wants them:
+  // the non-rewinding tape node first, the changer node, then sg. Links come
+  // back separately. Non-string or empty values are dropped.
+  function nodeRows(nodes) {
+    var n = (nodes && typeof nodes === "object") ? nodes : {};
+    var str = function (v) { return typeof v === "string" && v !== ""; };
+    var rows = [];
+    ["nst", "st", "sch", "sg"].forEach(function (k) {
+      if (str(n[k])) { rows.push({ label: k, path: n[k] }); }
+    });
+    var links = [];
+    [["by_id", "by-id"], ["by_path", "by-path"]].forEach(function (kl) {
+      coerceArray(n[kl[0]]).forEach(function (p) {
+        if (str(p)) { links.push({ label: kl[1], path: p }); }
+      });
+    });
+    return { rows: rows, links: links };
+  }
+
   // fmtRatio renders a compression ratio as "x.xx:1"; absent or non-positive
   // ratios (no data moved yet) render as "—".
   function fmtRatio(x) {
@@ -339,6 +359,7 @@
     slotIsOccupied: slotIsOccupied,
     filterSlots: filterSlots,
     countSlots: countSlots,
+    nodeRows: nodeRows,
   };
 
   /* ---- UMD tail ------------------------------------------------------- */

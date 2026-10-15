@@ -368,3 +368,25 @@ test("emptyLocations lists empty live storage then MAP slots", () => {
   assert.deepStrictEqual(core.emptyLocations({ live: false, slots: lib.slots }), []);
   assert.deepStrictEqual(core.emptyLocations(null), []);
 });
+
+test("nodeRows orders device nodes and separates the udev links", () => {
+  const drive = {
+    sg: "/dev/sg8", st: "/dev/st2", nst: "/dev/nst2",
+    by_id: ["/dev/tape/by-id/scsi-00XYZZY_A1-nst", 7, ""],
+    by_path: ["/dev/tape/by-path/pci-0-nst"],
+  };
+  assert.deepStrictEqual(core.nodeRows(drive), {
+    rows: [
+      { label: "nst", path: "/dev/nst2" },
+      { label: "st", path: "/dev/st2" },
+      { label: "sg", path: "/dev/sg8" },
+    ],
+    links: [
+      { label: "by-id", path: "/dev/tape/by-id/scsi-00XYZZY_A1-nst" },
+      { label: "by-path", path: "/dev/tape/by-path/pci-0-nst" },
+    ],
+  });
+  assert.deepStrictEqual(core.nodeRows({ sg: "/dev/sg10", sch: "/dev/sch0" }).rows.map((r) => r.label), ["sch", "sg"]);
+  assert.deepStrictEqual(core.nodeRows(undefined), { rows: [], links: [] });
+  assert.deepStrictEqual(core.nodeRows({ sg: 3, by_id: "x" }), { rows: [], links: [] });
+});
