@@ -290,6 +290,13 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		if h.Driver == hostids.MhvtlDriver && ours[[3]int{h.Channel, h.Target, h.LUN}] {
 			continue
 		}
+		// A device in the middle of removal (or offline) is going away; an
+		// unknown state counts as running.
+		if h.State != "" && h.State != "running" {
+			r.warnf(CodeIdentHostNotRunning, 0, nil, "host device %s (%s) is in state %q, not running; its serial and NAAs were not checked for collisions",
+				h.HCTL(), driverName(h), h.State)
+			continue
+		}
 		self, isSelf := device{}, false
 		if h.Driver == TCMLoopDriver {
 			self, isSelf = reexport(h, curDevs)

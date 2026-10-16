@@ -24,6 +24,7 @@ const (
 	CodeIdentSerialCut          = "identity.serial_cut"
 	CodeIdentHostSerial         = "identity.host_serial"
 	CodeIdentHostUnchecked      = "identity.host_unchecked"
+	CodeIdentHostNotRunning     = "identity.host_not_running"
 	CodeIdentHostNAA            = "identity.host_naa"
 	CodeIdentNoLibrary          = "identity.no_library"
 	CodeIdentDriveLineSerial    = "identity.drive_line_serial"
