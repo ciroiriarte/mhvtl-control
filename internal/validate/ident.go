@@ -19,6 +19,20 @@ import (
 // the same limit.
 const MaxSerialLen = 10
 
+// MaxID is the highest library or drive ID. vtltape and vtllibrary exit on
+// a -q queue ID outside 0..MAXPRIOR-1 (mhvtl include/utils/q.h:51, MAXPRIOR
+// 1024; usr/cmd/vtltape.c:2451, usr/cmd/vtllibrary.c:1672, upstream master
+// 993b193), and the kernel module refuses a minor of DEF_MAX_MINOR_NO (1024)
+// or more (kernel/mhvtl.c:186, :1246). ID 0 is out too: the ID is the
+// System V message type the daemon receives on, and msgsnd(2) fails with
+// EINVAL on a type below 1; the daemons' own message says [1..1023].
+const MaxID = 1023
+
+// MaxLUNs is the number of LUNs the mhvtl module answers: a command to LUN
+// DEF_MAX_LUNS (32) or above gets DID_NO_CONNECT (kernel/mhvtl.c:126, :195,
+// :602 in 993b193). It is not a module parameter.
+const MaxLUNs = 32
+
 // MaxVendorLen and MaxProductLen are the INQUIRY vendor and product
 // identification field widths. mhVTL cuts a longer device.conf value to
 // them, logging only (conf_clamp_string, usr/vtllib.c:1150; called at
@@ -133,6 +147,15 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	var naas []naaOwner
 	wire := make([][]byte, len(devs)) // the NAA each device reports, if known
 	for i, d := range devs {
+		if d.id < 1 || d.id > MaxID {
+			r.errorf(CodeIdentIDRange, d.lib, []ElementRef{d.key()}, "%s: ID %d is out of range; mhVTL needs 1..%d (the -q queue ID, the char device minor, and the message type, which msgsnd refuses at 0)", d, d.id, MaxID)
+		}
+		if d.channel < 0 || d.target < 0 || d.lun < 0 {
+			r.errorf(CodeIdentAddressRange, d.lib, []ElementRef{d.key()}, "%s: CHANNEL %d TARGET %d LUN %d: none can be negative", d, d.channel, d.target, d.lun)
+		}
+		if d.lun >= MaxLUNs {
+			r.errorf(CodeIdentAddressRange, d.lib, []ElementRef{d.key()}, "%s: LUN %d is out of range; the mhvtl module answers LUNs 0..%d only", d, d.lun, MaxLUNs-1)
+		}
 		if o, dup := ids[d.id]; dup {
 			r.errorf(CodeIdentIDDup, d.lib, []ElementRef{o.key(), d.key()}, "%s and %s share ID %d; mhVTL addresses its daemons by ID", o, d, d.id)
 		} else {

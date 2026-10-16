@@ -9,6 +9,8 @@ const (
 	CodeAddrDuplicate   = "address.duplicate"
 	CodeAddrOverflow    = "address.overflow"
 
+	CodeIdentIDRange            = "identity.id_range"
+	CodeIdentAddressRange       = "identity.address_range"
 	CodeIdentIDDup              = "identity.id_duplicate"
 	CodeIdentAddressDup         = "identity.address_duplicate"
 	CodeIdentSerialMissing      = "identity.serial_missing"
