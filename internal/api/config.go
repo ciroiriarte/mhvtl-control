@@ -731,6 +731,19 @@ const (
 
 var contentsName = regexp.MustCompile(`^library_contents\.([0-9]{1,5})$`)
 
+// contentsID returns the library ID of a library_contents.<id> file name.
+// The ID must be written as mhVTL builds the name, "library_contents.%ld"
+// (usr/vtllib.c:322, upstream master d65d25f): library_contents.010 is a
+// file vtllibrary never reads, so validating it would prove nothing.
+func contentsID(name string) (int, bool) {
+	m := contentsName.FindStringSubmatch(name)
+	if m == nil {
+		return 0, false
+	}
+	id, err := strconv.Atoi(m[1])
+	return id, err == nil && name == "library_contents."+strconv.Itoa(id)
+}
+
 // validateRequest is a proposed configuration, given as whole files.
 //
 // Files maps a file name, device.conf or library_contents.<id>, to its
@@ -765,7 +778,16 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 	var req validateRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	err := dec.Decode(&req)
+	if err == nil {
+		// One JSON object, and nothing after it.
+		if err = dec.Decode(&struct{}{}); err == io.EOF {
+			err = nil
+		} else if err == nil {
+			err = errors.New("unexpected data after the JSON object")
+		}
+	}
+	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			writeError(w, http.StatusRequestEntityTooLarge, "too_large", fmt.Sprintf("request body over %d bytes", maxBody))
@@ -783,7 +805,7 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 		case name == "device.conf" && c == nil:
 			writeError(w, http.StatusBadRequest, "bad_request", "device.conf cannot be deleted")
 			return
-		case name != "device.conf" && !contentsName.MatchString(name):
+		case name != "device.conf" && !validContentsName(name):
 			writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("file %q: only device.conf and library_contents.<id> can be proposed", name))
 			return
 		case c != nil && len(*c) > maxValidateFileSize:
@@ -842,7 +864,7 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 		if name == "device.conf" {
 			continue
 		}
-		id, _ := strconv.Atoi(contentsName.FindStringSubmatch(name)[1])
+		id, _ := contentsID(name)
 		_, inCur := findConfigLibrary(cur, id)
 		_, inNext := findConfigLibrary(next, id)
 		if !inCur && !inNext {
@@ -874,6 +896,11 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 		Problems:   toProblems(next.Problems),
 		LiveErrors: liveErrs,
 	})
+}
+
+func validContentsName(name string) bool {
+	_, ok := contentsID(name)
+	return ok
 }
 
 func findConfigLibrary(inv config.Inventory, id int) (config.Library, bool) {
