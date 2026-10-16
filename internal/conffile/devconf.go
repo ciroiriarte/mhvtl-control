@@ -223,8 +223,10 @@ type Stanza struct {
 	Start, End int
 	Attrs      []Attr // in file order, duplicates included
 	// Attr maps a key to the line of its last non-empty occurrence (else
-	// its last one): conf_value ignores a field with no value, so the last
-	// non-empty one is what mhVTL keeps.
+	// its last one), the line SetAttr changes. For a string read by
+	// conf_value, which ignores a field with no value, that is the value
+	// mhVTL keeps; for other keys it may not be, so a repeated key is an
+	// ambiguous Problem.
 	Attr map[string]int
 }
 
@@ -349,6 +351,17 @@ func (c *DeviceConf) index() {
 			if msg := scanfProblem(st.Kind, key, cText(l)); msg != "" {
 				problem(i, true, "%s", msg)
 			}
+			// mhVTL does not settle a repeated key one way: a string read
+			// by conf_value keeps its last non-empty value, PERSIST is
+			// true once any line says so (vtllibrary.c:1323-1328), and an
+			// invalid Compression type, Backoff or commandtimeout keeps the
+			// earlier value (vtltape.c:2184-2199, vtllibrary.c:1332-1341).
+			for _, a := range st.Attrs {
+				if a.Key == key {
+					problem(i, true, "%s repeated (first at line %d): mhVTL does not always keep the last one; keep one line", key, a.Line+1)
+					break
+				}
+			}
 			st.Attrs = append(st.Attrs, Attr{Key: key, Value: value, Line: i})
 			if j, seen := st.Attr[key]; !seen || value != "" || c.attrValue(j) == "" {
 				st.Attr[key] = i
@@ -456,8 +469,8 @@ func (c *DeviceConf) Stanza(kind string, id int) (Stanza, bool) {
 	return Stanza{}, false
 }
 
-// Get returns the effective value of key in a stanza: its last occurrence, as
-// mhVTL reads the lines in order and the last one wins.
+// Get returns the value of key on its Attr line. With a repeated key (an
+// ambiguous Problem) mhVTL may use another one.
 func (st Stanza) Get(key string) (string, bool) {
 	i, ok := st.Attr[key]
 	if !ok {

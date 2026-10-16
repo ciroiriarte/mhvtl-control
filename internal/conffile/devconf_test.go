@@ -31,6 +31,8 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 		{"Library ID without Slot", drv + " Library ID: 10\n", 2, "without 'Slot: N'"},
 		{"bare Library header", "Library: 10\n Vendor identification: STK\n", 1, "Library 10 has no CHANNEL"},
 		{"partial Drive header", "Drive: 11 CHANNEL: 00\n", 1, "Drive 11 has no CHANNEL"},
+		{"repeated key", lib + " PERSIST: yes\n PERSIST: no\n", 3, "PERSIST repeated (first at line 2)"},
+		{"repeated key, other spacing", drv + " Backoff: 400\n Backoff:  x\n", 3, "Backoff repeated"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,9 +56,12 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 	}
 
 	// The forms vtltape and vtllibrary read as written.
-	if c := ParseDeviceConf([]byte(drv + " Compression: 5\n NAA: 1:2:3:4:5:6:7:8\n NAA:\n" +
-		" Library ID: 10 Slot: 01\n Compression: factor 1 enabled 0\n")); len(c.Problems) != 0 {
+	if c := ParseDeviceConf([]byte(drv + " Compression: factor 1 enabled 0\n NAA: 1:2:3:4:5:6:7:8\n" +
+		" Library ID: 10 Slot: 01\n")); len(c.Problems) != 0 {
 		t.Errorf("valid sscanf fields flagged: %v", c.Problems)
+	}
+	if c := ParseDeviceConf([]byte(drv + " Compression: 5\n")); len(c.Problems) != 0 {
+		t.Errorf("Compression: 5 flagged: %v", c.Problems)
 	}
 
 	// Adjacent Libraries read as written: each header switches vtllibrary
