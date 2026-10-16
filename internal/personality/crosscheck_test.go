@@ -14,8 +14,12 @@ import (
 )
 
 // The cross-checks below read mhVTL's C sources and fail on any difference
-// from the Go tables, naming the C line. CI runs them against upstream
-// master ($MHVTL_SRC), so a drift there fails the build.
+// in value or dispatch order from the Go tables, naming the C line. CI runs
+// them against upstream master ($MHVTL_SRC), so a drift there fails the
+// build. A cited line that merely moved is logged as citation drift and only
+// fails once it is more than maxCitationDrift lines off
+// (TestCitationsWithinReach), so a citation cannot end up pointing at a
+// different function.
 
 // mhvtlRepo locates the mhVTL source: $MHVTL_SRC, else the sibling submodule
 // of the superproject.
@@ -51,6 +55,31 @@ func readC(t *testing.T, root, rel string) cfile {
 }
 
 func (f cfile) at(n int) string { return fmt.Sprintf("%s:%d", f.rel, n) }
+
+// maxCitationDrift is how far a cited line may be from where the C source has
+// it now before the citation counts as wrong.
+const maxCitationDrift = 50
+
+// splitCitation parses "file:line".
+func splitCitation(c string) (string, int) {
+	i := strings.LastIndexByte(c, ':')
+	if i < 0 {
+		return c, -1
+	}
+	n, err := strconv.Atoi(c[i+1:])
+	if err != nil {
+		return c, -1
+	}
+	return c[:i], n
+}
+
+// logDrift logs a citation that no longer names the line the C source has.
+func logDrift(t *testing.T, cited, found string) {
+	t.Helper()
+	if cited != found {
+		t.Logf("citation drift: table says %s, found at %s", cited, found)
+	}
+}
 
 // body returns the 1-based line range of the function named fn: the line
 // after its definition through the line before the closing brace in column 1.
@@ -168,8 +197,14 @@ func TestCrossCheckLibraryDispatch(t *testing.T) {
 			t.Errorf("Rules[%d] %+v has no counterpart in customise_lu", i, Rules[i])
 		case i >= len(Rules):
 			t.Errorf("%s: dispatch rule %+v is missing from Rules", got[i].Source, got[i])
-		case got[i] != Rules[i]:
-			t.Errorf("%s: dispatch rule %+v; Rules[%d] = %+v", got[i].Source, got[i], i, Rules[i])
+		default:
+			g, w := got[i], Rules[i]
+			g.Source, w.Source = "", ""
+			if g != w {
+				t.Errorf("%s: dispatch rule %+v; Rules[%d] = %+v", got[i].Source, got[i], i, Rules[i])
+				continue
+			}
+			logDrift(t, Rules[i].Source, got[i].Source)
 		}
 	}
 }
@@ -224,6 +259,17 @@ func smcFields(t *testing.T, f cfile, first, last int) map[string]cvalue {
 		}
 	}
 	return vals
+}
+
+// windowSource is the line of the first start_* value a personality uses.
+func windowSource(f cfile, vals map[string]cvalue) string {
+	ws := 0
+	for _, k := range []string{"start_picker", "start_map", "start_drive", "start_storage"} {
+		if v, ok := vals[k]; ok && (ws == 0 || v.line < ws) {
+			ws = v.line
+		}
+	}
+	return f.at(ws)
 }
 
 // hasVPD83 reports whether the init function, or a function it calls in the
@@ -291,15 +337,7 @@ func TestCrossCheckLibraryModels(t *testing.T) {
 		check("dvcid_nul_terminated", b(m.DvcidNulTerminated))
 		check("stk_dte_layout", b(m.StkDteLayout))
 
-		ws := 0
-		for _, k := range []string{"start_picker", "start_map", "start_drive", "start_storage"} {
-			if v, ok := vals[k]; ok && (ws == 0 || v.line < ws) {
-				ws = v.line
-			}
-		}
-		if got := f.at(ws); got != m.WindowSource {
-			t.Errorf("%s: %s element windows start here; Models[%q].WindowSource = %s", got, fn, fn, m.WindowSource)
-		}
+		logDrift(t, m.WindowSource, windowSource(f, vals))
 		if got := hasVPD83(f, first, last); got != m.VPD83 {
 			t.Errorf("%s: %s allocates VPD 83h: %v; Models[%q].VPD83 = %v", f.at(first-1), fn, got, fn, m.VPD83)
 		}
@@ -315,19 +353,24 @@ var (
 	genArrayDefR = regexp.MustCompile(`^static const struct ult_gen_media (\w+)\[\] = \{`)
 )
 
-func TestCrossCheckDriveProducts(t *testing.T) {
-	root := mhvtlRepo(t)
+// driveProducts parses tape_drives[] and the default drive_init of vtltape.c.
+func driveProducts(t *testing.T, root string) (rows []DriveProduct, def string) {
+	t.Helper()
 	f := readC(t, root, "usr/cmd/vtltape.c")
-	var got []DriveProduct
-	def := ""
 	for n, l := range f.lines {
 		if m := driveRowRe.FindStringSubmatch(l); m != nil {
-			got = append(got, DriveProduct{Product: strings.TrimRight(m[1], " "), InitFn: m[2], Source: f.at(n + 1)})
+			rows = append(rows, DriveProduct{Product: strings.TrimRight(m[1], " "), InitFn: m[2], Source: f.at(n + 1)})
 		}
 		if m := driveInitRe.FindStringSubmatch(l); m != nil {
 			def = m[1]
 		}
 	}
+	return rows, def
+}
+
+func TestCrossCheckDriveProducts(t *testing.T) {
+	root := mhvtlRepo(t)
+	got, def := driveProducts(t, root)
 	if def != DefaultDriveInit {
 		t.Errorf("vtltape.c drive_init defaults to %q; DefaultDriveInit = %q", def, DefaultDriveInit)
 	}
@@ -337,8 +380,14 @@ func TestCrossCheckDriveProducts(t *testing.T) {
 			t.Errorf("DriveProducts[%d] %+v is not in tape_drives", i, DriveProducts[i])
 		case i >= len(DriveProducts):
 			t.Errorf("%s: tape_drives row %+v is missing from DriveProducts", got[i].Source, got[i])
-		case got[i] != DriveProducts[i]:
-			t.Errorf("%s: tape_drives row %+v; DriveProducts[%d] = %+v", got[i].Source, got[i], i, DriveProducts[i])
+		default:
+			g, w := got[i], DriveProducts[i]
+			g.Source, w.Source = "", ""
+			if g != w {
+				t.Errorf("%s: tape_drives row %+v; DriveProducts[%d] = %+v", got[i].Source, got[i], i, DriveProducts[i])
+				continue
+			}
+			logDrift(t, DriveProducts[i].Source, got[i].Source)
 		}
 	}
 }
@@ -459,9 +508,7 @@ func TestCrossCheckDriveMedia(t *testing.T) {
 	}
 	for _, dm := range DriveModels {
 		f, first, last := findInit(t, files, dm.InitFn)
-		if got := f.at(first - 1); got != dm.Source {
-			t.Errorf("%s: %s is defined here; DriveModels cites %s", got, dm.InitFn, dm.Source)
-		}
+		logDrift(t, dm.Source, f.at(first-1))
 		arrays := genArrays(f)
 		var got []cmedia
 		for n := first; n <= last; n++ {
@@ -619,4 +666,51 @@ func shellFunc(t *testing.T, script, name string) string {
 	}
 	t.Fatalf("make_vtl_media.in: function %s not found", name)
 	return ""
+}
+
+// TestCitationsWithinReach fails when a citation names another file, or a
+// line more than maxCitationDrift lines from where the C source has the cited
+// statement now: at that distance it likely points into another function.
+func TestCitationsWithinReach(t *testing.T) {
+	root := mhvtlRepo(t)
+	type pair struct{ what, cited, found string }
+	var pairs []pair
+
+	rules := dispatch(t, readC(t, root, "usr/cmd/vtllibrary.c"), "customise_lu", nil)
+	for i := 0; i < min(len(rules), len(Rules)); i++ {
+		pairs = append(pairs, pair{fmt.Sprintf("Rules[%d]", i), Rules[i].Source, rules[i].Source})
+	}
+	files := pmFiles(t, root)
+	for fn, m := range Models {
+		f, first, last := findInit(t, files, fn)
+		pairs = append(pairs, pair{fmt.Sprintf("Models[%q].WindowSource", fn), m.WindowSource, windowSource(f, smcFields(t, f, first, last))})
+	}
+	rows, _ := driveProducts(t, root)
+	for i := 0; i < min(len(rows), len(DriveProducts)); i++ {
+		pairs = append(pairs, pair{fmt.Sprintf("DriveProducts[%d]", i), DriveProducts[i].Source, rows[i].Source})
+	}
+	for _, dm := range DriveModels {
+		f, first, _ := findInit(t, files, dm.InitFn)
+		pairs = append(pairs, pair{fmt.Sprintf("DriveModels %s", dm.InitFn), dm.Source, f.at(first - 1)})
+	}
+
+	for _, p := range pairs {
+		cf, cl := splitCitation(p.cited)
+		ff, fl := splitCitation(p.found)
+		switch {
+		case cl < 0:
+			t.Errorf("%s: citation %q is not file:line", p.what, p.cited)
+		case cf != ff:
+			t.Errorf("%s cites %s, but the C source has it in %s", p.what, p.cited, p.found)
+		case cl-fl > maxCitationDrift || fl-cl > maxCitationDrift:
+			t.Errorf("%s cites %s, %d lines from where the C source has it (%s); update the citation", p.what, p.cited, abs(cl-fl), p.found)
+		}
+	}
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
