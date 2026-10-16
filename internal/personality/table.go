@@ -101,8 +101,13 @@ var Models = map[string]Model{
 		DvcidLen: 34,
 	},
 	// init_hp_msl_smc sets a 34-byte identifier for the models HPE documents
-	// (MSL6480, MSL3040, 1/8 G3) and a 20-byte serial for the others; the
-	// table keeps the second, the last assignment.
+	// (MSL6480, MSL3040, MSL2024 G4, 1/8 G3; usr/pm/hp_smc_pm.c
+	// hp_msl_documented :156-161) and a 20-byte serial only identifier for
+	// the others; the table keeps the second, the last assignment. So
+	// SerialArea gives 20 for every MSL, where the documented models show 10
+	// characters of a drive serial (34 less the 8-byte vendor and 16-byte
+	// product). No warning is lost: device.conf serials are at most 10
+	// characters (MaxSerialLen in package validate).
 	"init_hp_msl_smc": {
 		InitFn: "init_hp_msl_smc", Name: "HP MSL",
 		StartPicker: 0x0001, StartMAP: 0x01c0, StartDrive: 0x01e0, StartStorage: 0x0020,
