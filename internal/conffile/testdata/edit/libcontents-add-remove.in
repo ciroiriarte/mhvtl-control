@@ -1,0 +1,12 @@
+VERSION: 2
+
+Drive 1:
+
+Picker 1:
+
+MAP 1: E01040L8
+# a comment
+  # an indented comment
+Slot 1: E01001L8  
+Slot 2:
+Slot 3: CLN001L1

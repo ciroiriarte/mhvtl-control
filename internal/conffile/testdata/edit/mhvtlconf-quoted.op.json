@@ -1,0 +1,7 @@
+{"file": "mhvtl.conf", "ops": [
+  {"op": "set", "key": "MHVTL_HOME_PATH", "value": "/srv/tapes"},
+  {"op": "set", "key": "CAPACITY", "value": "1000"},
+  {"op": "set", "key": "VERBOSE", "value": "2"},
+  {"op": "set", "key": "VTL_DEBUG", "value": "1"},
+  {"op": "set", "key": "MHVTL_CONFIG_PATH", "value": "/etc/mhvtl"}
+]}

@@ -1,0 +1,4 @@
+{"file": "device.conf", "ops": [
+  {"op": "remove_stanza", "kind": "Drive", "id": 12},
+  {"op": "remove_stanza", "kind": "Drive", "id": 34}
+]}

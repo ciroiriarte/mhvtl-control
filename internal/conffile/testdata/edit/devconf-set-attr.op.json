@@ -1,0 +1,4 @@
+{"file": "device.conf", "ops": [
+  {"op": "set_attr", "kind": "Drive", "id": 12, "key": "Product identification", "value": "ULT3580-TD9"},
+  {"op": "set_attr", "kind": "Library", "id": 10, "key": "PERSIST", "value": "True"}
+]}

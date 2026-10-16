@@ -1,0 +1,8 @@
+VERSION: 5
+
+Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00
+ Vendor identification: STK
+
+Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00
+ Library ID: 10 Slot: 01
+ Product identification: ULT3580-TD8

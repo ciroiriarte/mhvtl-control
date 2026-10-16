@@ -1,0 +1,3 @@
+# Round-trip fixtures must reach the tests byte for byte (CRLF, no final
+# newline), whatever the checkout's line-ending settings.
+internal/conffile/testdata/** -text

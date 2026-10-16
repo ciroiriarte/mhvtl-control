@@ -1,0 +1,4 @@
+{"file": "device.conf", "ops": [
+  {"op": "set_attr", "kind": "Library", "id": 10, "key": "Vendor identification", "value": "IBM"},
+  {"op": "set_attr", "kind": "Library", "id": 10, "key": "Product identification", "value": "03584L32"}
+]}

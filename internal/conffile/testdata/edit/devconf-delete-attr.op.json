@@ -1,0 +1,4 @@
+{"file": "device.conf", "ops": [
+  {"op": "delete_attr", "kind": "Drive", "id": 11, "key": "Backoff"},
+  {"op": "delete_attr", "kind": "Library", "id": 30, "key": "PERSIST"}
+]}
