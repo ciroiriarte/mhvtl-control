@@ -1,0 +1,5 @@
+{"file": "device.conf", "ops": [
+  {"op": "add_stanza", "kind": "Library", "id": 10, "attrs": [
+    {"key": "Vendor identification", "value": "IBM"},
+    {"key": "Product identification", "value": "03584L32"}]}
+]}

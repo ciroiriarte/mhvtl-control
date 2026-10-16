@@ -158,8 +158,9 @@ func checkUntouched(t *testing.T, in, out *DeviceConf, ops []editOp) {
 		}
 		return string(renderLines(c.Lines()[:end]))
 	}
-	// A Library added in front of the first stanza moves the boundary.
-	if p, q := preamble(in), preamble(out); !strings.HasPrefix(q, p) && !strings.HasPrefix(p, q) {
+	// A Library added in front of the first stanza goes after the
+	// preamble, so the preamble is the same in every case.
+	if p, q := preamble(in), preamble(out); p != q {
 		t.Errorf("preamble changed:\n%q\nto\n%q", p, q)
 	}
 }

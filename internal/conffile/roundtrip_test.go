@@ -306,6 +306,10 @@ func TestPersistLibContents(t *testing.T) {
 			t.Errorf("line %d changed: %q -> %q", i+1, in[i].Text, out[i].Text)
 		}
 	}
+	slot21 := c.entries[c.lookup("Slot", 21)].Line
+	if got := c.Lines()[slot21].Text; got != "Slot 21: E01021L8" {
+		t.Errorf("Slot 21 line = %q", got)
+	}
 	if again := ParseLibContents(c.Render()); len(again.Problems) != 0 {
 		t.Errorf("problems after edit: %v", again.Problems)
 	}
