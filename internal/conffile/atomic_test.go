@@ -302,6 +302,22 @@ func TestNotDurable(t *testing.T) {
 	if err := MoveAcross(src, dir); !errors.Is(err, ErrNotDurable) {
 		t.Errorf("MoveAcross: err = %v", err)
 	}
+
+	// On the copy path the move is still finished: the source goes, so the
+	// file is not left in both places.
+	link = func(string, string) error { return &os.LinkError{Op: "link", Err: syscall.EXDEV} }
+	t.Cleanup(func() { link = os.Link })
+	src = filepath.Join(t.TempDir(), "g")
+	os.WriteFile(src, []byte("g"), 0o644)
+	if err := MoveAcross(src, dir); !errors.Is(err, ErrNotDurable) || !errors.Is(err, cause) {
+		t.Errorf("MoveAcross copy: err = %v", err)
+	}
+	if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("source left behind: %v", err)
+	}
+	if got := readString(t, filepath.Join(dir, "g")); got != "g" {
+		t.Errorf("copy = %q", got)
+	}
 }
 
 // TestRemoveStale checks a writer removes temp files of the same name that a
