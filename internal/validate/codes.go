@@ -40,6 +40,7 @@ const (
 	CodeMediaUnreadable  = "media.unreadable"
 
 	CodeBarcodeLength      = "barcode.length"
+	CodeBarcodeChars       = "barcode.chars"
 	CodeBarcodeDup         = "barcode.duplicate"
 	CodeBarcodePersistRead = "barcode.persist_unreadable"
 	CodeBarcodeInPersist   = "barcode.in_persist"
