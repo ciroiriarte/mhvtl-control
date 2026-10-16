@@ -54,6 +54,9 @@ func Merge(cur, next config.Library, live *Placement, bay func(barcode string) b
 	nextS, nextM := fileSlots(next), fileMAPs(next)
 
 	placed := map[string]bool{} // barcodes next edits into an element
+	for _, b := range pickerMedia(next) {
+		placed[b] = true
+	}
 	for _, e := range []struct{ base, next map[int]string }{{base.Slots, nextS}, {base.MAPs, nextM}} {
 		for k, b := range e.next {
 			if b != e.base[k] && b != "" {
