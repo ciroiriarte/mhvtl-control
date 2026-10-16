@@ -62,6 +62,14 @@ func AppSpecific(machine, app [16]byte) [16]byte {
 }
 
 // Generator proposes identities for one appliance.
+//
+// It walks a fixed sequence and returns the first candidate the caller does
+// not report as taken, so after a device is deleted its serial and NAA come
+// back for the next device created. A host that still remembers the old
+// device by those identifiers (an initiator's persistent binding, a backup
+// application's drive table) would take the new device for it. Keeping a
+// persisted high-water mark of the sequence, so identifiers are never
+// reused, belongs to Phase 4, which owns the state written to disk.
 type Generator struct {
 	Appliance [16]byte
 }
