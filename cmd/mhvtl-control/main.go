@@ -119,6 +119,9 @@ func main() {
 		CORSOrigin:  *corsOrigin,
 		StaticFS:    webui.FS(),
 		Version:     version,
+		// Configuration writes need TLS off loopback (plan 4.1); GET
+		// /config/capabilities reports it.
+		InsecureListen: !isLoopbackHost(host) && (*tlsCert == "" || *tlsKey == ""),
 	}
 
 	srv := &http.Server{

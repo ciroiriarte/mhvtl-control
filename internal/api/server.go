@@ -58,6 +58,14 @@ type Config struct {
 	StaticFS fs.FS
 	// Version is the daemon's version, reported by GET /system.
 	Version string
+	// SysRoot is the sysfs mount point POST /config/validate reads the
+	// host's SCSI identities from; empty means /sys.
+	SysRoot string
+	// Capabilities are the host paths GET /config/capabilities inspects.
+	Capabilities CapabilityPaths
+	// InsecureListen is whether the daemon listens on a non-loopback address
+	// without TLS, where configuration writes are refused (plan 4.1).
+	InsecureListen bool
 }
 
 // ChangerService is the medium-changer surface the API uses; implemented by
@@ -170,6 +178,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/libraries/{id}/drives/{drive}/stats", s.handleDriveStats)
 	mux.HandleFunc("GET /api/v1/storage/disks", s.handleDisks)
 	mux.HandleFunc("POST /api/v1/storage/disks/format", s.handleFormat)
+	mux.HandleFunc("GET /api/v1/config", s.handleConfig)
+	mux.HandleFunc("GET /api/v1/config/capabilities", s.handleConfigCapabilities)
+	mux.HandleFunc("GET /api/v1/config/personalities", s.handleConfigPersonalities)
+	mux.HandleFunc("GET /api/v1/config/libraries", s.handleConfigLibraries)
+	mux.HandleFunc("GET /api/v1/config/libraries/{id}", s.handleConfigLibrary)
+	mux.HandleFunc("GET /api/v1/config/libraries/{id}/drives", s.handleConfigDrives)
+	mux.HandleFunc("GET /api/v1/config/libraries/{id}/slots", s.handleConfigSlots)
+	mux.HandleFunc("POST /api/v1/config/validate", s.handleConfigValidate)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
