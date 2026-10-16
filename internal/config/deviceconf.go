@@ -111,7 +111,7 @@ func applyAttr(lib *Library, drv *Drive, key, val string) error {
 		if drv == nil {
 			return nil
 		}
-		f := strings.Fields(strings.ReplaceAll(val, ":", " "))
+		f := strings.FieldsFunc(strings.ReplaceAll(val, ":", " "), isCSpace)
 		if len(f) != 1 && !(len(f) == 3 && f[1] == "Slot") {
 			return fmt.Errorf("malformed Library ID %q", val)
 		}
@@ -139,7 +139,7 @@ func applyAttr(lib *Library, drv *Drive, key, val string) error {
 		if drv == nil {
 			return nil
 		}
-		f := strings.Fields(val)
+		f := strings.FieldsFunc(val, isCSpace)
 		// "Compression: N" sets the factor alone, 0 when N is out of 1-9
 		// (vtltape.c:2208-2212).
 		if len(f) == 1 {
@@ -172,4 +172,10 @@ func applyAttr(lib *Library, drv *Drive, key, val string) error {
 		}
 	}
 	return nil
+}
+
+// isCSpace is C's isspace in the "C" locale, the white space sscanf's %d
+// skips; unlike strings.Fields it does not split on Unicode spaces.
+func isCSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r'
 }

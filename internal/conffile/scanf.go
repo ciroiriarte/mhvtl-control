@@ -1,11 +1,28 @@
 package conffile
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // isCSpace is C's isspace in the "C" locale, the white space sscanf skips.
+// Go's unicode.IsSpace, behind strings.Fields and TrimSpace, also takes
+// NBSP, U+0085 and other Unicode spaces, which C does not.
 func isCSpace(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r'
 }
+
+// isBlankRune is a blank to conf_value (mhvtl usr/vtllib.c:1093-1108):
+// space or tab only.
+func isBlankRune(r rune) bool { return r == ' ' || r == '\t' }
+
+func cFields(s string) []string { return strings.FieldsFunc(s, isCSpace) }
+
+func cTrim(s string) string { return strings.TrimFunc(s, isCSpace) }
+
+// canonicalKey is a key as conf_value matches it: each run of blanks one
+// space.
+func canonicalKey(k string) string { return strings.Join(strings.FieldsFunc(k, isBlankRune), " ") }
 
 // cText is the line as readline hands it to sscanf: a CRLF's '\r' stays.
 func cText(l Line) string {
