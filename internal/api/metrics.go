@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -98,6 +99,19 @@ func (s *Server) latest(ctx context.Context) (col collection, ok bool) {
 
 // refresh runs one collection, stores it and closes done.
 func (s *Server) refresh(done chan struct{}) {
+	// The collection runs outside any request, so recoverMW can't catch a
+	// panic here: log it, keep the previous collection and let the next
+	// request try again, rather than taking the daemon down.
+	defer func() {
+		if rv := recover(); rv != nil {
+			log.Printf("panic collecting metrics: %v", rv)
+			c := &s.metrics
+			c.mu.Lock()
+			c.running = nil
+			c.mu.Unlock()
+			close(done)
+		}
+	}()
 	var set promtext.Set
 	start := time.Now()
 	checks := s.collect(&set)
@@ -218,10 +232,13 @@ func (s *Server) collectLibrary(set *promtext.Set, lib config.Library) *readyChe
 		switch {
 		case errors.Is(err, changer.ErrBusy):
 			busy.Set(1, "library", id)
-			check = &readyCheck{Name: name, OK: true, Note: "busy with another operation; last known state kept"}
 			if last, ok := c.live[lib.ID]; ok {
+				check = &readyCheck{Name: name, OK: true, Note: "busy with another operation; last known state kept"}
 				up.Set(1, "library", id)
 				liveGauges(set, id, last)
+			} else {
+				// It has not answered since it was last down, or since start.
+				check = &readyCheck{Name: name, Error: "busy with another operation; no state read yet"}
 			}
 		case err != nil:
 			busy.Set(0, "library", id)

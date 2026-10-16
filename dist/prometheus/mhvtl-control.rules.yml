@@ -29,6 +29,25 @@ groups:
         annotations:
           summary: "Library {{ $labels.library }} on {{ $labels.instance }} does not answer READ ELEMENT STATUS"
 
+      # A library stays busy only while a move holds its changer, and a move
+      # times out after 5 minutes; busy for longer means moves are stuck back
+      # to back and the library gauges are stale.
+      - alert: MhvtlLibraryBusyTooLong
+        expr: mhvtl_library_busy == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Library {{ $labels.library }} on {{ $labels.instance }} has been busy for 10 minutes; its gauges are stale"
+
+      - alert: MhvtlMetricsStale
+        expr: mhvtl_control_metrics_age_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "mhvtl-control on {{ $labels.instance }} has not finished a collection for over 5 minutes"
+
       - alert: MhvtlHomeFilesystemFilling
         expr: |
           1 - mhvtl_home_filesystem_avail_bytes / mhvtl_home_filesystem_size_bytes > 0.90
