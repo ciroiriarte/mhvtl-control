@@ -248,6 +248,23 @@ func TestDriveLineSerials(t *testing.T) {
 				config.DriveLine{Number: 5, Serial: "GHOST"}, config.DriveLine{Number: 6, Serial: "GHOST"})
 		}, []string{`library_contents.10 lines "Drive 5" and "Drive 6" both give the changer serial "GHOST"`},
 			[]string{"drive slot 5", "drive slot 6"}},
+		{"an empty Drive line with no drive", func(i *config.Inventory) {
+			i.Libraries[0].DriveLines = append(i.Libraries[0].DriveLines, config.DriveLine{Number: 5})
+		}, nil, []string{`library_contents.10 line "Drive 5:": no drive of device.conf sits in drive slot 5, so the changer reports an empty drive element`}},
+		// A typo in Library ID: the drive leaves library 10 and runs
+		// standalone; its Drive line is left with no drive.
+		{"a Library ID naming no library", func(i *config.Inventory) {
+			d := i.Libraries[0].Drives[3]
+			d.LibraryID = 11
+			i.Libraries[0].Drives = i.Libraries[0].Drives[:3]
+			i.Standalone = append(i.Standalone, d)
+		}, nil, []string{
+			`library_contents.10 line "Drive 4:": no drive of device.conf sits in drive slot 4`,
+			"drive 14: Library ID 11 names no library of device.conf, so no changer reports the drive and it runs standalone",
+		}},
+		{"a standalone drive with no Library ID", func(i *config.Inventory) {
+			i.Standalone = append(i.Standalone, config.Drive{ID: 90, Target: 90, Serial: "SOLO90", NAA: "40:00:00:00:00:00:00:90"})
+		}, nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cur := shipped(t)
