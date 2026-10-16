@@ -30,6 +30,9 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 			drives = append(drives, driveKey(d.ID))
 		}
 		home := homeOf(lib, opts)
+		if hiddenHome(home) {
+			r.warnf(CodeMediaHomeHidden, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: media home %s is under /home, /root or /run/user, which mhvtl-control's unit hides (ProtectHome=yes); cartridges there look missing to these checks", lib.ID, home)
+		}
 		check := func(where string, key ElementRef, barcode string, created bool) {
 			els := append(drives[:len(drives):len(drives)], key)
 			if barcode == "" {
@@ -84,4 +87,15 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 			check(fmt.Sprintf("picker %d", p.Number), pickerKey(lib.ID, p.Number), p.Barcode, false)
 		}
 	}
+}
+
+// hiddenHome reports whether home lies where ProtectHome=yes in
+// dist/mhvtl-control.service hides it from mhvtl-control.
+func hiddenHome(home string) bool {
+	for _, p := range []string{"/home", "/root", "/run/user"} {
+		if home == p || strings.HasPrefix(home, p+"/") {
+			return true
+		}
+	}
+	return false
 }

@@ -220,7 +220,13 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 			var err error
 			if b, err = hostids.ParseNAA(d.naa); err != nil {
 				r.errorf(CodeIdentNAAInvalid, d.lib, []ElementRef{d.key()}, "%s: %v", d, err)
-				continue
+				// vtltape then sends the NAA derived from the serial
+				// (usr/vtllib.c update_vpd_83 :2474-2483): check that one.
+				if d.serial == "" {
+					continue
+				}
+				d.naa = ""
+				b = derivedNAA(d)
 			}
 		case d.serial == "":
 			continue // already refused above
