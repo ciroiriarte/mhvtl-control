@@ -1808,6 +1808,14 @@
         if (!slots.live) {
           view.appendChild(mk("p", { class: "muted", text: "Live changer state unavailable" + (slots.live_error ? ": " + String(slots.live_error) : "") + ". Showing library_contents only." }));
         }
+        if (slots.warning) {
+          view.appendChild(mk("p", { class: "cfg-notice warn", text: "Note: " + String(slots.warning) + "." }));
+        }
+        if (Array.isArray(slots.drives) && slots.drives.length) {
+          view.appendChild(mk("p", { class: "muted", text: "In drives now: " + slots.drives.map(function (d) {
+            return "drive slot " + coerceNumber(d && d.number) + " (" + String(d && d.barcode) + ")";
+          }).join(", ") + "." }));
+        }
         view.appendChild(mk("div", { class: "slot-scroll", children: [configSlotsTable(slots)] }));
       }
     }
