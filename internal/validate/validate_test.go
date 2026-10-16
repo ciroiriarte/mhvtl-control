@@ -67,6 +67,27 @@ func TestGeneratedIsValid(t *testing.T) {
 	}
 }
 
+// fromLive returns inv with the Slot and MAP lines of each library whose live
+// placement is known showing that placement, as an editor built from the
+// live view sends them: Merge takes next as an edit of Baseline.
+func fromLive(inv config.Inventory, live *Live) config.Inventory {
+	out := clone(inv)
+	for i, l := range out.Libraries {
+		p, ok := live.library(l.ID)
+		if !ok {
+			continue
+		}
+		b := Baseline(l, &p, nil)
+		for j, s := range l.Slots {
+			out.Libraries[i].Slots[j].Barcode = b.Slots[s.Number]
+		}
+		for j, m := range l.MAPs {
+			out.Libraries[i].MAPs[j].Barcode = b.MAPs[m.Number]
+		}
+	}
+	return out
+}
+
 // driveLines returns the lines "Drive 1:" to "Drive n:".
 func driveLines(n int) []config.DriveLine {
 	var out []config.DriveLine
