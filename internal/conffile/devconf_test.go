@@ -22,7 +22,10 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 		{"tab comment two bytes", lib + "\t#\n", 2, "two-byte line"},
 		{"long line", lib + " Vendor identification: " + strings.Repeat("x", 500) + "\n", 2, "longer than 510"},
 		{"NUL", lib + " Vendor identification: A\x00B\n", 2, "NUL"},
-		{"text after LUN", "Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00 # x\n", 1, "text after LUN"},
+		{"colon-less CHANNEL", "Library: 10 CHANNEL 00 TARGET: 00 LUN: 00\n", 1, "Library 10 has no CHANNEL"},
+		{"non-numeric TARGET", "Drive: 11 CHANNEL: 00 TARGET: 1a LUN: 00\n", 1, "Drive 11 has no CHANNEL"},
+		{"bare header after a full one", drv + " Library ID: 10 Slot: 01\n\nDrive: 12\n", 4, "Drive 12 has no CHANNEL"},
+		{"octal-looking id", "Drive: 011 CHANNEL: 00 TARGET: 01 LUN: 00\n", 1, "leading 0"},
 		{"empty Compression", drv + " Compression:\n", 2, "partial or empty Compression"},
 		{"Compression without enabled", drv + " Compression: factor 1\n", 2, "partial or empty Compression"},
 		{"Compression ignored", drv + " Compression: bogus\n", 2, "vtltape ignores it"},
@@ -62,6 +65,11 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 	}
 	if c := ParseDeviceConf([]byte(drv + " Compression: 5\n")); len(c.Problems) != 0 {
 		t.Errorf("Compression: 5 flagged: %v", c.Problems)
+	}
+	// sscanf ignores text after LUN, so the address is read.
+	c0 := ParseDeviceConf([]byte("Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00 # x\n"))
+	if d := mustStanza(t, c0, "Drive", 11); len(c0.Problems) != 0 || !d.HasAddress || d.Target != 1 {
+		t.Errorf("text after LUN: %+v, problems %v", d, c0.Problems)
 	}
 
 	// Adjacent Libraries read as written: each header switches vtllibrary

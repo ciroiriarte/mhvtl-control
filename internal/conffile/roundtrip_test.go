@@ -345,6 +345,7 @@ func TestProblems(t *testing.T) {
 		"Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0\n garbage\n":                 "expected 'Key: value'",
 		"Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0\n Slot: 1\n\n Vendor: IBM\n": "attribute outside of a record",
 		"garbage\n": "malformed record header",
+		"Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0\nUnit serial number: X\n": "attribute in column 1",
 	}
 	for in, want := range cases {
 		c := ParseDeviceConf([]byte(in))

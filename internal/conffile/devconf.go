@@ -29,7 +29,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -294,14 +293,25 @@ func (c *DeviceConf) index() {
 				}
 				continue
 			}
-			st, trailing, ok := parseStanzaHeader(text)
+			st, ok := parseStanzaHeader(text)
 			if !ok {
-				problem(i, false, "malformed record header %q", text)
+				// conf_value does not need a leading blank (vtllib.c:1093-1094),
+				// so mhVTL reads a column-1 attribute inside a record.
+				if cur >= 0 && strings.Contains(text, ":") {
+					problem(i, false, "attribute in column 1 %q: mhVTL reads it as part of %s %d, this model does not; indent it",
+						text, c.stanzas[cur].Kind, c.stanzas[cur].ID)
+				} else {
+					problem(i, false, "malformed record header %q", text)
+				}
 				continue
 			}
+			// The systemd generator reads the id with strtol base 0
+			// (mhvtl usr/cmd/mhvtl-device-conf-generator.c:238, :243), so it starts
+			// "Drive: 011" as vtltape@9; vtltape reads 11.
+			if id := strings.TrimLeft(text[len(st.Kind)+1:], " \t\v\f\r"); len(id) > 1 && id[0] == '0' && id[1] >= '0' && id[1] <= '9' {
+				problem(i, true, "%s id with a leading 0: the systemd generator reads it as octal, mhVTL as decimal", st.Kind)
+			}
 			switch {
-			case trailing:
-				problem(i, true, "text after LUN in %q: mhVTL ignores it, but this header is not read as an address", text)
 			case !st.HasAddress && st.Kind == "Drive":
 				problem(i, true, "Drive %d has no CHANNEL, TARGET and LUN: vtltape registers it at an uninitialised address (vtltape.c:2078, :2146)", st.ID)
 			case !st.HasAddress:
@@ -411,42 +421,25 @@ func (c *DeviceConf) attrValue(i int) string {
 	return attrValue(v)
 }
 
-// parseStanzaHeader parses "Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00" or a
-// bare "Drive: 11", following the sscanf patterns in
-// mhvtl usr/cmd/vtllibrary.c:679-686.
-// trailing reports text after a full address, which mhVTL's sscanf ignores
-// but leaves HasAddress false here.
-func parseStanzaHeader(text string) (st Stanza, trailing, ok bool) {
-	f := cFields(strings.ReplaceAll(text, ":", " "))
-	if len(f) < 2 || (f[0] != "Library" && f[0] != "Drive") ||
-		!strings.HasPrefix(text, f[0]+":") {
-		return Stanza{}, false, false
-	}
-	id, err := strconv.Atoi(f[1])
-	if err != nil {
-		return Stanza{}, false, false
-	}
-	st = Stanza{Kind: f[0], ID: id}
-	if len(f) > 8 && f[2] == "CHANNEL" && f[4] == "TARGET" && f[6] == "LUN" {
-		trailing = true
-	}
-	if len(f) == 8 && f[2] == "CHANNEL" && f[4] == "TARGET" && f[6] == "LUN" {
-		var nums [3]int
-		ok := true
-		for j, s := range []string{f[3], f[5], f[7]} {
-			n, err := strconv.Atoi(s)
-			if err != nil {
-				ok = false
-				break
-			}
-			nums[j] = n
+// parseStanzaHeader parses "Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00" or
+// a Drive header with the sscanf pattern mhVTL uses (mhvtl
+// usr/cmd/vtllibrary.c:1283, usr/cmd/vtltape.c:2139). ok is set when sscanf
+// reads at least the id; HasAddress when it reads all four numbers. Text
+// after LUN is ignored, as sscanf ignores it.
+func parseStanzaHeader(text string) (st Stanza, ok bool) {
+	for _, kind := range []string{"Library", "Drive"} {
+		n, v := cScan(text, kind+": %d CHANNEL: %d TARGET: %d LUN: %d")
+		if n < 1 {
+			continue
 		}
-		if ok {
+		st = Stanza{Kind: kind, ID: int(v[0])}
+		if n == 4 {
 			st.HasAddress = true
-			st.Channel, st.Target, st.LUN = nums[0], nums[1], nums[2]
+			st.Channel, st.Target, st.LUN = int(v[1]), int(v[2]), int(v[3])
 		}
+		return st, true
 	}
-	return st, trailing, true
+	return Stanza{}, false
 }
 
 // Lines returns the file's lines. The slice must not be modified.
