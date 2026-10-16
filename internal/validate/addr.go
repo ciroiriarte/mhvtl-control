@@ -50,6 +50,23 @@ func checkAddresses(r *Result, next config.Inventory) {
 			}
 			fill = max(fill, dl.Number+1)
 		}
+		// A Drive line numbered at or below an earlier one reuses that
+		// drive element (lookup_drive) but counts it again in num_drives
+		// (usr/cmd/vtllibrary.c:859-874, upstream master 993b193), which
+		// mode page 1Dh reports (usr/mode.c:1332) and READ ELEMENT STATUS
+		// takes as the drive address range (usr/smc.c:80-81).
+		prevLine := 0
+		for _, dl := range lib.DriveLines {
+			switch {
+			case dl.Number == prevLine:
+				r.errorf(CodeAddrDuplicate, lib.ID, []ElementRef{libKey(lib.ID), lineKey(lib.ID, dl.Number)},
+					"library %d: library_contents.%d lists \"Drive %d:\" twice; vtllibrary counts the drive twice in num_drives, which mode page 1Dh and READ ELEMENT STATUS report", lib.ID, lib.ID, dl.Number)
+			case dl.Number < prevLine:
+				r.errorf(CodeAddrOrder, lib.ID, []ElementRef{libKey(lib.ID), lineKey(lib.ID, prevLine), lineKey(lib.ID, dl.Number)},
+					"library %d: \"Drive %d:\" is listed after \"Drive %d:\"; vtllibrary counts the drive twice in num_drives, which mode page 1Dh and READ ELEMENT STATUS report; library_contents must list drives in increasing order", lib.ID, dl.Number, prevLine)
+			}
+			prevLine = max(prevLine, dl.Number)
+		}
 		placed := map[int]bool{}
 		for _, d := range lib.Drives {
 			switch {
