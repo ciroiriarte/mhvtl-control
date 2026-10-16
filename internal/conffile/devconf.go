@@ -6,22 +6,48 @@
 // Citations of mhVTL source lines refer to upstream master 6458223
 // (github.com/markh794/mhvtl).
 //
-// Known gaps, for the editor's validation and apply phases (4.3, 5):
-//   - The media home is read by find_media_home_directory (mhvtl
+// Every writer must call Writable on the model it is about to write, and
+// write nothing when it returns an error.
+//
+// Known gaps, for the editor's validation and apply phases (4.3, 5). Those
+// marked [writer] must be closed before any writer is wired:
+//   - [writer] The media home is read by find_media_home_directory (mhvtl
 //     usr/vtllib.c:1673-1737), not like other attributes: its "found" flag
 //     is never reset, so the first " Home directory:" line after the
 //     library's header wins even when it is in a later stanza, and sscanf
 //     "%s" (:1720) cuts the path at its first blank. A home path with a
-//     space is not flagged here.
+//     blank, and a " Home directory:" line outside its library's stanza,
+//     are not flagged here.
+//   - [writer] mhVTL's other readers of device.conf are not modelled. The
+//     systemd generator (usr/cmd/mhvtl-device-conf-generator.c:229-247)
+//     needs "Library: " or "Drive: " in column 1 with exactly one space,
+//     so it skips "Library:10" and "Library:\t10", which vtllibrary
+//     reads; it parses the id with strtol base 0, so "Drive: 011" starts
+//     vtltape@9 (that one is flagged). mhvtl.init's device_ids
+//     (etc/mhvtl.init.in:57) matches awk '$1 == "Drive:"', so it also
+//     takes an indented " Drive: 12" line, which the model reads as an
+//     attribute.
+//   - [writer] make_vtl_media reads both files with awk, not like
+//     vtllibrary (usr/cmd/make_vtl_media.in:304, :313). '/Library:/ {print
+//     $2}' is unanchored: it matches a commented-out "# Library: 20 ..."
+//     line, which ends the script when library_contents.20 is missing, and
+//     prints "CHANNEL:" for "Library:10 CHANNEL: ...". '/^Slot/ {print
+//     $3}' makes no media for "Slot 1:ABC", which vtllibrary loads, and
+//     makes "E01001L8\r" from a CRLF library_contents.
+//   - [writer] mhvtl.conf is read by the shell (and systemd's
+//     EnvironmentFile=), but only simple KEY=VALUE lines are modelled.
+//     Expansions ("$HOME/x"), separators ("a;"), quotes inside a word
+//     ("a'b'") and backslash continuations raise no Problem, and Set
+//     replaces the whole word after '=', so on "CAPACITY=/a;rm" it also
+//     drops the command the shell would run.
+//   - [writer] No write is gated or serialised. ReplaceIfHash takes any
+//     model, and two writers can both pass its re-hash and both rename,
+//     the later silently replacing the earlier. A single Commit that takes
+//     an advisory lock, refuses unless Writable passes on both the base
+//     and the edited model, then calls ReplaceIfHash, is still to come.
 //   - MoveAcross falls back to copying only on EXDEV, not when link(2)
 //     fails with EPERM (a filesystem without hard links, or
 //     protected_hardlinks for a non-owner).
-//   - make_vtl_media reads both files with awk, not like vtllibrary
-//     (mhvtl usr/cmd/make_vtl_media.in:304, :313). '/Library:/ {print $2}'
-//     also matches a commented-out "# Library: 20 ..." line, which ends
-//     the script when library_contents.20 is missing, and '/^Slot/ {print
-//     $3}' makes no media for "Slot 1:ABC", which vtllibrary loads. Neither
-//     is flagged here: that is the script's behaviour, not the files'.
 package conffile
 
 import (
@@ -195,6 +221,19 @@ type Problem struct {
 }
 
 func (p Problem) Error() string { return fmt.Sprintf("line %d: %s", p.Line, p.Msg) }
+
+// writable is the error Writable returns for a file with problems.
+func writable(file string, ps []Problem) error {
+	if len(ps) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s has %d problem(s), first %w; fix them by hand before editing", file, len(ps), ps[0])
+}
+
+// Writable returns an error when the file has any Problem, ambiguous or
+// not. Every writer must call it, on the file as read and on the edited
+// model, and write nothing if it fails.
+func (c *DeviceConf) Writable() error { return writable("device.conf", c.Problems) }
 
 // Attr is one " Key: value" line of a device.conf stanza, read as mhVTL's
 // conf_value (mhvtl usr/vtllib.c:1089-1144) reads it: Key with each run of

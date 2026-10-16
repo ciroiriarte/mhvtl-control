@@ -42,6 +42,9 @@ type MhvtlConf struct {
 	Problems []Problem
 }
 
+// Writable is DeviceConf.Writable for mhvtl.conf.
+func (c *MhvtlConf) Writable() error { return writable("mhvtl.conf", c.Problems) }
+
 // ParseMhvtlConf parses mhvtl.conf. It never fails: lines that are not a
 // simple assignment are kept verbatim and not modelled.
 func ParseMhvtlConf(data []byte) *MhvtlConf {
