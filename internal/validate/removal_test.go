@@ -255,3 +255,16 @@ func TestPlacedWhileLoaded(t *testing.T) {
 		})
 	}
 }
+
+// A cartridge next lists on a picker has moved there and is not kept in its
+// live slot as well (PR 2a round-3 probe).
+func TestMergePickerMoves(t *testing.T) {
+	cur := lib(10, "IBM", "03584L32", 1, "A00001L8", "", "A00002L8")
+	next := cur
+	next.PickerMedia = []config.Slot{{Number: 1, Barcode: "A00001L8"}}
+	live := Placement{Slots: map[int]string{1: "A00001L8", 3: "A00002L8"}}
+	m := Merge(cur, next, &live, nil)
+	if m.Slots[1] != "" || m.Pickers[1] != "A00001L8" || m.Slots[3] != "A00002L8" {
+		t.Errorf("merge: slots %v, pickers %v; want A00001L8 on picker 1 only", m.Slots, m.Pickers)
+	}
+}
