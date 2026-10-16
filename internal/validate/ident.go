@@ -49,7 +49,7 @@ const MaxLUNs = 32
 // identification field widths. mhVTL cuts a longer device.conf value to
 // them, logging only (conf_clamp_string, usr/vtllib.c:1150; called at
 // usr/cmd/vtllibrary.c:1305 and :1316, usr/cmd/vtltape.c:2161 and :2167 in
-// upstream c65bff0).
+// upstream 993b193).
 const (
 	MaxVendorLen  = 8
 	MaxProductLen = 16
@@ -89,11 +89,11 @@ func (d device) key() ElementRef {
 
 // derivedNAA is the NAA mhVTL reports for a device whose device.conf entry
 // has none: the last 8 bytes of the serial as the daemon holds it, with the
-// NAA field rewritten to 5h (usr/vtllib.c update_vpd_83 :2471-2480; the
+// NAA field rewritten to 5h (usr/vtllib.c update_vpd_83 :2474-2483; the
 // changers' update_eml_vpd_83 do the same). Line numbers are upstream master
-// c65bff0. vtltape holds a drive serial padded with %-10s
+// 993b193. vtltape holds a drive serial padded with %-10s
 // (usr/cmd/vtltape.c:2157), with an IBM LTO serial shorter than 10 then
-// zero-filled on the left to 10 (usr/vtllib.c ibm_lto_serial_pad :2371-2392,
+// zero-filled on the left to 10 (usr/vtllib.c ibm_lto_serial_pad :2374-2395,
 // called at usr/cmd/vtltape.c:2256); vtllibrary holds its own serial padded
 // with %-14s, cut to 15 (usr/cmd/vtllibrary.c:1301).
 func derivedNAA(d device) []byte {
@@ -254,7 +254,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	// The drive identifier the library reports in READ ELEMENT STATUS can
 	// cut the drive serial short. A personality with no identifier area
 	// reports no serial at all, so nothing is cut (usr/cmd/vtllibrary.c
-	// set_drive_serial :631-632, upstream master c65bff0).
+	// set_drive_serial :631-632, upstream master 993b193).
 	for _, l := range next.Libraries {
 		p := personality.Lookup(l.Vendor, l.Product)
 		for _, d := range l.Drives {
@@ -353,8 +353,8 @@ func driverName(h hostids.Device) string {
 }
 
 // checkDriveLines checks the serials "Drive N: X" lines of library_contents
-// give drive slots. Line numbers are mhvtl upstream master 6458223,
-// https://github.com/markh794/mhvtl/blob/6458223/usr/cmd/vtllibrary.c:
+// give drive slots. Line numbers are mhvtl upstream master 993b193,
+// https://github.com/markh794/mhvtl/blob/993b193/usr/cmd/vtllibrary.c:
 // vtllibrary's main() calls customise_lu (:1711), whose personality init
 // calls init_slot_info (e.g. usr/pm/default_smc_pm.c:61); __init_slot_info
 // reads each Drive line (:1031-1039) and init_drive_slot (:851-878) passes a

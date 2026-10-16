@@ -89,7 +89,8 @@ func (g Generator) candidate(purpose string, n uint32) []byte {
 
 // Serial returns the first serial number of this appliance's sequence that
 // taken rejects: "MV" and 8 base32 characters, 10 in all, the most
-// device.conf allows (mhvtl etc/device.conf: "Serial num max len is 10").
+// device.conf allows (mhvtl etc/generate_device_conf.in:52: "Serial num max
+// len is 10").
 func (g Generator) Serial(taken func(serial string) bool) (string, error) {
 	for n := uint32(0); n < maxTries; n++ {
 		s := "MV" + base32.StdEncoding.EncodeToString(g.candidate("serial", n)[:5])
@@ -108,8 +109,8 @@ func (g Generator) Serial(taken func(serial string) bool) (string, error) {
 // format, https://www.t10.org/, table and page numbers not confirmed against
 // a copy of the standard). mhVTL forces the NAA field to 5h on the wire
 // whatever device.conf says (mhvtl usr/vtllib.c update_vpd_83, lines
-// 2420-2481 on upstream master 6458223: the placeholder 51:23:45:60:... at
-// 2446-2458, the rewrite at 2479-2480), so a locally assigned NAA 3h could
+// 2423-2484 on upstream master 993b193: the placeholder 51:23:45:60:... at
+// 2449-2461, the rewrite at 2482-2483), so a locally assigned NAA 3h could
 // never reach the host. Generating 5h keeps the wire value identical to what
 // device.conf holds.
 //
@@ -126,8 +127,8 @@ func (g Generator) Serial(taken func(serial string) bool) (string, error) {
 // older device.conf entries may carry another one.
 //
 // Not every changer personality sends the NAA. Paths below are mhvtl
-// usr/pm/ on upstream master c65bff0
-// (https://github.com/markh794/mhvtl/tree/c65bff0/usr/pm):
+// usr/pm/ on upstream master 993b193
+// (https://github.com/markh794/mhvtl/tree/993b193/usr/pm):
 //   - IBM 03584 and TS3100 build their own VPD page 83h holding only a T10
 //     vendor ID designator (ibm_smc_pm.c update_ibm_3584_vpd_83 :189,
 //     update_ibm_3100_vpd_83 :277);
