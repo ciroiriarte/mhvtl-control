@@ -6,15 +6,18 @@ import (
 	"mhvtl-control/internal/config"
 )
 
-// displaced is a cartridge in a slot or MAP slot that next removes.
+// displaced is a cartridge of cur that next drops from the library.
 type displaced struct {
 	barcode, where string
 }
 
-// checkRemovals refuses to remove a storage or MAP slot that holds a
-// cartridge, in library_contents or live, unless a Disposition says where it
-// goes, or next lists the barcode elsewhere in the same library. Otherwise
-// the cartridge would silently leave the library at the next restart.
+// checkRemovals refuses to let a cartridge leave a library without a
+// Disposition saying where it goes. A cartridge leaves when cur has it, in
+// library_contents (slot, MAP slot or picker) or live, and next has it
+// nowhere in the same library: in no slot, MAP slot or picker of the file,
+// and in no drive live. Whether its slot was deleted, cleared or became a
+// gap makes no difference; otherwise it would silently leave the library at
+// the next restart. A cartridge that moves within the library needs none.
 // Deleting a whole library is not covered here: its cartridges stay in its
 // home (AC 12).
 func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Options) {
@@ -52,35 +55,35 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		for _, m := range lib.MAPs {
 			keptMAPs[m.Number] = m.Barcode
 		}
-		stillListed := barcodes(listed(lib))
+		present := barcodes(listed(lib))
+		for _, b := range lp.Drives {
+			if b != "" {
+				present[b] = true
+			}
+		}
 
 		var gone []displaced
 		seen := map[string]bool{}
 		add := func(b, where string) {
-			if b != "" && !seen[b] && !stillListed[b] {
+			if b != "" && !seen[b] && !present[b] {
 				seen[b] = true
 				gone = append(gone, displaced{b, where})
 			}
 		}
 		for _, s := range old.Slots {
-			if _, kept := keptSlots[s.Number]; !kept {
-				add(s.Barcode, fmt.Sprintf("slot %d", s.Number))
-			}
+			add(s.Barcode, fmt.Sprintf("slot %d", s.Number))
 		}
 		for _, n := range sortedKeys(lp.Slots) {
-			if _, kept := keptSlots[n]; !kept {
-				add(lp.Slots[n], fmt.Sprintf("slot %d", n))
-			}
+			add(lp.Slots[n], fmt.Sprintf("slot %d", n))
 		}
 		for _, m := range old.MAPs {
-			if _, kept := keptMAPs[m.Number]; !kept {
-				add(m.Barcode, fmt.Sprintf("MAP slot %d", m.Number))
-			}
+			add(m.Barcode, fmt.Sprintf("MAP slot %d", m.Number))
 		}
 		for _, n := range sortedKeys(lp.MAPs) {
-			if _, kept := keptMAPs[n]; !kept {
-				add(lp.MAPs[n], fmt.Sprintf("MAP slot %d", n))
-			}
+			add(lp.MAPs[n], fmt.Sprintf("MAP slot %d", n))
+		}
+		for _, p := range old.PickerMedia {
+			add(p.Barcode, fmt.Sprintf("picker %d", p.Number))
 		}
 
 		disp := map[string]Disposition{}
@@ -91,7 +94,7 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 			}
 			disp[d.Barcode] = d
 			if !seen[d.Barcode] {
-				r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: a disposition names %s, but no removed slot holds it", lib.ID, d.Barcode)
+				r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: a disposition names %s, but it does not leave the library", lib.ID, d.Barcode)
 			}
 		}
 
@@ -106,7 +109,9 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		for _, g := range gone {
 			d, ok := disp[g.barcode]
 			if !ok {
-				r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: removing %s would drop %s; say where it goes: a storage slot, export, or shelf", lib.ID, g.where, g.barcode)
+				// The apply drops it, even when cur already lists it
+				// nowhere (a cartridge only the live state has).
+				r.stickyErrorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s (%s) would leave the library; say where it goes: a storage slot, export, or shelf", lib.ID, g.barcode, g.where)
 				continue
 			}
 			switch d.To {
