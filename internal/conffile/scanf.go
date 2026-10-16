@@ -2,6 +2,7 @@ package conffile
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -38,12 +39,20 @@ func cText(l Line) string {
 // made, or -1 (EOF) when the input ends before the first one. C tests most
 // of these calls for truth, so -1 counts as a match there.
 func cScanf(s, format string) int {
+	n, _ := cScan(s, format)
+	return n
+}
+
+// cScan is cScanf that also returns the converted values. A value too large
+// for an int64 is returned as 0.
+func cScan(s, format string) (int, []int64) {
 	n, i := 0, 0
-	eof := func() int {
+	var vals []int64
+	eof := func() (int, []int64) {
 		if n == 0 {
-			return -1
+			return -1, vals
 		}
-		return n
+		return n, vals
 	}
 	for j := 0; j < len(format); j++ {
 		f := format[j]
@@ -81,20 +90,26 @@ func cScanf(s, format string) int {
 				digits++
 			}
 			if digits == 0 {
-				return n
+				return n, vals
 			}
+			base := 10
+			if hex {
+				base = 16
+			}
+			v, _ := strconv.ParseInt(strings.TrimPrefix(s[start:i], "+"), base, 64)
+			vals = append(vals, v)
 			n++
 		default:
 			if i == len(s) {
 				return eof()
 			}
 			if s[i] != f {
-				return n
+				return n, vals
 			}
 			i++
 		}
 	}
-	return n
+	return n, vals
 }
 
 func isDigit(c byte, hex bool) bool {
