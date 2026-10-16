@@ -14,7 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The cross-language tests (queue frame layout, raw-disk superblock CRC)
-      # compile against mhVTL's headers; without them they skip.
+      # compile against mhVTL's headers, and the config round-trip corpus is
+      # checked against what mhVTL's etc/ generates; without it they skip.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: markh794/mhvtl
