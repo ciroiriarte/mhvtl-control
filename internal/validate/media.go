@@ -21,8 +21,14 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 			models = append(models, personality.DriveFor(d.Product))
 			products = append(products, d.Product)
 		}
+		// Changing the drives changes what loads.
+		drives := []string{libKey(lib.ID)}
+		for _, d := range lib.Drives {
+			drives = append(drives, driveKey(d.ID))
+		}
 		home := homeOf(lib, opts)
-		check := func(where, barcode string) {
+		check := func(where, key, barcode string) {
+			els := append(drives[:len(drives):len(drives)], key)
 			if barcode == "" {
 				return
 			}
@@ -33,7 +39,7 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 					r.warnf(FamilyMedia, lib.ID, "library %d %s: the media type of %s cannot be told from its barcode; the existing cartridge is used as it is", lib.ID, where, barcode)
 					return
 				}
-				r.errorf(FamilyMedia, lib.ID, "library %d %s: make_vtl_media cannot create %s: its barcode gives density %s, which mktape does not accept", lib.ID, where, barcode, density)
+				r.errorf(FamilyMedia, lib.ID, els, "library %d %s: make_vtl_media cannot create %s: its barcode gives density %s, which mktape does not accept", lib.ID, where, barcode, density)
 				return
 			}
 			if len(models) == 0 {
@@ -45,14 +51,14 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 					return
 				}
 			}
-			r.errorf(FamilyMedia, lib.ID, "library %d %s: %s is %s media (from its barcode), which none of the library's drives (%s) loads",
+			r.errorf(FamilyMedia, lib.ID, els, "library %d %s: %s is %s media (from its barcode), which none of the library's drives (%s) loads",
 				lib.ID, where, barcode, name, strings.Join(products, ", "))
 		}
 		for _, s := range lib.Slots {
-			check(fmt.Sprintf("slot %d", s.Number), s.Barcode)
+			check(fmt.Sprintf("slot %d", s.Number), slotKey(lib.ID, s.Number), s.Barcode)
 		}
 		for _, m := range lib.MAPs {
-			check(fmt.Sprintf("MAP slot %d", m.Number), m.Barcode)
+			check(fmt.Sprintf("MAP slot %d", m.Number), mapKey(lib.ID, m.Number), m.Barcode)
 		}
 	}
 }

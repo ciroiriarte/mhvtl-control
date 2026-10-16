@@ -26,7 +26,7 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		_, inCur := findLibrary(cur, id)
 		_, inNext := findLibrary(next, id)
 		if !inCur || !inNext {
-			r.errorf(FamilyRemoval, id, "dispositions name library %d, which is not in both the current and the new configuration", id)
+			r.errorf(FamilyRemoval, id, []string{libKey(id)}, "dispositions name library %d, which is not in both the current and the new configuration", id)
 		}
 	}
 
@@ -77,12 +77,12 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		disp := map[string]Disposition{}
 		for _, d := range byLib[lib.ID] {
 			if _, dup := disp[d.Barcode]; dup {
-				r.errorf(FamilyRemoval, lib.ID, "library %d: two dispositions for %s", lib.ID, d.Barcode)
+				r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: two dispositions for %s", lib.ID, d.Barcode)
 				continue
 			}
 			disp[d.Barcode] = d
 			if !seen[d.Barcode] {
-				r.errorf(FamilyRemoval, lib.ID, "library %d: a disposition names %s, but no removed slot holds it", lib.ID, d.Barcode)
+				r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: a disposition names %s, but no removed slot holds it", lib.ID, d.Barcode)
 			}
 		}
 
@@ -97,7 +97,7 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		for _, g := range gone {
 			d, ok := disp[g.barcode]
 			if !ok {
-				r.errorf(FamilyRemoval, lib.ID, "library %d: removing %s would drop %s; say where it goes: a storage slot, export, or shelf", lib.ID, g.where, g.barcode)
+				r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: removing %s would drop %s; say where it goes: a storage slot, export, or shelf", lib.ID, g.where, g.barcode)
 				continue
 			}
 			switch d.To {
@@ -108,22 +108,22 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 				b, kept := keptSlots[d.Slot]
 				switch {
 				case !kept:
-					r.errorf(FamilyRemoval, lib.ID, "library %d: %s is to go to slot %d, which the new configuration does not have", lib.ID, g.barcode, d.Slot)
+					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which the new configuration does not have", lib.ID, g.barcode, d.Slot)
 				case b != "" && b != g.barcode:
-					r.errorf(FamilyRemoval, lib.ID, "library %d: %s is to go to slot %d, which lists %s", lib.ID, g.barcode, d.Slot, b)
+					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which lists %s", lib.ID, g.barcode, d.Slot, b)
 				case haveLive && lp.Slots[d.Slot] != "" && lp.Slots[d.Slot] != g.barcode:
-					r.errorf(FamilyRemoval, lib.ID, "library %d: %s is to go to slot %d, which holds %s now", lib.ID, g.barcode, d.Slot, lp.Slots[d.Slot])
+					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which holds %s now", lib.ID, g.barcode, d.Slot, lp.Slots[d.Slot])
 				case targets[d.Slot] != "":
-					r.errorf(FamilyRemoval, lib.ID, "library %d: %s and %s are both to go to slot %d", lib.ID, targets[d.Slot], g.barcode, d.Slot)
+					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s and %s are both to go to slot %d", lib.ID, targets[d.Slot], g.barcode, d.Slot)
 				default:
 					targets[d.Slot] = g.barcode
 				}
 			default:
-				r.errorf(FamilyRemoval, lib.ID, "library %d: unknown destination %q for %s; want slot, export or shelf", lib.ID, d.To, g.barcode)
+				r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: unknown destination %q for %s; want slot, export or shelf", lib.ID, d.To, g.barcode)
 			}
 		}
 		if exports > freeMAPs {
-			r.errorf(FamilyRemoval, lib.ID, "library %d: %d cartridges are to be exported, but only %d MAP slots are free", lib.ID, exports, freeMAPs)
+			r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %d cartridges are to be exported, but only %d MAP slots are free", lib.ID, exports, freeMAPs)
 		}
 	}
 }

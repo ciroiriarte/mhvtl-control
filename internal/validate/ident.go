@@ -23,6 +23,14 @@ type device struct {
 
 func (d device) String() string { return fmt.Sprintf("%s %d", d.kind, d.id) }
 
+// key is the element key of the device.
+func (d device) key() string {
+	if d.kind == "library" {
+		return libKey(d.id)
+	}
+	return driveKey(d.id)
+}
+
 func devices(inv config.Inventory) []device {
 	var devs []device
 	drive := func(d config.Drive, lib int) device {
@@ -58,26 +66,26 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	var naas []naaOwner
 	for _, d := range devs {
 		if o, dup := ids[d.id]; dup {
-			r.errorf(FamilyIdentity, d.lib, "%s and %s share ID %d; mhVTL addresses its daemons by ID", o, d, d.id)
+			r.errorf(FamilyIdentity, d.lib, []string{o.key(), d.key()}, "%s and %s share ID %d; mhVTL addresses its daemons by ID", o, d, d.id)
 		} else {
 			ids[d.id] = d
 		}
 		k := [3]int{d.channel, d.target, d.lun}
 		if o, dup := ctl[k]; dup {
-			r.errorf(FamilyIdentity, d.lib, "%s and %s share CHANNEL %d TARGET %d LUN %d", o, d, d.channel, d.target, d.lun)
+			r.errorf(FamilyIdentity, d.lib, []string{o.key(), d.key()}, "%s and %s share CHANNEL %d TARGET %d LUN %d", o, d, d.channel, d.target, d.lun)
 		} else {
 			ctl[k] = d
 		}
 
 		switch {
 		case d.serial == "":
-			r.errorf(FamilyIdentity, d.lib, "%s has no Unit serial number", d)
+			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s has no Unit serial number", d)
 		case len(d.serial) > MaxSerialLen:
-			r.errorf(FamilyIdentity, d.lib, "%s: serial %q is %d characters; device.conf allows %d", d, d.serial, len(d.serial), MaxSerialLen)
+			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: serial %q is %d characters; device.conf allows %d", d, d.serial, len(d.serial), MaxSerialLen)
 		}
 		if d.serial != "" {
 			if o, dup := serials[d.serial]; dup {
-				r.errorf(FamilyIdentity, d.lib, "%s and %s share serial %q", o, d, d.serial)
+				r.errorf(FamilyIdentity, d.lib, []string{o.key(), d.key()}, "%s and %s share serial %q", o, d, d.serial)
 			} else {
 				serials[d.serial] = d
 			}
@@ -89,12 +97,12 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		}
 		b, err := hostids.ParseNAA(d.naa)
 		if err != nil {
-			r.errorf(FamilyIdentity, d.lib, "%s: %v", d, err)
+			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: %v", d, err)
 			continue
 		}
 		for _, o := range naas {
 			if hostids.SameNAA(o.b, b) {
-				r.errorf(FamilyIdentity, d.lib, "%s and %s share NAA %s (mhVTL rewrites the NAA field of drives to 5h, so only the last 60 bits count)", o.d, d, d.naa)
+				r.errorf(FamilyIdentity, d.lib, []string{o.d.key(), d.key()}, "%s and %s share NAA %s (mhVTL rewrites the NAA field of drives to 5h, so only the last 60 bits count)", o.d, d, d.naa)
 				break
 			}
 		}
@@ -123,7 +131,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		}
 		for _, d := range devs {
 			if d.serial != "" && d.serial == h.Serial {
-				r.errorf(FamilyIdentity, d.lib, "%s: serial %q is already used by host device %s (%s)", d, d.serial, h.HCTL(), driverName(h))
+				r.stickyErrorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: serial %q is already used by host device %s (%s)", d, d.serial, h.HCTL(), driverName(h))
 			}
 			b, err := hostids.ParseNAA(d.naa)
 			if err != nil {
@@ -131,7 +139,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 			}
 			for _, hn := range h.NAAs {
 				if hb, err := hostids.ParseNAA(hn); err == nil && hostids.SameNAA(b, hb) {
-					r.errorf(FamilyIdentity, d.lib, "%s: NAA %s is already used by host device %s (%s), which reports %s", d, d.naa, h.HCTL(), driverName(h), hn)
+					r.stickyErrorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: NAA %s is already used by host device %s (%s), which reports %s", d, d.naa, h.HCTL(), driverName(h), hn)
 				}
 			}
 		}

@@ -7,6 +7,14 @@
 //
 // Every family blocks: a finding in Result.Errors means the configuration
 // must not be applied. Warnings are advisory.
+//
+// Validate judges the change, not the whole file: an error the configuration
+// in force already has, word for word, and which the change does not touch
+// (none of its libraries, drives or slots differ) is reported as a warning
+// tagged TagPreExisting, so a hand edit made earlier does not block every
+// later apply. A collision with another device of the host or a cartridge
+// another library holds now always blocks, being a live conflict, and so does
+// a library that fails the target application asked for.
 package validate
 
 import (
@@ -27,12 +35,20 @@ const (
 	FamilyRemoval  = "removal"
 )
 
+// TagPreExisting marks a warning that is an error the configuration in force
+// already has, untouched by the change.
+const TagPreExisting = "pre-existing"
+
 // Finding is one problem found in a configuration.
 type Finding struct {
 	Family string `json:"family"`
 	// Library is the ID of the library concerned, or 0.
 	Library int    `json:"library,omitempty"`
 	Message string `json:"message"`
+	Tag     string `json:"tag,omitempty"`
+
+	elements []string // keys of the libraries, drives and slots concerned
+	sticky   bool     // never reported as pre-existing
 }
 
 // Result holds the findings of Validate.
@@ -44,12 +60,54 @@ type Result struct {
 // OK reports whether nothing blocks the configuration.
 func (r Result) OK() bool { return len(r.Errors) == 0 }
 
-func (r *Result) errorf(family string, lib int, format string, a ...any) {
-	r.Errors = append(r.Errors, Finding{Family: family, Library: lib, Message: fmt.Sprintf(format, a...)})
+func (r *Result) errorf(family string, lib int, els []string, format string, a ...any) {
+	r.Errors = append(r.Errors, Finding{Family: family, Library: lib, Message: fmt.Sprintf(format, a...), elements: els})
+}
+
+// stickyErrorf records an error that blocks even when the configuration in
+// force already has it: a conflict with the live host, or a library that does
+// not meet the target application asked for.
+func (r *Result) stickyErrorf(family string, lib int, els []string, format string, a ...any) {
+	r.Errors = append(r.Errors, Finding{Family: family, Library: lib, Message: fmt.Sprintf(format, a...), elements: els, sticky: true})
 }
 
 func (r *Result) warnf(family string, lib int, format string, a ...any) {
 	r.Warnings = append(r.Warnings, Finding{Family: family, Library: lib, Message: fmt.Sprintf(format, a...)})
+}
+
+// Element keys name what a finding concerns.
+func libKey(id int) string        { return fmt.Sprintf("library %d", id) }
+func driveKey(id int) string      { return fmt.Sprintf("drive %d", id) }
+func slotKey(lib, n int) string   { return fmt.Sprintf("library %d slot %d", lib, n) }
+func mapKey(lib, n int) string    { return fmt.Sprintf("library %d MAP slot %d", lib, n) }
+func pickerKey(lib, n int) string { return fmt.Sprintf("library %d picker %d", lib, n) }
+
+// prints fingerprints every element of inv by its key, to tell what a change
+// touches. An element listed twice under one key gets both values, so adding
+// or removing a copy touches it.
+func prints(inv config.Inventory) map[string]string {
+	m := map[string]string{}
+	for _, l := range inv.Libraries {
+		bare := l
+		bare.Drives, bare.Slots, bare.MAPs, bare.Pickers = nil, nil, nil, nil
+		m[libKey(l.ID)] = fmt.Sprintf("%+v", bare)
+		for _, d := range l.Drives {
+			m[driveKey(d.ID)] += fmt.Sprintf("%+v", d)
+		}
+		for _, s := range l.Slots {
+			m[slotKey(l.ID, s.Number)] += "=" + s.Barcode
+		}
+		for _, s := range l.MAPs {
+			m[mapKey(l.ID, s.Number)] += "=" + s.Barcode
+		}
+		for _, n := range l.Pickers {
+			m[pickerKey(l.ID, n)] += "="
+		}
+	}
+	for _, d := range inv.Standalone {
+		m[driveKey(d.ID)] += fmt.Sprintf("%+v", d)
+	}
+	return m
 }
 
 // Live is where the running libraries hold cartridges now, from READ ELEMENT
@@ -112,6 +170,45 @@ type Options struct {
 // Validate checks next, the proposed configuration, against cur, the one in
 // force, the live placements and the host's SCSI devices.
 func Validate(cur, next config.Inventory, live *Live, host []hostids.Device, opts Options) Result {
+	r := check(cur, next, live, host, opts)
+	before := check(cur, cur, live, host, Options{TargetApps: opts.TargetApps, ConfigDir: opts.ConfigDir, DefaultHome: opts.DefaultHome})
+	type key struct {
+		family  string
+		lib     int
+		message string
+	}
+	had := map[key]bool{}
+	for _, f := range before.Errors {
+		had[key{f.Family, f.Library, f.Message}] = true
+	}
+	pc, pn := prints(cur), prints(next)
+	errs := r.Errors[:0]
+	for _, f := range r.Errors {
+		if f.sticky || !had[key{f.Family, f.Library, f.Message}] || touches(f, pc, pn) {
+			errs = append(errs, f)
+			continue
+		}
+		f.Tag = TagPreExisting
+		r.Warnings = append(r.Warnings, f)
+	}
+	r.Errors = errs
+	return r
+}
+
+// touches reports whether the change alters an element f concerns.
+func touches(f Finding, cur, next map[string]string) bool {
+	for _, k := range f.elements {
+		c, inCur := cur[k]
+		n, inNext := next[k]
+		if inCur != inNext || c != n {
+			return true
+		}
+	}
+	return false
+}
+
+// check runs every family on next.
+func check(cur, next config.Inventory, live *Live, host []hostids.Device, opts Options) Result {
 	r := Result{Errors: []Finding{}, Warnings: []Finding{}}
 	checkAddresses(&r, next)
 	checkIdentities(&r, cur, next, host)
