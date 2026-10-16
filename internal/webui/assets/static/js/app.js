@@ -978,12 +978,14 @@
       var acts = mk("td", { class: "acts" });
       var editWhy = !live ? "changer not reachable: cannot confirm the cartridge is not in a drive"
         : kind === "drive" ? "in a drive: unload it first"
-          : !c.backend ? "no media on disk" : "";
+          : !c.backend ? "no media on disk"
+            : c.media_absent ? "its disk is not attached" : "";
       acts.appendChild(mediaButton("Edit", "Edit " + bc, editWhy || "Change write protect, type, density or size",
         !mutationsEnabled || !!editWhy, function () { openEditDialog(libId, c, renderGen); }));
       if (kind === "shelf") {
-        acts.appendChild(mediaButton("Import", "Import " + bc + " into the library", c.backend ? "Put it into the MAP" : "no media on disk",
-          !mutationsEnabled || !c.backend, function () { openImportDialog(libId, renderGen, bc); }));
+        var importWhy = !c.backend ? "no media on disk" : c.media_absent ? "its disk is not attached" : "";
+        acts.appendChild(mediaButton("Import", "Import " + bc + " into the library", importWhy || "Put it into the MAP",
+          !mutationsEnabled || !!importWhy, function () { openImportDialog(libId, renderGen, bc); }));
       } else if (kind === "slot" || kind === "drive") {
         acts.appendChild(mediaButton("Export", "Export " + bc + " to the MAP",
           mapOpen ? "the MAP is open: close it first" : "Move to the first empty MAP slot",
@@ -997,7 +999,9 @@
       }
 
       var locBadge = mk("span", { class: "badge loc-" + (kind || "unknown"), text: mediaLocText(loc, drives) });
-      var tr = mk("tr", { class: c.error ? "has-note" : "", children: [
+      var note = c.error ? "⚠ " + String(c.error)
+        : c.media_absent ? "Disk not attached: the bay is empty or the disk was removed." : "";
+      var tr = mk("tr", { class: note ? "has-note" : "", children: [
         mk("td", { class: "mono", text: bc }),
         mk("td", { text: c.type || "—" }),
         mk("td", { class: "mono", text: c.density || "—", attrs: c.description ? { title: String(c.description) } : null }),
@@ -1008,8 +1012,8 @@
         acts,
       ] });
       rows.push(tr);
-      if (c.error) {
-        rows.push(mk("tr", { class: "row-note", children: [mk("td", { text: "⚠ " + String(c.error), attrs: { colspan: "8" } })] }));
+      if (note) {
+        rows.push(mk("tr", { class: "row-note", children: [mk("td", { text: note, attrs: { colspan: "8" } })] }));
       }
     });
     var thead = mk("thead", { children: [mk("tr", { children: [

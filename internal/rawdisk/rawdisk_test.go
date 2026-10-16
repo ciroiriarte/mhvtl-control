@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -49,8 +50,16 @@ int main(int argc, char **argv) {
     sb.total_capacity_bytes = capacity;
     sb.generation_id = 7;
     sb.num_partitions = 1;
+    sb.part[0].data_cap = 111;
+    sb.part[0].data_used = 222;
+    sb.part[0].advertised_capacity = 333;
+    /* A MAM region as raw_be_save_mam lays it out: u32 lengths, streams. */
+    uint32_t hdr[2] = { 3, 2 };
+    unsigned char mam[8 + 5];
+    memcpy(mam, hdr, sizeof(hdr));
+    memcpy(mam + 8, "abcde", 5);
     sb.mam_off = MVTL_MAM_OFF;
-    sb.mam_len = 0;
+    sb.mam_len = sizeof(mam);
     sb.header_crc32c = crc32c(0, &sb, MVTL_SB_CRC_LEN);
 
     int fd = open(out, O_RDWR | O_CREAT | O_TRUNC, 0644);
@@ -58,6 +67,9 @@ int main(int argc, char **argv) {
     if (ftruncate(fd, (off_t)(4ull << 20)) != 0) { perror("ftruncate"); return 1; }
     if (pwrite(fd, &sb, sizeof(sb), (off_t)MVTL_SB_PRIMARY_OFF) != (ssize_t)sizeof(sb)) {
         perror("pwrite primary"); return 1;
+    }
+    if (pwrite(fd, mam, sizeof(mam), (off_t)sb.mam_off) != (ssize_t)sizeof(mam)) {
+        perror("pwrite mam"); return 1;
     }
     if (write_mirror) {
         if (pwrite(fd, &sb, sizeof(sb), (off_t)MVTL_SB_MIRROR_OFF) != (ssize_t)sizeof(sb)) {
@@ -170,6 +182,16 @@ func TestCRCCrossLanguage(t *testing.T) {
 	}
 	if sb.TotalCapacityBytes != capacity {
 		t.Errorf("capacity = %d, want %d", sb.TotalCapacityBytes, capacity)
+	}
+	if want := []Partition{{DataCap: 111, DataUsed: 222, AdvertisedCapacity: 333}}; !slices.Equal(sb.Partitions, want) {
+		t.Errorf("partitions = %+v, want %+v", sb.Partitions, want)
+	}
+	mam, err := ReadMAM(img, sb)
+	if err != nil {
+		t.Fatalf("ReadMAM: %v", err)
+	}
+	if want := "\x03\x00\x00\x00\x02\x00\x00\x00abcde"; string(mam) != want {
+		t.Errorf("MAM region = %q, want %q", mam, want)
 	}
 
 	// Independently recompute CRC-32C in Go over the exact same header bytes

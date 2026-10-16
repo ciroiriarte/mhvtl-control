@@ -27,6 +27,8 @@ const (
 	PrimaryOff int64 = 1 << 20
 	// MirrorOff is MVTL_SB_MIRROR_OFF, the mirror superblock byte offset.
 	MirrorOff int64 = 2 << 20
+	// MAMReserve is MVTL_MAM_RESERVE, the capacity of the MAM region.
+	MAMReserve uint64 = 1 << 20
 
 	// maxPartitions is MVTL_MAX_PARTITIONS.
 	maxPartitions = 4
@@ -86,10 +88,25 @@ type Superblock struct {
 	TotalCapacityBytes uint64
 	GenerationID       uint64
 	NumPartitions      uint32
+	Partitions         []Partition // the first NumPartitions entries
 	MAMOff             uint64
 	MAMLen             uint64
 	HeaderCRC32C       uint32
 }
+
+// Partition is the part of a mhvtl_raw_partition entry that is reported.
+type Partition struct {
+	DataCap            uint64 // bytes reserved for the payload stream
+	DataUsed           uint64 // payload bytes written so far
+	AdvertisedCapacity uint64 // capacity the emulated tape reports
+}
+
+// Field byte offsets within a packed mhvtl_raw_partition.
+const (
+	partDataCap    = 8
+	partDataUsed   = 16
+	partAdvertised = 80
+)
 
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
@@ -142,6 +159,14 @@ func ParseSuperblock(b []byte) (*Superblock, error) {
 	if crc32.Update(0, crc32cTable, b[:sb.HeaderLen]) != sb.HeaderCRC32C {
 		return nil, ErrBadCRC
 	}
+	for i := 0; i < int(min(sb.NumPartitions, maxPartitions)); i++ {
+		p := b[offPart+i*partitionSize:]
+		sb.Partitions = append(sb.Partitions, Partition{
+			DataCap:            binary.LittleEndian.Uint64(p[partDataCap:]),
+			DataUsed:           binary.LittleEndian.Uint64(p[partDataUsed:]),
+			AdvertisedCapacity: binary.LittleEndian.Uint64(p[partAdvertised:]),
+		})
+	}
 	return sb, nil
 }
 
@@ -180,4 +205,26 @@ func readSuperblockAt(f *os.File, off int64) (*Superblock, error) {
 		return nil, fmt.Errorf("rawdisk: short read at offset %d: %d bytes", off, n)
 	}
 	return ParseSuperblock(buf)
+}
+
+// ReadMAM returns the serialized MAM region of the cartridge at path, as
+// described by sb: MAMLen bytes at MAMOff. A freshly formatted cartridge has
+// MAMLen 0 and yields nil.
+func ReadMAM(path string, sb *Superblock) ([]byte, error) {
+	if sb.MAMLen == 0 {
+		return nil, nil
+	}
+	if sb.MAMLen > MAMReserve {
+		return nil, fmt.Errorf("rawdisk: implausible MAM length %d", sb.MAMLen)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	buf := make([]byte, sb.MAMLen)
+	if _, err := f.ReadAt(buf, int64(sb.MAMOff)); err != nil {
+		return nil, fmt.Errorf("rawdisk: read MAM region: %w", err)
+	}
+	return buf, nil
 }
