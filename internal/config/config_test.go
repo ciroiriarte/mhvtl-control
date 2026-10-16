@@ -153,6 +153,29 @@ func TestLoadInventory(t *testing.T) {
 	if len(l30.Drives) != 4 || len(l30.Slots) != 0 || len(l30.MAPs) != 0 {
 		t.Errorf("l30 should have drives but no contents: %+v", l30)
 	}
+	if len(inv.Standalone) != 0 {
+		t.Errorf("standalone drives = %+v; every drive has a library", inv.Standalone)
+	}
+}
+
+func TestLoadInventoryStandaloneDrive(t *testing.T) {
+	d := t.TempDir()
+	conf := "Library: 1 CHANNEL: 0 TARGET: 0 LUN: 0\n\n" +
+		"Drive: 2 CHANNEL: 0 TARGET: 1 LUN: 0\n Library ID: 1 Slot: 1\n\n" +
+		"Drive: 3 CHANNEL: 0 TARGET: 2 LUN: 0\n Library ID: 9 Slot: 1\n"
+	if err := os.WriteFile(d+"/device.conf", []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := LoadInventory(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Libraries) != 1 || len(inv.Libraries[0].Drives) != 1 || inv.Libraries[0].Drives[0].ID != 2 {
+		t.Errorf("libraries = %+v", inv.Libraries)
+	}
+	if len(inv.Standalone) != 1 || inv.Standalone[0].ID != 3 {
+		t.Errorf("standalone = %+v; want drive 3", inv.Standalone)
+	}
 }
 
 func TestLoadInventoryMissing(t *testing.T) {
