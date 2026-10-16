@@ -137,12 +137,12 @@ func TestMoveAcrossRename(t *testing.T) {
 	}
 }
 
-// TestMoveAcrossCopy forces EXDEV from the rename, as two mounts give, and
+// TestMoveAcrossCopy forces EXDEV from the link, as two mounts give, and
 // checks the copy path keeps content, mode and mtime, and removes the source.
 func TestMoveAcrossCopy(t *testing.T) {
 	var renamed int
-	rename = func(string, string) error { renamed++; return &os.LinkError{Op: "rename", Err: syscall.EXDEV} }
-	t.Cleanup(func() { rename = os.Rename })
+	link = func(string, string) error { renamed++; return &os.LinkError{Op: "link", Err: syscall.EXDEV} }
+	t.Cleanup(func() { link = os.Link })
 
 	src, dst := t.TempDir(), t.TempDir()
 	path := filepath.Join(src, "library_contents.10.persist")
@@ -155,7 +155,7 @@ func TestMoveAcrossCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	if renamed != 1 {
-		t.Errorf("rename tried %d times", renamed)
+		t.Errorf("link tried %d times", renamed)
 	}
 	out := filepath.Join(dst, "library_contents.10.persist")
 	if got := readString(t, out); got != string(data) {
@@ -217,5 +217,112 @@ func TestMoveAcrossBindMount(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("source still there: %v", err)
+	}
+}
+
+func TestRefuseNonRegularTarget(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.conf")
+	os.WriteFile(real, []byte("x"), 0o600)
+	os.Symlink("real.conf", filepath.Join(dir, "device.conf"))
+	os.Mkdir(filepath.Join(dir, "library_contents.10"), 0o755)
+
+	for _, name := range []string{"device.conf", "library_contents.10"} {
+		if err := WriteAtomic(dir, name, []byte("y"), 0o644, -1, -1); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("WriteAtomic %s: err = %v", name, err)
+		}
+		if err := ReplaceIfHash(dir, name, Hash([]byte("x")), []byte("y")); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Errorf("ReplaceIfHash %s: err = %v", name, err)
+		}
+	}
+	if fi, _ := os.Lstat(filepath.Join(dir, "device.conf")); fi.Mode()&fs.ModeSymlink == 0 {
+		t.Error("symlink replaced")
+	}
+	if got := readString(t, real); got != "x" {
+		t.Errorf("link target changed: %q", got)
+	}
+	// A symlink swapped in after the temp file is written is caught too.
+	path := filepath.Join(dir, "swap.conf")
+	os.WriteFile(path, []byte("x"), 0o644)
+	beforeRehash = func() { os.Remove(path); os.Symlink("real.conf", path) }
+	t.Cleanup(func() { beforeRehash = func() {} })
+	if err := ReplaceIfHash(dir, "swap.conf", Hash([]byte("x")), []byte("y")); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("late symlink: err = %v", err)
+	}
+	noTemps(t, dir)
+}
+
+// TestReplaceIfHashCreateRace creates a file that appears after the temp
+// file is written: link(2) must refuse rather than overwrite it.
+func TestReplaceIfHashCreateRace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "library_contents.40")
+	beforeRehash = func() { os.WriteFile(path, []byte("theirs\n"), 0o644) }
+	t.Cleanup(func() { beforeRehash = func() {} })
+	err := ReplaceIfHash(dir, "library_contents.40", "", []byte("ours\n"))
+	var ce *ConflictError
+	if !errors.As(err, &ce) || ce.Current != Hash([]byte("theirs\n")) {
+		t.Fatalf("err = %v", err)
+	}
+	if got := readString(t, path); got != "theirs\n" {
+		t.Errorf("overwritten: %q", got)
+	}
+	noTemps(t, dir)
+}
+
+func TestNotDurable(t *testing.T) {
+	cause := errors.New("EIO")
+	syncDir = func(string) error { return cause }
+	t.Cleanup(func() {
+		syncDir = func(dir string) error {
+			d, err := os.Open(dir)
+			if err != nil {
+				return err
+			}
+			defer d.Close()
+			return d.Sync()
+		}
+	})
+	dir := t.TempDir()
+	path := filepath.Join(dir, "device.conf")
+	err := WriteAtomic(dir, "device.conf", []byte("new\n"), 0o644, -1, -1)
+	if !errors.Is(err, ErrNotDurable) || !errors.Is(err, cause) {
+		t.Errorf("WriteAtomic: err = %v", err)
+	}
+	// The rename took effect all the same.
+	if got := readString(t, path); got != "new\n" {
+		t.Errorf("content = %q", got)
+	}
+	if err := ReplaceIfHash(dir, "device.conf", Hash([]byte("new\n")), []byte("newer\n")); !errors.Is(err, ErrNotDurable) {
+		t.Errorf("ReplaceIfHash: err = %v", err)
+	}
+	src := filepath.Join(t.TempDir(), "f")
+	os.WriteFile(src, nil, 0o644)
+	if err := MoveAcross(src, dir); !errors.Is(err, ErrNotDurable) {
+		t.Errorf("MoveAcross: err = %v", err)
+	}
+}
+
+// TestRemoveStale checks a writer removes temp files of the same name that a
+// dead writer left more than staleTemp ago, and leaves recent ones (another
+// writer may be using them) and other names alone.
+func TestRemoveStale(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().Add(-2 * staleTemp)
+	stale := filepath.Join(dir, ".device.conf.tmp-111")
+	fresh := filepath.Join(dir, ".device.conf.tmp-222")
+	other := filepath.Join(dir, ".library_contents.10.tmp-333")
+	for _, p := range []string{stale, fresh, other} {
+		os.WriteFile(p, nil, 0o600)
+	}
+	os.Chtimes(stale, old, old)
+	os.Chtimes(other, old, old)
+	if err := WriteAtomic(dir, "device.conf", []byte("x"), 0o644, -1, -1); err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]bool{stale: false, fresh: true, other: true} {
+		if _, err := os.Stat(p); (err == nil) != want {
+			t.Errorf("%s exists = %v, want %v", filepath.Base(p), err == nil, want)
+		}
 	}
 }
