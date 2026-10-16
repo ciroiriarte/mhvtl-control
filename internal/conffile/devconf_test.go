@@ -35,6 +35,7 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 		{"bare Library header", "Library: 10\n Vendor identification: STK\n", 1, "Library 10 has no CHANNEL"},
 		{"partial Drive header", "Drive: 11 CHANNEL: 00\n", 1, "Drive 11 has no CHANNEL"},
 		{"repeated key", lib + " PERSIST: yes\n PERSIST: no\n", 3, "PERSIST repeated (first at line 2)"},
+		{"serial above Library ID", drv + " Unit serial number: A\n Library ID: 10 Slot: 01\n", 2, "Unit serial number above Library ID (line 3)"},
 		{"repeated key, other spacing", drv + " Backoff: 400\n Backoff:  x\n", 3, "Backoff repeated"},
 	}
 	for _, tc := range cases {
@@ -80,7 +81,9 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 	// Adjacent Drives do not: vtllibrary moves to the new drive only at its
 	// Library ID line, so a serial before it lands on the previous drive.
 	c := ParseDeviceConf([]byte(drv + " Library ID: 10 Slot: 01\nDrive: 12 CHANNEL: 00 TARGET: 02 LUN: 00\n Unit serial number: B\n Library ID: 10 Slot: 02\n"))
-	if len(c.Problems) != 1 || c.Problems[0].Line != 3 || !strings.Contains(c.Problems[0].Msg, "after Drive 11") {
+	// Drive 12's serial above its Library ID is flagged as such too.
+	if len(c.Problems) != 2 || c.Problems[0].Line != 3 || !strings.Contains(c.Problems[0].Msg, "after Drive 11") ||
+		c.Problems[1].Line != 4 || !strings.Contains(c.Problems[1].Msg, "above Library ID") {
 		t.Errorf("adjacent drives: %v", c.Problems)
 	}
 	// A 600-byte column-1 comment is still split by readline.
