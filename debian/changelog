@@ -1,3 +1,11 @@
+mhvtl-control (0.3.1-1) unstable; urgency=medium
+
+  * Release workflow: install pkgconf and systemd-dev for the deb build.
+    v0.3.0's release run failed there, so 0.3.0 has no GitHub release;
+    0.3.1 is otherwise the same as 0.3.0.
+
+ -- Ciro Iriarte <ciro.iriarte@gmail.com>  Fri, 16 Oct 2026 20:36:22 -0300
+
 mhvtl-control (0.3.0-1) unstable; urgency=medium
 
   * Read raw-disk cartridges' superblock and MAM: capacity, usage and MAM
