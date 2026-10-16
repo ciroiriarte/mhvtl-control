@@ -193,13 +193,18 @@ func TestMoveAcrossRefuses(t *testing.T) {
 
 // TestMoveAcrossBindMount moves into a bind mount of a directory on the same
 // filesystem, as ProtectSystem=strict sets up, where rename gives EXDEV.
-// Mounting needs root, so this runs on the test VM and skips elsewhere.
+// Mounting needs CAP_SYS_ADMIN, so this runs on the test VM and skips
+// elsewhere, including package builds that run as root without it (a
+// container or a build chroot, where mount(2) fails with EPERM).
 func TestMoveAcrossBindMount(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root to bind mount; run on the test VM")
 	}
 	src, backing, dst := t.TempDir(), t.TempDir(), t.TempDir()
 	if err := syscall.Mount(backing, dst, "", syscall.MS_BIND, ""); err != nil {
+		if errors.Is(err, syscall.EPERM) {
+			t.Skipf("bind mount: %v (root without CAP_SYS_ADMIN); run on the test VM", err)
+		}
 		t.Fatalf("bind mount: %v", err)
 	}
 	t.Cleanup(func() { syscall.Unmount(dst, 0) })
