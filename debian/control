@@ -5,6 +5,8 @@ Maintainer: Ciro Iriarte <ciro.iriarte@gmail.com>
 Build-Depends:
  debhelper-compat (= 13),
  golang-go (>= 2:1.22~),
+ pkgconf,
+ systemd-dev | systemd,
 Standards-Version: 4.7.2
 Homepage: https://github.com/ciroiriarte/mhvtl-control
 Vcs-Git: https://github.com/ciroiriarte/mhvtl-control.git
