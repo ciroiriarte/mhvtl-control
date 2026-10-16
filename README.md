@@ -18,11 +18,11 @@ and static binaries, all for amd64 and arm64, are attached to each
 
 ```sh
 # Debian, Ubuntu
-sudo apt install ./mhvtl-control_0.2.0-1_amd64.deb
+sudo apt install ./mhvtl-control_0.3.0-1_amd64.deb
 # RHEL, Rocky, Alma
-sudo dnf install ./mhvtl-control-0.2.0-1.el9.x86_64.rpm
+sudo dnf install ./mhvtl-control-0.3.0-1.el9.x86_64.rpm
 # openSUSE
-sudo zypper install ./mhvtl-control-0.2.0-1.x86_64.rpm
+sudo zypper install ./mhvtl-control-0.3.0-1.x86_64.rpm
 ```
 
 The package installs `/usr/bin/mhvtl-control`, `mhvtl-control.service` and
