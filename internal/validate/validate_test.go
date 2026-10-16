@@ -11,14 +11,30 @@ import (
 
 // shipped loads mhVTL's shipped device.conf and library_contents.10 (the
 // config package's test copy): library 10 is an STK L700 with two LTO-8 and
-// two LTO-6 drives, library 30 an STK L80 with four T10000B.
+// two LTO-6 drives, library 30 an STK L80 with four T10000B. The copy has no
+// library_contents.30; the Drive lines mhVTL's generate_library_contents
+// writes for it (one per drive) are added here.
 func shipped(t *testing.T) config.Inventory {
 	t.Helper()
 	inv, err := config.LoadInventory("../config/testdata")
 	if err != nil {
 		t.Fatal(err)
 	}
+	for i, l := range inv.Libraries {
+		if len(l.DriveLines) == 0 {
+			inv.Libraries[i].DriveLines = driveLines(len(l.Drives))
+		}
+	}
 	return inv
+}
+
+// driveLines returns the lines "Drive 1:" to "Drive n:".
+func driveLines(n int) []config.DriveLine {
+	var out []config.DriveLine
+	for i := 1; i <= n; i++ {
+		out = append(out, config.DriveLine{Number: i})
+	}
+	return out
 }
 
 // clone deep-copies an inventory so a test case can change it.
@@ -40,7 +56,7 @@ func clone(inv config.Inventory) config.Inventory {
 // numbered id+1..., and storage slots holding barcodes ("" for empty).
 func lib(id int, vendor, product string, drives int, barcodes ...string) config.Library {
 	l := config.Library{ID: id, Target: id, Vendor: vendor, Product: product,
-		Serial: "LIB" + strconv.Itoa(id), NAA: naa(id), Pickers: []int{1}}
+		Serial: "LIB" + strconv.Itoa(id), NAA: naa(id), Pickers: []int{1}, DriveLines: driveLines(drives)}
 	for i := 1; i <= drives; i++ {
 		l.Drives = append(l.Drives, config.Drive{ID: id + i, Target: id + i, LibraryID: id, Slot: i,
 			Vendor: "IBM", Product: "ULT3580-TD8", Serial: "DRV" + strconv.Itoa(id+i), NAA: naa(id + i)})
