@@ -4,7 +4,7 @@
 %global debug_package %{nil}
 
 Name:           mhvtl-control
-Version:        0.3.0
+Version:        0.3.1
 Release:        1%{?dist}
 Summary:        Management daemon and web dashboard for the mhVTL virtual tape library
 License:        Apache-2.0
@@ -129,6 +129,9 @@ fi
 %dir %attr(0700,root,root) %{_sharedstatedir}/mhvtl-control-apply
 
 %changelog
+* Fri Oct 16 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.3.1-1
+- Release workflow: install pkgconf and systemd-dev for the deb build. v0.3.0's release run failed there, so 0.3.0 has no GitHub release; 0.3.1 is otherwise the same as 0.3.0.
+
 * Fri Oct 16 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.3.0-1
 - Read raw-disk cartridges' superblock and MAM: capacity, usage and MAM in the media list (#33).
 - Serve Prometheus metrics at /metrics and readiness at /readyz (#34).
