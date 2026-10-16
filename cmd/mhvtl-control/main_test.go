@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestIsLoopbackHost(t *testing.T) {
 	cases := map[string]bool{
@@ -58,5 +63,67 @@ func TestParseChangerFlag(t *testing.T) {
 		if err := parseChangerFlag(map[int]string{}, bad); err == nil {
 			t.Errorf("parseChangerFlag(%q) accepted", bad)
 		}
+	}
+}
+
+func TestLegacyOptions(t *testing.T) {
+	dir := t.TempDir()
+	cur := filepath.Join(dir, "mhvtl-control", "mhvtl-control.env")
+	legacy := filepath.Join(dir, "mhvtl", "mhvtl-control.env")
+	noEnv := func(string) string { return "" }
+
+	// Neither file: nothing to read.
+	if _, _, ok, err := legacyOptions(cur, legacy, noEnv); ok || err != nil {
+		t.Fatalf("no files: ok=%v err=%v", ok, err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `# Options for mhvtl-control.service.
+MHVTL_CONTROL_OPTS="--listen 0.0.0.0:8443  --tls-cert /etc/mhvtl/c.crt --tls-key /etc/mhvtl/c.key"
+
+; a comment
+MHVTL_CONTROL_API_TOKEN='s3cret'
+#MHVTL_CONTROL_API_TOKEN=commented-out
+`
+	if err := os.WriteFile(legacy, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args, token, ok, err := legacyOptions(cur, legacy, noEnv)
+	if err != nil || !ok {
+		t.Fatalf("legacy only: ok=%v err=%v", ok, err)
+	}
+	if got, want := strings.Join(args, "|"), "--listen|0.0.0.0:8443|--tls-cert|/etc/mhvtl/c.crt|--tls-key|/etc/mhvtl/c.key"; got != want {
+		t.Errorf("args = %q, want %q", got, want)
+	}
+	if token != "s3cret" {
+		t.Errorf("token = %q, want s3cret", token)
+	}
+
+	// systemd passed options from the current file, or the environment
+	// carries them: the legacy file is ignored.
+	for _, k := range []string{"MHVTL_CONTROL_OPTS", "MHVTL_CONTROL_API_TOKEN"} {
+		env := func(name string) string {
+			if name == k {
+				return "set"
+			}
+			return ""
+		}
+		if _, _, ok, _ := legacyOptions(cur, legacy, env); ok {
+			t.Errorf("%s set: legacy file read", k)
+		}
+	}
+
+	// The current file exists: the legacy one is ignored, even when the
+	// current one sets nothing.
+	if err := os.MkdirAll(filepath.Dir(cur), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cur, []byte("# empty\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, _ := legacyOptions(cur, legacy, noEnv); ok {
+		t.Error("current file present: legacy file read")
 	}
 }

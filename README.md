@@ -26,7 +26,7 @@ sudo zypper install ./mhvtl-control-0.2.0-1.x86_64.rpm
 ```
 
 The package installs `/usr/bin/mhvtl-control`, `mhvtl-control.service` and
-`/etc/mhvtl/mhvtl-control.env`. The service is not enabled on install:
+`/etc/mhvtl-control/mhvtl-control.env`. The service is not enabled on install:
 
 ```sh
 sudo systemctl enable --now mhvtl-control
@@ -35,14 +35,17 @@ sudo systemctl enable --now mhvtl-control
 The dashboard is then at <http://127.0.0.1:8080/>. mhvtl-control needs a configured
 mhVTL (`/etc/mhvtl/device.conf`) to show anything, but may start before it.
 
-To install the static binary instead, copy it to `/usr/bin/mhvtl-control`, and
-`dist/mhvtl-control.service` and `dist/mhvtl-control.env` from the source to
-`/usr/lib/systemd/system/` and `/etc/mhvtl/` (mode 0600). `make install` does
-the same from a source tree, and keeps an existing `mhvtl-control.env`.
+To install the static binary instead, copy it to `/usr/bin/mhvtl-control`,
+`dist/mhvtl-control.service` from the source to `/usr/lib/systemd/system/`, and
+`dist/mhvtl-control.env` to `/etc/mhvtl-control/` (directory mode 0750, file
+mode 0600). `make install` does the same from a source tree, and keeps an
+existing `mhvtl-control.env`.
 
 ## Configure
 
-Options live in `/etc/mhvtl/mhvtl-control.env`. Restart mhvtl-control after changing them.
+Options live in `/etc/mhvtl-control/mhvtl-control.env`. Restart mhvtl-control after changing them.
+Up to 0.2.0 they lived in `/etc/mhvtl/mhvtl-control.env`; while the new file is
+absent, mhvtl-control still reads the old one and logs that it is deprecated.
 
 ```sh
 MHVTL_CONTROL_OPTS="--listen 0.0.0.0:8080 --tls-cert /etc/mhvtl/mhvtl-control.crt --tls-key /etc/mhvtl/mhvtl-control.key"
@@ -100,12 +103,20 @@ the backup application. Example alert rules are in
 ## Upgrade and roll back
 
 Upgrade by installing the newer package. The .deb restarts mhvtl-control if it is
-enabled; the RPM restarts it if it is running. An edited `/etc/mhvtl/mhvtl-control.env` is kept. If the
+enabled; the RPM restarts it if it is running. An edited `/etc/mhvtl-control/mhvtl-control.env` is kept. If the
 packaged default changed too, dpkg asks which to keep, and RPM keeps yours and
 writes the new default next to it as `mhvtl-control.env.rpmnew`.
 
+Upgrading from 0.2.0 moves an edited `/etc/mhvtl/mhvtl-control.env` to
+`/etc/mhvtl-control/mhvtl-control.env` and restarts a running mhvtl-control on
+it. The new packaged default is kept beside it as `mhvtl-control.env.dpkg-new`
+or `mhvtl-control.env.rpmnew`. An unedited old file is simply replaced by the
+new default.
+
 mhvtl-control keeps no state of its own: libraries, media and configuration belong to
-mhVTL. Rolling back is therefore just installing the older package:
+mhVTL. Rolling back is therefore just installing the older package. 0.2.0
+reads its options from `/etc/mhvtl/mhvtl-control.env`, so before rolling back
+to it, copy `/etc/mhvtl-control/mhvtl-control.env` there (mode 0600):
 
 ```sh
 # Debian, Ubuntu

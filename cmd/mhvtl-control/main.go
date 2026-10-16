@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -27,6 +28,12 @@ import (
 
 // version is set at build time: -ldflags "-X main.version=0.1.0".
 var version = "dev"
+
+// The options file mhvtl-control.service reads, and where 0.2.0 kept it.
+const (
+	envFile       = "/etc/mhvtl-control/mhvtl-control.env"
+	legacyEnvFile = "/etc/mhvtl/mhvtl-control.env"
+)
 
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
@@ -55,6 +62,18 @@ func main() {
 	mktape := flag.String("mktape", "mktape", "path to mhVTL's mktape (creates media)")
 	editTape := flag.String("edit-tape", "edit_tape", "path to mhVTL's edit_tape (edits media)")
 	homeDir := flag.String("home-dir", "/var/lib/mhvtl", "media home of a library device.conf and mhvtl.conf give none for")
+	args, legacyToken, legacy, err := legacyOptions(envFile, legacyEnvFile, os.Getenv)
+	if err != nil {
+		log.Fatalf("reading %s: %v", legacyEnvFile, err)
+	}
+	if legacy {
+		log.Printf("deprecated: options read from %s; move it to %s", legacyEnvFile, envFile)
+		// Ahead of the command line, so explicit flags still win.
+		os.Args = append(append([]string{os.Args[0]}, args...), os.Args[1:]...)
+		if legacyToken != "" {
+			os.Setenv("MHVTL_CONTROL_API_TOKEN", legacyToken)
+		}
+	}
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("mhvtl-control", version)
@@ -159,6 +178,52 @@ func isLoopbackHost(host string) bool {
 // bind with no token and without the --insecure override.
 func bindRefused(host, token string, insecure bool) bool {
 	return !isLoopbackHost(host) && token == "" && !insecure
+}
+
+// legacyOptions reads the options a 0.2.0 install kept in legacy, for a
+// daemon whose unit now reads cur. It does so only when cur is absent and
+// neither MHVTL_CONTROL_OPTS nor MHVTL_CONTROL_API_TOKEN is set, that is when
+// the service manager passed no options at all; ok is false otherwise, and
+// when legacy is absent too. args is MHVTL_CONTROL_OPTS split on blanks, as
+// systemd splits an unquoted $MHVTL_CONTROL_OPTS on ExecStart=. The file is
+// parsed as the plain KEY=VALUE subset of systemd's EnvironmentFile= format
+// that dist/mhvtl-control.env uses: comments, blank lines, and values in
+// single or double quotes.
+func legacyOptions(cur, legacy string, getenv func(string) string) (args []string, token string, ok bool, err error) {
+	if getenv("MHVTL_CONTROL_OPTS") != "" || getenv("MHVTL_CONTROL_API_TOKEN") != "" {
+		return nil, "", false, nil
+	}
+	if _, err := os.Stat(cur); !errors.Is(err, fs.ErrNotExist) {
+		return nil, "", false, nil
+	}
+	b, err := os.ReadFile(legacy)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, "", false, nil
+	}
+	if err != nil {
+		return nil, "", false, err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line[0] == '#' || line[0] == ';' {
+			continue
+		}
+		key, val, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		val = strings.TrimSpace(val)
+		if len(val) >= 2 && (val[0] == '"' || val[0] == '\'') && val[len(val)-1] == val[0] {
+			val = val[1 : len(val)-1]
+		}
+		switch strings.TrimSpace(key) {
+		case "MHVTL_CONTROL_OPTS":
+			args = strings.Fields(val)
+		case "MHVTL_CONTROL_API_TOKEN":
+			token = val
+		}
+	}
+	return args, token, true, nil
 }
 
 // parseChangerFlag records one --changer <libid>=<path> or --drive

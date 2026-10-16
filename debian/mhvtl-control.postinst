@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+# On the upgrade that moves the options file, the restart dh_installsystemd
+# adds above runs before mv_conffile (debian/mhvtl-control.maintscript) puts an
+# edited /etc/mhvtl/mhvtl-control.env in place, so the daemon came back on the
+# packaged default. Restart it again, if it is running, to pick up the
+# operator's options and token.
+if [ "$1" = configure ] && [ -n "$2" ] && dpkg --compare-versions "$2" lt-nl 0.3.0~ \
+	&& [ -d /run/systemd/system ]; then
+	deb-systemd-invoke try-restart mhvtl-control.service >/dev/null || true
+fi
+
+exit 0
