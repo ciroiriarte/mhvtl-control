@@ -57,7 +57,6 @@
    * without a refetch.                                                   */
   var cfgView = { selected: null, app: "" };
   var lastCfg = null;    // { caps, config, personalities }
-  var lastSlots = null;  // { libId, data }
 
   /* ---- localStorage (errors surfaced, never silently implying success) -- */
   var LS_THEME = "mhvtl-control.theme";
@@ -1798,9 +1797,13 @@
       view.appendChild(mk("h4", { class: "cfg-h", text: "Drives (device.conf)" }));
       view.appendChild(mk("div", { class: "cfg-scroll", children: [configDrivesTable(lib)] }));
       view.appendChild(mk("h4", { class: "cfg-h", text: "Slots (library_contents." + cfgView.selected + ")" }));
-      var slots = lastSlots && lastSlots.libId === cfgView.selected ? lastSlots.data : null;
+      // GET /config carries every library's slots, from the same changer
+      // read as its live_content, so a refresh reads each changer once.
+      var allSlots = lastCfg.config && lastCfg.config.slots;
+      var slots = allSlots && typeof allSlots === "object" && Object.prototype.hasOwnProperty.call(allSlots, cfgView.selected)
+        ? allSlots[cfgView.selected] : null;
       if (!slots) {
-        view.appendChild(mk("p", { class: "muted", text: "Loading slots…" }));
+        view.appendChild(mk("p", { class: "muted", text: "No slot data." }));
       } else {
         if (!slots.live) {
           view.appendChild(mk("p", { class: "muted", text: "Live changer state unavailable" + (slots.live_error ? ": " + String(slots.live_error) : "") + ". Showing library_contents only." }));
@@ -1852,9 +1855,9 @@
     box.appendChild(mk("div", { class: "media-scroll", children: [mk("table", { class: "slot-table findings-table", children: [head, mk("tbody", { children: trs })] })] }));
   }
 
-  // refreshConfigLibrary reads the selected library's slots and validates the
-  // configuration in force for the application it is checked for. Validation
-  // proposes no file and never writes.
+  // refreshConfigLibrary validates the configuration in force for the
+  // application the selected library is checked for. Validation proposes no
+  // file and never writes; it reuses the changer reads GET /config made.
   function refreshConfigLibrary(gen, signal) {
     if (gen === undefined) { gen = NodeState.generation; }
     if (!lastCfg || isStale(gen, NodeState.generation)) { return Promise.resolve(); }
@@ -1862,17 +1865,7 @@
     var problems = lastCfg.config && lastCfg.config.problems;
     findingsStatus.loading();
     busy("findings-panel", true);
-    var slotsP = libId == null ? Promise.resolve(null) : api("/api/v1/config/libraries/" + encodeURIComponent(libId) + "/slots", { signal: signal });
-    var checkP = api("/api/v1/config/validate", { method: "POST", body: buildValidateBody(libId, cfgView.app), signal: signal });
-    slotsP.then(function (d) {
-      if (isStale(gen, NodeState.generation) || cfgView.selected !== libId) { return; }
-      lastSlots = d ? { libId: libId, data: d } : null;
-      renderConfig();
-    }).catch(function (e) {
-      if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
-      configStatus.error("slots: " + e.message);
-    });
-    return checkP.then(function (res) {
+    return api("/api/v1/config/validate", { method: "POST", body: buildValidateBody(libId, cfgView.app), signal: signal }).then(function (res) {
       busy("findings-panel", false);
       if (isStale(gen, NodeState.generation)) { return; }
       renderFindings(problems, res);
@@ -2143,7 +2136,6 @@
     // they are.
     $("config-library").addEventListener("change", function (e) {
       cfgView.selected = e.target.value;
-      lastSlots = null;
       renderConfig();
       refreshConfigLibrary(NodeState.generation, currentAbort ? currentAbort.signal : undefined);
     });
