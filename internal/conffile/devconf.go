@@ -2,6 +2,20 @@
 // (device.conf, library_contents.<id> and mhvtl.conf). Every line keeps its
 // exact bytes, so rendering an unedited file reproduces it byte for byte, and
 // an edit rewrites only the lines it touches.
+//
+// Citations of mhVTL source lines refer to upstream master 6458223
+// (github.com/markh794/mhvtl).
+//
+// Known gaps, for the editor's validation and apply phases (4.3, 5):
+//   - The media home is read by find_media_home_directory (mhvtl
+//     usr/vtllib.c:1673-1737), not like other attributes: its "found" flag
+//     is never reset, so the first " Home directory:" line after the
+//     library's header wins even when it is in a later stanza, and sscanf
+//     "%s" (:1720) cuts the path at its first blank. A home path with a
+//     space is not flagged here.
+//   - MoveAcross falls back to copying only on EXDEV, not when link(2)
+//     fails with EPERM (a filesystem without hard links, or
+//     protected_hardlinks for a non-owner).
 package conffile
 
 import (
@@ -111,7 +125,7 @@ func cLen(l Line) int {
 func separates(l Line) bool { return isBlank(l.Text) && cLen(l) <= 1 }
 
 // maxLine is the longest line readline returns whole: fgets into a
-// MALLOC_SZ (512, mhvtl include/vtllib.h:86) buffer reads at most 511 bytes,
+// MALLOC_SZ (512, mhvtl include/vtllib.h:94) buffer reads at most 511 bytes,
 // the '\n' included, so a longer line is read as two.
 const maxLine = 510
 
@@ -133,7 +147,7 @@ func lineProblem(l Line) string {
 // read lines with readline (mhvtl usr/vtllib.c:1064), which drops a '\n'
 // past the first byte, then test:
 //   - strlen(b) == 1 in mhvtl usr/cmd/vtllibrary.c:740 and :1281, and
-//     mhvtl usr/cmd/vtltape.c:2134;
+//     mhvtl usr/cmd/vtltape.c:2137;
 //   - strlen(b) < 3 in mhvtl usr/vtllib.c:1710 (find_media_home_directory).
 //
 // An empty line, LF or CRLF ("\r" alone, strlen 1), separates records for
@@ -269,7 +283,7 @@ func (c *DeviceConf) index() {
 			}
 			// mhVTL's parsers follow one kind of record each and only a
 			// blank line ends it (vtllibrary.c:677-740 and :1281-1293,
-			// vtltape.c:2134-2145): a header of the other kind leaves the
+			// vtltape.c:2137-2148): a header of the other kind leaves the
 			// open record running, so its attributes apply to both.
 			if cur >= 0 && c.stanzas[cur].Kind != st.Kind {
 				problem(i, true, "%s header with no blank line after %s %d: mhVTL reads what follows as part of %s %d too",
