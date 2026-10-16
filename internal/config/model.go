@@ -14,6 +14,16 @@ type Library struct {
 	Slots                   []Slot
 	MAPs                    []MAPSlot
 	Pickers                 []int
+	// DriveLines are the "Drive N: [serial]" lines of library_contents.
+	DriveLines []DriveLine
+}
+
+// DriveLine is a "Drive N: [serial]" line of library_contents. A non-empty
+// Serial gives the changer a serial for drive slot N (mhvtl
+// usr/cmd/vtllibrary.c init_drive_slot); it is not a loaded cartridge.
+type DriveLine struct {
+	Number int
+	Serial string
 }
 
 // Drive is a virtual tape drive defined in device.conf.

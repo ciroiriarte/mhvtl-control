@@ -60,12 +60,12 @@ func LoadInventory(configDir string) (Inventory, error) {
 		if err != nil {
 			return Inventory{}, err
 		}
-		_, pickers, maps, slots, problems, err := ParseLibraryContents(cf)
+		driveLines, pickers, maps, slots, problems, err := ParseLibraryContents(cf)
 		cf.Close()
 		if err != nil {
 			return Inventory{}, fmt.Errorf("%s: %w", cpath, err)
 		}
-		lib.Pickers, lib.MAPs, lib.Slots = pickers, maps, slots
+		lib.DriveLines, lib.Pickers, lib.MAPs, lib.Slots = driveLines, pickers, maps, slots
 		for _, p := range problems {
 			inv.Problems = append(inv.Problems, Problem{File: cpath, Problem: p})
 		}

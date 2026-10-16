@@ -107,3 +107,51 @@ func TestHostCollisionsFromSysfs(t *testing.T) {
 	expect(t, "errors", family(r.Errors, FamilyIdentity),
 		[]string{`drive 12: serial "XYZZY_A2" is already used by host device 0:0:0:0 (ahci)`})
 }
+
+// A "Drive N: X" line of library_contents gives the changer serial X for drive
+// slot N until device.conf's Unit serial number replaces it.
+func TestDriveLineSerials(t *testing.T) {
+	line := func(n int, serial string) func(*config.Inventory) {
+		return func(i *config.Inventory) {
+			i.Libraries[0].DriveLines[n-1].Serial = serial
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		edit   func(*config.Inventory)
+		errors []string
+		warns  []string
+	}{
+		{"same as device.conf", line(1, "XYZZY_A1"), nil, nil},
+		{"device.conf overrides it", line(1, "OTHER1"), nil,
+			[]string{`library_contents.10 line "Drive 1: OTHER1" is ignored: device.conf gives drive 11 serial "XYZZY_A1"`}},
+		{"no device.conf serial: changer and drive disagree", func(i *config.Inventory) {
+			line(1, "OTHER1")(i)
+			i.Libraries[0].Drives[0].Serial = ""
+		}, []string{
+			"drive 11 has no Unit serial number",
+			`library_contents.10 line "Drive 1: OTHER1" makes the changer report serial "OTHER1" for drive 11, which has no Unit serial number in device.conf; the changer and the drive would report different serials`,
+		}, nil},
+		{"empty drive slot with a free serial", func(i *config.Inventory) {
+			i.Libraries[0].DriveLines = append(i.Libraries[0].DriveLines, config.DriveLine{Number: 5, Serial: "GHOST5"})
+		}, nil, []string{`library_contents.10 line "Drive 5: GHOST5": no drive of device.conf sits in drive slot 5`}},
+		{"empty drive slot repeating a drive serial", func(i *config.Inventory) {
+			i.Libraries[0].DriveLines = append(i.Libraries[0].DriveLines, config.DriveLine{Number: 5, Serial: "XYZZY_B1"})
+		}, []string{`library_contents.10 line "Drive 5: XYZZY_B1" gives the changer a drive with serial "XYZZY_B1", which drive 31 already uses`},
+			[]string{"no drive of device.conf sits in drive slot 5"}},
+		{"two empty drive slots with one serial", func(i *config.Inventory) {
+			i.Libraries[0].DriveLines = append(i.Libraries[0].DriveLines,
+				config.DriveLine{Number: 5, Serial: "GHOST"}, config.DriveLine{Number: 6, Serial: "GHOST"})
+		}, []string{`library_contents.10 lines "Drive 5" and "Drive 6" both give the changer serial "GHOST"`},
+			[]string{"drive slot 5", "drive slot 6"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cur := shipped(t)
+			next := clone(cur)
+			tc.edit(&next)
+			r := Validate(cur, next, nil, nil, Options{})
+			expect(t, "errors", family(r.Errors, FamilyIdentity), tc.errors)
+			expect(t, "warnings", family(r.Warnings, FamilyIdentity), tc.warns)
+		})
+	}
+}

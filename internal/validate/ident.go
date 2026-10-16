@@ -2,6 +2,7 @@ package validate
 
 import (
 	"fmt"
+	"strconv"
 
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/hostids"
@@ -109,6 +110,8 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		naas = append(naas, naaOwner{b, d})
 	}
 
+	checkDriveLines(r, next, serials)
+
 	// The drive identifier the library reports in READ ELEMENT STATUS can
 	// cut the drive serial short.
 	for _, l := range next.Libraries {
@@ -151,4 +154,62 @@ func driverName(h hostids.Device) string {
 		return "unknown driver"
 	}
 	return h.Driver
+}
+
+// checkDriveLines checks the serials "Drive N: X" lines of library_contents
+// give drive slots. Line numbers are mhvtl upstream master 6458223,
+// https://github.com/markh794/mhvtl/blob/6458223/usr/cmd/vtllibrary.c:
+// vtllibrary's main() calls customise_lu (:1711), whose personality init
+// calls init_slot_info (e.g. usr/pm/default_smc_pm.c:61); __init_slot_info
+// reads each Drive line (:1031-1039) and init_drive_slot (:851-878) passes a
+// non-empty value to set_drive_serial (:621, called at :876), which sets the
+// serial the changer reports in READ ELEMENT STATUS. Then main() calls
+// update_drive_details (:1713; do_rereadconfig does the same at :1581-1583),
+// which reads device.conf and, for this library's drive in that slot, sets
+// the serial again from its "Unit serial number" (:719-721). vtltape answers
+// INQUIRY with that device.conf serial (usr/cmd/vtltape.c:2154-2157). So:
+//   - with a device.conf serial, the Drive line value is overridden: changer
+//     and drive agree, and the value is ignored (a warning);
+//   - without one, the changer reports the Drive line value and the drive
+//     reports none: they disagree (blocking);
+//   - for a slot no device.conf drive occupies, the changer reports a drive
+//     with that serial and nothing behind it; the serial must still not
+//     repeat another device's (blocking), and the empty drive is a warning.
+func checkDriveLines(r *Result, next config.Inventory, serials map[string]device) {
+	for _, l := range next.Libraries {
+		bySlot := map[int]config.Drive{}
+		for _, d := range l.Drives {
+			bySlot[d.Slot] = d
+		}
+		file := "library_contents." + strconv.Itoa(l.ID)
+		phantom := map[string]int{}
+		for _, dl := range l.DriveLines {
+			if dl.Serial == "" {
+				continue
+			}
+			els := []string{lineKey(l.ID, dl.Number)}
+			d, ok := bySlot[dl.Number]
+			switch {
+			case ok && d.Serial == "":
+				r.errorf(FamilyIdentity, l.ID, append(els, driveKey(d.ID)),
+					"%s line \"Drive %d: %s\" makes the changer report serial %q for drive %d, which has no Unit serial number in device.conf; the changer and the drive would report different serials",
+					file, dl.Number, dl.Serial, dl.Serial, d.ID)
+			case ok && d.Serial != dl.Serial:
+				r.warnf(FamilyIdentity, l.ID, "%s line \"Drive %d: %s\" is ignored: device.conf gives drive %d serial %q, which vtllibrary applies afterwards",
+					file, dl.Number, dl.Serial, d.ID, d.Serial)
+			case !ok:
+				r.warnf(FamilyIdentity, l.ID, "%s line \"Drive %d: %s\": no drive of device.conf sits in drive slot %d, so the changer reports a drive that does not exist",
+					file, dl.Number, dl.Serial, dl.Number)
+				if o, dup := serials[dl.Serial]; dup {
+					r.errorf(FamilyIdentity, l.ID, append(els, o.key()), "%s line \"Drive %d: %s\" gives the changer a drive with serial %q, which %s already uses",
+						file, dl.Number, dl.Serial, dl.Serial, o)
+				} else if n, dup := phantom[dl.Serial]; dup {
+					r.errorf(FamilyIdentity, l.ID, append(els, lineKey(l.ID, n)), "%s lines \"Drive %d\" and \"Drive %d\" both give the changer serial %q",
+						file, n, dl.Number, dl.Serial)
+				} else {
+					phantom[dl.Serial] = dl.Number
+				}
+			}
+		}
+	}
 }
