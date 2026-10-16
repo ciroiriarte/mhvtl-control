@@ -22,9 +22,24 @@ func TestMedia(t *testing.T) {
 			"slot 30: F01030L6", "slot 31", "slot 32", "slot 33", "slot 34", "slot 35", "slot 36", "slot 37", "slot 38",
 			"slot 39: F01039L6 is LTO6 media",
 		}, nil},
-		{"pre-filled MAP slot", func(l *config.Library) {
-			l.MAPs[0].Barcode = "E09001L3"
-		}, []string{"library 10 MAP slot 1: E09001L3 is LTO3 media (from its barcode), which none of the library's drives (ULT3580-TD8, ULT3580-TD8, ULT3580-TD6, ULT3580-TD6) loads"}, nil},
+		{"MAP slot naming a cartridge that does not exist", func(l *config.Library) {
+			l.MAPs[0].Barcode = "E09001L8"
+			l.HomeDir = "testdata/homes/a"
+		}, []string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in testdata/homes/a"}, nil},
+		{"picker naming a cartridge with no home known", func(l *config.Library) {
+			l.PickerMedia = []config.Slot{{Number: 1, Barcode: "E09001L8"}}
+			l.HomeDir = ""
+		}, []string{"library 10 picker 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and no media home is known to look for it in"}, nil},
+		{"MAP slot with an existing cartridge", func(l *config.Library) {
+			l.MAPs[0].Barcode = "E01001L8"
+			l.HomeDir = "testdata/homes/a"
+		}, nil, nil},
+		{"picker with an existing cartridge no drive loads", func(l *config.Library) {
+			l.PickerMedia = []config.Slot{{Number: 1, Barcode: "E01001L8"}}
+			l.HomeDir = "testdata/homes/a"
+			l.Drives = l.Drives[2:]
+			l.Slots = nil
+		}, []string{"library 10 picker 1: E01001L8 is LTO8 media (from its barcode), which none of the library's drives (ULT3580-TD6, ULT3580-TD6) loads"}, nil},
 		{"LTO-4 read-only in an LTO-6 drive", func(l *config.Library) {
 			l.Slots[0].Barcode = "E09001L4"
 		}, nil, nil},
