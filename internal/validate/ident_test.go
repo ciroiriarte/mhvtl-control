@@ -229,3 +229,24 @@ func TestDriveLineSerials(t *testing.T) {
 		})
 	}
 }
+
+// An IBM 03584 changer sends no NAA, so its tcm_loop re-export is matched on
+// serial, vendor and product (probe from the PR 2a re-review).
+func TestChangerReexport(t *testing.T) {
+	cur := gen(t)
+	cur.Libraries[0].Vendor, cur.Libraries[0].Product = "IBM", "03584L32"
+	for _, tc := range []struct {
+		name   string
+		h      hostids.Device
+		errors []string
+	}{
+		{"the changer itself", hostids.Device{Host: 7, Target: 0, Driver: "tcm_loop", Serial: "XYZZY_A", Vendor: "IBM", Model: "03584L32"}, nil},
+		{"another product with its serial", hostids.Device{Host: 7, Target: 0, Driver: "tcm_loop", Serial: "XYZZY_A", Vendor: "IBM", Model: "3573-TL"},
+			[]string{`library 10: serial "XYZZY_A" is already used by host device 7:0:0:0 (tcm_loop)`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Validate(cur, clone(cur), nil, []hostids.Device{tc.h}, Options{})
+			expect(t, "errors", family(r.Errors, FamilyIdentity), tc.errors)
+		})
+	}
+}
