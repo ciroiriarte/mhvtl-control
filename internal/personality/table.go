@@ -101,7 +101,7 @@ var Models = map[string]Model{
 	"init_hp_msl_smc": {
 		InitFn: "init_hp_msl_smc", Name: "HP MSL",
 		StartPicker: 0x0001, StartMAP: 0x01c0, StartDrive: 0x01e0, StartStorage: 0x0020,
-		WindowSource: "usr/pm/hp_smc_pm.c:168",
+		WindowSource: "usr/pm/hp_smc_pm.c:169",
 		VPD83:        true,
 		DvcidLen:     20, DvcidSerialOnly: true,
 	},
@@ -154,19 +154,19 @@ var Models = map[string]Model{
 	"init_stkl20": {
 		InitFn: "init_stkl20", Name: "STK L20/L40/L80",
 		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
-		WindowSource: "usr/pm/stklxx_pm.c:68",
+		WindowSource: "usr/pm/stklxx_pm.c:79",
 		DvcidLen:     32, StkDteLayout: true,
 	},
 	"init_stklxx": {
 		InitFn: "init_stklxx", Name: "STK L-series (L180/L700)",
 		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
-		WindowSource: "usr/pm/stklxx_pm.c:98",
+		WindowSource: "usr/pm/stklxx_pm.c:109",
 		DvcidLen:     32, StkDteLayout: true,
 	},
 	"init_stkslxx": {
 		InitFn: "init_stkslxx", Name: "STK SL500",
 		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
-		WindowSource: "usr/pm/stklxx_pm.c:124",
+		WindowSource: "usr/pm/stklxx_pm.c:135",
 		DvcidLen:     32, StkDteLayout: true,
 	},
 }
