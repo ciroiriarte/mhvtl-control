@@ -146,8 +146,11 @@ func devices(inv config.Inventory) []device {
 // recognised by their mhvtl HBA address; any other device, real or virtual,
 // counts, except a local re-export of a device of cur (see reexport), which
 // does not collide with that device in next.
-func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Device) {
+func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Device, hostErr error) {
 	devs := devices(next)
+	if hostErr != nil {
+		r.warnf(CodeIdentHostUnchecked, 0, nil, "the host's SCSI devices could not all be read (%v); serials and NAAs other devices of the host use were not all checked for collisions", hostErr)
+	}
 
 	ids := map[int]device{}
 	ctl := map[[3]int]device{}

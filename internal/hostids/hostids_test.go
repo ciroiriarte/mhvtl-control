@@ -1,6 +1,7 @@
 package hostids
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -76,10 +77,33 @@ func TestRead(t *testing.T) {
 	}
 }
 
+// With no scsi_device class, nothing was read: an error, not an empty host.
 func TestReadNoSCSI(t *testing.T) {
 	devs, err := Read(t.TempDir())
-	if err != nil || devs != nil {
-		t.Errorf("Read on a host without scsi_device = %v, %v; want nil, nil", devs, err)
+	if !errors.Is(err, os.ErrNotExist) || devs != nil {
+		t.Errorf("Read on a host without scsi_device = %v, %v; want nil and a not-exist error", devs, err)
+	}
+}
+
+// An attribute that cannot be read is reported, and the device is still
+// listed with what could be read. vendor and model are absent: no error.
+func TestReadUnreadable(t *testing.T) {
+	root := t.TempDir()
+	fakeSysfs(t, root, "3:0:1:0", "mhvtl", "XYZZY_A1")
+	// A directory in place of vpd_pg83 fails to read with EISDIR, even as
+	// root.
+	pg83 := filepath.Join(root, "class", "scsi_device", "3:0:1:0", "device", "vpd_pg83")
+	if err := os.Mkdir(pg83, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A proc_name without its newline reads the same.
+	write(t, filepath.Join(root, "class", "scsi_host", "host3", "proc_name"), []byte("mhvtl"))
+	devs, err := Read(root)
+	if err == nil || !strings.Contains(err.Error(), "vpd_pg83") {
+		t.Errorf("err = %v; want one naming vpd_pg83", err)
+	}
+	if len(devs) != 1 || devs[0].Serial != "XYZZY_A1" || devs[0].Driver != "mhvtl" {
+		t.Errorf("devs = %+v", devs)
 	}
 }
 

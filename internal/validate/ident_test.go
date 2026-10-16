@@ -310,3 +310,16 @@ func TestChangerReexport(t *testing.T) {
 	r := Validate(long, clone(long), nil, []hostids.Device{h}, Options{})
 	expect(t, "errors with an over-long vendor and product", family(r.Errors, FamilyIdentity), nil)
 }
+
+// A host scan that failed, in whole or in part, is reported: host collisions
+// were not all checked.
+func TestHostScanFailed(t *testing.T) {
+	cur := shipped(t)
+	_, err := hostids.Read(t.TempDir())
+	if err == nil {
+		t.Fatal("hostids.Read of an empty root: no error")
+	}
+	r := Validate(cur, clone(cur), nil, nil, Options{HostErr: err})
+	expect(t, "errors", family(r.Errors, FamilyIdentity), nil)
+	expect(t, "warnings", family(r.Warnings, FamilyIdentity), []string{"the host's SCSI devices could not all be read"})
+}
