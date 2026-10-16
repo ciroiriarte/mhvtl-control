@@ -11,13 +11,17 @@ import (
 // ErrDriveBarcode is returned for an edit that would put a value on a Drive
 // line. That value is not a cartridge: it sets the drive's serial number as
 // the changer reports it (init_drive_slot -> set_drive_serial, mhvtl
-// usr/cmd/vtllibrary.c:850-881 and :621), overriding device.conf. The editor
-// keeps serial numbers in device.conf only.
+// usr/cmd/vtllibrary.c:850-881 and :621). device.conf's "Unit serial number"
+// overrides it, since update_drive_details reads device.conf after
+// init_slot_info (:1581-1583, :1711-1713), so it counts only for a drive
+// without one. The editor keeps serial numbers in device.conf only.
 var ErrDriveBarcode = errors.New("library_contents: a Drive line's value is the drive's serial number; set it in device.conf")
 
-// maxBarcode is MAX_BARCODE_LEN (mhvtl include/vtllib.h:82). add_barcode
+// maxBarcode is MAX_BARCODE_LEN (mhvtl include/vtllib.h:90). add_barcode
 // exits on a longer barcode, and on a duplicate one (mhvtl
-// usr/cmd/vtllibrary.c:324-331).
+// usr/cmd/vtllibrary.c:324-331), but it compares the stored barcode, padded
+// to 16 with "%-16.16s" (:345), with strncmp(..., 17) (lookup_barcode,
+// :309): only a 16-character duplicate matches.
 const maxBarcode = 16
 
 // Entry is one "Drive N:", "Picker N:", "MAP N: X" or "Slot N: X" line.
@@ -119,7 +123,18 @@ func (c *LibContents) index() {
 	// Whole-file checks of what vtllibrary does with the entries.
 	seen := map[string]int{}
 	last := map[string]int{}
+	number := map[[2]string]bool{}
 	for _, e := range c.entries {
+		// MAP and Picker elements are created per line with no hole
+		// filling (init_map_slot, init_transport_slot, :883-925), so a
+		// repeated number creates the element twice.
+		if e.Kind == "MAP" || e.Kind == "Picker" {
+			k := [2]string{e.Kind, strconv.Itoa(e.Number)}
+			if number[k] {
+				problem(e.Line, true, "%s %d listed twice: mhVTL creates the element twice", e.Kind, e.Number)
+			}
+			number[k] = true
+		}
 		// Drives and slots fill holes up to each number in turn
 		// (vtllibrary.c:1032-1063), so a number not above the previous one
 		// creates the element twice.
@@ -136,7 +151,11 @@ func (c *LibContents) index() {
 			problem(e.Line, true, "barcode %q is longer than %d characters: vtllibrary exits on start", e.Barcode, maxBarcode)
 		}
 		if j, dup := seen[e.Barcode]; dup {
-			problem(e.Line, true, "barcode %s already at line %d: vtllibrary exits on start", e.Barcode, j+1)
+			if len(e.Barcode) == maxBarcode {
+				problem(e.Line, true, "barcode %s already at line %d: vtllibrary exits on start", e.Barcode, j+1)
+			} else {
+				problem(e.Line, true, "barcode %s already at line %d: vtllibrary loads both as one cartridge's media", e.Barcode, j+1)
+			}
 			continue
 		}
 		seen[e.Barcode] = e.Line
