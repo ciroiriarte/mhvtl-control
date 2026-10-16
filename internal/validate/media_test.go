@@ -89,24 +89,35 @@ func TestMedia(t *testing.T) {
 
 // A MAP entry the live placement already holds in that MAP slot is in the
 // library, not a pre-fill: it need not be in the home. The same barcode in
-// another MAP slot, or with the live placement unknown, still must be.
+// another MAP slot, with the live placement unknown, or in a library whose
+// media home the change moves, still must be.
 func TestMediaLiveMAP(t *testing.T) {
 	cur := shipped(t)
+	cur.Libraries[0].HomeDir = "testdata/homes/a"
 	next := clone(cur)
-	next.Libraries[0].HomeDir = "testdata/homes/a"
 	next.Libraries[0].MAPs[0].Barcode = "E09001L8"
 	notInHome := []string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in testdata/homes/a"}
+	inMAP1 := &Live{Libraries: map[int]Placement{10: {MAPs: map[int]string{1: "E09001L8"}}}}
 	for _, tc := range []struct {
 		name   string
 		live   *Live
+		edit   func(*config.Library)
 		errors []string
 	}{
-		{"in that MAP slot live", &Live{Libraries: map[int]Placement{10: {MAPs: map[int]string{1: "E09001L8"}}}}, nil},
-		{"in another MAP slot live", &Live{Libraries: map[int]Placement{10: {MAPs: map[int]string{2: "E09001L8"}}}}, notInHome},
-		{"live unknown", nil, notInHome},
+		{"in that MAP slot live", inMAP1, nil, nil},
+		{"in another MAP slot live", &Live{Libraries: map[int]Placement{10: {MAPs: map[int]string{2: "E09001L8"}}}}, nil, notInHome},
+		{"live unknown", nil, nil, notInHome},
+		{"in that MAP slot live, home changed", inMAP1, func(l *config.Library) { l.HomeDir = "testdata/homes/b" },
+			[]string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in testdata/homes/b"}},
+		{"in that MAP slot live, home now the default", inMAP1, func(l *config.Library) { l.HomeDir = "" },
+			[]string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in testdata/homes/b"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := Validate(cur, next, tc.live, nil, Options{})
+			next := clone(next)
+			if tc.edit != nil {
+				tc.edit(&next.Libraries[0])
+			}
+			r := Validate(cur, next, tc.live, nil, Options{DefaultHome: "testdata/homes/b"})
 			expect(t, "errors", family(r.Errors, FamilyMedia), tc.errors)
 		})
 	}

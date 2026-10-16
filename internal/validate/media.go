@@ -19,8 +19,10 @@ import (
 // entry the live placement already holds in that MAP slot is no pre-fill:
 // the cartridge is in the library (imported at run time, or placed by the
 // bay monitor), and the client that builds next from the live view (plan,
-// "Phase 4 client contract for next") writes it back as it is.
-func checkMedia(r *Result, next config.Inventory, live *Live, opts Options) {
+// "Phase 4 client contract for next") writes it back as it is. That holds
+// only while the library keeps its media home: in another home, the
+// cartridge must exist there like any other MAP entry.
+func checkMedia(r *Result, cur, next config.Inventory, live *Live, opts Options) {
 	for _, lib := range next.Libraries {
 		var models []personality.DriveModel
 		var products []string
@@ -37,7 +39,11 @@ func checkMedia(r *Result, next config.Inventory, live *Live, opts Options) {
 		if hiddenHome(home) {
 			r.warnf(CodeMediaHomeHidden, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: media home %s is under /home, /root or /run/user, which mhvtl-control's unit hides (ProtectHome=yes); cartridges there look missing to these checks", lib.ID, home)
 		}
-		lp, _ := live.library(lib.ID)
+		// The live MAP counts only for a library that keeps its home.
+		var lp Placement
+		if old, ok := findLibrary(cur, lib.ID); ok && homeOf(old, opts) == home {
+			lp, _ = live.library(lib.ID)
+		}
 		check := func(where string, key ElementRef, barcode string, created, present bool) {
 			els := append(drives[:len(drives):len(drives)], key)
 			if barcode == "" {
