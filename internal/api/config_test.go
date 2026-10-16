@@ -332,16 +332,9 @@ func TestValidateShippedL700WithPBS(t *testing.T) {
 // imported cartridge leave the library.
 func TestValidateBuildsOnTheLiveView(t *testing.T) {
 	dir := genDir(t)
-	// The imported cartridge is in the media home, as a real one is.
-	home := filepath.Join(dir, "home")
-	if err := os.MkdirAll(filepath.Join(home, "ZZ0001L8"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// The imported cartridge is not in the (missing) media home: being in the
+	// live MAP, it needs no check there.
 	dc, _ := os.ReadFile(filepath.Join(dir, "device.conf"))
-	dc = bytes.ReplaceAll(dc, []byte("Home directory: testdata/gen/home"), []byte("Home directory: "+home))
-	if err := os.WriteFile(filepath.Join(dir, "device.conf"), dc, 0o644); err != nil {
-		t.Fatal(err)
-	}
 	live := liveOf(t, dir, 10, func(inv *changer.Inventory) {
 		inv.MAPs[0].Full, inv.MAPs[0].Barcode = true, "ZZ0001L8"
 	})
