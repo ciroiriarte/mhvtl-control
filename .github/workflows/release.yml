@@ -71,7 +71,8 @@ jobs:
       - name: build
         run: |
           apt-get update -qq
-          apt-get install -y -qq --no-install-recommends build-essential debhelper golang-go lintian
+          # debian/control's Build-Depends, plus build-essential and lintian.
+          apt-get install -y -qq --no-install-recommends build-essential debhelper golang-go pkgconf systemd-dev lintian
           dpkg-buildpackage -b -us -uc
           lintian --fail-on error ../*.changes
           mkdir out && cp ../mhvtl-control_*.deb out/
