@@ -1,94 +1,53 @@
 package config
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+
+	"mhvtl-control/internal/conffile"
 )
 
-// ParseDeviceConf parses a device.conf stream into libraries and drives.
+// ParseDeviceConf parses a device.conf stream into libraries and drives. It
+// is a typed projection of conffile's lossless model, so the editor and the
+// read path share one grammar.
 func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, err error) {
-	sc := bufio.NewScanner(r)
-	var (
-		lib    *Library
-		drv    *Drive
-		lineNo int
-	)
-	flush := func() {
-		if lib != nil {
-			libraries = append(libraries, *lib)
-			lib = nil
-		}
-		if drv != nil {
-			drives = append(drives, *drv)
-			drv = nil
-		}
-	}
-	for sc.Scan() {
-		lineNo++
-		line := strings.TrimRight(sc.Text(), " \t\r")
-		if strings.TrimSpace(line) == "" {
-			flush()
-			continue
-		}
-		if strings.HasPrefix(strings.TrimSpace(line), "#") {
-			continue
-		}
-		if line[0] != ' ' && line[0] != '\t' {
-			// Record header (or VERSION).
-			if strings.HasPrefix(line, "VERSION:") {
-				continue
-			}
-			flush()
-			kind, id, ch, tg, lun, herr := parseHeader(line)
-			if herr != nil {
-				return nil, nil, fmt.Errorf("device.conf line %d: %w", lineNo, herr)
-			}
-			switch kind {
-			case "Library":
-				lib = &Library{ID: id, Channel: ch, Target: tg, LUN: lun}
-			case "Drive":
-				drv = &Drive{ID: id, Channel: ch, Target: tg, LUN: lun}
-			}
-			continue
-		}
-		if lib == nil && drv == nil {
-			return nil, nil, fmt.Errorf("device.conf line %d: attribute outside of a record", lineNo)
-		}
-		key, val, ok := strings.Cut(strings.TrimSpace(line), ":")
-		if !ok {
-			return nil, nil, fmt.Errorf("device.conf line %d: expected 'Key: value'", lineNo)
-		}
-		key, val = strings.TrimSpace(key), strings.TrimSpace(val)
-		if aerr := applyAttr(lib, drv, key, val); aerr != nil {
-			return nil, nil, fmt.Errorf("device.conf line %d: %w", lineNo, aerr)
-		}
-	}
-	if err := sc.Err(); err != nil {
+	data, err := io.ReadAll(r)
+	if err != nil {
 		return nil, nil, err
 	}
-	flush()
-	return libraries, drives, nil
-}
-
-// parseHeader parses "Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00".
-func parseHeader(line string) (kind string, id, ch, tg, lun int, err error) {
-	f := strings.Fields(strings.ReplaceAll(line, ":", " "))
-	if len(f) != 8 || (f[0] != "Library" && f[0] != "Drive") ||
-		f[2] != "CHANNEL" || f[4] != "TARGET" || f[6] != "LUN" {
-		return "", 0, 0, 0, 0, fmt.Errorf("malformed record header %q", line)
+	c := conffile.ParseDeviceConf(data)
+	if len(c.Problems) > 0 {
+		return nil, nil, fmt.Errorf("device.conf %w", c.Problems[0])
 	}
-	nums := make([]int, 4)
-	for i, s := range []string{f[1], f[3], f[5], f[7]} {
-		n, e := strconv.Atoi(s)
-		if e != nil {
-			return "", 0, 0, 0, 0, fmt.Errorf("bad number %q in header %q", s, line)
+	for _, st := range c.Stanzas() {
+		if !st.HasAddress {
+			return nil, nil, fmt.Errorf("device.conf line %d: malformed record header %q",
+				st.HeaderLine+1, strings.TrimRight(c.Lines()[st.HeaderLine].Text, " \t\r"))
 		}
-		nums[i] = n
+		var (
+			lib *Library
+			drv *Drive
+		)
+		switch st.Kind {
+		case "Library":
+			lib = &Library{ID: st.ID, Channel: st.Channel, Target: st.Target, LUN: st.LUN}
+		case "Drive":
+			drv = &Drive{ID: st.ID, Channel: st.Channel, Target: st.Target, LUN: st.LUN}
+		}
+		for _, a := range st.Attrs {
+			if aerr := applyAttr(lib, drv, a.Key, a.Value); aerr != nil {
+				return nil, nil, fmt.Errorf("device.conf line %d: %w", a.Line+1, aerr)
+			}
+		}
+		if lib != nil {
+			libraries = append(libraries, *lib)
+		} else {
+			drives = append(drives, *drv)
+		}
 	}
-	return f[0], nums[0], nums[1], nums[2], nums[3], nil
+	return libraries, drives, nil
 }
 
 func applyAttr(lib *Library, drv *Drive, key, val string) error {
