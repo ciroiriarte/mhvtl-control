@@ -18,8 +18,12 @@ func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, err erro
 		return nil, nil, err
 	}
 	c := conffile.ParseDeviceConf(data)
-	if len(c.Problems) > 0 {
-		return nil, nil, fmt.Errorf("device.conf %w", c.Problems[0])
+	// An ambiguous line still loads in mhVTL, so the read path goes on; the
+	// editor refuses to write over it.
+	for _, p := range c.Problems {
+		if !p.Ambiguous {
+			return nil, nil, fmt.Errorf("device.conf %w", p)
+		}
 	}
 	for _, st := range c.Stanzas() {
 		if !st.HasAddress {
