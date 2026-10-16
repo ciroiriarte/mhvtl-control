@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/conffile"
@@ -102,11 +104,19 @@ func TestConfigView(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
 	got := decodeBody[struct {
-		Files      []configFileDTO    `json:"files"`
-		Libraries  []configLibraryDTO `json:"libraries"`
-		Problems   []configProblemDTO `json:"problems"`
-		LiveErrors map[string]string  `json:"live_errors"`
+		Files      []configFileDTO         `json:"files"`
+		Libraries  []configLibraryDTO      `json:"libraries"`
+		Problems   []configProblemDTO      `json:"problems"`
+		LiveErrors map[string]string       `json:"live_errors"`
+		Slots      map[string]slotsViewDTO `json:"slots"`
 	}](t, rec)
+
+	if sv := got.Slots["10"]; !sv.Live || sv.MAPs[0].LiveBarcode == nil || *sv.MAPs[0].LiveBarcode != "ZZ0001L8" {
+		t.Errorf("slots of library 10 = %+v", sv)
+	}
+	if sv := got.Slots["30"]; sv.Live || sv.LiveError == "" || len(sv.Slots) == 0 {
+		t.Errorf("slots of library 30 = %+v", sv)
+	}
 
 	if len(got.Files) != 3 {
 		t.Fatalf("files = %+v", got.Files)
@@ -580,5 +590,84 @@ func TestLiveContents(t *testing.T) {
 	want := "VERSION: 2\n\nDrive 1:\n\nPicker 1:\n\nMAP 1: M00001L8\nMAP 2:\n\nSlot 1:\nSlot 2: A00001L8\nSlot 3: A00003L8\n"
 	if string(got) != want {
 		t.Errorf("liveContents =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// gatedChangers counts READ ELEMENT STATUS per library, holding each
+// until release is closed, so concurrent callers overlap.
+type gatedChangers struct {
+	fakeChangers
+	release chan struct{}
+	mu      sync.Mutex
+	reads   map[int]int
+}
+
+func (c *gatedChangers) Inventory(lib config.Library) (changer.Inventory, error) {
+	c.mu.Lock()
+	c.reads[lib.ID]++
+	c.mu.Unlock()
+	<-c.release
+	return changer.Inventory{}, nil
+}
+
+// GET /config, the slots route and validation share one READ ELEMENT STATUS
+// per library: concurrent calls wait for the read in progress, and later
+// ones within the TTL reuse it.
+func TestConfigSharesLiveReads(t *testing.T) {
+	dir := genDir(t)
+	cc := &gatedChangers{release: make(chan struct{}), reads: map[int]int{}}
+	h := NewServer(Config{ConfigDir: dir, SysRoot: noSys(t), Changers: cc}).Handler()
+	call := func(method, path, body string) int {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec.Code
+	}
+	reqs := [][3]string{
+		{http.MethodGet, "/api/v1/config", ""},
+		{http.MethodPost, "/api/v1/config/validate", "{}"},
+		{http.MethodGet, "/api/v1/config/libraries/10/slots", ""},
+		{http.MethodGet, "/api/v1/config", ""},
+	}
+	var wg sync.WaitGroup
+	codes := make([]int, len(reqs))
+	for i, r := range reqs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes[i] = call(r[0], r[1], r[2])
+		}()
+	}
+	// Let every request reach the changer read before it returns.
+	time.Sleep(100 * time.Millisecond)
+	close(cc.release)
+	wg.Wait()
+	call(http.MethodPost, "/api/v1/config/validate", "{}") // within the TTL
+	for i, c := range codes {
+		if c != http.StatusOK {
+			t.Errorf("%s %s: %d", reqs[i][0], reqs[i][1], c)
+		}
+	}
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	if cc.reads[10] != 1 || cc.reads[30] != 1 {
+		t.Errorf("READ ELEMENT STATUS per library = %v, want one each", cc.reads)
+	}
+}
+
+// A read older than the TTL is not reused.
+func TestLiveCacheExpires(t *testing.T) {
+	c := liveCache{ttl: time.Millisecond}
+	n := 0
+	read := func() (validate.Placement, error) { n++; return validate.Placement{}, nil }
+	lib := config.Library{ID: 10, Serial: "S"}
+	c.get(lib, read)
+	c.get(lib, read)
+	time.Sleep(5 * time.Millisecond)
+	c.get(lib, read)
+	lib.Serial = "T" // another changer
+	c.get(lib, read)
+	if n != 3 {
+		t.Errorf("%d reads, want 3", n)
 	}
 }

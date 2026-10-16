@@ -116,6 +116,9 @@ type Server struct {
 	metrics metricsCache
 	// requests counts handled requests for GET /metrics.
 	requests requestCounter
+	// live shares each library's live placement among the configuration
+	// routes.
+	live liveCache
 }
 
 // keyedMutex is a set of mutexes created on first use.

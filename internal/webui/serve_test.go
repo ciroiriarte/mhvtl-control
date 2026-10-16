@@ -336,7 +336,7 @@ func TestConfigViewIsReadOnly(t *testing.T) {
 		}
 	}
 	_, app := get(t, h, "/static/js/app.js")
-	for _, want := range []string{"/api/v1/config/capabilities", "/api/v1/config/personalities", "/api/v1/config/validate", "/slots", "capabilityNotice"} {
+	for _, want := range []string{"/api/v1/config/capabilities", "/api/v1/config/personalities", "/api/v1/config/validate", "config.slots", "capabilityNotice"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js missing marker %q", want)
 		}
