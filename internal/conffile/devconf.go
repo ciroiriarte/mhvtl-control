@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -46,12 +47,12 @@ func renderLines(lines []Line) []byte {
 	return b.Bytes()
 }
 
-// eol is the line ending new lines get: that of the first terminated line,
+// eol is the line ending new lines get: that of the last terminated line,
 // else "\n".
 func eol(lines []Line) string {
-	for _, l := range lines {
-		if l.EOL != "" {
-			return l.EOL
+	for i := len(lines) - 1; i >= 0; i-- {
+		if lines[i].EOL != "" {
+			return lines[i].EOL
 		}
 	}
 	return "\n"
@@ -89,16 +90,42 @@ func deleteLines(lines []Line, from, to int) []Line {
 // records depends on its length (see separates).
 func isBlank(text string) bool { return strings.TrimSpace(text) == "" }
 
-// separates reports a blank line every mhVTL parser takes as the end of a
-// record: one whose bytes before the '\n' number at most one (see
-// ambiguousBlank). Longer white-space lines are kept inside the record, as
-// vtllibrary and vtltape read them.
-func separates(l Line) bool {
+// cLen is strlen(b) for the line as mhVTL's readline (mhvtl
+// usr/vtllib.c:1064) leaves it: fgets, then every '\n' past the first byte
+// cut. A '\r' of a CRLF ending stays, and an empty LF line keeps its '\n'.
+func cLen(l Line) int {
 	n := len(l.Text)
 	if l.EOL == "\r\n" {
 		n++
 	}
-	return n <= 1
+	if n == 0 && l.EOL == "\n" {
+		n = 1
+	}
+	return n
+}
+
+// separates reports a blank line every mhVTL parser takes as the end of a
+// record: white space with cLen at most one (see ambiguousBlank). Longer
+// white-space lines are kept inside the record, as vtllibrary and vtltape
+// read them.
+func separates(l Line) bool { return isBlank(l.Text) && cLen(l) <= 1 }
+
+// maxLine is the longest line readline returns whole: fgets into a
+// MALLOC_SZ (512, mhvtl include/vtllib.h:86) buffer reads at most 511 bytes,
+// the '\n' included, so a longer line is read as two.
+const maxLine = 510
+
+// lineProblem reports a line mhVTL's readline does not read as one C string:
+// too long for its buffer, or holding a NUL, which ends the string early.
+// Both device.conf and library_contents are read that way.
+func lineProblem(l Line) string {
+	switch {
+	case strings.IndexByte(l.Text, 0) >= 0:
+		return "line contains a NUL byte: mhVTL reads it only up to there"
+	case len(l.Text)+len(l.EOL) > maxLine+1:
+		return fmt.Sprintf("line longer than %d bytes: mhVTL's readline splits it in two", maxLine)
+	}
+	return ""
 }
 
 // ambiguousBlank reports a line that is white space but not empty (line
@@ -115,6 +142,9 @@ func separates(l Line) bool {
 // three or more for none. Every non-empty white-space line is flagged, not
 // just the ones they disagree on, so no edit has to reason about them.
 // The model ends a record at the lines all of them agree on (separates).
+// An indented line of cLen 2 (" #", "\ta") is split on the same way, and
+// flagged too. (A column-1 one is a comment, which every parser skips first,
+// or a malformed header.)
 func ambiguousBlank(l Line) bool { return l.Text != "" && isBlank(l.Text) }
 
 // isComment reports a comment line. mhVTL ignores '#' in column 1 only
@@ -132,15 +162,20 @@ var ErrNotFound = errors.New("not found")
 type Problem struct {
 	Line int // 1-based
 	Msg  string
-	// Ambiguous marks a line mhVTL's parsers read differently from each
-	// other (a white-space line inside a stanza), as opposed to a malformed
-	// one. Such a file still loads, so readers may go on; writes may not.
+	// Ambiguous marks a file mhVTL still loads, but where a line does not
+	// mean what its shape says or mhVTL's parsers read it differently (a
+	// white-space line inside a record, a duplicate record, a value mhVTL
+	// truncates). The others are malformed: mhVTL ignores the line or will
+	// not start. Readers may go on past an ambiguous problem; writes may not.
 	Ambiguous bool
 }
 
 func (p Problem) Error() string { return fmt.Sprintf("line %d: %s", p.Line, p.Msg) }
 
-// Attr is one " Key: value" line of a device.conf stanza.
+// Attr is one " Key: value" line of a device.conf stanza, read as mhVTL's
+// conf_value (mhvtl usr/vtllib.c:1090-1144) reads it: Key with each run of
+// blanks collapsed to one space, Value without a trailing comment (a '#'
+// after a blank) and trimmed.
 type Attr struct {
 	Key, Value string
 	Line       int // index into the file's lines
@@ -160,8 +195,11 @@ type Stanza struct {
 	// to HeaderLine when there is none); End is one past its last line,
 	// which is the line before the next blank line or the next stanza.
 	Start, End int
-	Attrs      []Attr         // in file order, duplicates included
-	Attr       map[string]int // key -> line index of its last occurrence
+	Attrs      []Attr // in file order, duplicates included
+	// Attr maps a key to the line of its last non-empty occurrence (else
+	// its last one): conf_value ignores a field with no value, so the last
+	// non-empty one is what mhVTL keeps.
+	Attr map[string]int
 }
 
 // DeviceConf is a lossless device.conf.
@@ -191,17 +229,24 @@ func (c *DeviceConf) index() {
 			cur = -1
 		}
 	}
-	problem := func(i int, format string, a ...any) {
-		c.Problems = append(c.Problems, Problem{Line: i + 1, Msg: fmt.Sprintf(format, a...)})
+	problem := func(i int, ambiguous bool, format string, a ...any) {
+		c.Problems = append(c.Problems, Problem{Line: i + 1, Ambiguous: ambiguous, Msg: fmt.Sprintf(format, a...)})
 	}
 	for i, l := range c.lines {
+		if msg := lineProblem(l); msg != "" {
+			problem(i, true, "%s", msg)
+		}
+		if cur >= 0 && !isComment(l.Text) {
+			switch {
+			case ambiguousBlank(l):
+				problem(i, true, "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record; make it empty")
+			case cLen(l) == 2 && (l.Text[0] == ' ' || l.Text[0] == '\t'):
+				problem(i, true, "two-byte line inside a record: mhVTL's home-directory lookup (vtllib.c:1710) takes it as a blank line, vtllibrary and vtltape do not")
+			}
+		}
 		text := strings.TrimRight(l.Text, " \t\r")
 		switch {
 		case isBlank(text):
-			if cur >= 0 && ambiguousBlank(l) {
-				c.Problems = append(c.Problems, Problem{Line: i + 1, Ambiguous: true,
-					Msg: "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record; make it empty"})
-			}
 			if separates(l) {
 				closeAt(i)
 			}
@@ -213,10 +258,21 @@ func (c *DeviceConf) index() {
 				}
 				continue
 			}
-			st, ok := parseStanzaHeader(text)
+			st, trailing, ok := parseStanzaHeader(text)
 			if !ok {
-				problem(i, "malformed record header %q", text)
+				problem(i, false, "malformed record header %q", text)
 				continue
+			}
+			if trailing {
+				problem(i, true, "text after LUN in %q: mhVTL ignores it, but this header is not read as an address", text)
+			}
+			// mhVTL's parsers follow one kind of record each and only a
+			// blank line ends it (vtllibrary.c:677-740 and :1281-1293,
+			// vtltape.c:2134-2145): a header of the other kind leaves the
+			// open record running, so its attributes apply to both.
+			if cur >= 0 && c.stanzas[cur].Kind != st.Kind {
+				problem(i, true, "%s header with no blank line after %s %d: mhVTL reads what follows as part of %s %d too",
+					st.Kind, c.stanzas[cur].Kind, c.stanzas[cur].ID, c.stanzas[cur].Kind, c.stanzas[cur].ID)
 			}
 			// Column-1 comments right above the header belong to this
 			// stanza, not the one before it.
@@ -234,37 +290,84 @@ func (c *DeviceConf) index() {
 				continue
 			}
 			if cur < 0 {
-				problem(i, "attribute outside of a record")
+				problem(i, false, "attribute outside of a record")
 				continue
 			}
-			key, val, ok := strings.Cut(trimmed, ":")
+			rawKey, val, ok := strings.Cut(trimmed, ":")
 			if !ok {
-				problem(i, "expected 'Key: value'")
+				problem(i, false, "expected 'Key: value'")
 				continue
 			}
-			key = strings.TrimSpace(key)
+			if strings.TrimRight(rawKey, " \t") != rawKey {
+				// conf_value needs the ':' right after the name.
+				problem(i, true, "blank before ':' in %q: mhVTL ignores this line", trimmed)
+				continue
+			}
+			key := strings.Join(strings.Fields(rawKey), " ")
+			value := attrValue(val)
 			st := &c.stanzas[cur]
-			st.Attrs = append(st.Attrs, Attr{Key: key, Value: strings.TrimSpace(val), Line: i})
-			st.Attr[key] = i
+			st.Attrs = append(st.Attrs, Attr{Key: key, Value: value, Line: i})
+			if j, seen := st.Attr[key]; !seen || value != "" || c.attrValue(j) == "" {
+				st.Attr[key] = i
+			}
 		}
 	}
 	closeAt(len(c.lines))
+
+	type kindID struct {
+		kind string
+		id   int
+	}
+	first := map[kindID]int{}
+	for _, st := range c.stanzas {
+		k := kindID{st.Kind, st.ID}
+		if j, dup := first[k]; dup {
+			problem(st.HeaderLine, true, "duplicate %s %d (first at line %d): mhVTL applies both", st.Kind, st.ID, j+1)
+			continue
+		}
+		first[k] = st.HeaderLine
+	}
+	sort.SliceStable(c.Problems, func(a, b int) bool { return c.Problems[a].Line < c.Problems[b].Line })
+}
+
+// attrValue reads a value as conf_value does: leading blanks skipped, cut at
+// a '#' that follows a blank, trailing blanks and '\r' trimmed.
+func attrValue(v string) string {
+	v = strings.TrimLeft(v, " \t")
+	for i := 0; i+1 < len(v); i++ {
+		if (v[i] == ' ' || v[i] == '\t') && v[i+1] == '#' {
+			v = v[:i]
+			break
+		}
+	}
+	return strings.TrimRight(v, " \t\r\n")
+}
+
+// attrValue returns the value of the attribute on line i.
+func (c *DeviceConf) attrValue(i int) string {
+	_, v, _ := strings.Cut(c.lines[i].Text, ":")
+	return attrValue(v)
 }
 
 // parseStanzaHeader parses "Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00" or a
 // bare "Drive: 11", following the sscanf patterns in
 // mhvtl usr/cmd/vtllibrary.c:679-686.
-func parseStanzaHeader(text string) (Stanza, bool) {
+// trailing reports text after a full address, which mhVTL's sscanf ignores
+// but leaves HasAddress false here.
+func parseStanzaHeader(text string) (st Stanza, trailing, ok bool) {
 	f := strings.Fields(strings.ReplaceAll(text, ":", " "))
 	if len(f) < 2 || (f[0] != "Library" && f[0] != "Drive") ||
 		!strings.HasPrefix(text, f[0]+":") {
-		return Stanza{}, false
+		return Stanza{}, false, false
 	}
 	id, err := strconv.Atoi(f[1])
 	if err != nil {
-		return Stanza{}, false
+		return Stanza{}, false, false
 	}
-	st := Stanza{Kind: f[0], ID: id}
+	st = Stanza{Kind: f[0], ID: id}
+	if len(f) > 8 && f[2] == "CHANNEL" && f[4] == "TARGET" && f[6] == "LUN" {
+		trailing = true
+	}
 	if len(f) == 8 && f[2] == "CHANNEL" && f[4] == "TARGET" && f[6] == "LUN" {
 		var nums [3]int
 		ok := true
@@ -281,7 +384,7 @@ func parseStanzaHeader(text string) (Stanza, bool) {
 			st.Channel, st.Target, st.LUN = nums[0], nums[1], nums[2]
 		}
 	}
-	return st, true
+	return st, trailing, true
 }
 
 // Lines returns the file's lines. The slice must not be modified.
@@ -328,12 +431,23 @@ func (st Stanza) Get(key string) (string, bool) {
 // Render returns the file's bytes.
 func (c *DeviceConf) Render() []byte { return renderLines(c.lines) }
 
+// checkKV refuses what conf_value would not read back as written: a key
+// that is not in canonical form, a value with a line break or NUL, leading
+// or trailing blanks (trimmed), or a '#' after a blank (a comment), and a
+// line too long for readline.
 func checkKV(key, value string) error {
-	if key == "" || strings.ContainsAny(key, ":\r\n#") || strings.TrimSpace(key) != key {
+	if key == "" || strings.ContainsAny(key, ":\r\n#\x00") || strings.Join(strings.Fields(key), " ") != key {
 		return fmt.Errorf("invalid key %q", key)
 	}
-	if strings.ContainsAny(value, "\r\n") {
-		return fmt.Errorf("invalid value for %s: contains a line break", key)
+	switch {
+	case strings.ContainsAny(value, "\r\n\x00"):
+		return fmt.Errorf("invalid value for %s: contains a line break or NUL", key)
+	case strings.Trim(value, " \t") != value:
+		return fmt.Errorf("invalid value for %s: leading or trailing blanks", key)
+	case strings.Contains(value, " #") || strings.Contains(value, "\t#"):
+		return fmt.Errorf("invalid value for %s: a '#' after a blank starts a comment", key)
+	case len(attrText(key, value))+2 > maxLine+1:
+		return fmt.Errorf("invalid value for %s: line longer than %d bytes", key, maxLine)
 	}
 	return nil
 }
@@ -369,7 +483,19 @@ func (c *DeviceConf) SetAttr(kind string, id int, key, value string) error {
 		if sp == colon && value != "" {
 			prefix += " "
 		}
-		c.lines[i].Text = prefix + value
+		// A trailing comment stays, after a blank. With no value it goes:
+		// conf_value would take "# ..." as the value.
+		comment := ""
+		for j := sp; j+1 < len(text) && value != ""; j++ {
+			if (text[j] == ' ' || text[j] == '\t') && text[j+1] == '#' {
+				comment = text[j:]
+				break
+			}
+		}
+		if len(prefix)+len(value)+len(comment)+2 > maxLine+1 {
+			return fmt.Errorf("invalid value for %s: line longer than %d bytes", key, maxLine)
+		}
+		c.lines[i].Text = prefix + value + comment
 		c.index()
 		return nil
 	}
@@ -446,8 +572,13 @@ func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 	}
 	switch {
 	case last >= 0:
-		// Separator first, so the new stanza follows the old one's end.
-		c.lines = insertLines(c.lines, c.stanzas[last].End, append([]Line{{EOL: nl}}, block...))
+		// Separator first, so the new stanza follows the old one's end, and
+		// one after it unless a blank line is already there.
+		at := c.stanzas[last].End
+		if at < len(c.lines) && !separates(c.lines[at]) {
+			block = append(block, Line{EOL: nl})
+		}
+		c.lines = insertLines(c.lines, at, append([]Line{{EOL: nl}}, block...))
 	case h.Kind == "Library" && len(c.stanzas) > 0:
 		c.lines = insertLines(c.lines, c.stanzas[0].Start, append(block, Line{EOL: nl}))
 	default:
@@ -455,7 +586,7 @@ func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 		if len(c.stanzas) > 0 {
 			at = c.stanzas[len(c.stanzas)-1].End
 		}
-		if at > 0 && !isBlank(c.lines[at-1].Text) {
+		if at > 0 && !separates(c.lines[at-1]) {
 			block = append([]Line{{EOL: nl}}, block...)
 		}
 		c.lines = insertLines(c.lines, at, block)
@@ -464,19 +595,28 @@ func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 	return nil
 }
 
-// RemoveStanza removes a stanza with its leading comment block, and one
-// blank line next to it so no double gap is left behind.
+// RemoveStanza removes a stanza from Start to End: its leading comment
+// block, and the column-1 comments that follow it up to the next blank line
+// (such as the shipped "# fifo:" line, a commented-out attribute of that
+// record). When the next header follows with no blank line, every comment
+// between the two is the next header's leading block (see index), so it
+// stays. One blank line next to the stanza goes too, so no double gap is
+// left: the one before it, or at the top of the file the one after it. When
+// the next record abuts the stanza, no blank goes, so the records around it
+// never end up adjacent.
 func (c *DeviceConf) RemoveStanza(kind string, id int) error {
 	st, err := c.find(kind, id)
 	if err != nil {
 		return err
 	}
 	from, to := st.Start, st.End
-	switch {
-	case from > 0 && isBlank(c.lines[from-1].Text):
-		from--
-	case to < len(c.lines) && isBlank(c.lines[to].Text):
-		to++
+	if to == len(c.lines) || separates(c.lines[to]) {
+		switch {
+		case from > 0 && separates(c.lines[from-1]):
+			from--
+		case from == 0 && to < len(c.lines):
+			to++
+		}
 	}
 	c.lines = deleteLines(c.lines, from, to)
 	c.index()

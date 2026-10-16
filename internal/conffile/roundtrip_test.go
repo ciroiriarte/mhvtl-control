@@ -205,8 +205,11 @@ func TestAmbiguousBlank(t *testing.T) {
 	}
 
 	c = readConf(t, "ambiguous/crlf-space-blank.device.conf")
-	if len(c.Problems) != 1 || c.Problems[0].Line != 5 || !c.Problems[0].Ambiguous {
-		t.Errorf("problems = %+v, want one ambiguous on line 5", c.Problems)
+	// " \r" is not a separator to vtllibrary, so the Drive header after it
+	// opens while Library 10 is still being read: both are flagged.
+	if len(c.Problems) != 2 || c.Problems[0].Line != 5 || c.Problems[1].Line != 6 ||
+		!c.Problems[0].Ambiguous || !c.Problems[1].Ambiguous {
+		t.Errorf("problems = %+v, want ambiguous on lines 5 and 6", c.Problems)
 	}
 	// An empty CRLF line is a separator to every parser: not flagged.
 	if d11 := mustStanza(t, c, "Drive", 11); d11.End != d11.HeaderLine+2 {
@@ -219,10 +222,13 @@ func TestAmbiguousBlank(t *testing.T) {
 	}
 }
 
+// ambiguousCount counts ambiguous problems an edit could introduce. An
+// over-long last line with no newline is left out: it is the input's, and
+// only becomes one readline splits when an edit appends after it.
 func ambiguousCount(c *DeviceConf) int {
 	n := 0
 	for _, p := range c.Problems {
-		if p.Ambiguous {
+		if p.Ambiguous && !strings.Contains(p.Msg, "longer than") {
 			n++
 		}
 	}
