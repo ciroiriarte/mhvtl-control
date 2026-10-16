@@ -29,7 +29,7 @@ func TestMedia(t *testing.T) {
 		{"picker naming a cartridge with no home known", func(l *config.Library) {
 			l.PickerMedia = []config.Slot{{Number: 1, Barcode: "E09001L8"}}
 			l.HomeDir = ""
-		}, []string{"library 10 picker 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and no media home is known to look for it in"}, nil},
+		}, nil, []string{"library 10 picker 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and no media home is known to check that it exists"}},
 		{"MAP slot with an existing cartridge", func(l *config.Library) {
 			l.MAPs[0].Barcode = "E01001L8"
 			l.HomeDir = "testdata/homes/a"
