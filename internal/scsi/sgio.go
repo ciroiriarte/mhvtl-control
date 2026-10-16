@@ -1,5 +1,5 @@
 // Package scsi issues SCSI commands to Linux SCSI generic (/dev/sgN) nodes via
-// the SG_IO ioctl and builds/parses the CDBs and responses mhvtld needs to
+// the SG_IO ioctl and builds/parses the CDBs and responses mhvtl-control needs to
 // drive a medium changer (INQUIRY, MODE SENSE page 1Dh, READ ELEMENT STATUS,
 // MOVE MEDIUM).
 //

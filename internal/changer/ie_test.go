@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"mhvtld/internal/scsi"
+	"mhvtl-control/internal/scsi"
 )
 
 func TestInventoryMAPState(t *testing.T) {

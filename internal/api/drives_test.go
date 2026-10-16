@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
-	"mhvtld/internal/drivestats"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/drivestats"
 )
 
 type fakeDrives struct {

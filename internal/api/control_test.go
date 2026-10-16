@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
-	"mhvtld/internal/ipc"
-	"mhvtld/internal/scsi"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/ipc"
+	"mhvtl-control/internal/scsi"
 )
 
 func postJSON(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {

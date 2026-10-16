@@ -7,12 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"mhvtld/internal/api"
-	"mhvtld/internal/webui"
+	"mhvtl-control/internal/api"
+	"mhvtl-control/internal/webui"
 )
 
 // newServer builds the real API handler with the embedded dashboard wired in,
-// exactly as cmd/mhvtld does.
+// exactly as cmd/mhvtl-control does.
 func newServer() http.Handler {
 	return api.NewServer(api.Config{StaticFS: webui.FS()}).Handler()
 }

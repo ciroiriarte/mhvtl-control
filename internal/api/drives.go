@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
-	"mhvtld/internal/drivestats"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/drivestats"
 )
 
 // DriveStatsService reads a tape drive's statistics; implemented by

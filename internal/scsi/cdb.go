@@ -31,7 +31,7 @@ const (
 	ElementDTE       = 4 // data transfer (drive)
 )
 
-// INQUIRY peripheral device types mhvtld looks for.
+// INQUIRY peripheral device types mhvtl-control looks for.
 const (
 	PeripheralSequential    = 0x01 // SSC device (tape drive)
 	PeripheralMediumChanger = 0x08 // SMC device (medium changer)
@@ -102,7 +102,7 @@ func MoveMediumCDB(transport, source, dest uint16) []byte {
 // ErrShortResponse is returned when a response is too short to parse.
 var ErrShortResponse = errors.New("scsi: response too short")
 
-// StdInquiry is the subset of standard INQUIRY data mhvtld uses.
+// StdInquiry is the subset of standard INQUIRY data mhvtl-control uses.
 type StdInquiry struct {
 	PeripheralType uint8
 	Vendor         string

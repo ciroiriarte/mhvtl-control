@@ -8,9 +8,9 @@ import (
 	"os"
 	"strconv"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
-	"mhvtld/internal/scsi"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/scsi"
 )
 
 // slotDTO is a storage slot or MAP (mail) slot. Without live changer state,

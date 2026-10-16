@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"sort"
 
-	"mhvtld/internal/config"
+	"mhvtl-control/internal/config"
 )
 
 // Nodes are the device nodes of one SCSI device, as a backup application

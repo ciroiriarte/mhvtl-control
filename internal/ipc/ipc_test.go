@@ -270,7 +270,7 @@ func TestControllerQueueAbsent(t *testing.T) {
 func TestControllerOpensLazilyAndSurvivesQueueRecreation(t *testing.T) {
 	key := uniqueKey()
 	c := newTestController(key)
-	// mhVTL starts after mhvtld: the first command finds no queue...
+	// mhVTL starts after mhvtl-control: the first command finds no queue...
 	if err := c.Offline(10); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("before mhVTL: err = %v, want ErrUnavailable", err)
 	}
@@ -450,8 +450,8 @@ func TestControllerNoReplyTimesOut(t *testing.T) {
 }
 
 // Replies to vtlcmd (and the bay monitor), which share VTLCMD_Q, are neither
-// taken as mhvtld's nor consumed: they stay queued for their reader. That
-// includes a reply from the very library mhvtld is commanding.
+// taken as mhvtl-control's nor consumed: they stay queued for their reader. That
+// includes a reply from the very library mhvtl-control is commanding.
 func TestControllerLeavesVtlcmdRepliesAlone(t *testing.T) {
 	key := uniqueKey()
 	q := createQueue(t, key)

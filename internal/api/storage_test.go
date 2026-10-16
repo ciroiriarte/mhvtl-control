@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mhvtld/internal/rawdisk"
+	"mhvtl-control/internal/rawdisk"
 )
 
 func TestDisksHandlerUnformatted(t *testing.T) {

@@ -1,3 +1,3 @@
-module mhvtld
+module mhvtl-control
 
 go 1.22

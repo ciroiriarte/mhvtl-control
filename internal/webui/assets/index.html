@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>mhvtld — Virtual Tape Appliance</title>
+  <title>mhVTL Control</title>
   <link rel="stylesheet" href="static/css/themes.css">
 </head>
 <body>
   <div class="topbar">
-    <div class="brand">mh<span>vtld</span></div>
+    <div class="brand">mhVTL <span>Control</span></div>
     <!-- Active-node badge: Local (same-origin) or the remote URL, plus health. -->
     <div class="node-badge" id="node-badge" title="Active managed node">
       <span class="dot" id="node-health-dot"></span>
@@ -23,7 +23,7 @@
         <option value="modern">Modern</option>
         <option value="classic">Classic (mhvtl-gui)</option>
       </select>
-      <button class="btn sm" id="target-btn" title="Configure the mhvtld node this dashboard manages">Target…</button>
+      <button class="btn sm" id="target-btn" title="Configure the mhvtl-control node this dashboard manages">Target…</button>
       <button class="btn sm" id="refresh-btn">Refresh</button>
     </div>
   </div>
@@ -95,7 +95,7 @@
     <form method="dialog" id="target-form">
       <h3 id="target-dialog-title" style="margin:0 0 10px">Managed node</h3>
       <p class="muted" style="margin:0 0 12px">
-        Point this dashboard at a local or remote mhvtld. Leave the base URL
+        Point this dashboard at a local or remote mhvtl-control. Leave the base URL
         blank to use the node that served this page (same origin). The token is
         kept in memory only unless you choose to remember it on this device.
       </p>

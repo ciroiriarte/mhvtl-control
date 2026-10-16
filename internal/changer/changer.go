@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"mhvtld/internal/config"
-	"mhvtld/internal/scsi"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/scsi"
 )
 
 // Command timeouts. A move waits for the drive daemon to load or unload the

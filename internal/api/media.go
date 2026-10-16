@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
-	"mhvtld/internal/ipc"
-	"mhvtld/internal/media"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/ipc"
+	"mhvtl-control/internal/media"
 )
 
 // maxCreate bounds one media creation request.

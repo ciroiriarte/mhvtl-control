@@ -2,7 +2,7 @@ name: release
 
 # Pushing a v<version> tag builds static binaries and packages and attaches
 # them to a GitHub release for that tag. The tag must match the version in
-# debian/changelog, rpm/mhvtld.spec and dist/mhvtld.8.
+# debian/changelog, rpm/mhvtl-control.spec and dist/mhvtl-control.8.
 on:
   push:
     tags: ['v*']
@@ -21,9 +21,9 @@ jobs:
         name: tag matches the packaging versions
         run: |
           v=${GITHUB_REF_NAME#v}
-          deb=$(sed -nE '1s/^mhvtld \(([^)]*)-[^-)]*\).*/\1/p' debian/changelog)
-          rpm=$(sed -n 's/^Version:[[:space:]]*//p' rpm/mhvtld.spec)
-          man=$(sed -nE '1s/.*"mhvtld ([^"]*)".*/\1/p' dist/mhvtld.8)
+          deb=$(sed -nE '1s/^mhvtl-control \(([^)]*)-[^-)]*\).*/\1/p' debian/changelog)
+          rpm=$(sed -n 's/^Version:[[:space:]]*//p' rpm/mhvtl-control.spec)
+          man=$(sed -nE '1s/.*"mhvtl-control ([^"]*)".*/\1/p' dist/mhvtl-control.8)
           echo "tag $v, debian $deb, rpm $rpm, man $man"
           for got in "$deb" "$rpm" "$man"; do
             [ "$got" = "$v" ] || { echo "::error::version mismatch: $got != $v"; exit 1; }
@@ -51,13 +51,13 @@ jobs:
         run: |
           v=${{ needs.check.outputs.version }}
           GOARCH=${{ matrix.arch }} make build VERSION=$v
-          d=mhvtld-$v-linux-${{ matrix.arch }}
-          mkdir $d && cp bin/mhvtld LICENSE README.md dist/mhvtld.service dist/mhvtld.env dist/mhvtld.8 $d/
+          d=mhvtl-control-$v-linux-${{ matrix.arch }}
+          mkdir $d && cp bin/mhvtl-control LICENSE README.md dist/mhvtl-control.service dist/mhvtl-control.env dist/mhvtl-control.8 $d/
           tar -czf $d.tar.gz $d
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bin-${{ matrix.arch }}
-          path: mhvtld-*.tar.gz
+          path: mhvtl-control-*.tar.gz
 
   deb:
     needs: check
@@ -74,7 +74,7 @@ jobs:
           apt-get install -y -qq --no-install-recommends build-essential debhelper golang-go lintian
           dpkg-buildpackage -b -us -uc
           lintian --fail-on error ../*.changes
-          mkdir out && cp ../mhvtld_*.deb out/
+          mkdir out && cp ../mhvtl-control_*.deb out/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deb-${{ matrix.runner }}
@@ -103,9 +103,9 @@ jobs:
           v=${{ needs.check.outputs.version }}
           top=$PWD/rpmbuild
           mkdir -p $top/SOURCES
-          tar --exclude=./rpmbuild --exclude=./.git --transform "s,^\.,mhvtld-$v," -czf $top/SOURCES/mhvtld-$v.tar.gz .
-          rpmbuild -bb --define "_topdir $top" rpm/mhvtld.spec
-          mkdir out && cp $top/RPMS/*/mhvtld-*.rpm out/
+          tar --exclude=./rpmbuild --exclude=./.git --transform "s,^\.,mhvtl-control-$v," -czf $top/SOURCES/mhvtl-control-$v.tar.gz .
+          rpmbuild -bb --define "_topdir $top" rpm/mhvtl-control.spec
+          mkdir out && cp $top/RPMS/*/mhvtl-control-*.rpm out/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rpm-${{ strategy.job-index }}
@@ -126,4 +126,4 @@ jobs:
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "mhvtld ${GITHUB_REF_NAME#v}" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "mhvtl-control ${GITHUB_REF_NAME#v}" --generate-notes

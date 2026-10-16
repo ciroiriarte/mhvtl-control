@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/ipc"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/ipc"
 )
 
 func TestMove(t *testing.T) {

@@ -13,10 +13,10 @@ import (
 	"strings"
 	"testing"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
-	"mhvtld/internal/ipc"
-	"mhvtld/internal/media"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/ipc"
+	"mhvtl-control/internal/media"
 )
 
 // fakeMedia is a MediaService that records calls and creates the cartridge

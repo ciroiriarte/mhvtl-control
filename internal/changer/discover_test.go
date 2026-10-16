@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"mhvtld/internal/scsi"
+	"mhvtl-control/internal/scsi"
 )
 
 func TestLocatorFindBySerial(t *testing.T) {

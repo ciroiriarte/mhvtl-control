@@ -1,7 +1,0 @@
-# The options file may hold the API bearer token.
-mhvtld: non-standard-file-perm 0600 != 0644 [etc/mhvtl/mhvtld.env]
-# Not uploaded to the Debian archive, so there is no ITP bug to close.
-mhvtld: initial-upload-closes-no-bugs [usr/share/doc/mhvtld/changelog.Debian.gz:1]
-# A Go PIE built with CGO_ENABLED=0 links no libraries, so it has no
-# DT_NEEDED on libc; it only needs the dynamic loader.
-mhvtld: shared-library-lacks-prerequisites [usr/bin/mhvtld]

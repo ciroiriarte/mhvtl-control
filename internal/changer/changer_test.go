@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"mhvtld/internal/config"
-	"mhvtld/internal/scsi"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/scsi"
 )
 
 // sim is a medium changer simulated at the CDB level, answering the commands

@@ -1,5 +1,5 @@
 /*
- * mhvtld dashboard — pure, framework-free helpers.
+ * mhvtl-control dashboard — pure, framework-free helpers.
  *
  * Security-critical: these are the ONLY sanctioned encoders for API-derived
  * data. app.js must route every interpolated value through esc()/attr() when a

@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: mhvtld
+Upstream-Name: mhvtl-control
 Upstream-Contact: Ciro Iriarte <ciro.iriarte@gmail.com>
-Source: https://github.com/ciroiriarte/mhvtld
+Source: https://github.com/ciroiriarte/mhvtl-control
 
 Files: *
 Copyright: 2026 Ciro Iriarte <ciro.iriarte@gmail.com>

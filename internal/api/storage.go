@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"mhvtld/internal/rawdisk"
+	"mhvtl-control/internal/rawdisk"
 )
 
 // mvtlDTO is the decoded MVTL superblock summary shared by the disk listing

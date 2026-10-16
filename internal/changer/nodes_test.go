@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"mhvtld/internal/config"
+	"mhvtl-control/internal/config"
 )
 
 // fakeNodes lays out what bench-debian13 shows for an STK L700 changer

@@ -1,5 +1,5 @@
 /*
- * mhvtld dashboard client (framework-free, no build step).
+ * mhvtl-control dashboard client (framework-free, no build step).
  *
  * Security + operational-correctness rewrite (P0 hardening):
  *   - XSS-safe: ALL API-derived DOM is built with createElement + textContent /
@@ -51,10 +51,10 @@
   var lastMedia = null; // { libId, gen, data }
 
   /* ---- localStorage (errors surfaced, never silently implying success) -- */
-  var LS_THEME = "mhvtld.theme";
-  var LS_ORIGIN = "mhvtld.origin";
-  var LS_TOKEN = "mhvtld.token";
-  var LS_REMEMBER = "mhvtld.remember";
+  var LS_THEME = "mhvtl-control.theme";
+  var LS_ORIGIN = "mhvtl-control.origin";
+  var LS_TOKEN = "mhvtl-control.token";
+  var LS_REMEMBER = "mhvtl-control.remember";
 
   function lsGet(k) {
     try { return localStorage.getItem(k); } catch (e) { return null; }

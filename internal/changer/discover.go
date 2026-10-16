@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"mhvtld/internal/config"
-	"mhvtld/internal/scsi"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/scsi"
 )
 
 // inquiryTimeout bounds the INQUIRY fallback used during discovery.

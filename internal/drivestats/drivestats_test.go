@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
-	"mhvtld/internal/scsi"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/scsi"
 )
 
 // param builds one log parameter with control byte 0x40.

@@ -1,4 +1,4 @@
-// Command mhvtld is the mhVTL management daemon.
+// Command mhvtl-control is the mhVTL management daemon.
 package main
 
 import (
@@ -16,13 +16,13 @@ import (
 	"syscall"
 	"time"
 
-	"mhvtld/internal/api"
-	"mhvtld/internal/changer"
-	"mhvtld/internal/drivestats"
-	"mhvtld/internal/ipc"
-	"mhvtld/internal/media"
-	"mhvtld/internal/rawdisk"
-	"mhvtld/internal/webui"
+	"mhvtl-control/internal/api"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/drivestats"
+	"mhvtl-control/internal/ipc"
+	"mhvtl-control/internal/media"
+	"mhvtl-control/internal/rawdisk"
+	"mhvtl-control/internal/webui"
 )
 
 // version is set at build time: -ldflags "-X main.version=0.1.0".
@@ -32,7 +32,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	listen := flag.String("listen", "127.0.0.1:8080", "address to listen on")
 	configDir := flag.String("config-dir", "/etc/mhvtl", "directory holding device.conf and library_contents.<id>")
-	apiToken := flag.String("api-token", "", "bearer token required on /api/v1/* (falls back to MHVTLD_API_TOKEN)")
+	apiToken := flag.String("api-token", "", "bearer token required on /api/v1/* (falls back to MHVTL_CONTROL_API_TOKEN)")
 	corsOrigin := flag.String("cors-origin", "", "Access-Control-Allow-Origin value; empty disables CORS")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file (enables HTTPS with --tls-key)")
 	tlsKey := flag.String("tls-key", "", "TLS key file (enables HTTPS with --tls-cert)")
@@ -57,13 +57,13 @@ func main() {
 	homeDir := flag.String("home-dir", "/var/lib/mhvtl", "media home of a library device.conf and mhvtl.conf give none for")
 	flag.Parse()
 	if *showVersion {
-		fmt.Println("mhvtld", version)
+		fmt.Println("mhvtl-control", version)
 		return
 	}
 
 	token := *apiToken
 	if token == "" {
-		token = os.Getenv("MHVTLD_API_TOKEN")
+		token = os.Getenv("MHVTL_CONTROL_API_TOKEN")
 	}
 
 	host, _, err := net.SplitHostPort(*listen)
@@ -114,10 +114,10 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() {
 		if *tlsCert != "" && *tlsKey != "" {
-			log.Printf("mhvtld %s listening on %s (TLS)", version, *listen)
+			log.Printf("mhvtl-control %s listening on %s (TLS)", version, *listen)
 			errCh <- srv.ListenAndServeTLS(*tlsCert, *tlsKey)
 		} else {
-			log.Printf("mhvtld %s listening on %s", version, *listen)
+			log.Printf("mhvtl-control %s listening on %s", version, *listen)
 			errCh <- srv.ListenAndServe()
 		}
 	}()

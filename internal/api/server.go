@@ -1,4 +1,4 @@
-// Package api implements the mhvtld REST API.
+// Package api implements the mhvtl-control REST API.
 package api
 
 import (
@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
-	"mhvtld/internal/ipc"
-	"mhvtld/internal/media"
-	"mhvtld/internal/rawdisk"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/ipc"
+	"mhvtl-control/internal/media"
+	"mhvtl-control/internal/rawdisk"
 )
 
 var startTime = time.Now()
@@ -174,7 +174,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("mhvtld"))
+			_, _ = w.Write([]byte("mhvtl-control"))
 		})
 	}
 

@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
 )
 
 // etcDir holds copies of mhVTL's sample etc/device.conf and library_contents.10.

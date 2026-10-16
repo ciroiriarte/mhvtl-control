@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
-	"mhvtld/internal/scsi"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/scsi"
 )
 
 // logSenseTimeout bounds one LOG SENSE.

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"mhvtld/internal/changer"
-	"mhvtld/internal/config"
-	"mhvtld/internal/media"
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/media"
 )
 
 // mapImportRequest names the cartridge to put into the MAP. Store moves it on

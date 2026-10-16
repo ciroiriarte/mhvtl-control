@@ -1,7 +1,7 @@
 [Unit]
 Description=mhVTL management daemon (REST API and web dashboard)
-Documentation=https://github.com/ciroiriarte/mhvtld
-# Ordered after mhVTL when both start, but not tied to it: mhvtld opens the
+Documentation=https://github.com/ciroiriarte/mhvtl-control
+# Ordered after mhVTL when both start, but not tied to it: mhvtl-control opens the
 # message queue and finds the changers on demand, so it may start first and
 # survives mhVTL restarts.
 After=network.target mhvtl.target
@@ -13,12 +13,12 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/mhvtl/mhvtld.env
-ExecStart=/usr/bin/mhvtld $MHVTLD_OPTS
+EnvironmentFile=-/etc/mhvtl/mhvtl-control.env
+ExecStart=/usr/bin/mhvtl-control $MHVTL_CONTROL_OPTS
 Restart=on-failure
 RestartSec=5
 
-# mhvtld runs as root: the mhVTL message queue is root's (mode 0660), and it
+# mhvtl-control runs as root: the mhVTL message queue is root's (mode 0660), and it
 # opens /dev/sg* and the disks it formats, all root-owned. Every capability
 # is dropped but CAP_DAC_OVERRIDE, which lets mktape and edit_tape write media
 # homes owned by another user: mhVTL ran as user "vtl" until 2018, and older

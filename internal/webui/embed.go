@@ -1,4 +1,4 @@
-// Package webui embeds the mhvtld dashboard (HTML/CSS/JS) into the binary so
+// Package webui embeds the mhvtl-control dashboard (HTML/CSS/JS) into the binary so
 // the daemon is self-contained and serves its web UI from any working
 // directory, with no external asset files.
 package webui

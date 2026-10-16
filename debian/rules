@@ -2,9 +2,9 @@
 
 include /usr/share/dpkg/pkg-info.mk
 
-# The build must not write to $HOME or reach the network: mhvtld uses only the
-# Go standard library, so the module cache is never needed, and the build cache
-# lives in the build tree.
+# The build must not write to $HOME or reach the network: mhvtl-control uses
+# only the Go standard library, so the module cache is never needed, and the
+# build cache lives in the build tree.
 export GOCACHE = $(CURDIR)/debian/.gocache
 export GOTOOLCHAIN = local
 export GOFLAGS = -mod=readonly
@@ -27,19 +27,19 @@ ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
 endif
 
 override_dh_auto_install:
-	$(MAKE) install $(MAKE_VARS) DESTDIR=$(CURDIR)/debian/mhvtld
+	$(MAKE) install $(MAKE_VARS) DESTDIR=$(CURDIR)/debian/mhvtl-control
 
 # The options file may hold the API token.
 override_dh_fixperms:
 	dh_fixperms
-	chmod 0600 debian/mhvtld/etc/mhvtl/mhvtld.env
+	chmod 0600 debian/mhvtl-control/etc/mhvtl/mhvtl-control.env
 
 # dwz does not understand the DWARF the Go linker writes.
 override_dh_dwz:
 
 # Not enabled on install: the operator decides whether and where to expose
 # the dashboard. deb-systemd-invoke doesn't start a disabled unit, so a fresh
-# install starts nothing, and an upgrade restarts mhvtld only where it is
+# install starts nothing, and an upgrade restarts mhvtl-control only where it is
 # enabled.
 override_dh_installsystemd:
 	dh_installsystemd --no-enable
