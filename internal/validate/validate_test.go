@@ -28,6 +28,45 @@ func shipped(t *testing.T) config.Inventory {
 	return inv
 }
 
+// gen loads testdata/gen: the device.conf and library_contents.10 and .30
+// that upstream c65bff0's generate_device_conf and generate_library_contents
+// write (home directory made relative).
+func gen(t *testing.T) config.Inventory {
+	t.Helper()
+	inv, err := config.LoadInventory("testdata/gen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inv
+}
+
+// The generated configuration validates as it is, under every changer
+// personality, with and without NAAs.
+func TestGeneratedIsValid(t *testing.T) {
+	cur := gen(t)
+	if r := Validate(cur, clone(cur), nil, nil, Options{}); !r.OK() {
+		t.Errorf("errors: %v", r.Errors)
+	}
+	for _, vp := range [][2]string{{"IBM", "03584L32"}, {"IBM", "3573-TL"}, {"HP", "MSL G3 Series"}, {"HP", "EML E-Series"},
+		{"SPECTRA", "PYTHON"}, {"SPECTRA", "215"}, {"QUANTUM", "Scalar i6000"}, {"OVERLAND", "OVERLAND NEO"}, {"MHVTL", "VTL"}} {
+		for _, dropNAA := range []bool{false, true} {
+			c := gen(t)
+			for i := range c.Libraries {
+				c.Libraries[i].Vendor, c.Libraries[i].Product = vp[0], vp[1]
+				if dropNAA {
+					c.Libraries[i].NAA = ""
+					for j := range c.Libraries[i].Drives {
+						c.Libraries[i].Drives[j].NAA = ""
+					}
+				}
+			}
+			if r := Validate(c, clone(c), nil, nil, Options{}); !r.OK() {
+				t.Errorf("%v without NAAs %v: %v", vp, dropNAA, r.Errors)
+			}
+		}
+	}
+}
+
 // driveLines returns the lines "Drive 1:" to "Drive n:".
 func driveLines(n int) []config.DriveLine {
 	var out []config.DriveLine

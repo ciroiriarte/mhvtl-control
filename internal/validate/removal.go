@@ -1,10 +1,6 @@
 package validate
 
-import (
-	"fmt"
-
-	"mhvtl-control/internal/config"
-)
+import "mhvtl-control/internal/config"
 
 // displaced is a cartridge of cur that next drops from the library.
 type displaced struct {
@@ -12,14 +8,15 @@ type displaced struct {
 }
 
 // checkRemovals refuses to let a cartridge leave a library without a
-// Disposition saying where it goes. A cartridge leaves when cur has it, in
-// library_contents (slot, MAP slot or picker) or live, and next has it
-// nowhere in the same library: in no slot, MAP slot or picker of the file,
-// and in no drive live. Whether its slot was deleted, cleared or became a
-// gap makes no difference; otherwise it would silently leave the library at
-// the next restart. A cartridge that moves within the library needs none.
-// Deleting a whole library is not covered here: its cartridges stay in its
-// home (AC 12).
+// Disposition saying where it goes. The apply writes next's library_contents
+// merged with the live placement (Merge), so a cartridge leaves when it is in
+// the placement in force, Merge(cur, cur), and nowhere in Merge(cur, next) or
+// a live drive: its element was deleted, next put another barcode there, or,
+// with the live state unknown, next's file no longer lists it. Otherwise it
+// would silently leave the library at the next restart. A cartridge that
+// moves within the library needs none, and one imported at run time stays
+// where it is. Deleting a whole library is not covered here: its cartridges
+// stay in its home (AC 12).
 func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Options) {
 	byLib := map[int][]Disposition{}
 	for _, d := range opts.Dispositions {
@@ -39,51 +36,31 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 			continue
 		}
 		lp, haveLive := live.library(lib.ID)
-		keptSlots, keptMAPs := map[int]string{}, map[int]string{}
-		highest := 0
-		for _, s := range lib.Slots {
-			keptSlots[s.Number] = s.Barcode
-			highest = max(highest, s.Number)
+		keptSlots, keptMAPs := fileSlots(lib), fileMAPs(lib)
+		// Decide on the placement the apply writes: next's file merged with
+		// the live placement (Merge). A cartridge in a live drive counts as
+		// present even when next deletes the drive: the apply refuses a loaded
+		// drive it affects (plan 3.3, drive_loaded) and places the cartridge
+		// in a slot when forced.
+		var livep *Placement
+		if haveLive {
+			livep = &lp
 		}
-		// vtllibrary makes an empty slot for each number the Slot lines skip
-		// (usr/cmd/vtllibrary.c:1054-1064, upstream master c65bff0).
-		for n := 1; n < highest; n++ {
-			if _, ok := keptSlots[n]; !ok {
-				keptSlots[n] = ""
-			}
+		bay := bayCartridge(homeOf(lib, opts))
+		present := map[string]bool{}
+		for _, c := range Merge(old, lib, livep, bay).cartridges() {
+			present[c.barcode] = true
 		}
-		for _, m := range lib.MAPs {
-			keptMAPs[m.Number] = m.Barcode
-		}
-		present := barcodes(listed(lib))
 		for _, b := range lp.Drives {
-			if b != "" {
-				present[b] = true
-			}
+			present[b] = true
 		}
-
 		var gone []displaced
 		seen := map[string]bool{}
-		add := func(b, where string) {
-			if b != "" && !seen[b] && !present[b] {
-				seen[b] = true
-				gone = append(gone, displaced{b, where})
+		for _, c := range Merge(old, old, livep, bay).cartridges() {
+			if !present[c.barcode] {
+				seen[c.barcode] = true
+				gone = append(gone, c)
 			}
-		}
-		for _, s := range old.Slots {
-			add(s.Barcode, fmt.Sprintf("slot %d", s.Number))
-		}
-		for _, n := range sortedKeys(lp.Slots) {
-			add(lp.Slots[n], fmt.Sprintf("slot %d", n))
-		}
-		for _, m := range old.MAPs {
-			add(m.Barcode, fmt.Sprintf("MAP slot %d", m.Number))
-		}
-		for _, n := range sortedKeys(lp.MAPs) {
-			add(lp.MAPs[n], fmt.Sprintf("MAP slot %d", n))
-		}
-		for _, p := range old.PickerMedia {
-			add(p.Barcode, fmt.Sprintf("picker %d", p.Number))
 		}
 
 		disp := map[string]Disposition{}
