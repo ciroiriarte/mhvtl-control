@@ -55,10 +55,21 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 				r.warnf(CodeMediaNoDrives, lib.ID, els, "library %d %s: %s is %s media, but the library has no drives", lib.ID, where, barcode, name)
 				return
 			}
+			// make_vtl_media makes it a WORM cartridge by its barcode
+			// (set_media_type), and vtltape loads one only in a drive whose
+			// personality supports WORM (personality.DriveModel.WORM).
+			worm := personality.BarcodeMediaType(barcode) == "WORM"
+			reads := false
 			for _, m := range models {
-				if m.Reads(name) {
+				if m.Reads(name) && (!worm || m.WORM) {
 					return
 				}
+				reads = reads || m.Reads(name)
+			}
+			if reads {
+				r.errorf(CodeMediaWORM, lib.ID, els, "library %d %s: %s is %s WORM media (from its barcode), and none of the library's drives (%s) that load %s supports WORM",
+					lib.ID, where, barcode, name, strings.Join(products, ", "), name)
+				return
 			}
 			r.errorf(CodeMediaUnreadable, lib.ID, els, "library %d %s: %s is %s media (from its barcode), which none of the library's drives (%s) loads",
 				lib.ID, where, barcode, name, strings.Join(products, ", "))

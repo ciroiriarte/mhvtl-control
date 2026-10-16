@@ -40,6 +40,7 @@ const (
 	CodeMediaUnknownType = "media.unknown_type"
 	CodeMediaDensity     = "media.density"
 	CodeMediaNoDrives    = "media.no_drives"
+	CodeMediaWORM        = "media.worm"
 	CodeMediaUnreadable  = "media.unreadable"
 
 	CodeBarcodeLength      = "barcode.length"

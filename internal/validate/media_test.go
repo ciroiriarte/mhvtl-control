@@ -58,6 +58,15 @@ func TestMedia(t *testing.T) {
 		{"a density make_vtl_media derives but mktape rejects", func(l *config.Library) {
 			l.Slots[0].Barcode = "E09001TK"
 		}, []string{"its barcode gives density T10KK, which mktape does not accept"}, nil},
+		{"WORM media in a drive without WORM support", func(l *config.Library) {
+			l.Drives = l.Drives[:1]
+			l.Drives[0].Product = "ULT3580-TD2"
+			l.Slots = []config.Slot{{Number: 1, Barcode: "W00001L2"}, {Number: 2, Barcode: "E00002L2"}}
+			l.MAPs = nil
+		}, []string{"library 10 slot 1: W00001L2 is LTO2 WORM media (from its barcode), and none of the library's drives (ULT3580-TD2) that load LTO2 supports WORM"}, nil},
+		{"WORM media in a drive with WORM support", func(l *config.Library) {
+			l.Slots[0].Barcode = "W00001L6"
+		}, nil, nil},
 		{"no drives", func(l *config.Library) {
 			l.Drives = nil
 			l.Slots = l.Slots[:1]
