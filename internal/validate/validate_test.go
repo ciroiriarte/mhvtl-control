@@ -32,8 +32,9 @@ func shipped(t *testing.T) config.Inventory {
 }
 
 // gen loads testdata/gen: the device.conf and library_contents.10 and .30
-// that upstream c65bff0's generate_device_conf and generate_library_contents
-// write (home directory made relative).
+// that upstream generate_device_conf and generate_library_contents write
+// (home directory made relative). Master 993b193 writes them byte for byte as
+// c65bff0, where they were made, did.
 func gen(t *testing.T) config.Inventory {
 	t.Helper()
 	inv, err := config.LoadInventory("testdata/gen")
