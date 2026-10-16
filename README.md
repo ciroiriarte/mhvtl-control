@@ -67,10 +67,15 @@ mhvtl-control serves three endpoints for monitoring:
   [Prometheus text format](https://prometheus.io/docs/instrumenting/exposition_formats/),
   plus mhvtl-control's own request counters. A collection is reused for 10
   seconds, so several scrapers don't each query the changers and drives.
+  A scrape never waits behind a cartridge move: a changer busy with one
+  reports `mhvtl_library_busy 1` and its last known state, and while a
+  collection is still running the previous one is served, its age in
+  `mhvtl_control_metrics_age_seconds`.
 - `GET /readyz`: `200` when `device.conf` parses, every library's changer
-  answers, and every attached raw-disk cartridge has a readable superblock;
-  `503` otherwise. The JSON body lists each check and why it failed. The
-  message queue is not checked.
+  answers (or is busy with a move), and every attached raw-disk cartridge has
+  a readable superblock; `503` otherwise. It reads the same cached collection,
+  so probes add no SCSI or disk I/O of their own. The JSON body lists each
+  check and why it failed. The message queue is not checked.
 - `GET /healthz`: `200` while mhvtl-control is running, without checking
   mhVTL.
 

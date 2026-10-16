@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"mhvtl-control/internal/scsi"
 )
@@ -35,6 +36,29 @@ func TestInventoryMAPState(t *testing.T) {
 	if inv.MAPOpen != nil {
 		t.Fatalf("library without a MAP: MAPOpen = %v, want nil", *inv.MAPOpen)
 	}
+}
+
+func TestTryInventoryBusy(t *testing.T) {
+	m, _ := managerFor(newSim(ibmMap))
+	if _, err := m.TryInventory(testLib()); err != nil {
+		t.Fatalf("TryInventory on an idle changer: %v", err)
+	}
+	l := m.lock(testLib().ID) // as a move in progress holds it
+	l.Lock()
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.TryInventory(testLib())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrBusy) {
+			t.Fatalf("TryInventory during a move: %v, want ErrBusy", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("TryInventory waited for the move")
+	}
+	l.Unlock()
 }
 
 func TestInventoryLocate(t *testing.T) {

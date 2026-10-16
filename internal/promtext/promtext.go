@@ -115,7 +115,8 @@ var (
 )
 
 // escapeLabel escapes a label value: backslash, double quote and line feed.
-func escapeLabel(s string) string { return labelEscaper.Replace(s) }
+// The format is UTF-8, so invalid bytes (a home path, say) become U+FFFD.
+func escapeLabel(s string) string { return labelEscaper.Replace(strings.ToValidUTF8(s, "\uFFFD")) }
 
 // escapeHelp escapes HELP text: backslash and line feed.
 func escapeHelp(s string) string { return helpEscaper.Replace(s) }

@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestWriteTo(t *testing.T) {
@@ -61,5 +62,17 @@ func TestFormatValue(t *testing.T) {
 	}
 	if got := formatValue(math.NaN()); got != "NaN" {
 		t.Errorf("NaN = %q", got)
+	}
+}
+
+func TestEscapeLabelInvalidUTF8(t *testing.T) {
+	var s Set
+	s.Family("m", "h", Gauge).Set(1, "home", "/srv/caf\xe9")
+	var b strings.Builder
+	if _, err := s.WriteTo(&b); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "m{home=\"/srv/caf\uFFFD\"} 1\n") || !utf8.ValidString(b.String()) {
+		t.Fatalf("got %q", b.String())
 	}
 }

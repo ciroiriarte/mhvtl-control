@@ -64,6 +64,9 @@ type Config struct {
 // *changer.Manager.
 type ChangerService interface {
 	Inventory(lib config.Library) (changer.Inventory, error)
+	// TryInventory is Inventory, but returns changer.ErrBusy instead of
+	// waiting for an operation in progress.
+	TryInventory(lib config.Library) (changer.Inventory, error)
 	Mount(lib config.Library, driveID int, from changer.Source) (changer.Move, error)
 	Unmount(lib config.Library, driveID, toSlot int) (changer.Move, error)
 	Transfer(lib config.Library, from, to changer.Location) (changer.Move, error)

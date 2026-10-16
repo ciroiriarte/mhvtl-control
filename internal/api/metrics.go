@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -11,23 +12,106 @@ import (
 	"syscall"
 	"time"
 
+	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/drivestats"
 	"mhvtl-control/internal/media"
 	"mhvtl-control/internal/promtext"
 )
 
-// metricsTTL is how long a collection is served before the next scrape
-// collects again. It bounds how often scrapes reach the changers and drives,
-// however many Prometheus servers scrape and however often.
+// metricsTTL is how long a collection is served before a request starts
+// the next one. It bounds how often scrapes and probes reach the changers,
+// drives and raw disks, however many clients ask and however often.
 const metricsTTL = 10 * time.Second
 
-// metricsCache holds the last collection. mu is held while collecting, so
-// concurrent scrapes wait for one collection instead of each starting one.
+// metricsWait is how long a request waits for a collection it started before
+// it serves the previous one instead.
+const metricsWait = 2 * time.Second
+
+// metricsCache holds the last collection: the metrics body and the readiness
+// checks computed with it. Collections run one at a time, each in its own
+// goroutine. A request that finds a previous collection never waits longer
+// than wait for a new one, and not at all when one is already running, so a
+// scrape or probe does not queue behind a cartridge move.
 type metricsCache struct {
-	mu   sync.Mutex
-	at   time.Time
-	body []byte
+	ttl, wait time.Duration // metricsTTL and metricsWait when zero
+
+	mu      sync.Mutex
+	at      time.Time
+	body    []byte
+	checks  []readyCheck
+	running chan struct{} // closed when the running collection ends
+
+	// live is each library's last inventory, reported while its changer is
+	// busy with a move. Only the running collection uses it.
+	live map[int]changer.Inventory
+}
+
+// collection is one finished collection.
+type collection struct {
+	at     time.Time
+	body   []byte
+	checks []readyCheck
+}
+
+// latest returns the latest collection, starting a new one when the cached
+// one is older than the TTL. It waits for the new one only when it started
+// it (up to the wait) or when there is no collection yet; ctx ends the wait
+// early. ok is false when no collection has finished.
+func (s *Server) latest(ctx context.Context) (col collection, ok bool) {
+	c := &s.metrics
+	c.mu.Lock()
+	ttl, wait := c.ttl, c.wait
+	if ttl == 0 {
+		ttl = metricsTTL
+	}
+	if wait == 0 {
+		wait = metricsWait
+	}
+	have := c.body != nil
+	fresh := have && time.Since(c.at) < ttl
+	started := false
+	if !fresh && c.running == nil {
+		c.running, started = make(chan struct{}), true
+		go s.refresh(c.running)
+	}
+	running := c.running
+	c.mu.Unlock()
+
+	if !fresh && (started || !have) {
+		var timeout <-chan time.Time
+		if have {
+			t := time.NewTimer(wait)
+			defer t.Stop()
+			timeout = t.C
+		}
+		select {
+		case <-running:
+		case <-timeout:
+		case <-ctx.Done():
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return collection{at: c.at, body: c.body, checks: c.checks}, c.body != nil
+}
+
+// refresh runs one collection, stores it and closes done.
+func (s *Server) refresh(done chan struct{}) {
+	var set promtext.Set
+	start := time.Now()
+	checks := s.collect(&set)
+	set.Family("mhvtl_control_collect_duration_seconds",
+		"Time the last collection of library, media and drive state took.", promtext.Gauge).
+		Set(time.Since(start).Seconds())
+	var b bytes.Buffer
+	_, _ = set.WriteTo(&b)
+
+	c := &s.metrics
+	c.mu.Lock()
+	c.body, c.checks, c.at, c.running = b.Bytes(), checks, time.Now(), nil
+	c.mu.Unlock()
+	close(done)
 }
 
 // requestCounter counts handled requests by route pattern and status code.
@@ -49,35 +133,23 @@ func (c *requestCounter) add(route string, code int) {
 }
 
 // handleMetrics serves GET /metrics in the Prometheus text format: the
-// cached collection of library, media, home and drive state, then the
-// daemon's own counters, which are always current.
-func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
-	body := s.collectCached()
+// latest collection of library, media, home and drive state, then the
+// daemon's own metrics, which are always current.
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	col, ok := s.latest(r.Context())
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "no collection has finished yet")
+		return
+	}
 	var own promtext.Set
 	s.ownMetrics(&own)
+	own.Family("mhvtl_control_metrics_age_seconds",
+		"Age of the collection served: above the 10s cache while a collection is still running.", promtext.Gauge).
+		Set(time.Since(col.at).Seconds())
 	w.Header().Set("Content-Type", promtext.ContentType)
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	_, _ = w.Write(col.body)
 	_, _ = own.WriteTo(w)
-}
-
-func (s *Server) collectCached() []byte {
-	c := &s.metrics
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.body != nil && time.Since(c.at) < metricsTTL {
-		return c.body
-	}
-	var set promtext.Set
-	start := time.Now()
-	s.collect(&set)
-	set.Family("mhvtl_control_collect_duration_seconds",
-		"Time the last collection of library, media and drive state took.", promtext.Gauge).
-		Set(time.Since(start).Seconds())
-	var b bytes.Buffer
-	_, _ = set.WriteTo(&b)
-	c.body, c.at = b.Bytes(), time.Now()
-	return c.body
 }
 
 // ownMetrics adds the daemon's build info and request counters.
@@ -93,69 +165,107 @@ func (s *Server) ownMetrics(set *promtext.Set) {
 	}
 }
 
-// collect adds library, media, home filesystem and drive metrics. A library
-// whose changer cannot be read reports mhvtl_library_up 0 and no live
-// gauges; a drive whose statistics cannot be read reports
+// collect adds library, media, home filesystem and drive metrics to set and
+// returns the readiness checks. A library whose changer cannot be read
+// reports mhvtl_library_up 0 and no live gauges; one whose changer is busy
+// with another operation reports mhvtl_library_busy 1 and its last known
+// gauges. A drive whose statistics cannot be read reports
 // mhvtl_drive_stats_up 0.
-func (s *Server) collect(set *promtext.Set) {
+func (s *Server) collect(set *promtext.Set) []readyCheck {
 	inv, err := config.LoadInventory(s.cfg.ConfigDir)
 	set.Family("mhvtl_config_ok", "Whether device.conf could be read and parsed.", promtext.Gauge).
 		Set(boolValue(err == nil))
+	checks := []readyCheck{newCheck("config", err)}
 	if err != nil {
-		return
+		return checks
 	}
 	homes := map[string]bool{}
 	for _, lib := range inv.Libraries {
-		s.collectLibrary(set, lib)
+		if c := s.collectLibrary(set, lib); c != nil {
+			checks = append(checks, *c)
+		}
 		homes[s.homeFor(lib)] = true
 	}
 	// Libraries may share a home directory; count its media once.
 	for _, home := range sortedKeys(homes) {
-		collectHome(set, home)
+		checks = append(checks, collectHome(set, home))
 	}
+	return checks
 }
 
-func (s *Server) collectLibrary(set *promtext.Set, lib config.Library) {
+// collectLibrary adds lib's metrics and returns its changer check, or nil
+// when changer access is not configured.
+func (s *Server) collectLibrary(set *promtext.Set, lib config.Library) *readyCheck {
 	id := strconv.Itoa(lib.ID)
 	set.Family("mhvtl_library_info", "Library identity from device.conf; always 1.", promtext.Gauge).
 		Set(1, "library", id, "vendor", lib.Vendor, "product", lib.Product, "serial", lib.Serial, "home", s.homeFor(lib))
 	set.Family("mhvtl_library_drives", "Drives configured in the library.", promtext.Gauge).
 		Set(float64(len(lib.Drives)), "library", id)
 
-	up := set.Family("mhvtl_library_up", "Whether the library's changer answered READ ELEMENT STATUS.", promtext.Gauge)
+	up := set.Family("mhvtl_library_up", "Whether the library's changer answered READ ELEMENT STATUS (last known while busy).", promtext.Gauge)
+	busy := set.Family("mhvtl_library_busy",
+		"Whether the changer was busy with another operation, such as a cartridge move; the library's gauges are then its last known state.", promtext.Gauge)
+	var check *readyCheck
 	if s.cfg.Changers == nil {
 		up.Set(0, "library", id)
-	} else if live, err := s.cfg.Changers.Inventory(lib); err != nil {
-		up.Set(0, "library", id)
 	} else {
-		up.Set(1, "library", id)
-		slots, full := 0, 0
-		for _, sl := range live.Slots {
-			slots++
-			full += boolInt(sl.Full)
+		c := &s.metrics
+		if c.live == nil {
+			c.live = map[int]changer.Inventory{}
 		}
-		maps, mapsFull := 0, 0
-		for _, m := range live.MAPs {
-			maps++
-			mapsFull += boolInt(m.Full)
+		live, err := s.cfg.Changers.TryInventory(lib)
+		name := "changer:" + id
+		switch {
+		case errors.Is(err, changer.ErrBusy):
+			busy.Set(1, "library", id)
+			check = &readyCheck{Name: name, OK: true, Note: "busy with another operation; last known state kept"}
+			if last, ok := c.live[lib.ID]; ok {
+				up.Set(1, "library", id)
+				liveGauges(set, id, last)
+			}
+		case err != nil:
+			busy.Set(0, "library", id)
+			up.Set(0, "library", id)
+			delete(c.live, lib.ID)
+			check = &readyCheck{Name: name, Error: err.Error()}
+		default:
+			busy.Set(0, "library", id)
+			up.Set(1, "library", id)
+			c.live[lib.ID] = live
+			liveGauges(set, id, live)
+			check = &readyCheck{Name: name, OK: true}
 		}
-		loaded := 0
-		for _, d := range live.Drives {
-			loaded += boolInt(d.Full)
-		}
-		set.Family("mhvtl_library_slots", "Storage slots.", promtext.Gauge).Set(float64(slots), "library", id)
-		set.Family("mhvtl_library_slots_full", "Storage slots holding a cartridge.", promtext.Gauge).Set(float64(full), "library", id)
-		set.Family("mhvtl_library_map_slots", "Import/export (MAP) slots.", promtext.Gauge).Set(float64(maps), "library", id)
-		set.Family("mhvtl_library_map_slots_full", "MAP slots holding a cartridge.", promtext.Gauge).Set(float64(mapsFull), "library", id)
-		set.Family("mhvtl_library_drives_loaded", "Drives holding a cartridge.", promtext.Gauge).Set(float64(loaded), "library", id)
 	}
 
-	if s.cfg.Drives == nil {
-		return
+	if s.cfg.Drives != nil {
+		for _, d := range lib.Drives {
+			collectDrive(set, id, d, s.cfg.Drives)
+		}
 	}
-	for _, d := range lib.Drives {
-		collectDrive(set, id, d, s.cfg.Drives)
+	return check
+}
+
+// liveGauges adds the slot, MAP and drive gauges of library id's inventory.
+func liveGauges(set *promtext.Set, id string, live changer.Inventory) {
+	slots, full := 0, 0
+	for _, sl := range live.Slots {
+		slots++
+		full += boolInt(sl.Full)
 	}
+	maps, mapsFull := 0, 0
+	for _, m := range live.MAPs {
+		maps++
+		mapsFull += boolInt(m.Full)
+	}
+	loaded := 0
+	for _, d := range live.Drives {
+		loaded += boolInt(d.Full)
+	}
+	set.Family("mhvtl_library_slots", "Storage slots.", promtext.Gauge).Set(float64(slots), "library", id)
+	set.Family("mhvtl_library_slots_full", "Storage slots holding a cartridge.", promtext.Gauge).Set(float64(full), "library", id)
+	set.Family("mhvtl_library_map_slots", "Import/export (MAP) slots.", promtext.Gauge).Set(float64(maps), "library", id)
+	set.Family("mhvtl_library_map_slots_full", "MAP slots holding a cartridge.", promtext.Gauge).Set(float64(mapsFull), "library", id)
+	set.Family("mhvtl_library_drives_loaded", "Drives holding a cartridge.", promtext.Gauge).Set(float64(loaded), "library", id)
 }
 
 func collectDrive(set *promtext.Set, lib string, d config.Drive, r DriveStatsService) {
@@ -212,13 +322,16 @@ func collectDrive(set *promtext.Set, lib string, d config.Drive, r DriveStatsSer
 	}
 }
 
-// collectHome adds the media and filesystem metrics of one home directory.
-func collectHome(set *promtext.Set, home string) {
+// collectHome adds the media and filesystem metrics of one home directory
+// and returns its readiness check: the home can be listed, and no raw
+// cartridge whose disk is attached has an unreadable superblock or MAM. A
+// detached disk is not a failure: bays are removable.
+func collectHome(set *promtext.Set, home string) readyCheck {
 	ok := set.Family("mhvtl_home_ok", "Whether the media home directory could be listed.", promtext.Gauge)
 	carts, err := media.List(home)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		ok.Set(0, "home", home)
-		return
+		return newCheck("media:"+home, err)
 	}
 	ok.Set(1, "home", home)
 	if err == nil {
@@ -256,6 +369,7 @@ func collectHome(set *promtext.Set, home string) {
 		absent.Add(float64(boolInt(c.MediaAbsent)), "home", home)
 		errs.Add(float64(boolInt(c.Error != "")), "home", home)
 	}
+	return newCheck("media:"+home, rawMediaError(carts))
 }
 
 // readyCheck is one check of GET /readyz.
@@ -263,57 +377,47 @@ type readyCheck struct {
 	Name  string `json:"name"`
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	Note  string `json:"note,omitempty"`
 }
 
-// handleReadyz serves GET /readyz: 200 when device.conf parses, every
-// library's changer answers and no attached raw cartridge has an unreadable
-// superblock; 503 otherwise. The body lists each check. The message queue
-// is not checked: the queue client has no request that is free of side
-// effects.
-func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
-	var checks []readyCheck
-	add := func(name string, err error) {
-		c := readyCheck{Name: name, OK: err == nil}
-		if err != nil {
-			c.Error = err.Error()
-		}
-		checks = append(checks, c)
+func newCheck(name string, err error) readyCheck {
+	if err != nil {
+		return readyCheck{Name: name, Error: err.Error()}
 	}
-	inv, err := config.LoadInventory(s.cfg.ConfigDir)
-	add("config", err)
-	if err == nil {
-		homes := map[string]bool{}
-		for _, lib := range inv.Libraries {
-			homes[s.homeFor(lib)] = true
-			if s.cfg.Changers != nil {
-				_, err := s.cfg.Changers.Inventory(lib)
-				add("changer:"+strconv.Itoa(lib.ID), err)
-			}
-		}
-		for _, home := range sortedKeys(homes) {
-			add("media:"+home, checkRawMedia(home))
-		}
+	return readyCheck{Name: name, OK: true}
+}
+
+// handleReadyz serves GET /readyz from the latest collection, so a probe
+// causes at most one collection per TTL and never waits behind a cartridge
+// move: 200 when device.conf parses, every library's changer answers (or
+// is busy with a move) and no attached raw cartridge is unreadable; 503
+// otherwise, and while no collection has finished. The body lists each
+// check and the collection's age. The message queue is not checked: the
+// queue client has no request that is free of side effects.
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	col, ok := s.latest(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "fail", "checks": []readyCheck{
+			{Name: "collection", Error: "no collection has finished yet"},
+		}})
+		return
 	}
 	status, code := "ok", http.StatusOK
-	for _, c := range checks {
+	for _, c := range col.checks {
 		if !c.OK {
 			status, code = "fail", http.StatusServiceUnavailable
 		}
 	}
-	writeJSON(w, code, map[string]any{"status": status, "checks": checks})
+	writeJSON(w, code, map[string]any{
+		"status":      status,
+		"checks":      col.checks,
+		"age_seconds": time.Since(col.at).Seconds(),
+	})
 }
 
-// checkRawMedia fails when home cannot be listed, or when a raw cartridge
-// whose disk is attached has an unreadable superblock or MAM. A detached
-// disk is not a failure: bays are removable.
-func checkRawMedia(home string) error {
-	carts, err := media.List(home)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
+// rawMediaError names the raw cartridges whose disk is attached but whose
+// superblock or MAM could not be read.
+func rawMediaError(carts []media.Cartridge) error {
 	var bad []string
 	for _, c := range carts {
 		if c.Backend == media.BackendRaw && !c.MediaAbsent && c.Error != "" {
