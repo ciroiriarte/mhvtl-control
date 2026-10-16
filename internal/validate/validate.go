@@ -90,7 +90,7 @@ func prints(inv config.Inventory) map[string]string {
 	m := map[string]string{}
 	for _, l := range inv.Libraries {
 		bare := l
-		bare.Drives, bare.Slots, bare.MAPs, bare.Pickers, bare.DriveLines = nil, nil, nil, nil, nil
+		bare.Drives, bare.Slots, bare.MAPs, bare.Pickers, bare.PickerMedia, bare.DriveLines = nil, nil, nil, nil, nil, nil
 		m[libKey(l.ID)] = fmt.Sprintf("%+v", bare)
 		for _, d := range l.Drives {
 			m[driveKey(d.ID)] += fmt.Sprintf("%+v", d)
@@ -103,6 +103,9 @@ func prints(inv config.Inventory) map[string]string {
 		}
 		for _, n := range l.Pickers {
 			m[pickerKey(l.ID, n)] += "="
+		}
+		for _, s := range l.PickerMedia {
+			m[pickerKey(l.ID, s.Number)] += s.Barcode
 		}
 		for _, d := range l.DriveLines {
 			m[lineKey(l.ID, d.Number)] += "=" + d.Serial

@@ -26,6 +26,19 @@ func TestBarcodes(t *testing.T) {
 		errors []string
 	}{
 		{"unchanged", nil, nil, nil, nil},
+		{"16 characters", nil, func(i *config.Inventory) { i.Libraries[0].Slots[1].Barcode = "ABCDEFGHIJ0001L8" }, nil, nil},
+		{"17 characters in a slot, a MAP slot and a picker", nil, func(i *config.Inventory) {
+			i.Libraries[0].Slots[1].Barcode = "ABCDEFGHIJK0001L8"
+			i.Libraries[0].MAPs = []config.MAPSlot{{Number: 1, Barcode: "MAPDEFGHIJK0001L8"}}
+			i.Libraries[1].PickerMedia = []config.Slot{{Number: 1, Barcode: "PCKDEFGHIJK0001L8"}}
+		}, nil, []string{
+			"library 10 slot 2: barcode ABCDEFGHIJK0001L8 is 17 characters; vtllibrary stops on a barcode longer than 16",
+			"library 10 MAP slot 1: barcode MAPDEFGHIJK0001L8 is 17 characters",
+			"library 30 picker 1: barcode PCKDEFGHIJK0001L8 is 17 characters",
+		}},
+		{"a picker barcode counts for duplicates", nil, func(i *config.Inventory) {
+			i.Libraries[1].PickerMedia = []config.Slot{{Number: 1, Barcode: "A00001L8"}}
+		}, nil, []string{"barcode A00001L8 is listed 2 times: library 10 slot 1, library 30 picker 1"}},
 		{"listed by two libraries", nil, func(i *config.Inventory) { i.Libraries[1].Slots[1].Barcode = "A00001L8" }, nil,
 			[]string{"barcode A00001L8 is listed 2 times: library 10 slot 1, library 30 slot 2"}},
 		{"listed twice in one library", nil, func(i *config.Inventory) { i.Libraries[0].Slots[1].Barcode = "A00001L8" }, nil,

@@ -601,6 +601,10 @@ func TestCrossCheckDensityMedia(t *testing.T) {
 	}
 }
 
+// wholeBarcodeRe is the shape set_density's regex accepts when it must match
+// the whole barcode: 6 to 8 letters or digits, then two characters.
+var wholeBarcodeRe = regexp.MustCompile(`^[A-Z0-9]{6,8}..$`)
+
 // TestCrossCheckBarcodeRules runs make_vtl_media's own set_density and
 // set_media_type on a corpus of barcodes and compares them with the Go port.
 func TestCrossCheckBarcodeRules(t *testing.T) {
@@ -641,8 +645,14 @@ func TestCrossCheckBarcodeRules(t *testing.T) {
 		if len(f) != 3 {
 			t.Fatalf("bash output %q", l)
 		}
-		if got := BarcodeDensity(f[0]); got != f[1] {
-			t.Errorf("make_vtl_media.in set_density(%s) = %s; BarcodeDensity = %s", f[0], f[1], got)
+		want := f[1]
+		if !wholeBarcodeRe.MatchString(f[0]) {
+			// make_vtl_media's regex is not anchored at the start and
+			// reads the tail of a longer barcode; the port refuses it.
+			want = "UNKNOWN"
+		}
+		if got := BarcodeDensity(f[0]); got != want {
+			t.Errorf("make_vtl_media.in set_density(%s) = %s; BarcodeDensity = %s, want %s", f[0], f[1], got, want)
 		}
 		if got := BarcodeMediaType(f[0]); got != f[2] {
 			t.Errorf("make_vtl_media.in set_media_type(%s) = %s; BarcodeMediaType = %s", f[0], f[2], got)

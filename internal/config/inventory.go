@@ -65,7 +65,13 @@ func LoadInventory(configDir string) (Inventory, error) {
 		if err != nil {
 			return Inventory{}, fmt.Errorf("%s: %w", cpath, err)
 		}
-		lib.DriveLines, lib.Pickers, lib.MAPs, lib.Slots = driveLines, pickers, maps, slots
+		lib.DriveLines, lib.MAPs, lib.Slots = driveLines, maps, slots
+		for _, p := range pickers {
+			lib.Pickers = append(lib.Pickers, p.Number)
+			if p.Barcode != "" {
+				lib.PickerMedia = append(lib.PickerMedia, p)
+			}
+		}
 		for _, p := range problems {
 			inv.Problems = append(inv.Problems, Problem{File: cpath, Problem: p})
 		}
