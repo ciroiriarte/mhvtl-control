@@ -208,8 +208,12 @@ type Stanza struct {
 	Kind string // "Library" or "Drive"
 	ID   int
 	// HasAddress is set when the header carries CHANNEL, TARGET and LUN.
-	// mhVTL accepts a bare "Drive: N", with target 0
-	// (mhvtl usr/cmd/vtllibrary.c:683).
+	// Without them the header is an ambiguous Problem: sscanf returns 1 or
+	// 2, which vtltape and vtllibrary take as a match, and they copy an
+	// uninitialised mhvtl_ctl (mhvtl usr/cmd/vtltape.c:2078, :2146, used by
+	// add_lu at :2684; usr/cmd/vtllibrary.c:1224, :1290). Only the
+	// changer's element descriptor gets a defined SCSI ID for a bare
+	// "Drive: N", 0 (vtllibrary.c:682-684).
 	HasAddress           bool
 	Channel, Target, LUN int
 	HeaderLine           int // index of the header line
@@ -287,8 +291,13 @@ func (c *DeviceConf) index() {
 				problem(i, false, "malformed record header %q", text)
 				continue
 			}
-			if trailing {
+			switch {
+			case trailing:
 				problem(i, true, "text after LUN in %q: mhVTL ignores it, but this header is not read as an address", text)
+			case !st.HasAddress && st.Kind == "Drive":
+				problem(i, true, "Drive %d has no CHANNEL, TARGET and LUN: vtltape registers it at an uninitialised address (vtltape.c:2078, :2146)", st.ID)
+			case !st.HasAddress:
+				problem(i, true, "Library %d has no CHANNEL, TARGET and LUN: vtllibrary registers it at an uninitialised address (vtllibrary.c:1224, :1290)", st.ID)
 			}
 			// mhVTL's parsers follow one kind of record each and only a
 			// blank line ends it (vtllibrary.c:677-740 and :1281-1293,

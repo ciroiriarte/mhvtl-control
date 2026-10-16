@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,18 @@ type editOp struct {
 type editFile struct {
 	File string   `json:"file"` // device.conf, library_contents or mhvtl.conf
 	Ops  []editOp `json:"ops"`
+	// Problems lists the lines of the input that carry a Problem. A writer
+	// refuses to write over such a file, so its ops are not applied and
+	// .want is the input.
+	Problems []int `json:"problems"`
+}
+
+func problemLines(ps []Problem) []int {
+	var lines []int
+	for _, p := range ps {
+		lines = append(lines, p.Line)
+	}
+	return lines
 }
 
 func applyDevConf(c *DeviceConf, op editOp) error {
@@ -89,6 +102,13 @@ func TestEditGolden(t *testing.T) {
 			switch ef.File {
 			case "device.conf":
 				c := ParseDeviceConf(in)
+				if lines := problemLines(c.Problems); !reflect.DeepEqual(lines, ef.Problems) {
+					t.Fatalf("problems on lines %v, want %v: %v", lines, ef.Problems, c.Problems)
+				}
+				if len(c.Problems) > 0 {
+					got = in
+					break
+				}
 				for _, op := range ef.Ops {
 					if err := applyDevConf(c, op); err != nil {
 						t.Fatalf("%+v: %v", op, err)
