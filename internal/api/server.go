@@ -101,6 +101,10 @@ type Server struct {
 	// homes serializes media creation per home directory, so the check that a
 	// barcode is new and mktape cannot interleave with another creation.
 	homes keyedMutex
+	// metrics caches the last GET /metrics collection.
+	metrics metricsCache
+	// requests counts handled requests for GET /metrics.
+	requests requestCounter
 }
 
 // keyedMutex is a set of mutexes created on first use.
@@ -147,7 +151,7 @@ func NewServer(cfg Config) *Server {
 // Handler builds the route mux and wraps it in the middleware chain
 // (recover -> log -> cors -> auth), returning the wrapped handler.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
+	mux := &routeMux{ServeMux: http.NewServeMux()}
 
 	mux.HandleFunc("GET /api/v1/system", s.handleSystem)
 	mux.HandleFunc("GET /api/v1/libraries", s.handleLibraries)
@@ -164,6 +168,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/storage/disks", s.handleDisks)
 	mux.HandleFunc("POST /api/v1/storage/disks/format", s.handleFormat)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /readyz", s.handleReadyz)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 
 	if s.cfg.StaticFS != nil {
 		mux.Handle("GET /static/", http.FileServerFS(s.cfg.StaticFS))
@@ -181,9 +187,30 @@ func (s *Server) Handler() http.Handler {
 	var h http.Handler = mux
 	h = s.auth(h)
 	h = s.cors(h)
-	h = logging(h)
+	h = logging(h, s.requests.add)
 	h = recoverMW(h)
 	return h
+}
+
+// routeMux is a ServeMux that records each matched route's pattern on the
+// logging middleware's statusRecorder, so request metrics are labelled by
+// pattern ("POST /api/v1/libraries/{id}/mount"), not by path. (Go 1.23's
+// Request.Pattern would do this, but go.mod targets 1.22.)
+type routeMux struct {
+	*http.ServeMux
+}
+
+func (m *routeMux) Handle(pattern string, h http.Handler) {
+	m.ServeMux.Handle(pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rec, ok := w.(*statusRecorder); ok {
+			rec.route = pattern
+		}
+		h.ServeHTTP(w, r)
+	}))
+}
+
+func (m *routeMux) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	m.Handle(pattern, http.HandlerFunc(h))
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

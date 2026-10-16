@@ -1,0 +1,63 @@
+# Example Prometheus alerting rules for mhvtl-control's /metrics.
+# Adjust the job name, thresholds and durations to your site, then load the
+# file with rule_files: in prometheus.yml. Check it with:
+#   promtool check rules mhvtl-control.rules.yml
+groups:
+  - name: mhvtl-control
+    rules:
+      - alert: MhvtlControlDown
+        expr: up{job="mhvtl-control"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "mhvtl-control on {{ $labels.instance }} cannot be scraped"
+
+      - alert: MhvtlConfigUnreadable
+        expr: mhvtl_config_ok == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "device.conf on {{ $labels.instance }} is missing or does not parse"
+
+      - alert: MhvtlLibraryDown
+        expr: mhvtl_library_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Library {{ $labels.library }} on {{ $labels.instance }} does not answer READ ELEMENT STATUS"
+
+      - alert: MhvtlHomeFilesystemFilling
+        expr: |
+          1 - mhvtl_home_filesystem_avail_bytes / mhvtl_home_filesystem_size_bytes > 0.90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Media home {{ $labels.home }} on {{ $labels.instance }} is over 90% full"
+
+      - alert: MhvtlRawMediaAbsent
+        expr: mhvtl_media_raw_absent_cartridges > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} raw-disk cartridge(s) in {{ $labels.home }} have no disk attached"
+
+      - alert: MhvtlUnreadableMedia
+        expr: mhvtl_media_unreadable_cartridges > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} cartridge(s) in {{ $labels.home }} have unreadable metadata"
+
+      - alert: MhvtlNoFreeSlots
+        expr: mhvtl_library_slots_full == mhvtl_library_slots and mhvtl_library_slots > 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Every storage slot of library {{ $labels.library }} is full"

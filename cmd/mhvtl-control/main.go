@@ -32,7 +32,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	listen := flag.String("listen", "127.0.0.1:8080", "address to listen on")
 	configDir := flag.String("config-dir", "/etc/mhvtl", "directory holding device.conf and library_contents.<id>")
-	apiToken := flag.String("api-token", "", "bearer token required on /api/v1/* (falls back to MHVTL_CONTROL_API_TOKEN)")
+	apiToken := flag.String("api-token", "", "bearer token required on /api/v1/*, /metrics and /readyz (falls back to MHVTL_CONTROL_API_TOKEN)")
 	corsOrigin := flag.String("cors-origin", "", "Access-Control-Allow-Origin value; empty disables CORS")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate file (enables HTTPS with --tls-key)")
 	tlsKey := flag.String("tls-key", "", "TLS key file (enables HTTPS with --tls-cert)")

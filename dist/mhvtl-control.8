@@ -21,6 +21,16 @@ to create and edit media, and runs
 .B mhvtl-raw-format
 to format raw disks as cartridges.
 .PP
+For monitoring,
+.I /metrics
+serves library, media, home filesystem and drive metrics in the Prometheus
+text format,
+.I /readyz
+answers 200 when device.conf parses, every changer answers and every attached
+raw-disk cartridge is readable (503 otherwise, with the failed checks), and
+.I /healthz
+answers 200 while the daemon runs.
+.PP
 mhVTL may start after
 .BR mhvtl-control ,
 and may restart while it runs.
@@ -34,7 +44,10 @@ refuses a non-loopback address without a token, unless given
 .TP
 .BI \-api\-token " token"
 Bearer token required on
-.IR /api/v1/* .
+.IR /api/v1/* ,
+.I /metrics
+and
+.IR /readyz .
 Defaults to the
 .B MHVTL_CONTROL_API_TOKEN
 environment variable.

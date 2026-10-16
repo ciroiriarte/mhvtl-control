@@ -8,11 +8,13 @@ import (
 	"time"
 )
 
-// statusRecorder captures the response status for the logging middleware.
+// statusRecorder captures the response status for the logging middleware,
+// and the matched route pattern (set by routeMux; empty when none matched).
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
 	wrote  bool
+	route  string
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -45,13 +47,17 @@ func recoverMW(next http.Handler) http.Handler {
 	})
 }
 
-// logging writes one line per request: method, path, status, duration.
-func logging(next http.Handler) http.Handler {
+// logging writes one line per request: method, path, status, duration. It
+// also passes the route pattern and status to count, when non-nil.
+func logging(next http.Handler, count func(route string, status int)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		next.ServeHTTP(rec, r)
 		log.Printf("%s %s %d %s", r.Method, r.URL.Path, rec.status, time.Since(start))
+		if count != nil {
+			count(rec.route, rec.status)
+		}
 	})
 }
 
@@ -74,9 +80,10 @@ func (s *Server) cors(next http.Handler) http.Handler {
 	})
 }
 
-// auth enforces a bearer token on /api/v1/* paths when a token is configured.
-// "/", "/static/", and "/healthz" are always exempt (they are not under
-// /api/v1/). It is a no-op passthrough when no token is set.
+// auth enforces a bearer token on /api/v1/*, /metrics and /readyz when a
+// token is configured: metrics and readiness checks name libraries, homes,
+// barcodes and errors. "/", "/static/" and "/healthz" are always exempt. It
+// is a no-op passthrough when no token is set.
 func (s *Server) auth(next http.Handler) http.Handler {
 	token := s.cfg.Token
 	if token == "" {
@@ -85,7 +92,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 	tokenBytes := []byte(token)
 	const prefix = "Bearer "
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/v1/") {
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/") && r.URL.Path != "/metrics" && r.URL.Path != "/readyz" {
 			next.ServeHTTP(w, r)
 			return
 		}
