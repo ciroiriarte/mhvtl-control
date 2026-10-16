@@ -211,3 +211,30 @@ func TestLoadedDriveDeleted(t *testing.T) {
 	r := Validate(cur, next, live, nil, Options{})
 	expect(t, "errors", family(r.Errors, FamilyRemoval), nil)
 }
+
+// A barcode next places in a slot, MAP slot or picker while a live drive of
+// the library holds it would be listed twice (PR 2a round-3 probe).
+func TestPlacedWhileLoaded(t *testing.T) {
+	l := lib(10, "IBM", "03584L32", 2, "A00001L8", "", "A00002L8")
+	l.MAPs = []config.MAPSlot{{Number: 1}}
+	cur := inv(l)
+	live := &Live{Libraries: map[int]Placement{10: {Slots: map[int]string{1: "A00001L8", 3: "A00002L8"}, Drives: map[int]string{1: "D00001L8"}}}}
+	for _, tc := range []struct {
+		name   string
+		edit   func(*config.Library)
+		errors []string
+	}{
+		{"a slot", func(l *config.Library) { l.Slots[1].Barcode = "D00001L8" }, []string{"library 10: D00001L8 (slot 2) is loaded in drive 1 now"}},
+		{"a MAP slot", func(l *config.Library) { l.MAPs[0].Barcode = "D00001L8" }, []string{"library 10: D00001L8 (MAP slot 1) is loaded in drive 1 now"}},
+		{"a picker", func(l *config.Library) { l.PickerMedia = []config.Slot{{Number: 1, Barcode: "D00001L8"}} },
+			[]string{"library 10: D00001L8 (picker 1) is loaded in drive 1 now"}},
+		{"elsewhere", func(l *config.Library) { l.Slots[1].Barcode = "E00001L8" }, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next := fromLive(cur, live)
+			tc.edit(&next.Libraries[0])
+			r := Validate(cur, next, live, nil, Options{})
+			expect(t, "errors", family(r.Errors, FamilyBarcode), tc.errors)
+		})
+	}
+}

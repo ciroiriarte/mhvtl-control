@@ -52,11 +52,21 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 			livep = &lp
 		}
 		bay := bayCartridge(homeOf(lib, opts))
+		inDrive := map[string]int{}
+		for _, n := range sortedKeys(lp.Drives) {
+			if b := lp.Drives[n]; b != "" {
+				inDrive[b] = n
+			}
+		}
 		present := map[string]bool{}
 		for _, c := range Merge(old, lib, livep, bay).cartridges() {
 			present[c.barcode] = true
+			// The merge would list it in a second element.
+			if n, loaded := inDrive[c.barcode]; loaded {
+				r.stickyErrorf(FamilyBarcode, lib.ID, []string{libKey(lib.ID)}, "library %d: %s (%s) is loaded in drive %d now", lib.ID, c.barcode, c.where, n)
+			}
 		}
-		for _, b := range lp.Drives {
+		for b := range inDrive {
 			present[b] = true
 		}
 		var gone []displaced
