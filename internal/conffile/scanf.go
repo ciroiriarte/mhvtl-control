@@ -43,8 +43,10 @@ func cScanf(s, format string) int {
 	return n
 }
 
-// cScan is cScanf that also returns the converted values. A value too large
-// for an int64 is returned as 0.
+// cScan is cScanf that also returns the converted values. A value outside
+// int64 is returned as math.MaxInt64 or math.MinInt64 (strconv.ParseInt's
+// result on overflow). C's %d truncates to 32 bits instead, so
+// "Drive: 4294967307" is 11 to mhVTL; that difference is not modelled.
 func cScan(s, format string) (int, []int64) {
 	n, i := 0, 0
 	var vals []int64

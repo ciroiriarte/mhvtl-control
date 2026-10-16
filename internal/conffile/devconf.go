@@ -24,14 +24,15 @@
 //     so it skips "Library:10" and "Library:\t10", which vtllibrary
 //     reads; it parses the id with strtol base 0, so "Drive: 011" starts
 //     vtltape@9 (that one is flagged). mhvtl.init's device_ids
-//     (etc/mhvtl.init.in:57) matches awk '$1 == "Drive:"', so it also
-//     takes an indented " Drive: 12" line, which the model reads as an
-//     attribute.
+//     (etc/mhvtl.init.in:57) matches awk '$1 == "Library:"' and
+//     '$1 == "Drive:"', so it too skips "Library:10", and it takes an
+//     indented " Drive: 12" line, which the model reads as an attribute.
 //   - [writer] make_vtl_media reads both files with awk, not like
 //     vtllibrary (usr/cmd/make_vtl_media.in:304, :313). '/Library:/ {print
-//     $2}' is unanchored: it matches a commented-out "# Library: 20 ..."
-//     line, which ends the script when library_contents.20 is missing, and
-//     prints "CHANNEL:" for "Library:10 CHANNEL: ...". '/^Slot/ {print
+//     $2}' is unanchored: a commented-out "# Library: 20 ..." line prints
+//     "Library:", so the script looks for library_contents.Library: and
+//     exits whatever the other files hold ("#Library: 20", with no space,
+//     prints 20); it prints "CHANNEL:" for "Library:10 CHANNEL: ...". '/^Slot/ {print
 //     $3}' makes no media for "Slot 1:ABC", which vtllibrary loads, and
 //     makes "E01001L8\r" from a CRLF library_contents.
 //   - [writer] mhvtl.conf is read by the shell (and systemd's
@@ -39,12 +40,21 @@
 //     Expansions ("$HOME/x"), separators ("a;"), quotes inside a word
 //     ("a'b'") and backslash continuations raise no Problem, and Set
 //     replaces the whole word after '=', so on "CAPACITY=/a;rm" it also
-//     drops the command the shell would run.
+//     drops the command the shell would run. Control flow is not modelled
+//     either: an assignment inside "if false; then VERBOSE=1; fi" or a
+//     heredoc is returned by Get and edited by Set, though the shell never
+//     makes it.
 //   - [writer] No write is gated or serialised. ReplaceIfHash takes any
 //     model, and two writers can both pass its re-hash and both rename,
 //     the later silently replacing the earlier. A single Commit that takes
 //     an advisory lock, refuses unless Writable passes on both the base
 //     and the edited model, then calls ReplaceIfHash, is still to come.
+//     Writable reads the model's current Problems, which every edit
+//     rebuilds, so a base that fails (a repeated "Unit serial number")
+//     can pass after the edit removes the line: Commit must check the base
+//     as read, before editing. The edit primitives and WriteAtomic,
+//     ReplaceIfHash and MoveAcross are exported and ungated; only Commit
+//     should be used once it exists.
 //   - MoveAcross falls back to copying only on EXDEV, not when link(2)
 //     fails with EPERM (a filesystem without hard links, or
 //     protected_hardlinks for a non-owner).
@@ -257,7 +267,9 @@ type Stanza struct {
 	// uninitialised mhvtl_ctl (mhvtl usr/cmd/vtltape.c:2078, :2146, used by
 	// add_lu at :2684; usr/cmd/vtllibrary.c:1224, :1290). Only the
 	// changer's element descriptor gets a defined SCSI ID for a bare
-	// "Drive: N", 0 (vtllibrary.c:682-684).
+	// "Drive: N", 0 (vtllibrary.c:682-684). Without an address Channel,
+	// Target and LUN stay 0, so internal/config projects such a header as
+	// 0/0/0; the Problem is what marks it as unusable.
 	HasAddress           bool
 	Channel, Target, LUN int
 	HeaderLine           int // index of the header line
