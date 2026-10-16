@@ -1,0 +1,5 @@
+{"file": "library_contents", "ops": [
+  {"op": "set_barcode", "kind": "MAP", "id": 1, "barcode": ""},
+  {"op": "set_barcode", "kind": "Slot", "id": 2, "barcode": "E01002L8"},
+  {"op": "set_barcode", "kind": "Slot", "id": 30, "barcode": "F01031L6"}
+]}

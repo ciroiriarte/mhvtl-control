@@ -15,13 +15,19 @@ var ErrDriveBarcode = errors.New("library_contents: a Drive line must not carry 
 
 // Entry is one "Drive N:", "Picker N:", "MAP N: X" or "Slot N: X" line.
 type Entry struct {
-	Kind    string // "Drive", "Picker", "MAP" or "Slot"
-	Number  int
-	Barcode string // empty when the element is empty
-	Line    int    // index into the file's lines
+	Kind   string // "Drive", "Picker", "MAP" or "Slot"
+	Number int
+	// Barcode is empty when the element is empty. It is trimmed: the
+	// .persist file vtllibrary writes at stop pads barcodes to 16 with
+	// spaces ("%-16.16s", mhvtl usr/cmd/vtllibrary.c:345 and :1206), and
+	// mhVTL's own sscanf "%s" drops the padding too.
+	Barcode string
+	Line    int // index into the file's lines
 }
 
-// LibContents is a lossless library_contents.<id>.
+// LibContents is a lossless library_contents.<id>, or the
+// library_contents.<id>.persist save_config writes (no VERSION line, padded
+// barcodes, "Slot N: " with a trailing space when empty).
 type LibContents struct {
 	lines       []Line
 	entries     []Entry
