@@ -10,9 +10,15 @@ export GOTOOLCHAIN = local
 export GOFLAGS = -mod=readonly
 export GOPROXY = off
 
+# The newest versioned Go toolchain, else "go" from PATH. Debian 12's own
+# golang-go is 1.19, older than go.mod's 1.22; there the build uses
+# golang-1.2x-go from bookworm-backports, which has no /usr/bin/go unless
+# the backports golang-go is installed too.
+GO := $(or $(shell ls -d /usr/lib/go-1.*/bin/go 2>/dev/null | sort -V | tail -n 1),go)
+
 # Symbols are kept (LDFLAGS empty) so dh_strip can split them into -dbgsym.
 # PIE, as Debian's hardening expects; it links no libraries, only needs ld.so.
-MAKE_VARS = GO=go VERSION=$(DEB_VERSION_UPSTREAM) LDFLAGS= \
+MAKE_VARS = GO=$(GO) VERSION=$(DEB_VERSION_UPSTREAM) LDFLAGS= \
 	GOBUILDFLAGS="-trimpath -buildvcs=false -buildmode=pie"
 
 # Install the unit where this release's systemd looks for it: bookworm's
@@ -28,7 +34,7 @@ override_dh_auto_build:
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
-	go test ./...
+	$(GO) test ./...
 endif
 
 override_dh_auto_install:
@@ -61,4 +67,4 @@ override_dh_auto_clean:
 # static builds such as Go's (dpkg >= 1.21.3):
 # https://manpages.debian.org/trixie/dpkg-dev/deb-control.5.en.html
 override_dh_gencontrol:
-	dh_gencontrol -- "-Vgolang:Static-Built-Using=$$(dpkg-query -W -f='$${source:Package} (= $${source:Version})' $$(dpkg-query -S "$$(readlink -f "$$(command -v go)")" | cut -d: -f1))"
+	dh_gencontrol -- "-Vgolang:Static-Built-Using=$$(dpkg-query -W -f='$${source:Package} (= $${source:Version})' $$(dpkg-query -S "$$(readlink -f "$$(command -v $(GO))")" | cut -d: -f1))"
