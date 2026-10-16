@@ -145,8 +145,15 @@ func (k *keyedMutex) lock(key string) func() {
 
 // lockLibrary serializes cartridge moves and queue commands for library id.
 // Callers that need several libraries lock them in ascending id order.
+// Unlocking drops the library's shared live read first, so the views read
+// the placement the move left rather than the one before it; a read still
+// in progress then serves only those already waiting for it.
 func (s *Server) lockLibrary(id int) func() {
-	return s.libs.lock(strconv.Itoa(id))
+	unlock := s.libs.lock(strconv.Itoa(id))
+	return func() {
+		s.live.forget(id)
+		unlock()
+	}
 }
 
 // maxBody bounds a JSON request body.
