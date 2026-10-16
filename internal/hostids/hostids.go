@@ -43,17 +43,28 @@ func (d Device) HCTL() string {
 	return fmt.Sprintf("%d:%d:%d:%d", d.Host, d.Channel, d.Target, d.LUN)
 }
 
-// Read lists the devices under <sysRoot>/class/scsi_device. A host without
-// SCSI devices yields none. A device whose VPD pages are absent or malformed
-// is listed without those identities.
+// Read lists the devices under <sysRoot>/class/scsi_device. A device whose
+// VPD pages are absent or malformed is listed without those identities.
+//
+// Read fails open: it returns every device it could list even when err is
+// set. err joins each attribute it could not read for a reason other than
+// its absence (EACCES, EIO), and is set alone when there is no
+// <sysRoot>/class/scsi_device to read, so the caller can tell that the host
+// was not fully checked. Devices that come or go during the scan are missed
+// or listed without their identities.
 func Read(sysRoot string) ([]Device, error) {
 	classDir := filepath.Join(sysRoot, "class", "scsi_device")
 	ents, err := os.ReadDir(classDir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
+	}
+	var errs []error
+	read := func(path string) ([]byte, bool) {
+		b, err := os.ReadFile(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+		return b, err == nil
 	}
 	var devs []Device
 	for _, e := range ents {
@@ -62,27 +73,27 @@ func Read(sysRoot string) ([]Device, error) {
 			continue
 		}
 		devDir := filepath.Join(classDir, e.Name(), "device")
-		if b, err := os.ReadFile(filepath.Join(devDir, "vpd_pg80")); err == nil {
+		if b, ok := read(filepath.Join(devDir, "vpd_pg80")); ok {
 			if s, err := scsi.ParseVPDSerial(b); err == nil {
 				d.Serial = s
 			}
 		}
-		if b, err := os.ReadFile(filepath.Join(devDir, "vpd_pg83")); err == nil {
+		if b, ok := read(filepath.Join(devDir, "vpd_pg83")); ok {
 			d.NAAs = parseNAAs(b)
 		}
-		if b, err := os.ReadFile(filepath.Join(devDir, "vendor")); err == nil {
+		if b, ok := read(filepath.Join(devDir, "vendor")); ok {
 			d.Vendor = strings.TrimSpace(string(b))
 		}
-		if b, err := os.ReadFile(filepath.Join(devDir, "model")); err == nil {
+		if b, ok := read(filepath.Join(devDir, "model")); ok {
 			d.Model = strings.TrimSpace(string(b))
 		}
-		if b, err := os.ReadFile(filepath.Join(sysRoot, "class", "scsi_host", "host"+strconv.Itoa(d.Host), "proc_name")); err == nil {
+		if b, ok := read(filepath.Join(sysRoot, "class", "scsi_host", "host"+strconv.Itoa(d.Host), "proc_name")); ok {
 			d.Driver = strings.TrimSpace(string(b))
 		}
 		devs = append(devs, d)
 	}
 	sort.Slice(devs, func(i, j int) bool { return less(devs[i], devs[j]) })
-	return devs, nil
+	return devs, errors.Join(errs...)
 }
 
 func less(a, b Device) bool {

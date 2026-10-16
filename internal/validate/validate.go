@@ -215,6 +215,9 @@ type Options struct {
 	// DefaultHome is the media home of libraries without a "Home directory"
 	// (MHVTL_HOME_PATH); empty skips the home checks for them.
 	DefaultHome string
+	// HostErr is the error hostids.Read returned with the host's devices:
+	// the serials and NAAs of the host were then not all compared.
+	HostErr error
 }
 
 // Validate checks next, the proposed configuration, against cur, the one in
@@ -282,7 +285,7 @@ func touches(f Finding, cur, next map[ElementRef]string) bool {
 func check(cur, next config.Inventory, live *Live, host []hostids.Device, opts Options) Result {
 	r := Result{Errors: []Finding{}, Warnings: []Finding{}}
 	checkAddresses(&r, next)
-	checkIdentities(&r, cur, next, host)
+	checkIdentities(&r, cur, next, host, opts.HostErr)
 	checkPresets(&r, next, opts)
 	checkMedia(&r, next, opts)
 	checkBarcodes(&r, cur, next, live, opts)

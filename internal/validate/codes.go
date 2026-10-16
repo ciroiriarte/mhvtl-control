@@ -23,6 +23,7 @@ const (
 	CodeIdentNAADup             = "identity.naa_duplicate"
 	CodeIdentSerialCut          = "identity.serial_cut"
 	CodeIdentHostSerial         = "identity.host_serial"
+	CodeIdentHostUnchecked      = "identity.host_unchecked"
 	CodeIdentHostNAA            = "identity.host_naa"
 	CodeIdentNoLibrary          = "identity.no_library"
 	CodeIdentDriveLineSerial    = "identity.drive_line_serial"
