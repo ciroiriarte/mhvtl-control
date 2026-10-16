@@ -228,6 +228,41 @@ func TestBayCartridgeNeverLeaves(t *testing.T) {
 	expect(t, "errors", family(r.Errors, FamilyRemoval), []string{"library 10: R00001L8 (slot 1) would leave the library"})
 }
 
+// A MAP slot holding a bay cartridge is not free for an export: the bay
+// monitor's coldplug places the cartridge there again (PR 2a round-4 probe).
+func TestBayMAPNotFree(t *testing.T) {
+	l := lib(10, "IBM", "03584L32", 1, "A00001L8", "A00002L8")
+	l.HomeDir = "testdata/homes/b"
+	l.MAPs = []config.MAPSlot{{Number: 1}}
+	cur := inv(l)
+	export := Options{Dispositions: []Disposition{{Library: 10, Barcode: "A00002L8", To: ToExport}}}
+	full := []string{"library 10: 1 cartridges are to be exported, but only 0 MAP slots are free"}
+	for _, tc := range []struct {
+		name   string
+		mapped string // what MAP slot 1 holds
+		live   bool
+		errors []string
+	}{
+		{"a bay cartridge, live known", "R00001L8", true, full},
+		{"a bay cartridge, live unknown", "R00001L8", false, full},
+		{"empty, live known", "", true, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var live *Live
+			next := clone(cur)
+			if tc.live {
+				live = &Live{Libraries: map[int]Placement{10: {Slots: map[int]string{1: "A00001L8", 2: "A00002L8"}, MAPs: map[int]string{1: tc.mapped}}}}
+				next = fromLive(cur, live)
+			} else {
+				next.Libraries[0].MAPs[0].Barcode = tc.mapped
+			}
+			next.Libraries[0].Slots = next.Libraries[0].Slots[:1]
+			r := Validate(cur, next, live, nil, export)
+			expect(t, "errors", family(r.Errors, FamilyRemoval), tc.errors)
+		})
+	}
+}
+
 // A cartridge loaded in a drive that next deletes counts as present: the
 // apply's drive_loaded refusal (plan 3.3) handles it, not validation (probe
 // from the PR 2a re-review).
