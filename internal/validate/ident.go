@@ -9,8 +9,13 @@ import (
 	"mhvtl-control/internal/personality"
 )
 
-// MaxSerialLen is the longest unit serial number device.conf allows (mhvtl
-// etc/device.conf: "Serial num max len is 10").
+// MaxSerialLen is the longest unit serial number mhvtl-control allows. mhVTL
+// itself takes up to 40 characters (include/vtllib.h MAX_DRIVE_SN_LEN :88,
+// upstream master c65bff0), but some of what it reports has a fixed 10-byte
+// field: the HP EML/MSL and Overland changers copy exactly 10 bytes of the
+// serial into VPD page 83h (usr/pm/hp_smc_pm.c:79, usr/pm/overland_pm.c:63),
+// so a longer one is cut short there. etc/generate_device_conf.in:52 states
+// the same limit.
 const MaxSerialLen = 10
 
 // device is a library or drive of device.conf, for the identity checks.
@@ -82,7 +87,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		case d.serial == "":
 			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s has no Unit serial number", d)
 		case len(d.serial) > MaxSerialLen:
-			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: serial %q is %d characters; device.conf allows %d", d, d.serial, len(d.serial), MaxSerialLen)
+			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: serial %q is %d characters; mhvtl-control limits serials to %d characters, the fixed field some changers report them in (e.g. VPD page 83h, usr/pm/hp_smc_pm.c:79)", d, d.serial, len(d.serial), MaxSerialLen)
 		}
 		if d.serial != "" {
 			if o, dup := serials[d.serial]; dup {
