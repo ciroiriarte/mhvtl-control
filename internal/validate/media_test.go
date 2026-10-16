@@ -86,3 +86,28 @@ func TestMedia(t *testing.T) {
 		})
 	}
 }
+
+// A MAP entry the live placement already holds in that MAP slot is in the
+// library, not a pre-fill: it need not be in the home. The same barcode in
+// another MAP slot, or with the live placement unknown, still must be.
+func TestMediaLiveMAP(t *testing.T) {
+	cur := shipped(t)
+	next := clone(cur)
+	next.Libraries[0].HomeDir = "testdata/homes/a"
+	next.Libraries[0].MAPs[0].Barcode = "E09001L8"
+	notInHome := []string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in testdata/homes/a"}
+	for _, tc := range []struct {
+		name   string
+		live   *Live
+		errors []string
+	}{
+		{"in that MAP slot live", &Live{Libraries: map[int]Placement{10: {MAPs: map[int]string{1: "E09001L8"}}}}, nil},
+		{"in another MAP slot live", &Live{Libraries: map[int]Placement{10: {MAPs: map[int]string{2: "E09001L8"}}}}, notInHome},
+		{"live unknown", nil, notInHome},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Validate(cur, next, tc.live, nil, Options{})
+			expect(t, "errors", family(r.Errors, FamilyMedia), tc.errors)
+		})
+	}
+}

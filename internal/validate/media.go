@@ -15,8 +15,12 @@ import (
 // mhvtl usr/cmd/make_vtl_media.in). make_vtl_media creates cartridges only
 // for the Slot lines of library_contents, in the library's home
 // (make_vtl_media.in:349-364, upstream master 993b193; see homeOf), so a MAP
-// or Picker barcode must name a cartridge that already exists there.
-func checkMedia(r *Result, next config.Inventory, opts Options) {
+// or Picker barcode must name a cartridge that already exists there. A MAP
+// entry the live placement already holds in that MAP slot is no pre-fill:
+// the cartridge is in the library (imported at run time, or placed by the
+// bay monitor), and the client that builds next from the live view (plan,
+// "Phase 4 client contract for next") writes it back as it is.
+func checkMedia(r *Result, next config.Inventory, live *Live, opts Options) {
 	for _, lib := range next.Libraries {
 		var models []personality.DriveModel
 		var products []string
@@ -33,12 +37,15 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 		if hiddenHome(home) {
 			r.warnf(CodeMediaHomeHidden, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: media home %s is under /home, /root or /run/user, which mhvtl-control's unit hides (ProtectHome=yes); cartridges there look missing to these checks", lib.ID, home)
 		}
-		check := func(where string, key ElementRef, barcode string, created bool) {
+		lp, _ := live.library(lib.ID)
+		check := func(where string, key ElementRef, barcode string, created, present bool) {
 			els := append(drives[:len(drives):len(drives)], key)
 			if barcode == "" {
 				return
 			}
-			if !created && home == "" {
+			if present {
+				// In the library now: neither created nor looked for.
+			} else if !created && home == "" {
 				r.warnf(CodeMediaNoHome, lib.ID, els, "library %d %s: %s: MAP and Picker entries are not created by make_vtl_media, and no media home is known to check that it exists", lib.ID, where, barcode)
 			} else if !created && !media.Exists(home, barcode) {
 				r.errorf(CodeMediaNotInHome, lib.ID, els, "library %d %s: %s: MAP and Picker entries are not created by make_vtl_media, and it is not in %s", lib.ID, where, barcode, home)
@@ -47,7 +54,7 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 			density := personality.BarcodeDensity(barcode)
 			name, ok := personality.DensityMedia[density]
 			if !ok {
-				if home != "" && media.Exists(home, barcode) {
+				if present || home != "" && media.Exists(home, barcode) {
 					r.warnf(CodeMediaUnknownType, lib.ID, els, "library %d %s: the media type of %s cannot be told from its barcode; the existing cartridge is used as it is", lib.ID, where, barcode)
 					return
 				}
@@ -78,13 +85,13 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 				lib.ID, where, barcode, name, strings.Join(products, ", "))
 		}
 		for _, s := range lib.Slots {
-			check(fmt.Sprintf("slot %d", s.Number), slotKey(lib.ID, s.Number), s.Barcode, true)
+			check(fmt.Sprintf("slot %d", s.Number), slotKey(lib.ID, s.Number), s.Barcode, true, false)
 		}
 		for _, m := range lib.MAPs {
-			check(fmt.Sprintf("MAP slot %d", m.Number), mapKey(lib.ID, m.Number), m.Barcode, false)
+			check(fmt.Sprintf("MAP slot %d", m.Number), mapKey(lib.ID, m.Number), m.Barcode, false, lp.MAPs[m.Number] == m.Barcode)
 		}
 		for _, p := range lib.PickerMedia {
-			check(fmt.Sprintf("picker %d", p.Number), pickerKey(lib.ID, p.Number), p.Barcode, false)
+			check(fmt.Sprintf("picker %d", p.Number), pickerKey(lib.ID, p.Number), p.Barcode, false, false)
 		}
 	}
 }

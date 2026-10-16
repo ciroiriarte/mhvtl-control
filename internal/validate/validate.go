@@ -287,7 +287,7 @@ func check(cur, next config.Inventory, live *Live, host []hostids.Device, opts O
 	checkAddresses(&r, next)
 	checkIdentities(&r, cur, next, host, opts.HostErr)
 	checkPresets(&r, next, opts)
-	checkMedia(&r, next, opts)
+	checkMedia(&r, next, live, opts)
 	checkBarcodes(&r, cur, next, live, opts)
 	checkRemovals(&r, cur, next, live, opts)
 	return r
