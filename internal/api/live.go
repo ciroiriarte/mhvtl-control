@@ -18,7 +18,8 @@ import (
 // is one flag per vtllibrary, not per initiator (check_reset, mhvtl
 // usr/vtllib.c:620-628, called at usr/cmd/vtllibrary.c:227 and raised at
 // :1702, upstream master d65d25f), and so hide the reset from backup hosts
-// (plan, fact 13).
+// (plan, fact 13). Moves this daemon makes drop the library's read
+// (forget); moves a backup application makes show after the TTL.
 const liveTTL = 5 * time.Second
 
 // errNoChangers is the live error of every library when changer access is
@@ -103,6 +104,15 @@ func (c *liveCache) get(ctx context.Context, lib config.Library, read func() (ch
 	e.inv, e.err = read()
 	panicked = false
 	return e.inv, e.err
+}
+
+// forget drops library id's read, so the next view reads the changer again.
+// Callers that move cartridges call it after the move, while they still
+// hold the library's lock.
+func (c *liveCache) forget(id int) {
+	c.mu.Lock()
+	delete(c.libs, id)
+	c.mu.Unlock()
 }
 
 // liveInventory reads lib's changer through the live cache.

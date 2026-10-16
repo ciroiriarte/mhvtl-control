@@ -686,8 +686,10 @@ func TestLiveCacheExpires(t *testing.T) {
 	c.get(ctx, lib, read)
 	lib.Serial = "T" // another changer
 	c.get(ctx, lib, read)
-	if n != 3 {
-		t.Errorf("%d reads, want 3", n)
+	c.forget(10)
+	c.get(ctx, lib, read)
+	if n != 4 {
+		t.Errorf("%d reads, want 4", n)
 	}
 }
 
@@ -752,6 +754,36 @@ func TestLiveCacheWaiterCancels(t *testing.T) {
 	cancel()
 	if _, err := c.get(ctx, lib, nil); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+// A move through this daemon drops the library's shared read: GET /config
+// right after a mount shows the cartridge in the drive.
+func TestMoveDropsLiveRead(t *testing.T) {
+	dir := genDir(t)
+	fc := &fakeChangers{invByLib: map[int]changer.Inventory{10: liveOf(t, dir, 10, nil)}}
+	h := NewServer(Config{ConfigDir: dir, SysRoot: noSys(t), Changers: fc}).Handler()
+	drives := func() []liveDriveDTO {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/config", nil))
+		return decodeBody[struct {
+			Slots map[string]slotsViewDTO `json:"slots"`
+		}](t, rec).Slots["10"].Drives
+	}
+	if d := drives(); len(d) != 0 {
+		t.Fatalf("drives before the mount = %+v", d)
+	}
+	fc.mu.Lock()
+	fc.invByLib[10] = liveOf(t, dir, 10, func(inv *changer.Inventory) {
+		inv.Slots[0].Full, inv.Slots[0].Barcode = false, ""
+		inv.Drives[0].Full, inv.Drives[0].Barcode = true, "E01001L8"
+	})
+	fc.mu.Unlock()
+	if rec := postJSON(t, h, "/api/v1/libraries/10/mount", `{"drive":11,"slot":1}`); rec.Code != http.StatusOK {
+		t.Fatalf("mount: %d %s", rec.Code, rec.Body)
+	}
+	if d := drives(); !reflect.DeepEqual(d, []liveDriveDTO{{1, "E01001L8"}}) {
+		t.Errorf("drives after the mount = %+v", d)
 	}
 }
 
