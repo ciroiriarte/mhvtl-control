@@ -73,24 +73,28 @@ type libraryDTO struct {
 	Nodes *changer.Nodes `json:"nodes,omitempty"`
 }
 
+func toDriveDTO(d config.Drive) driveDTO {
+	return driveDTO{
+		ID:                 d.ID,
+		Vendor:             d.Vendor,
+		Product:            d.Product,
+		Revision:           d.Revision,
+		Serial:             d.Serial,
+		NAA:                d.NAA,
+		Channel:            d.Channel,
+		Target:             d.Target,
+		LUN:                d.LUN,
+		Slot:               d.Slot,
+		CompressionEnabled: d.CompressionEnabled,
+		CompressionType:    d.CompressionType,
+		CompressionFactor:  d.CompressionFactor,
+	}
+}
+
 func toLibraryDTO(l config.Library) libraryDTO {
 	drives := make([]driveDTO, 0, len(l.Drives))
 	for _, d := range l.Drives {
-		drives = append(drives, driveDTO{
-			ID:                 d.ID,
-			Vendor:             d.Vendor,
-			Product:            d.Product,
-			Revision:           d.Revision,
-			Serial:             d.Serial,
-			NAA:                d.NAA,
-			Channel:            d.Channel,
-			Target:             d.Target,
-			LUN:                d.LUN,
-			Slot:               d.Slot,
-			CompressionEnabled: d.CompressionEnabled,
-			CompressionType:    d.CompressionType,
-			CompressionFactor:  d.CompressionFactor,
-		})
+		drives = append(drives, toDriveDTO(d))
 	}
 	slots := make([]slotDTO, 0, len(l.Slots))
 	for _, sl := range l.Slots {
