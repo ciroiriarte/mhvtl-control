@@ -36,6 +36,15 @@ func LoadInventory(configDir string) (Inventory, error) {
 	for _, p := range problems {
 		inv.Problems = append(inv.Problems, Problem{File: path, Problem: p})
 	}
+	for _, d := range drives {
+		attached := false
+		for _, l := range libs {
+			attached = attached || l.ID == d.LibraryID
+		}
+		if !attached {
+			inv.Standalone = append(inv.Standalone, d)
+		}
+	}
 	for i := range libs {
 		lib := &libs[i]
 		for _, d := range drives {

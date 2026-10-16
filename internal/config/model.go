@@ -48,6 +48,9 @@ type Inventory struct {
 	// Problems are the lines of the files read that mhVTL does not read as
 	// written, or that the projection skipped (see ParseDeviceConf).
 	Problems []Problem
+	// Standalone holds the drives whose Library ID names no library in
+	// device.conf; vtltape runs them without a changer.
+	Standalone []Drive
 }
 
 // Problem is a conffile Problem in one of the files LoadInventory read.
