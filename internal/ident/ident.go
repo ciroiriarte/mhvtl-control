@@ -116,6 +116,21 @@ func (g Generator) Serial(taken func(serial string) bool) (string, error) {
 // 300,000. Collisions with devices this host can see are excluded by taken,
 // which should ignore the NAA field (hostids.SameNAA), as host devices and
 // older device.conf entries may carry another one.
+//
+// Not every changer personality sends the NAA. Paths below are mhvtl
+// usr/pm/ on upstream master 6458223
+// (https://github.com/markh794/mhvtl/tree/6458223/usr/pm):
+//   - IBM 03584 and TS3100 build their own VPD page 83h holding only a T10
+//     vendor ID designator (ibm_smc_pm.c update_ibm_3584_vpd_83 :189,
+//     update_ibm_3100_vpd_83 :277);
+//   - Quantum Scalar does the same (scalar_pm.c update_scalar_vpd_83 :73);
+//   - STK L-series remove page 83h (stklxx_pm.c update_stk_l_vpd_83 :55), and
+//     the Spectra personalities never build one (spectra_pm.c).
+//
+// For those the NAA in device.conf never reaches the host. HP EML/MSL and
+// Overland send the device.conf NAA as written, without the 5h rewrite
+// (hp_smc_pm.c and overland_pm.c update_eml_vpd_83); generating 5h keeps
+// them consistent with the drives.
 func (g Generator) NAA(taken func(naa []byte) bool) (string, error) {
 	for n := uint32(0); n < maxTries; n++ {
 		c := g.candidate("naa", n)
