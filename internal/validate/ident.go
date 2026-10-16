@@ -10,14 +10,26 @@ import (
 	"mhvtl-control/internal/personality"
 )
 
-// MaxSerialLen is the longest unit serial number mhvtl-control allows. mhVTL
-// itself takes up to 40 characters (include/vtllib.h MAX_DRIVE_SN_LEN :88,
-// upstream master c65bff0), but some of what it reports has a fixed 10-byte
-// field: the HP EML/MSL and Overland changers copy exactly 10 bytes of the
-// serial into VPD page 83h (usr/pm/hp_smc_pm.c:79, usr/pm/overland_pm.c:63),
-// so a longer one is cut short there. etc/generate_device_conf.in:52 states
-// the same limit.
+// MaxSerialLen is the longest unit serial number mhvtl-control allows.
+// mhVTL itself takes up to 40 characters (include/vtllib.h MAX_DRIVE_SN_LEN
+// :88, upstream master 993b193), but etc/generate_device_conf.in:52 states a
+// limit of 10, and parts of what it reports have room for 10 only:
+//   - a drive serial: the changers whose READ ELEMENT STATUS drive identifier
+//     leaves 10 characters for it (personality.Model.SerialArea: the mhVTL
+//     default, HP EML and the documented MSLs, IBM, Overland, Spectra Gator)
+//     cut it there. A drive can move to any library by its Library ID, so
+//     the limit holds for every drive.
+//   - a library's own serial: only the HP EML/MSL and Overland changers copy
+//     exactly 10 bytes of it into VPD page 83h (usr/pm/hp_smc_pm.c:79,
+//     usr/pm/overland_pm.c:63). A library does not move, so for the other
+//     personalities a longer serial is only warned about.
 const MaxSerialLen = 10
+
+// cutsLibrarySerial holds the library personalities that cut their own
+// serial to MaxSerialLen in VPD page 83h (update_eml_vpd_83, called from
+// init_hp_eml_smc and init_hp_msl_smc, usr/pm/hp_smc_pm.c:145, :198, and
+// init_overland_smc, usr/pm/overland_pm.c:123).
+var cutsLibrarySerial = map[string]bool{"init_hp_eml_smc": true, "init_hp_msl_smc": true, "init_overland_smc": true}
 
 // MaxID is the highest library or drive ID. vtltape and vtllibrary exit on
 // a -q queue ID outside 0..MAXPRIOR-1 (mhvtl include/utils/q.h:51, MAXPRIOR
@@ -171,8 +183,15 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		switch {
 		case d.serial == "":
 			r.errorf(CodeIdentSerialMissing, d.lib, []ElementRef{d.key()}, "%s has no Unit serial number", d)
+		case len(d.serial) > MaxSerialLen && d.kind == "drive":
+			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; mhvtl-control limits drive serials to %d, since several changers (the mhVTL default, HP, IBM, Overland) show no more in READ ELEMENT STATUS and a drive can move to any library",
+				d, d.serial, len(d.serial), MaxSerialLen)
+		case len(d.serial) > MaxSerialLen && cutsLibrarySerial[personality.Lookup(d.vendor, d.product).InitFn]:
+			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; the %s personality reports only the first %d in VPD page 83h (usr/pm/hp_smc_pm.c:79, usr/pm/overland_pm.c:63)",
+				d, d.serial, len(d.serial), personality.Lookup(d.vendor, d.product).Name, MaxSerialLen)
 		case len(d.serial) > MaxSerialLen:
-			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; mhvtl-control limits serials to %d characters, the fixed field some changers report them in (e.g. VPD page 83h, usr/pm/hp_smc_pm.c:79)", d, d.serial, len(d.serial), MaxSerialLen)
+			r.warnf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; this personality reports it whole, but generate_device_conf and mhvtl-control keep serials to %d, and the HP and Overland personalities would cut it",
+				d, d.serial, len(d.serial), MaxSerialLen)
 		}
 		if len(d.vendor) > MaxVendorLen {
 			r.errorf(CodeIdentVendorLength, d.lib, []ElementRef{d.key()}, "%s: vendor %q is %d characters; INQUIRY has room for %d and mhVTL cuts the rest", d, d.vendor, len(d.vendor), MaxVendorLen)
