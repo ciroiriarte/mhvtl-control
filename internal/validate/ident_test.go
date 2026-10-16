@@ -25,7 +25,7 @@ func TestIdentities(t *testing.T) {
 			[]string{`drive 11 and drive 31 share serial "XYZZY_A1"`}, nil},
 		{"serial at the limit", func(i *config.Inventory) { i.Libraries[0].Drives[0].Serial = "ABCDEFGHIJ" }, nil, nil},
 		{"serial past the limit", func(i *config.Inventory) { i.Libraries[0].Drives[0].Serial = "ABCDEFGHIJK" },
-			[]string{`drive 11: serial "ABCDEFGHIJK" is 11 characters; device.conf allows 10`}, nil},
+			[]string{`drive 11: serial "ABCDEFGHIJK" is 11 characters; mhvtl-control limits serials to 10 characters`}, nil},
 		{"no serial", func(i *config.Inventory) { i.Libraries[0].Serial = "" },
 			[]string{"library 10 has no Unit serial number"}, nil},
 		{"duplicate NAA", func(i *config.Inventory) { i.Libraries[1].Drives[0].NAA = "10:22:33:44:ab:00:01:00" },
