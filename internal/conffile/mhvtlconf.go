@@ -8,24 +8,35 @@ import (
 // ModelledKeys are the mhvtl.conf keys MhvtlConf.Set accepts.
 var ModelledKeys = []string{"CAPACITY", "VERBOSE", "VTL_DEBUG", "MHVTL_HOME_PATH", "MHVTL_CONFIG_PATH"}
 
+// cReadKeys are the keys mhVTL's C code reads from mhvtl.conf itself
+// (mhvtl usr/vtllib.c:288-301); the rest only reach it through the shell or
+// systemd's EnvironmentFile.
+var cReadKeys = map[string]bool{"MHVTL_CONFIG_PATH": true}
+
 // assignment is a parsed "KEY=VALUE" line, split so that only the value
 // token is ever rewritten: prefix is everything up to the value (indent,
 // "export ", key, '=' and spacing), quote the value's quote character (0
 // when unquoted), and suffix whatever follows the value.
 type assignment struct {
-	key, value     string
-	prefix, suffix string
-	quote          byte
-	line           int
+	key, value       string
+	prefix, suffix   string
+	quote            byte
+	indented, export bool
+	line             int
 }
 
-// MhvtlConf is a lossless mhvtl.conf: shell KEY=VALUE lines, read both by
-// the shell (the init script, systemd EnvironmentFile) and by mhVTL itself
-// with sscanf "%[^= \t\r] = %[^\n]" (mhvtl usr/vtllib.c:291), which takes
-// the value to the end of the line, quotes included.
+// MhvtlConf is a lossless mhvtl.conf. It is read two ways. The shell (the
+// init script, make_vtl_media) and systemd's EnvironmentFile read
+// KEY=VALUE assignments. mhVTL's C code reads MHVTL_CONFIG_PATH only, with
+// sscanf "%[^= \t\r] = %[^\n]" (mhvtl usr/vtllib.c:291): the value runs to
+// the end of the line, quotes, trailing text and a CRLF's '\r' included; an
+// indented or "export" line is skipped as a syntax error; and the first
+// assignment wins, where the shell takes the last. For that key every such
+// line is a Problem.
 type MhvtlConf struct {
-	lines   []Line
-	assigns []assignment
+	lines    []Line
+	assigns  []assignment
+	Problems []Problem
 }
 
 // ParseMhvtlConf parses mhvtl.conf. It never fails: lines that are not a
@@ -37,13 +48,51 @@ func ParseMhvtlConf(data []byte) *MhvtlConf {
 }
 
 func (c *MhvtlConf) index() {
-	c.assigns = nil
+	c.assigns, c.Problems = nil, nil
+	seen := map[string]int{}
 	for i, l := range c.lines {
-		if a, ok := parseAssignment(l.Text); ok {
-			a.line = i
-			c.assigns = append(c.assigns, a)
+		if strings.IndexByte(l.Text, 0) >= 0 {
+			c.Problems = append(c.Problems, Problem{Line: i + 1, Ambiguous: true,
+				Msg: "line contains a NUL byte: mhVTL reads it only up to there"})
+		}
+		a, ok := parseAssignment(l.Text)
+		if !ok {
+			continue
+		}
+		a.line = i
+		c.assigns = append(c.assigns, a)
+		if !cReadKeys[a.key] {
+			continue
+		}
+		msg := cProblem(a, l)
+		if j, dup := seen[a.key]; dup && msg == "" {
+			msg = fmt.Sprintf("set again after line %d: mhVTL uses the first, the shell the last", j+1)
+		}
+		if _, dup := seen[a.key]; !dup {
+			seen[a.key] = i
+		}
+		if msg != "" {
+			c.Problems = append(c.Problems, Problem{Line: i + 1, Ambiguous: true, Msg: a.key + ": " + msg})
 		}
 	}
+}
+
+// cProblem reports why mhVTL's sscanf would not read the assignment as the
+// shell does, or "".
+func cProblem(a assignment, l Line) string {
+	switch {
+	case a.indented:
+		return "indented: mhVTL skips the line"
+	case a.export:
+		return "\"export\": mhVTL skips the line"
+	case a.quote != 0:
+		return "quoted: mhVTL takes the quotes into the value"
+	case a.suffix != "":
+		return "text after the value: mhVTL takes it into the value"
+	case l.EOL == "\r\n":
+		return "CRLF line ending: mhVTL takes the '\\r' into the value"
+	}
+	return ""
 }
 
 func parseAssignment(text string) (assignment, bool) {
@@ -54,7 +103,9 @@ func parseAssignment(text string) (assignment, bool) {
 		}
 	}
 	skipSpace()
-	if strings.HasPrefix(text[p:], "export ") {
+	indented := p > 0
+	export := strings.HasPrefix(text[p:], "export ")
+	if export {
 		p += len("export ")
 		skipSpace()
 	}
@@ -72,7 +123,7 @@ func parseAssignment(text string) (assignment, bool) {
 	}
 	p++
 	skipSpace()
-	a := assignment{key: key, prefix: text[:p]}
+	a := assignment{key: key, prefix: text[:p], indented: indented, export: export}
 	rest := strings.TrimSuffix(text[p:], "\r")
 	if rest != "" && (rest[0] == '"' || rest[0] == '\'') {
 		end := strings.IndexByte(rest[1:], rest[0])
@@ -112,8 +163,10 @@ func (c *MhvtlConf) Render() []byte { return renderLines(c.lines) }
 
 // Set sets one of ModelledKeys. The last assignment to the key keeps its
 // quoting and anything after the value; a missing key is appended as
-// KEY=value. Values are restricted to characters that need no quoting, so
-// the shell and mhVTL's sscanf read the same thing.
+// KEY=value. Values are restricted to characters that need no quoting. For
+// a key the C code reads, Set refuses when that would not give the shell and
+// the C code the same value: a Problem on the key's line, or a new line in
+// a CRLF file.
 func (c *MhvtlConf) Set(key, value string) error {
 	modelled := false
 	for _, k := range ModelledKeys {
@@ -125,6 +178,13 @@ func (c *MhvtlConf) Set(key, value string) error {
 	for _, r := range value {
 		if !(r < 0x80 && (isAlnum(byte(r)) || strings.ContainsRune("_./:@+,-", r))) {
 			return fmt.Errorf("mhvtl.conf: invalid value %q for %s", value, key)
+		}
+	}
+	if cReadKeys[key] {
+		for _, p := range c.Problems {
+			if strings.HasPrefix(p.Msg, key+": ") {
+				return fmt.Errorf("mhvtl.conf: %w", p)
+			}
 		}
 	}
 	for j := len(c.assigns) - 1; j >= 0; j-- {
@@ -139,6 +199,9 @@ func (c *MhvtlConf) Set(key, value string) error {
 		c.lines[a.line].Text = a.prefix + v + a.suffix
 		c.index()
 		return nil
+	}
+	if cReadKeys[key] && eol(c.lines) == "\r\n" {
+		return fmt.Errorf("mhvtl.conf: %s: CRLF line endings: mhVTL would take the '\\r' into the value", key)
 	}
 	c.lines = insertLines(c.lines, len(c.lines), []Line{{Text: key + "=" + value, EOL: eol(c.lines)}})
 	c.index()

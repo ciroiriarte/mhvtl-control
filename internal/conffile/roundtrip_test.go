@@ -36,7 +36,8 @@ func render(name string, data []byte) ([]byte, []Problem) {
 		c := ParseLibContents(data)
 		return c.Render(), c.Problems
 	case strings.HasSuffix(name, "mhvtl.conf"):
-		return ParseMhvtlConf(data).Render(), nil
+		c := ParseMhvtlConf(data)
+		return c.Render(), c.Problems
 	default:
 		c := ParseDeviceConf(data)
 		return c.Render(), c.Problems
