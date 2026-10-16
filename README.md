@@ -59,6 +59,39 @@ the disks it formats are root's. It drops every capability except
 explains each exception. The sandbox hides `/home`, so media homes there aren't
 supported.
 
+## Monitoring
+
+mhvtl-control serves three endpoints for monitoring:
+
+- `GET /metrics`: library, media, home filesystem and drive metrics in the
+  [Prometheus text format](https://prometheus.io/docs/instrumenting/exposition_formats/),
+  plus mhvtl-control's own request counters. A collection is reused for 10
+  seconds, so several scrapers don't each query the changers and drives.
+- `GET /readyz`: `200` when `device.conf` parses, every library's changer
+  answers, and every attached raw-disk cartridge has a readable superblock;
+  `503` otherwise. The JSON body lists each check and why it failed. The
+  message queue is not checked.
+- `GET /healthz`: `200` while mhvtl-control is running, without checking
+  mhVTL.
+
+`/metrics` and `/readyz` need the API token when one is set, because they name
+libraries, media homes and barcodes; `/healthz` never does. A scrape job:
+
+```yaml
+scrape_configs:
+  - job_name: mhvtl-control
+    authorization:
+      credentials_file: /etc/prometheus/mhvtl-control.token
+    static_configs:
+      - targets: ["vtl.example.com:8080"]
+```
+
+Media metrics are labelled by home directory, since libraries can share one;
+`mhvtl_library_info` maps each library to its home. Drive statistics come from
+LOG SENSE and never read the TapeAlert page, which would clear the flags for
+the backup application. Example alert rules are in
+`dist/prometheus/mhvtl-control.rules.yml`.
+
 ## Upgrade and roll back
 
 Upgrade by installing the newer package. The .deb restarts mhvtl-control if it is
