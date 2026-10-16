@@ -245,3 +245,22 @@ func TestFileProblems(t *testing.T) {
 		t.Errorf("warnings = %+v", r.Warnings)
 	}
 }
+
+// A Home directory with a blank in it blocks when the change sets it, and is
+// a pre-existing warning when the configuration in force has it already.
+func TestHomeWithBlank(t *testing.T) {
+	cur := inv(lib(10, "IBM", "03584L32", 1))
+	next := clone(cur)
+	next.Libraries[0].HomeDir = "/srv/my tapes"
+	r := Validate(cur, next, nil, nil, Options{})
+	expect(t, "errors", family(r.Errors, FamilyMedia), []string{`library 10: Home directory "/srv/my tapes" has a blank in it`})
+
+	next2 := clone(next)
+	next2.Libraries[0].Serial = "LIB10B"
+	r = Validate(next, next2, nil, nil, Options{})
+	expect(t, "errors", family(r.Errors, FamilyMedia), nil)
+	expect(t, "warnings", family(r.Warnings, FamilyMedia), []string{`library 10: Home directory "/srv/my tapes" has a blank in it`})
+	if len(r.Warnings) != 1 || r.Warnings[0].Tag != TagPreExisting {
+		t.Errorf("warnings = %+v", r.Warnings)
+	}
+}

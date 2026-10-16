@@ -32,6 +32,7 @@ const (
 	CodePresetUnmet      = "preset.unmet"
 	CodePresetUnknownApp = "preset.unknown_app"
 
+	CodeMediaHomeBlank   = "media.home_blank"
 	CodeMediaNoHome      = "media.no_home"
 	CodeMediaNotInHome   = "media.not_in_home"
 	CodeMediaUnknownType = "media.unknown_type"

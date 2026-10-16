@@ -13,9 +13,9 @@ import (
 // none of the library's drives loads. The media type comes from the barcode,
 // as make_vtl_media decides it when it creates the cartridge (set_density in
 // mhvtl usr/cmd/make_vtl_media.in). make_vtl_media creates cartridges only
-// for the Slot lines of library_contents (make_vtl_media.in:313, upstream
-// master c65bff0), so a MAP or Picker barcode must name a cartridge that
-// already exists in the library's home.
+// for the Slot lines of library_contents, in the library's home
+// (make_vtl_media.in:349-364, upstream master 993b193; see homeOf), so a MAP
+// or Picker barcode must name a cartridge that already exists there.
 func checkMedia(r *Result, next config.Inventory, opts Options) {
 	for _, lib := range next.Libraries {
 		var models []personality.DriveModel
