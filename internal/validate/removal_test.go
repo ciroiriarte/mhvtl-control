@@ -211,6 +211,21 @@ func TestBayCartridgeNeverLeaves(t *testing.T) {
 	live.Libraries[10].MAPs[2] = "G03001L8" // a file cartridge
 	r = Validate(cur, next, live, nil, Options{})
 	expect(t, "errors", family(r.Errors, FamilyRemoval), []string{"library 10: G03001L8 (MAP slot 2) would leave the library"})
+
+	// The bay filter covers MAP entries only (plan 3.3, exec step 5): a bay
+	// cartridge a host moved into a storage slot stays in the merge, and so
+	// still needs a Disposition to leave (PR 2a round-3 probe).
+	live = &Live{Libraries: map[int]Placement{10: {Slots: map[int]string{1: "R00001L8"}}}}
+	next = fromLive(cur, live)
+	r = Validate(cur, next, live, nil, Options{})
+	expect(t, "errors", family(r.Errors, FamilyRemoval), nil)
+	m := Merge(l, next.Libraries[0], &Placement{Slots: live.Libraries[10].Slots}, bayCartridge(l.HomeDir))
+	if m.Slots[1] != "R00001L8" {
+		t.Errorf("merge: slots %v; want R00001L8 kept in slot 1", m.Slots)
+	}
+	next.Libraries[0].Slots = nil
+	r = Validate(cur, next, live, nil, Options{})
+	expect(t, "errors", family(r.Errors, FamilyRemoval), []string{"library 10: R00001L8 (slot 1) would leave the library"})
 }
 
 // A cartridge loaded in a drive that next deletes counts as present: the
