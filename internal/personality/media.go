@@ -395,7 +395,7 @@ var DensityMedia = map[string]string{
 }
 
 // barcodeRe is set_density's regex in mhvtl usr/cmd/make_vtl_media.in
-// (:93, upstream master c65bff0). Like it, it is not anchored at the start:
+// (:120, upstream master 993b193). Like it, it is not anchored at the start:
 // a longer barcode takes its media type from its tail, as make_vtl_media
 // creates it. vtllibrary's 16-character barcode limit is checked elsewhere.
 var barcodeRe = regexp.MustCompile(`[A-Z0-9]{6,8}([SLXTJDP])([123456789ABCHKTUVWXYZ])$`)

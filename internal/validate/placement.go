@@ -112,7 +112,7 @@ func pickerMedia(lib config.Library) map[int]string {
 // fileSlots maps every storage slot vtllibrary makes from lib's
 // library_contents to the barcode listed there ("" for empty): the Slot lines
 // and the slots they skip (usr/cmd/vtllibrary.c:1054-1064, upstream master
-// c65bff0).
+// 993b193).
 func fileSlots(lib config.Library) map[int]string {
 	m := map[int]string{}
 	highest := 0

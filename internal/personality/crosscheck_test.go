@@ -797,3 +797,58 @@ func abs(n int) int {
 	}
 	return n
 }
+
+// commentCitations are lines of mhVTL that comments of this module cite
+// (packages personality, ident and validate), with text the cited line
+// holds at upstream master 993b193. TestCommentCitations fails when the text
+// moves more than maxCitationDrift lines away, and logs any smaller move.
+var commentCitations = []struct{ cite, text string }{
+	{"usr/vtllib.c:2423", "void update_vpd_83("},
+	{"usr/vtllib.c:2449", "NAA IEEE registered identifier (faked)"},
+	{"usr/vtllib.c:2482", "d[num + 4] &= 0x0f;"},
+	{"usr/vtllib.c:2374", "void ibm_lto_serial_pad("},
+	{"usr/vtllib.c:1673", "void find_media_home_directory("},
+	{"usr/vtllib.c:1723", `" Home directory: %s"`},
+	{"usr/vtllib.c:1150", "void conf_clamp_string("},
+	{"usr/cmd/make_vtl_media.in:120", "regex='[A-Z0-9]{6,8}([SLXTJDP])"},
+	{"usr/cmd/make_vtl_media.in:77", "set_media_type()"},
+	{"usr/cmd/make_vtl_media.in:58", "library_home()"},
+	{"usr/cmd/make_vtl_media.in:364", "awk '/^Slot/ {print $3}'"},
+	{"usr/cmd/vtllibrary.c:686", `" Library ID: %ld Slot: %d"`},
+	{"usr/cmd/vtllibrary.c:874", "smc_p->num_drives++;"},
+	{"usr/cmd/vtllibrary.c:1074", "Linked list data needs to be built in slot order"},
+	{"usr/cmd/vtllibrary.c:324", "if (strlen(barcode) > MAX_BARCODE_LEN)"},
+	{"usr/cmd/vtltape.c:1401", "if (!lu_ssc.pm->set_WORM)"},
+	{"usr/cmd/vtltape.c:2451", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
+	{"usr/cmd/vtllibrary.c:1672", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
+	{"kernel/mhvtl.c:126", "#define DEF_MAX_LUNS 32"},
+	{"kernel/mhvtl.c:602", "if (SCpnt->device->lun >= mhvtl_max_luns)"},
+	{"include/utils/q.h:51", "#define MAXPRIOR 1024"},
+}
+
+func TestCommentCitations(t *testing.T) {
+	root := mhvtlRepo(t)
+	// The comments describe mhVTL from 993b193 on (per-library media
+	// homes, markh794/mhvtl#275 and #276); an older checkout cannot match.
+	if mk := readC(t, root, "usr/cmd/make_vtl_media.in"); !strings.Contains(strings.Join(mk.lines, "\n"), "library_home()") {
+		t.Skipf("%s predates upstream 993b193 (no library_home in make_vtl_media.in); the comment citations describe 993b193 or later", root)
+	}
+	for _, c := range commentCitations {
+		file, line := splitCitation(c.cite)
+		f := readC(t, root, file)
+		found := -1
+		for i, l := range f.lines {
+			if strings.Contains(l, c.text) && (found < 0 || abs(i+1-line) < abs(found-line)) {
+				found = i + 1
+			}
+		}
+		switch {
+		case found < 0:
+			t.Errorf("%s: %q not found in %s", c.cite, c.text, file)
+		case abs(found-line) > maxCitationDrift:
+			t.Errorf("%s: %q is now at %s; update the comments citing it", c.cite, c.text, f.at(found))
+		default:
+			logDrift(t, c.cite, f.at(found))
+		}
+	}
+}

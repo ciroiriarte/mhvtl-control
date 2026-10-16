@@ -44,7 +44,7 @@ func TestMedia(t *testing.T) {
 			l.Slots[0].Barcode = "E09001L4"
 		}, nil, nil},
 		// make_vtl_media reads the media type from the tail, as set_density
-		// does (make_vtl_media.in:93); 14 characters is within vtllibrary's 16.
+		// does (make_vtl_media.in:120); 14 characters is within vtllibrary's 16.
 		{"a long barcode", func(l *config.Library) {
 			l.Slots[4].Barcode = "ABCDEFGHIJ01L8"
 		}, nil, nil},
