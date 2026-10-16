@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
@@ -130,6 +132,10 @@ func (c *countingChangers) Inventory(lib config.Library) (changer.Inventory, err
 	return changer.Inventory{}, nil
 }
 
+func (c *countingChangers) TryInventory(lib config.Library) (changer.Inventory, error) {
+	return c.Inventory(lib)
+}
+
 func TestMetricsCached(t *testing.T) {
 	cc := &countingChangers{}
 	h := NewServer(Config{ConfigDir: writeConfigDir(t), Changers: cc}).Handler()
@@ -238,5 +244,128 @@ func TestReadyzNoConfig(t *testing.T) {
 	code, r := readyz(t, Config{ConfigDir: t.TempDir()})
 	if code != http.StatusServiceUnavailable || strings.Join(failed(r), ",") != "config" {
 		t.Fatalf("status %d %+v", code, r)
+	}
+}
+
+// movingChangers is a changer whose reads block while a "move" holds it, as
+// changer.Manager.Inventory waits for a Mount in progress. TryInventory
+// reports ErrBusy when busy is set, like the Manager.
+type movingChangers struct {
+	fakeChangers
+	mu      sync.Mutex
+	inv     changer.Inventory
+	busy    bool
+	release chan struct{} // reads block until it is closed, when non-nil
+}
+
+func (m *movingChangers) Inventory(lib config.Library) (changer.Inventory, error) {
+	m.mu.Lock()
+	release, inv := m.release, m.inv
+	m.mu.Unlock()
+	if release != nil {
+		<-release
+	}
+	return inv, nil
+}
+
+func (m *movingChangers) TryInventory(lib config.Library) (changer.Inventory, error) {
+	m.mu.Lock()
+	busy := m.busy
+	m.mu.Unlock()
+	if busy {
+		return changer.Inventory{}, changer.ErrBusy
+	}
+	return m.Inventory(lib)
+}
+
+// within fails the test unless fn returns within d.
+func within(t *testing.T, d time.Duration, what string, fn func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { fn(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("%s did not return within %s", what, d)
+	}
+}
+
+func TestMetricsBusyKeepsLastState(t *testing.T) {
+	mc := &movingChangers{inv: changer.Inventory{Slots: []changer.SlotState{{Number: 1, Full: true}, {Number: 2}}}}
+	srv := NewServer(Config{ConfigDir: writeConfigDir(t), Changers: mc})
+	srv.metrics.ttl = time.Nanosecond // every request collects
+	h := srv.Handler()
+	get(h, "/metrics", "")
+
+	mc.mu.Lock()
+	mc.busy = true
+	mc.mu.Unlock()
+	time.Sleep(time.Millisecond)
+	body := get(h, "/metrics", "").Body.String()
+	for _, want := range []string{
+		`mhvtl_library_busy{library="10"} 1`,
+		`mhvtl_library_up{library="10"} 1`,
+		`mhvtl_library_slots{library="10"} 2`,
+		`mhvtl_library_slots_full{library="10"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("busy library: metrics lack %q", want)
+		}
+	}
+	rec := get(h, "/readyz", "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "busy with another operation") {
+		t.Errorf("readyz on a busy library: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestScrapeDuringMove pins that a scrape and a probe never wait for a
+// changer read stuck behind a move: they serve the previous collection, and
+// mhvtl_control_metrics_age_seconds shows how old it is.
+func TestScrapeDuringMove(t *testing.T) {
+	mc := &movingChangers{inv: changer.Inventory{Slots: []changer.SlotState{{Number: 1, Full: true}}}}
+	srv := NewServer(Config{ConfigDir: writeConfigDir(t), Changers: mc})
+	srv.metrics.ttl = time.Nanosecond
+	srv.metrics.wait = 50 * time.Millisecond
+	h := srv.Handler()
+	get(h, "/metrics", "")
+
+	release := make(chan struct{})
+	mc.mu.Lock()
+	mc.release = release
+	mc.mu.Unlock()
+	defer close(release)
+	time.Sleep(time.Millisecond)
+
+	var rec *httptest.ResponseRecorder
+	within(t, 2*time.Second, "a scrape during a move", func() { rec = get(h, "/metrics", "") })
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, `mhvtl_library_slots_full{library="10"} 1`) ||
+		!strings.Contains(body, "mhvtl_control_metrics_age_seconds ") {
+		t.Fatalf("scrape during a move: %d\n%s", rec.Code, body)
+	}
+	// The stuck collection is still running: these don't wait at all.
+	within(t, 2*time.Second, "a second scrape", func() { get(h, "/metrics", "") })
+	within(t, 2*time.Second, "/readyz during a move", func() { rec = get(h, "/readyz", "") })
+	if rec.Code != http.StatusOK {
+		t.Errorf("readyz during a move: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestReadyzHonoursContext pins that a probe arriving before any collection
+// has finished gives up when its context ends.
+func TestReadyzHonoursContext(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	mc := &movingChangers{release: release}
+	h := NewServer(Config{ConfigDir: writeConfigDir(t), Changers: mc}).Handler()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	rec := httptest.NewRecorder()
+	within(t, 2*time.Second, "/readyz with an expiring context", func() {
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil).WithContext(ctx))
+	})
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "no collection has finished yet") {
+		t.Errorf("got %d %s", rec.Code, rec.Body.String())
 	}
 }

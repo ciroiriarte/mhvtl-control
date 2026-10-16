@@ -48,6 +48,10 @@ func (f *fakeChangers) Inventory(lib config.Library) (changer.Inventory, error) 
 	return f.inv, f.invErr
 }
 
+func (f *fakeChangers) TryInventory(lib config.Library) (changer.Inventory, error) {
+	return f.Inventory(lib)
+}
+
 func (f *fakeChangers) Mount(lib config.Library, driveID int, from changer.Source) (changer.Move, error) {
 	f.calls = append(f.calls, fmt.Sprintf("Mount lib=%d drive=%d slot=%d map=%d", lib.ID, driveID, from.Slot, from.MAP))
 	return f.move, f.err

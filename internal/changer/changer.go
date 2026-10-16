@@ -39,6 +39,9 @@ const unitAttentionRetries = 2
 var (
 	// ErrUnavailable means the library's changer could not be found or opened.
 	ErrUnavailable = errors.New("changer unavailable")
+	// ErrBusy means another operation, typically a cartridge move, holds the
+	// changer; returned by TryInventory instead of waiting.
+	ErrBusy = errors.New("changer busy with another operation")
 	// ErrUnknownDrive means the drive id is not a drive of this library.
 	ErrUnknownDrive = errors.New("drive not in library")
 	// ErrOutOfRange means a drive position, slot or MAP number is outside the
@@ -167,6 +170,22 @@ func (m *Manager) with(lib config.Library, fn func(s *session) error) error {
 	l := m.lock(lib.ID)
 	l.Lock()
 	defer l.Unlock()
+	return m.run(lib, fn)
+}
+
+// tryWith is with, but returns ErrBusy instead of waiting when another
+// operation holds the lock. A move can hold it for minutes.
+func (m *Manager) tryWith(lib config.Library, fn func(s *session) error) error {
+	l := m.lock(lib.ID)
+	if !l.TryLock() {
+		return ErrBusy
+	}
+	defer l.Unlock()
+	return m.run(lib, fn)
+}
+
+// run opens lib's changer and runs fn against it; the caller holds its lock.
+func (m *Manager) run(lib config.Library, fn func(s *session) error) error {
 	path, err := m.locator.Find(lib)
 	if err != nil {
 		return err
@@ -187,6 +206,19 @@ func (m *Manager) with(lib config.Library, fn func(s *session) error) error {
 func (m *Manager) Inventory(lib config.Library) (Inventory, error) {
 	var inv Inventory
 	err := m.with(lib, func(s *session) error {
+		var err error
+		inv, err = s.inventory()
+		return err
+	})
+	return inv, err
+}
+
+// TryInventory is Inventory, but returns ErrBusy at once when another
+// operation on lib's changer is in progress, for callers such as metrics
+// that must not wait behind a cartridge move.
+func (m *Manager) TryInventory(lib config.Library) (Inventory, error) {
+	var inv Inventory
+	err := m.tryWith(lib, func(s *session) error {
 		var err error
 		inv, err = s.inventory()
 		return err
