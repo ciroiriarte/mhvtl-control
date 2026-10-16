@@ -197,7 +197,9 @@ func TestAmbiguousBlank(t *testing.T) {
 	for _, p := range c.Problems {
 		lines = append(lines, p.Line)
 	}
-	if want := []int{5, 10}; !reflect.DeepEqual(lines, want) {
+	// Line 11: " \t " does not end drive 11 for vtllibrary, so drive 12's
+	// header abuts it.
+	if want := []int{5, 10, 11}; !reflect.DeepEqual(lines, want) {
 		t.Errorf("problem lines = %v, want %v", lines, want)
 	}
 	wantAttr(t, mustStanza(t, c, "Library", 10), "Product identification", "L700")

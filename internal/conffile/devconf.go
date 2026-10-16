@@ -242,7 +242,7 @@ func (c *DeviceConf) index() {
 			case ambiguousBlank(l):
 				problem(i, true, "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record; make it empty")
 			case cLen(l) == 2 && (l.Text[0] == ' ' || l.Text[0] == '\t'):
-				problem(i, true, "two-byte line inside a record: mhVTL's home-directory lookup (vtllib.c:1710) takes it as a blank line, vtllibrary and vtltape do not")
+				problem(i, true, "two-byte line inside a record: strlen 2 is blank to strlen(b) < 3 (vtllib.c:1710) but not to strlen(b) == 1 (vtllibrary.c:740, :1281, vtltape.c:2137)")
 			}
 		}
 		text := strings.TrimRight(l.Text, " \t\r")
@@ -274,6 +274,13 @@ func (c *DeviceConf) index() {
 			if cur >= 0 && c.stanzas[cur].Kind != st.Kind {
 				problem(i, true, "%s header with no blank line after %s %d: mhVTL reads what follows as part of %s %d too",
 					st.Kind, c.stanzas[cur].Kind, c.stanzas[cur].ID, c.stanzas[cur].Kind, c.stanzas[cur].ID)
+			}
+			// vtllibrary moves to a new drive only at its " Library ID:"
+			// line (vtllibrary.c:686-712), so with no blank line between,
+			// the attributes before it still go to the previous drive.
+			if cur >= 0 && st.Kind == "Drive" && c.stanzas[cur].Kind == "Drive" {
+				problem(i, true, "Drive header with no blank line after Drive %d: vtllibrary applies what comes before its Library ID to Drive %d",
+					c.stanzas[cur].ID, c.stanzas[cur].ID)
 			}
 			// Column-1 comments right above the header belong to this
 			// stanza, not the one before it.
