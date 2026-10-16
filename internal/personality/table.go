@@ -34,6 +34,11 @@ type Model struct {
 	// VPD83 is whether the changer answers INQUIRY VPD page 83h (Device
 	// Identification). Linux udev derives ID_SCSI_SERIAL from it.
 	VPD83 bool
+	// SendsNAA is whether that page carries an NAA designator, from the
+	// device.conf NAA or else the serial (mhvtl usr/vtllib.c update_vpd_83,
+	// usr/pm/hp_smc_pm.c and usr/pm/overland_pm.c update_eml_vpd_83). The
+	// IBM and Scalar personalities build a page 83h without one.
+	SendsNAA bool
 
 	// Layout of the drive identifier in READ ELEMENT STATUS with DVCID set
 	// (mhvtl usr/smc.c fill_element_descriptor).
@@ -85,15 +90,15 @@ var Models = map[string]Model{
 		InitFn: "init_default_smc", Name: "mhVTL default library",
 		StartPicker: 0x02f0, StartMAP: 0x0300, StartDrive: 0x0001, StartStorage: 0x0400,
 		WindowSource: "usr/pm/default_smc_pm.c:53",
-		VPD83:        true,
-		DvcidLen:     34,
+		VPD83:        true, SendsNAA: true,
+		DvcidLen: 34,
 	},
 	"init_hp_eml_smc": {
 		InitFn: "init_hp_eml_smc", Name: "HP EML E-Series",
 		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
 		WindowSource: "usr/pm/hp_smc_pm.c:128",
-		VPD83:        true,
-		DvcidLen:     34,
+		VPD83:        true, SendsNAA: true,
+		DvcidLen: 34,
 	},
 	// init_hp_msl_smc sets a 34-byte identifier for the models HPE documents
 	// (MSL6480, MSL3040, 1/8 G3) and a 20-byte serial for the others; the
@@ -102,8 +107,8 @@ var Models = map[string]Model{
 		InitFn: "init_hp_msl_smc", Name: "HP MSL",
 		StartPicker: 0x0001, StartMAP: 0x01c0, StartDrive: 0x01e0, StartStorage: 0x0020,
 		WindowSource: "usr/pm/hp_smc_pm.c:169",
-		VPD83:        true,
-		DvcidLen:     20, DvcidSerialOnly: true,
+		VPD83:        true, SendsNAA: true,
+		DvcidLen: 20, DvcidSerialOnly: true,
 	},
 	"init_ibmts3100": {
 		InitFn: "init_ibmts3100", Name: "IBM TS3100",
@@ -123,8 +128,8 @@ var Models = map[string]Model{
 		InitFn: "init_overland_smc", Name: "Overland",
 		StartPicker: 0x0001, StartMAP: 0x0000, StartDrive: 0x00ff, StartStorage: 0x0002,
 		WindowSource: "usr/pm/overland_pm.c:106",
-		VPD83:        true,
-		DvcidLen:     34,
+		VPD83:        true, SendsNAA: true,
+		DvcidLen: 34,
 	},
 	"init_scalar_smc": {
 		InitFn: "init_scalar_smc", Name: "Quantum Scalar",

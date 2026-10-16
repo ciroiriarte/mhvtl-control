@@ -32,8 +32,17 @@ func TestIdentities(t *testing.T) {
 			[]string{"drive 11 and drive 31 share NAA"}, nil},
 		{"NAAs differing only in the NAA field", func(i *config.Inventory) { i.Libraries[1].Drives[0].NAA = "50:22:33:44:ab:00:01:00" },
 			[]string{"drive 11 and drive 31 share NAA 50:22:33:44:ab:00:01:00"}, nil},
-		{"malformed NAA", func(i *config.Inventory) { i.Libraries[0].NAA = "10:22:33" },
-			[]string{"library 10: NAA \"10:22:33\": want 8 hex bytes"}, nil},
+		{"malformed NAA", func(i *config.Inventory) { i.Libraries[0].Drives[0].NAA = "10:22:33" },
+			[]string{"drive 11: NAA \"10:22:33\": want 8 hex bytes"}, nil},
+		// The STK L-series has no VPD page 83h: its NAA is never sent.
+		{"STK library NAA is not checked", func(i *config.Inventory) {
+			i.Libraries[0].NAA = "10:22:33"
+			i.Libraries[1].NAA = i.Libraries[1].Drives[0].NAA
+		}, nil, nil},
+		{"HP EML library NAA is checked", func(i *config.Inventory) {
+			i.Libraries[1].Vendor, i.Libraries[1].Product = "HP", "EML E-Series"
+			i.Libraries[1].NAA = i.Libraries[1].Drives[0].NAA
+		}, []string{"library 30 and drive 31 share NAA"}, nil},
 		{"missing NAA", func(i *config.Inventory) { i.Libraries[0].Drives[1].NAA = "" },
 			nil, []string{"drive 12 has no NAA"}},
 		{"standalone drive counts", func(i *config.Inventory) {
@@ -82,6 +91,9 @@ func TestHostCollisions(t *testing.T) {
 		{"a stale mhVTL device", config.Inventory{}, []hostids.Device{mhvtlDrive11},
 			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 3:0:1:0 (mhvtl)`,
 				"drive 11: NAA 10:22:33:44:ab:00:01:00 is already used by host device 3:0:1:0 (mhvtl)"}},
+		// Library 10 is an STK L700, which sends no NAA.
+		{"a real device with the STK library's device.conf NAA", cur, []hostids.Device{{Host: 5, Target: 3, Driver: "qla2xxx",
+			NAAs: []string{"50:22:33:44:ab:00:00:00"}}}, nil},
 		// The same identity on another HBA (e.g. a target re-exporting it)
 		// is a collision.
 		{"same serial on another HBA", cur, []hostids.Device{{Host: 7, Target: 1, Driver: "iscsi_tcp", Serial: "XYZZY_A1"}},

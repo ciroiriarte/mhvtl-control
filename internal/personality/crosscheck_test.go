@@ -292,6 +292,28 @@ func hasVPD83(f cfile, first, last int) bool {
 	return false
 }
 
+// naaRe finds code that writes an NAA designator into VPD page 83h: the
+// shared update_vpd_83, or a personality's own copy of it, which reads the
+// device.conf NAA.
+var naaRe = regexp.MustCompile(`\bupdate_vpd_83\(|lu->naa\b`)
+
+// sendsNAA reports whether the init function, or a function it calls in the
+// same file, writes an NAA designator.
+func sendsNAA(f cfile, first, last int) bool {
+	writes := func(a, b int) bool { return naaRe.MatchString(strings.Join(f.lines[a-1:b], "\n")) }
+	if writes(first, last) {
+		return true
+	}
+	for n := first; n <= last; n++ {
+		for _, m := range callRe.FindAllStringSubmatch(f.lines[n-1], -1) {
+			if a, b, ok := f.body(m[1]); ok && writes(a, b) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestCrossCheckLibraryModels(t *testing.T) {
 	root := mhvtlRepo(t)
 	files := pmFiles(t, root)
@@ -340,6 +362,9 @@ func TestCrossCheckLibraryModels(t *testing.T) {
 		logDrift(t, m.WindowSource, windowSource(f, vals))
 		if got := hasVPD83(f, first, last); got != m.VPD83 {
 			t.Errorf("%s: %s allocates VPD 83h: %v; Models[%q].VPD83 = %v", f.at(first-1), fn, got, fn, m.VPD83)
+		}
+		if got := sendsNAA(f, first, last); got != m.SendsNAA {
+			t.Errorf("%s: %s writes an NAA designator: %v; Models[%q].SendsNAA = %v", f.at(first-1), fn, got, fn, m.SendsNAA)
 		}
 	}
 }
