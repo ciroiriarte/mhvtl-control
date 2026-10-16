@@ -1,5 +1,6 @@
 # The options file may hold the API bearer token.
-mhvtl-control: non-standard-file-perm 0600 != 0644 [etc/mhvtl/mhvtl-control.env]
+mhvtl-control: non-standard-file-perm 0600 != 0644 [etc/mhvtl-control/mhvtl-control.env]
+mhvtl-control: non-standard-dir-perm 0750 != 0755 [etc/mhvtl-control/]
 # Not uploaded to the Debian archive, so there is no ITP bug to close.
 mhvtl-control: initial-upload-closes-no-bugs [usr/share/doc/mhvtl-control/changelog.Debian.gz:1]
 # A Go PIE built with CGO_ENABLED=0 links no libraries, so it has no

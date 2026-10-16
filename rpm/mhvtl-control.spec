@@ -51,26 +51,62 @@ go test ./...
 make install DESTDIR=%{buildroot} BINDIR=%{_bindir} UNITDIR=%{_unitdir} \
     SYSCONFDIR=%{_sysconfdir} MANDIR=%{_mandir}
 
-%if 0%{?suse_version}
+# The options file moved from /etc/mhvtl to /etc/mhvtl-control after 0.2.0.
+# rpm decides each file's fate before %%pre runs, so a copy %%pre put at the
+# new path would be overwritten by the new default. Instead %%pre stages the
+# old file, only when the new path is absent (an upgrade from 0.2.0, never a
+# reinstall or a later upgrade), and %%posttrans, after the old package's
+# erase has removed the old file or kept an edited one as .rpmsave, puts the
+# staged copy in place. The new default stays beside it as .rpmnew if they
+# differ, and the .rpmsave is dropped when it is the staged copy, so no stray
+# copy of the token is left in /etc/mhvtl. Where the systemd macros restart
+# in %%postun rather than deferring it to systemd-update-helper, that restart
+# ran on the default file, so a running daemon is restarted again once its
+# options are in place.
 %pre
+if [ -f %{_sysconfdir}/mhvtl/mhvtl-control.env ] && [ ! -e %{_sysconfdir}/mhvtl-control/mhvtl-control.env ]; then
+    mkdir -p -m 0750 %{_sysconfdir}/mhvtl-control
+    cp -p %{_sysconfdir}/mhvtl/mhvtl-control.env %{_sysconfdir}/mhvtl-control/mhvtl-control.env.rpm-migrate
+fi
+%if 0%{?suse_version}
 %service_add_pre mhvtl-control.service
+%endif
+
+%posttrans
+f=%{_sysconfdir}/mhvtl-control/mhvtl-control.env
+if [ -f $f.rpm-migrate ]; then
+    if cmp -s $f.rpm-migrate $f; then
+        rm -f $f.rpm-migrate
+    else
+        mv -f $f $f.rpmnew
+        mv -f $f.rpm-migrate $f
+        if [ -d /run/systemd/system ]; then
+            systemctl try-restart mhvtl-control.service >/dev/null 2>&1 || :
+        fi
+    fi
+    if cmp -s %{_sysconfdir}/mhvtl/mhvtl-control.env.rpmsave $f; then
+        rm -f %{_sysconfdir}/mhvtl/mhvtl-control.env.rpmsave
+    fi
+fi
 
 %post
+%if 0%{?suse_version}
 %service_add_post mhvtl-control.service
+%else
+%systemd_post mhvtl-control.service
+%endif
 
 %preun
+%if 0%{?suse_version}
 %service_del_preun mhvtl-control.service
+%else
+%systemd_preun mhvtl-control.service
+%endif
 
 %postun
+%if 0%{?suse_version}
 %service_del_postun mhvtl-control.service
 %else
-%post
-%systemd_post mhvtl-control.service
-
-%preun
-%systemd_preun mhvtl-control.service
-
-%postun
 %systemd_postun_with_restart mhvtl-control.service
 %endif
 
@@ -80,10 +116,9 @@ make install DESTDIR=%{buildroot} BINDIR=%{_bindir} UNITDIR=%{_unitdir} \
 %{_bindir}/mhvtl-control
 %{_unitdir}/mhvtl-control.service
 %{_mandir}/man8/mhvtl-control.8*
-# /etc/mhvtl is shared with mhVTL.
-%dir %{_sysconfdir}/mhvtl
+%dir %attr(0750,root,root) %{_sysconfdir}/mhvtl-control
 # The options file may hold the API token.
-%config(noreplace) %attr(0600,root,root) %{_sysconfdir}/mhvtl/mhvtl-control.env
+%config(noreplace) %attr(0600,root,root) %{_sysconfdir}/mhvtl-control/mhvtl-control.env
 
 %changelog
 * Fri Oct 16 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.2.0-1

@@ -13,7 +13,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/mhvtl/mhvtl-control.env
+EnvironmentFile=-/etc/mhvtl-control/mhvtl-control.env
 ExecStart=/usr/bin/mhvtl-control $MHVTL_CONTROL_OPTS
 Restart=on-failure
 RestartSec=5

@@ -6,9 +6,10 @@ mhvtl-control is installed but neither enabled nor started. To run it:
   systemctl enable --now mhvtl-control
 
 It listens on http://127.0.0.1:8080 by default. Options, including the
-listen address, an API token and TLS, are set in /etc/mhvtl/mhvtl-control.env
-(mode 0600); restart mhvtl-control after changing it. mhvtl-control refuses to bind a
-non-loopback address without a token.
+listen address, an API token and TLS, are set in
+/etc/mhvtl-control/mhvtl-control.env (mode 0600); restart mhvtl-control after
+changing it. mhvtl-control refuses to bind a non-loopback address without a
+token.
 
 mhvtl-control finds mhVTL's libraries in /etc/mhvtl/device.conf and talks to the
 running mhVTL daemons, so it is useful once the mhvtl package is set up.

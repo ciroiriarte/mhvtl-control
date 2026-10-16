@@ -1,0 +1,10 @@
+mhvtl-control (0.3.0-1) UNRELEASED; urgency=medium
+
+  The options file moved from /etc/mhvtl/mhvtl-control.env to
+  /etc/mhvtl-control/mhvtl-control.env, so that mhVTL's /etc/mhvtl holds only
+  mhVTL's own configuration. If you edited the old file, the upgrade moves it
+  to the new path, token included, and keeps the new packaged default next to
+  it as mhvtl-control.env.dpkg-new. If you did not, the old file is removed
+  and the new default is installed.
+
+ -- Ciro Iriarte <ciro.iriarte@gmail.com>  Fri, 16 Oct 2026 12:00:00 -0300

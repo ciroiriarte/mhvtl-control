@@ -23,13 +23,15 @@ build:
 		-ldflags '$(LDFLAGS) -X main.version=$(VERSION)' -o bin/mhvtl-control ./cmd/mhvtl-control
 
 # install stages the binary, the unit, the man page and the default options
-# file. The options file may hold a token, so it is installed mode 0600, and
-# an existing one is left alone so that reinstalling keeps the configuration.
+# file. The options file may hold a token, so it is installed mode 0600 in a
+# 0750 directory, and an existing one is left alone so that reinstalling keeps
+# the configuration.
 install:
 	install -D -m 0755 $(MODDIR)bin/mhvtl-control $(DESTDIR)$(BINDIR)/mhvtl-control
 	install -D -m 0644 $(MODDIR)dist/mhvtl-control.service $(DESTDIR)$(UNITDIR)/mhvtl-control.service
-	test -e $(DESTDIR)$(SYSCONFDIR)/mhvtl/mhvtl-control.env || \
-		install -D -m 0600 $(MODDIR)dist/mhvtl-control.env $(DESTDIR)$(SYSCONFDIR)/mhvtl/mhvtl-control.env
+	install -d -m 0750 $(DESTDIR)$(SYSCONFDIR)/mhvtl-control
+	test -e $(DESTDIR)$(SYSCONFDIR)/mhvtl-control/mhvtl-control.env || \
+		install -m 0600 $(MODDIR)dist/mhvtl-control.env $(DESTDIR)$(SYSCONFDIR)/mhvtl-control/mhvtl-control.env
 	install -D -m 0644 $(MODDIR)dist/mhvtl-control.8 $(DESTDIR)$(MANDIR)/man8/mhvtl-control.8
 
 # jstest runs the framework-free dashboard helper tests with Node's built-in

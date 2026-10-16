@@ -98,12 +98,19 @@ media homes under /home, /root and /run/user are hidden from
 so mktape and edit_tape cannot reach them.
 .SH FILES
 .TP
-.I /etc/mhvtl/mhvtl-control.env
+.I /etc/mhvtl-control/mhvtl-control.env
 Options for
 .BR mhvtl-control.service :
 .B MHVTL_CONTROL_OPTS
 and
 .BR MHVTL_CONTROL_API_TOKEN .
+.TP
+.I /etc/mhvtl/mhvtl-control.env
+Where 0.2.0 kept the options. Deprecated: while
+.I /etc/mhvtl-control/mhvtl-control.env
+is absent and neither variable is set,
+.B mhvtl-control
+reads this file itself and logs a warning.
 .TP
 .I /etc/mhvtl/device.conf
 mhVTL's library and drive configuration.
