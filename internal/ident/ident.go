@@ -113,9 +113,9 @@ func (g Generator) Serial(taken func(serial string) bool) (string, error) {
 // never reach the host. Generating 5h keeps the wire value identical to what
 // device.conf holds.
 //
-// The OUI is 0x123456, the placeholder mhVTL's own default designator uses.
-// It is not an IEEE registered OUI: the identifier is unique per appliance
-// but makes no registration claim beyond what mhVTL already makes.
+// The identifier carries mhVTL's placeholder OUI, 0x123456, from the
+// 51:23:45:60:... bytes update_vpd_83 starts from. That OUI is not
+// registered with the IEEE.
 //
 // Uniqueness across appliances rests on the 36 vendor specific bits, taken
 // from an HMAC of the appliance ID and the sequence number. Among N
