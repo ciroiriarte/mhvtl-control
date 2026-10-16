@@ -41,7 +41,9 @@ default and is not enabled on install.
 # standard library.
 export GOCACHE=%{_builddir}/.gocache GOTOOLCHAIN=local GOPROXY=off
 # PIE, as distributions expect; it links no libraries, only needs ld.so.
-make build GO=go VERSION=%{version} GOBUILDFLAGS="-trimpath -buildvcs=false -buildmode=pie"
+# LDFLAGS is passed explicitly: EL10's %%build exports the C linker's flags
+# in LDFLAGS (-Wl,-z,relro ...), which the Makefile would hand to Go's linker.
+make build GO=go VERSION=%{version} LDFLAGS="-s -w" GOBUILDFLAGS="-trimpath -buildvcs=false -buildmode=pie"
 
 %check
 export GOCACHE=%{_builddir}/.gocache GOTOOLCHAIN=local GOPROXY=off
@@ -130,7 +132,8 @@ fi
 * Fri Oct 16 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.3.0-1
 - Read raw-disk cartridges' superblock and MAM: capacity, usage and MAM in the media list (#33).
 - Serve Prometheus metrics at /metrics and readiness at /readyz (#34).
-- Debian: install the unit where the release's systemd looks for it, so the package builds and installs on Debian 12 (#35).
+- Debian: install the unit where the release's systemd looks for it, and build with golang-1.23-go from bookworm-backports, so the package builds on Debian 12 (#35).
+- RPM: keep the C linker flags EL10 exports out of Go's linker.
 - Add a lossless model of mhVTL's configuration files and validation of a proposed configuration: personality table, identity generation and checks (#38, #39, #40). Not yet exposed in the API.
 - Move the options file to /etc/mhvtl-control/mhvtl-control.env; an upgrade from 0.2.0 moves an edited file (#41).
 - Confine mhvtl-control.service away from systemd, D-Bus and the config-apply helper (#41).
