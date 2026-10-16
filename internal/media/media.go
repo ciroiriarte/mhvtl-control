@@ -3,7 +3,8 @@
 // and meta streams plus the MAM in two files: mam (SCSI MAM attributes) and
 // mhvtl_data (mhVTL private attributes), written by mhvtl usr/vtlcart.c
 // write_mam. A cartridge on the raw-disk backend is instead a symlink to a
-// block device, which is reported but never opened.
+// block device holding an MVTL superblock and a MAM region with the same two
+// streams (mhvtl usr/vtlcart_raw.c raw_be_save_mam); it is opened read-only.
 package media
 
 import (
@@ -15,6 +16,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"mhvtl-control/internal/rawdisk"
 )
 
 // Backends.
@@ -69,7 +72,15 @@ type Cartridge struct {
 	ReadBytes      uint64 `json:"read_bytes"`
 	Partitions     int    `json:"partitions,omitempty"`
 	LastWritten    string `json:"last_written,omitempty"`
-	Error          string `json:"error,omitempty"` // metadata unreadable; other fields best effort
+
+	// Raw backend only, from the MVTL superblock.
+	UUID         string `json:"uuid,omitempty"`
+	GenerationID uint64 `json:"generation_id,omitempty"`
+	DeviceBytes  uint64 `json:"device_bytes,omitempty"` // total_capacity_bytes
+	UsedBytes    uint64 `json:"used_bytes,omitempty"`   // payload bytes on the disk
+	MediaAbsent  bool   `json:"media_absent,omitempty"` // the symlink's disk is not attached
+
+	Error string `json:"error,omitempty"` // metadata unreadable; other fields best effort
 }
 
 // Exists reports whether <home>/<barcode> is a cartridge directory or a raw
@@ -145,6 +156,7 @@ func read(home string, fi os.FileInfo) Cartridge {
 	c := Cartridge{Barcode: fi.Name(), Backend: BackendFile}
 	if fi.Mode()&os.ModeSymlink != 0 {
 		c.Backend = BackendRaw
+		readRaw(&c, filepath.Join(home, fi.Name()))
 		return c
 	}
 	dir := filepath.Join(home, fi.Name())
@@ -175,6 +187,77 @@ func read(home string, fi os.FileInfo) Cartridge {
 		c.Error = err.Error()
 	}
 	return c
+}
+
+// readRaw fills c from the superblock and MAM region of the disk the raw
+// cartridge symlink link points to. A symlink whose target is gone is a disk
+// that was removed from its bay: that is reported as MediaAbsent, not an
+// error.
+func readRaw(c *Cartridge, link string) {
+	if _, err := os.Stat(link); errors.Is(err, os.ErrNotExist) {
+		c.MediaAbsent = true
+		return
+	}
+	sb, err := rawdisk.ReadSuperblock(link)
+	if err != nil {
+		c.Error = "superblock: " + errText(err)
+		return
+	}
+	c.UUID = uuidString(sb.CartridgeUUID)
+	c.GenerationID = sb.GenerationID
+	c.DeviceBytes = sb.TotalCapacityBytes
+	c.Partitions = len(sb.Partitions)
+	for _, p := range sb.Partitions {
+		c.CapacityBytes += p.AdvertisedCapacity
+		c.UsedBytes += p.DataUsed
+	}
+
+	b, err := rawdisk.ReadMAM(link, sb)
+	if err != nil {
+		c.Error = "mam: " + errText(err)
+		return
+	}
+	if b == nil {
+		return // freshly formatted: no MAM written yet
+	}
+	if err := parseRawMAM(c, b); err != nil {
+		c.Error = err.Error()
+	}
+}
+
+// parseRawMAM decodes the raw backend's MAM region: two host-order u32
+// lengths, then the mam and mhvtl_data streams.
+func parseRawMAM(c *Cartridge, b []byte) error {
+	if len(b) < 8 {
+		return errors.New("mam: short header")
+	}
+	mlen := uint64(binary.NativeEndian.Uint32(b))
+	hlen := uint64(binary.NativeEndian.Uint32(b[4:]))
+	if 8+mlen+hlen > uint64(len(b)) {
+		return fmt.Errorf("mam: %w", errTruncated)
+	}
+	if err := parseMAM(c, b[8:8+mlen]); err != nil {
+		return fmt.Errorf("mam: %w", err)
+	}
+	if err := parseMhvtl(c, b[8+mlen:8+mlen+hlen]); err != nil {
+		return fmt.Errorf("mhvtl_data: %w", err)
+	}
+	return nil
+}
+
+// errText is err without the path a *os.PathError carries, since it ends up
+// in Cartridge.Error.
+func errText(err error) string {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return pe.Op + ": " + pe.Err.Error()
+	}
+	return err.Error()
+}
+
+// uuidString formats a 16-byte UUID in the canonical 8-4-4-4-12 form.
+func uuidString(u [16]byte) string {
+	return fmt.Sprintf("%x-%x-%x-%x-%x", u[0:4], u[4:6], u[6:8], u[8:10], u[10:16])
 }
 
 // readFile reads at most maxFileSize bytes of path. Errors name only the

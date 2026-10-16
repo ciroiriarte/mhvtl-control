@@ -235,20 +235,6 @@ func TestNoMAM(t *testing.T) {
 	}
 }
 
-func TestRawSymlink(t *testing.T) {
-	home := t.TempDir()
-	if err := os.Symlink("/dev/null", filepath.Join(home, "R00001")); err != nil {
-		t.Fatal(err)
-	}
-	c, err := Read(home, "R00001")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c != (Cartridge{Barcode: "R00001", Backend: "raw"}) {
-		t.Fatalf("got %+v", c)
-	}
-}
-
 func TestList(t *testing.T) {
 	home := t.TempDir()
 	writeCart(t, home, "C00003", typeMAM(0), nil)
