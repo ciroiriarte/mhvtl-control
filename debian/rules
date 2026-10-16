@@ -32,7 +32,7 @@ ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
 endif
 
 override_dh_auto_install:
-	test -n "$(SYSTEMD_UNITDIR)"
+	@test -n "$(SYSTEMD_UNITDIR)" || { echo "pkg-config can't find systemd.pc (systemdsystemunitdir)" >&2; exit 1; }
 	$(MAKE) install $(MAKE_VARS) UNITDIR=$(SYSTEMD_UNITDIR) DESTDIR=$(CURDIR)/debian/mhvtl-control
 
 # The options file may hold the API token.
