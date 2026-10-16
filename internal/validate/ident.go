@@ -362,7 +362,9 @@ func driverName(h hostids.Device) string {
 // serial the changer reports in READ ELEMENT STATUS. Then main() calls
 // update_drive_details (:1713; do_rereadconfig does the same at :1581-1583),
 // which reads device.conf and, for this library's drive in that slot, sets
-// the serial again from its "Unit serial number" (:719-721). vtltape answers
+// the serial again from its "Unit serial number" (:719-721), provided that
+// line comes after the drive's Library ID line (:686); conffile flags one
+// above it, and that Problem blocks (checkProblems). vtltape answers
 // INQUIRY with that device.conf serial (usr/cmd/vtltape.c:2154-2157). So:
 //   - with a device.conf serial, the Drive line value is overridden: changer
 //     and drive agree, and the value is ignored (a warning);

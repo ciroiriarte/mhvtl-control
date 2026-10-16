@@ -437,6 +437,30 @@ func (c *DeviceConf) index() {
 	}
 	closeAt(len(c.lines))
 
+	// vtllibrary's update_drive_details applies a drive's attributes only
+	// from its " Library ID:" line on (mhvtl usr/cmd/vtllibrary.c:686-738,
+	// upstream master 993b193), while vtltape reads the whole stanza. One
+	// above it gives the drive itself one value and the changer another
+	// (or none): for Unit serial number, the serial the changer reports for
+	// the drive slot stays the library_contents Drive line's.
+	for _, st := range c.stanzas {
+		if st.Kind != "Drive" {
+			continue
+		}
+		lib := -1
+		for _, a := range st.Attrs {
+			if a.Key == "Library ID" {
+				lib = a.Line
+				break
+			}
+		}
+		for _, a := range st.Attrs {
+			if lib >= 0 && a.Line < lib && changerReads[a.Key] {
+				problem(a.Line, true, "%s above Library ID (line %d): vtllibrary reads a drive's attributes only from its Library ID line on, so the changer does not see it; move it below", a.Key, lib+1)
+			}
+		}
+	}
+
 	type kindID struct {
 		kind string
 		id   int
@@ -451,6 +475,15 @@ func (c *DeviceConf) index() {
 		first[k] = st.HeaderLine
 	}
 	sort.SliceStable(c.Problems, func(a, b int) bool { return c.Problems[a].Line < c.Problems[b].Line })
+}
+
+// changerReads holds the drive attributes vtllibrary's update_drive_details
+// reads (mhvtl usr/cmd/vtllibrary.c:716-738, upstream master 993b193).
+var changerReads = map[string]bool{
+	"Unit serial number":     true,
+	"Product identification": true,
+	"Product revision level": true,
+	"Vendor identification":  true,
 }
 
 // attrValue reads a value as conf_value does: leading blanks skipped, cut at
