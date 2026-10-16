@@ -49,7 +49,18 @@ func TestRoundTripCorpus(t *testing.T) {
 			if !bytes.Equal(got, data) {
 				t.Errorf("render differs from input\ngot:  %q\nwant: %q", got, data)
 			}
-			if len(problems) > 0 {
+			// Files in ambiguous/ load in mhVTL but carry lines its
+			// parsers read differently: those, and only those, are flagged.
+			if strings.Contains(name, "/ambiguous/") {
+				if len(problems) == 0 {
+					t.Error("no problems reported")
+				}
+				for _, p := range problems {
+					if !p.Ambiguous {
+						t.Errorf("not an ambiguous-line problem: %v", p)
+					}
+				}
+			} else if len(problems) > 0 {
 				t.Errorf("problems in a valid file: %v", problems)
 			}
 		})
@@ -175,6 +186,48 @@ func TestCraftedDeviceConf(t *testing.T) {
 	})
 }
 
+// TestAmbiguousBlank checks white-space lines inside a record: each is a
+// Problem, and the record goes on past it as vtllibrary reads it, so the
+// attribute after it is not lost or orphaned.
+func TestAmbiguousBlank(t *testing.T) {
+	c := readConf(t, "ambiguous/space-blank.device.conf")
+	var lines []int
+	for _, p := range c.Problems {
+		lines = append(lines, p.Line)
+	}
+	if want := []int{5, 10}; !reflect.DeepEqual(lines, want) {
+		t.Errorf("problem lines = %v, want %v", lines, want)
+	}
+	wantAttr(t, mustStanza(t, c, "Library", 10), "Product identification", "L700")
+	if d11 := mustStanza(t, c, "Drive", 11); d11.End != d11.HeaderLine+3 {
+		t.Errorf("drive 11 should run to the next header: %+v", d11)
+	}
+
+	c = readConf(t, "ambiguous/crlf-space-blank.device.conf")
+	if len(c.Problems) != 1 || c.Problems[0].Line != 5 || !c.Problems[0].Ambiguous {
+		t.Errorf("problems = %+v, want one ambiguous on line 5", c.Problems)
+	}
+	// An empty CRLF line is a separator to every parser: not flagged.
+	if d11 := mustStanza(t, c, "Drive", 11); d11.End != d11.HeaderLine+2 {
+		t.Errorf("drive 11 should end at the empty CRLF line: %+v", d11)
+	}
+
+	// A white-space line outside any record changes nothing in mhVTL.
+	if c := ParseDeviceConf([]byte("VERSION: 5\n  \n\nLibrary: 1 CHANNEL: 0 TARGET: 0 LUN: 0\n")); len(c.Problems) != 0 {
+		t.Errorf("white space outside a record flagged: %v", c.Problems)
+	}
+}
+
+func ambiguousCount(c *DeviceConf) int {
+	n := 0
+	for _, p := range c.Problems {
+		if p.Ambiguous {
+			n++
+		}
+	}
+	return n
+}
+
 func TestCraftedLibContents(t *testing.T) {
 	b, err := os.ReadFile("testdata/roundtrip/crafted/no-final-newline.library_contents")
 	if err != nil {
@@ -258,8 +311,14 @@ func FuzzRoundTrip(f *testing.F) {
 			t.Fatalf("mhvtl.conf: render %q != input %q", got, data)
 		}
 
-		// An edit must read back as written, and leave every other stanza's
-		// lines as they were.
+		// An edit must read back as written, leave every other stanza's
+		// lines as they were, and never write a white-space line.
+		ambiguous := ambiguousCount(dc)
+		defer func() {
+			if n := ambiguousCount(ParseDeviceConf(dc.Render())); n > ambiguous {
+				t.Fatalf("edits added white-space lines: %d -> %d", ambiguous, n)
+			}
+		}()
 		if sts := dc.Stanzas(); len(sts) > 0 {
 			st := sts[0]
 			before := stanzaTexts(dc)

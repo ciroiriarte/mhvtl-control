@@ -85,11 +85,37 @@ func deleteLines(lines []Line, from, to int) []Line {
 	return out
 }
 
-// isBlank reports a line with nothing but white space. mhVTL itself only
-// treats an empty line as blank (mhvtl usr/cmd/vtllibrary.c:740,
-// strlen(b) == 1); a line of spaces is also taken as a record separator
-// here, as the earlier parser did.
+// isBlank reports a line with nothing but white space. Whether it separates
+// records depends on its length (see separates).
 func isBlank(text string) bool { return strings.TrimSpace(text) == "" }
+
+// separates reports a blank line every mhVTL parser takes as the end of a
+// record: one whose bytes before the '\n' number at most one (see
+// ambiguousBlank). Longer white-space lines are kept inside the record, as
+// vtllibrary and vtltape read them.
+func separates(l Line) bool {
+	n := len(l.Text)
+	if l.EOL == "\r\n" {
+		n++
+	}
+	return n <= 1
+}
+
+// ambiguousBlank reports a line that is white space but not empty (line
+// ending aside). mhVTL's parsers disagree on whether it ends a record. They
+// read lines with readline (mhvtl usr/vtllib.c:1064), which drops a '\n'
+// past the first byte, then test:
+//   - strlen(b) == 1 in mhvtl usr/cmd/vtllibrary.c:740 and :1281, and
+//     mhvtl usr/cmd/vtltape.c:2134;
+//   - strlen(b) < 3 in mhvtl usr/vtllib.c:1710 (find_media_home_directory).
+//
+// An empty line, LF or CRLF ("\r" alone, strlen 1), separates records for
+// all of them, and so does a single white-space character. Two characters,
+// such as "  " or " \r", separate only for the home-directory lookup, and
+// three or more for none. Every non-empty white-space line is flagged, not
+// just the ones they disagree on, so no edit has to reason about them.
+// The model ends a record at the lines all of them agree on (separates).
+func ambiguousBlank(l Line) bool { return l.Text != "" && isBlank(l.Text) }
 
 // isComment reports a comment line. mhVTL ignores '#' in column 1 only
 // (mhvtl usr/cmd/vtllibrary.c:677); an indented '#' line is kept as an
@@ -102,10 +128,14 @@ var ErrNotFound = errors.New("not found")
 
 // Problem is a line mhVTL would not read the way its shape suggests. Parsing
 // never fails, so any file round-trips; callers that need a well-formed file
-// check Problems.
+// check Problems, and a writer must refuse to write over a file with any.
 type Problem struct {
 	Line int // 1-based
 	Msg  string
+	// Ambiguous marks a line mhVTL's parsers read differently from each
+	// other (a white-space line inside a stanza), as opposed to a malformed
+	// one. Such a file still loads, so readers may go on; writes may not.
+	Ambiguous bool
 }
 
 func (p Problem) Error() string { return fmt.Sprintf("line %d: %s", p.Line, p.Msg) }
@@ -168,7 +198,13 @@ func (c *DeviceConf) index() {
 		text := strings.TrimRight(l.Text, " \t\r")
 		switch {
 		case isBlank(text):
-			closeAt(i)
+			if cur >= 0 && ambiguousBlank(l) {
+				c.Problems = append(c.Problems, Problem{Line: i + 1, Ambiguous: true,
+					Msg: "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record; make it empty"})
+			}
+			if separates(l) {
+				closeAt(i)
+			}
 		case isComment(text):
 		case text[0] != ' ' && text[0] != '\t':
 			if strings.HasPrefix(text, "VERSION:") {
@@ -380,7 +416,10 @@ type Header struct {
 // it (etc/generate_device_conf.in): the header, then " Key: value" lines. It
 // goes after the last stanza of its kind, separated by one blank line. The
 // first Library goes before every other stanza, and the first Drive after
-// them all.
+// them all. Where a Drive lands doesn't matter to mhVTL: a drive belongs to
+// the library its " Library ID:" names (mhvtl usr/cmd/vtllibrary.c:686), not
+// to the Library stanza it follows. Blank lines it writes are empty, never
+// white space (see ambiguousBlank).
 func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 	if h.Kind != "Library" && h.Kind != "Drive" {
 		return fmt.Errorf("invalid stanza kind %q", h.Kind)
