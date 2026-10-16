@@ -100,9 +100,8 @@ func devices(inv config.Inventory) []device {
 // numbers and NAAs in next, and serials or NAAs that another SCSI device of
 // the host already reports. mhVTL's own devices on the host are those of cur,
 // recognised by their mhvtl HBA address; any other device, real or virtual,
-// counts, except one that reports both the serial and the NAA a device of cur
-// reports: that is the same device exported again (tcm_loop or TCMU, an
-// iSCSI loopback session), and it does not collide with that device in next.
+// counts, except a local re-export of a device of cur (see reexport), which
+// does not collide with that device in next.
 func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Device) {
 	devs := devices(next)
 
@@ -196,7 +195,10 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		if h.Driver == hostids.MhvtlDriver && ours[[3]int{h.Channel, h.Target, h.LUN}] {
 			continue
 		}
-		self, isSelf := reexport(h, curDevs)
+		self, isSelf := device{}, false
+		if h.Driver == TCMLoopDriver {
+			self, isSelf = reexport(h, curDevs)
+		}
 		for i, d := range devs {
 			if isSelf && d.kind == self.kind && d.id == self.id {
 				continue
@@ -217,9 +219,22 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	}
 }
 
-// reexport returns the device of cur that h is an export of: one whose serial
-// and reported NAA h both reports. A changer that sends no NAA is matched on
-// its serial and INQUIRY vendor and product instead.
+// TCMLoopDriver is the proc_name of the LIO loopback fabric's SCSI hosts.
+const TCMLoopDriver = "tcm_loop"
+
+// reexport returns the device of cur that h, a tcm_loop device, is an export
+// of: one whose serial and reported NAA h both reports. A changer that sends
+// no NAA is matched on its serial and INQUIRY vendor and product instead.
+//
+// Only tcm_loop counts: the loopback fabric presents LIO backstores of this
+// host to this host, so a match there is mhVTL's device exported again
+// (through a pscsi or TCMU backstore). A device on any other HBA, such as an
+// iSCSI session, may be another mhVTL node whose default device.conf carries
+// the same serials and NAAs, and multipath would merge the two; that stays a
+// collision. Which backstore a tcm_loop device sits on is not checked (that
+// would mean mapping the SCSI host to its loopback target port and LUN under
+// /sys/kernel/config/target/loopback and following the LUN to
+// core/{pscsi,user}_*), so the match rests on the identity alone.
 func reexport(h hostids.Device, cur []device) (device, bool) {
 	for _, c := range cur {
 		if c.serial == "" || c.serial != h.Serial {

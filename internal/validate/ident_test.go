@@ -116,6 +116,13 @@ func TestHostCollisions(t *testing.T) {
 				"drive 12: NAA 10:22:33:44:ab:00:02:00 is already used by host device 7:0:11:0 (tcm_loop)"}},
 		// The same identity on another HBA (e.g. a target re-exporting it)
 		// is a collision.
+		// A second, default-configured mhVTL node's drive seen over iSCSI
+		// (probe from the PR 2a re-review): the same serial and NAA, but not
+		// a local re-export.
+		{"another node's drive with the same identity over iSCSI", cur, []hostids.Device{{Host: 9, Target: 1, Driver: "iscsi_tcp", Serial: "XYZZY_A1",
+			NAAs: []string{"50:22:33:44:ab:00:01:00"}}},
+			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 9:0:1:0 (iscsi_tcp)`,
+				"drive 11: NAA 10:22:33:44:ab:00:01:00 is already used by host device 9:0:1:0 (iscsi_tcp)"}},
 		{"same serial on another HBA", cur, []hostids.Device{{Host: 7, Target: 1, Driver: "iscsi_tcp", Serial: "XYZZY_A1"}},
 			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:1:0 (iscsi_tcp)`}},
 	} {
