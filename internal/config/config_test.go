@@ -18,9 +18,9 @@ func open(t *testing.T, p string) *os.File {
 }
 
 func TestParseDeviceConf(t *testing.T) {
-	libs, drives, err := ParseDeviceConf(open(t, "testdata/device.conf"))
-	if err != nil {
-		t.Fatal(err)
+	libs, drives, problems, err := ParseDeviceConf(open(t, "testdata/device.conf"))
+	if err != nil || len(problems) != 0 {
+		t.Fatal(err, problems)
 	}
 	if len(libs) != 2 || len(drives) != 8 {
 		t.Fatalf("got %d libs, %d drives; want 2, 8", len(libs), len(drives))
@@ -58,7 +58,7 @@ func TestParseDeviceConf(t *testing.T) {
 
 func TestParseDeviceConfCompressionDisabled(t *testing.T) {
 	in := "Drive: 5 CHANNEL: 00 TARGET: 01 LUN: 00\n Library ID:  10   Slot: 02\n Compression:  factor 9  enabled 0\n"
-	_, d, err := ParseDeviceConf(strings.NewReader(in))
+	_, d, _, err := ParseDeviceConf(strings.NewReader(in))
 	if err != nil || len(d) != 1 {
 		t.Fatalf("err=%v drives=%d", err, len(d))
 	}
@@ -67,28 +67,48 @@ func TestParseDeviceConfCompressionDisabled(t *testing.T) {
 	}
 }
 
+// Lines mhVTL ignores or reads its own way are Problems, not read errors:
+// the line is skipped and the rest of the file still projects.
 func TestParseDeviceConfMalformed(t *testing.T) {
-	cases := map[string]string{
-		"bad header":       "Library: x CHANNEL: 0 TARGET: 0 LUN: 0\n",
-		"short header":     "Drive: 1\n",
-		"orphan attribute": " Vendor identification: IBM\n",
-		"bad compression":  "Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0\n Compression: bogus\n",
-		"bad slot":         "Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0\n Library ID: 10 Slot: zz\n",
-		"no colon":         "Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0\n garbage\n",
+	const tail = "\nDrive: 2 CHANNEL: 0 TARGET: 2 LUN: 0\n Vendor identification: HP\n"
+	cases := map[string]struct {
+		in     string
+		drives int
+	}{
+		"bad header":       {"Library: x CHANNEL: 0 TARGET: 0 LUN: 0\n", 1},
+		"short header":     {"Drive: 1\n", 2},
+		"orphan attribute": {" Vendor identification: IBM\n", 1},
+		"bad compression":  {"Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0\n Compression: bogus\n", 2},
+		"bad slot":         {"Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0\n Library ID: 10 Slot: zz\n", 2},
+		"no colon":         {"Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0\n garbage\n", 2},
+		"text after LUN":   {"Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0 # main\n", 2},
 	}
-	for name, in := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, _, err := ParseDeviceConf(strings.NewReader(in)); err == nil {
-				t.Error("expected error")
+			_, d, problems, err := ParseDeviceConf(strings.NewReader(tc.in + tail))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (len(problems) == 0) != (name == "text after LUN") {
+				t.Errorf("problems = %v", problems)
+			}
+			if len(d) != tc.drives || d[len(d)-1].Vendor != "HP" {
+				t.Errorf("drives = %+v, want %d", d, tc.drives)
 			}
 		})
+	}
+	// An attribute the projection cannot read, that conffile does not
+	// flag, is reported by the projection.
+	_, _, problems, _ := ParseDeviceConf(strings.NewReader("Drive: 1 CHANNEL: 0 TARGET: 1 LUN: 0\n Slot: x\n"))
+	if len(problems) != 1 || problems[0].Line != 2 || !strings.Contains(problems[0].Msg, "bad Slot") {
+		t.Errorf("problems = %v", problems)
 	}
 }
 
 func TestParseLibraryContents(t *testing.T) {
-	drives, pickers, maps, slots, err := ParseLibraryContents(open(t, "testdata/library_contents.sample"))
-	if err != nil {
-		t.Fatal(err)
+	drives, pickers, maps, slots, problems, err := ParseLibraryContents(open(t, "testdata/library_contents.sample"))
+	if err != nil || len(problems) != 0 {
+		t.Fatal(err, problems)
 	}
 	if len(drives) != 8 || len(pickers) != 1 || len(maps) != 4 || len(slots) != 32 {
 		t.Fatalf("counts drives=%d pickers=%d maps=%d slots=%d", len(drives), len(pickers), len(maps), len(slots))
@@ -104,17 +124,18 @@ func TestParseLibraryContents(t *testing.T) {
 }
 
 func TestParseLibraryContentsMalformed(t *testing.T) {
-	for _, in := range []string{"Slot x: ABC\n", "Slot 1 ABC\n", "Bogus 1:\n", "Slot:\n"} {
-		if _, _, _, _, err := ParseLibraryContents(strings.NewReader(in)); err == nil {
-			t.Errorf("%q: expected error", in)
+	for _, in := range []string{"Slot x: ABC\n", "Slot 1 ABC\n", "Bogus 1:\n", "Slot:\n", "IEPort 1: B\n"} {
+		_, _, _, slots, problems, err := ParseLibraryContents(strings.NewReader(in + "Slot 2: A\n"))
+		if err != nil || len(problems) != 1 || len(slots) != 1 {
+			t.Errorf("%q: slots %+v, problems %v, err %v", in, slots, problems, err)
 		}
 	}
 }
 
 func TestLoadInventory(t *testing.T) {
 	inv, err := LoadInventory("testdata")
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(inv.Problems) != 0 {
+		t.Fatal(err, inv.Problems)
 	}
 	if len(inv.Libraries) != 2 {
 		t.Fatalf("libraries = %d", len(inv.Libraries))
@@ -146,7 +167,9 @@ func TestLoadInventoryMalformed(t *testing.T) {
 	d := t.TempDir()
 	os.WriteFile(d+"/device.conf", []byte("Library: 1 CHANNEL: 0 TARGET: 0 LUN: 0\n"), 0o644)
 	os.WriteFile(d+"/library_contents.1", []byte("Slot x: A\n"), 0o644)
-	if _, err := LoadInventory(d); err == nil {
-		t.Error("expected error for malformed library_contents")
+	inv, err := LoadInventory(d)
+	if err != nil || len(inv.Libraries) != 1 || len(inv.Problems) != 1 ||
+		inv.Problems[0].File != d+"/library_contents.1" || inv.Problems[0].Line != 1 {
+		t.Errorf("inventory %+v, err %v; want library_contents.1 line 1 as a Problem", inv, err)
 	}
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -12,24 +13,24 @@ import (
 // ParseDeviceConf parses a device.conf stream into libraries and drives. It
 // is a typed projection of conffile's lossless model, so the editor and the
 // read path share one grammar.
-func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, err error) {
+//
+// mhVTL starts with lines it ignores or reads in its own way, so a Problem
+// does not fail the read: problems returns conffile's, plus each attribute
+// the projection could not read, which it skips. A stanza whose header has
+// no full address is kept, with the numbers sscanf read. err is set only
+// when r cannot be read.
+func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, problems []conffile.Problem, err error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	c := conffile.ParseDeviceConf(data)
-	// An ambiguous line still loads in mhVTL, so the read path goes on; the
-	// editor refuses to write over it.
+	problems = append(problems, c.Problems...)
+	flagged := map[int]bool{}
 	for _, p := range c.Problems {
-		if !p.Ambiguous {
-			return nil, nil, fmt.Errorf("device.conf %w", p)
-		}
+		flagged[p.Line] = true
 	}
 	for _, st := range c.Stanzas() {
-		if !st.HasAddress {
-			return nil, nil, fmt.Errorf("device.conf line %d: malformed record header %q",
-				st.HeaderLine+1, strings.TrimRight(c.Lines()[st.HeaderLine].Text, " \t\r"))
-		}
 		var (
 			lib *Library
 			drv *Drive
@@ -48,8 +49,8 @@ func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, err erro
 			if a.Value == "" {
 				continue
 			}
-			if aerr := applyAttr(lib, drv, a.Key, a.Value); aerr != nil {
-				return nil, nil, fmt.Errorf("device.conf line %d: %w", a.Line+1, aerr)
+			if aerr := applyAttr(lib, drv, a.Key, a.Value); aerr != nil && !flagged[a.Line+1] {
+				problems = append(problems, conffile.Problem{Line: a.Line + 1, Msg: aerr.Error()})
 			}
 		}
 		if lib != nil {
@@ -58,7 +59,8 @@ func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, err erro
 			drives = append(drives, *drv)
 		}
 	}
-	return libraries, drives, nil
+	sort.SliceStable(problems, func(a, b int) bool { return problems[a].Line < problems[b].Line })
+	return libraries, drives, problems, nil
 }
 
 func applyAttr(lib *Library, drv *Drive, key, val string) error {

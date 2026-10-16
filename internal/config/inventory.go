@@ -27,10 +27,14 @@ func LoadInventory(configDir string) (Inventory, error) {
 	if err != nil {
 		return Inventory{}, &DeviceConfError{Path: path, Err: err}
 	}
-	libs, drives, err := ParseDeviceConf(f)
+	libs, drives, problems, err := ParseDeviceConf(f)
 	f.Close()
 	if err != nil {
 		return Inventory{}, fmt.Errorf("%s: %w", path, err)
+	}
+	var inv Inventory
+	for _, p := range problems {
+		inv.Problems = append(inv.Problems, Problem{File: path, Problem: p})
 	}
 	for i := range libs {
 		lib := &libs[i]
@@ -47,12 +51,16 @@ func LoadInventory(configDir string) (Inventory, error) {
 		if err != nil {
 			return Inventory{}, err
 		}
-		_, pickers, maps, slots, err := ParseLibraryContents(cf)
+		_, pickers, maps, slots, problems, err := ParseLibraryContents(cf)
 		cf.Close()
 		if err != nil {
 			return Inventory{}, fmt.Errorf("%s: %w", cpath, err)
 		}
 		lib.Pickers, lib.MAPs, lib.Slots = pickers, maps, slots
+		for _, p := range problems {
+			inv.Problems = append(inv.Problems, Problem{File: cpath, Problem: p})
+		}
 	}
-	return Inventory{Libraries: libs}, nil
+	inv.Libraries = libs
+	return inv, nil
 }

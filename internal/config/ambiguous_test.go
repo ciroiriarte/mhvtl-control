@@ -18,7 +18,7 @@ func TestParseDeviceConfAmbiguousBlank(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	libs, drives, err := ParseDeviceConf(strings.NewReader(string(b)))
+	libs, drives, _, err := ParseDeviceConf(strings.NewReader(string(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestParseDeviceConfEmptyValue(t *testing.T) {
 	if p := conffile.ParseDeviceConf([]byte(in)).Problems; len(p) == 0 || !strings.Contains(p[len(p)-1].Msg, "empty Compression") {
 		t.Errorf("empty Compression not flagged: %v", p)
 	}
-	_, drives, err := ParseDeviceConf(strings.NewReader(in))
+	_, drives, _, err := ParseDeviceConf(strings.NewReader(in))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestParseDeviceConfScanfFields(t *testing.T) {
 		// vtllibrary puts the drive in no slot without "Slot: N".
 		{drv + " Library ID: 10\n", Drive{}},
 	} {
-		_, d, err := ParseDeviceConf(strings.NewReader(tc.in))
+		_, d, _, err := ParseDeviceConf(strings.NewReader(tc.in))
 		if err != nil {
 			t.Fatalf("%q: %v", tc.in, err)
 		}

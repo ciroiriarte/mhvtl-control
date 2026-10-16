@@ -2,6 +2,8 @@
 // library_contents.<id>).
 package config
 
+import "mhvtl-control/internal/conffile"
+
 // Library is a virtual medium changer defined in device.conf.
 type Library struct {
 	ID                      int
@@ -43,4 +45,15 @@ type MAPSlot struct {
 // Inventory is the full parsed configuration.
 type Inventory struct {
 	Libraries []Library
+	// Problems are the lines of the files read that mhVTL does not read as
+	// written, or that the projection skipped (see ParseDeviceConf).
+	Problems []Problem
 }
+
+// Problem is a conffile Problem in one of the files LoadInventory read.
+type Problem struct {
+	File string
+	conffile.Problem
+}
+
+func (p Problem) Error() string { return p.File + ": " + p.Problem.Error() }
