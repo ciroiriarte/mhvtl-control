@@ -330,3 +330,42 @@ func TestHostScanFailed(t *testing.T) {
 	expect(t, "errors", family(r.Errors, FamilyIdentity), nil)
 	expect(t, "warnings", family(r.Warnings, FamilyIdentity), []string{"the host's SCSI devices could not all be read"})
 }
+
+// A host device that is not running (being removed, or offline) is not a
+// collision; it is named in a warning. One whose state is unknown counts.
+func TestHostNotRunning(t *testing.T) {
+	cur := shipped(t)
+	for _, tc := range []struct {
+		name          string
+		cur           config.Inventory
+		h             hostids.Device
+		errors, warns []string
+	}{
+		{"a deleted device with drive 11's serial", cur,
+			hostids.Device{Host: 0, Driver: "ahci", Serial: "XYZZY_A1", State: "deleted"},
+			nil, []string{`host device 0:0:0:0 (ahci) is in state "deleted", not running`}},
+		// Drive 11 was removed from the configuration and is re-added; its
+		// old mhVTL device is still going away.
+		{"a lingering mhVTL device the configuration no longer has", config.Inventory{},
+			hostids.Device{Host: 3, Target: 1, Driver: "mhvtl", Serial: "XYZZY_A1", NAAs: []string{"50:22:33:44:ab:00:01:00"}, State: "cancel"},
+			nil, []string{`host device 3:0:1:0 (mhvtl) is in state "cancel", not running`}},
+		{"a running device collides", cur,
+			hostids.Device{Host: 0, Driver: "ahci", Serial: "XYZZY_A1", State: "running"},
+			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 0:0:0:0 (ahci)`}, nil},
+		{"an unknown state counts as running", cur,
+			hostids.Device{Host: 0, Driver: "ahci", Serial: "XYZZY_A1"},
+			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 0:0:0:0 (ahci)`}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Validate(tc.cur, clone(cur), nil, []hostids.Device{tc.h}, Options{})
+			expect(t, "errors", family(r.Errors, FamilyIdentity), tc.errors)
+			var warns []string
+			for _, w := range r.Warnings {
+				if w.Code == CodeIdentHostNotRunning {
+					warns = append(warns, w.Message)
+				}
+			}
+			expect(t, "warnings", warns, tc.warns)
+		})
+	}
+}

@@ -36,6 +36,9 @@ type Device struct {
 	// Vendor and Model are the INQUIRY vendor and product identification,
 	// trimmed (the device's sysfs vendor and model attributes).
 	Vendor, Model string
+	// State is the device's sysfs state, e.g. "running", "offline" or
+	// "deleted" (SCSI midlayer sdev_state); empty when it could not be read.
+	State string
 }
 
 // HCTL formats the device's address as H:C:T:L.
@@ -51,7 +54,13 @@ func (d Device) HCTL() string {
 // its absence (EACCES, EIO), and is set alone when there is no
 // <sysRoot>/class/scsi_device to read, so the caller can tell that the host
 // was not fully checked. Devices that come or go during the scan are missed
-// or listed without their identities.
+// or listed without their identities; one being removed shows a State other
+// than "running" for a moment.
+//
+// A scsi_device that a bound ch driver leaks (Linux before torvalds
+// 27c0f718d3b3, v7.3-rc7) stays on the kernel's list after device_del(), but
+// it has no sysfs node, so Read never sees it and it cannot cause a false
+// collision.
 func Read(sysRoot string) ([]Device, error) {
 	classDir := filepath.Join(sysRoot, "class", "scsi_device")
 	ents, err := os.ReadDir(classDir)
@@ -86,6 +95,9 @@ func Read(sysRoot string) ([]Device, error) {
 		}
 		if b, ok := read(filepath.Join(devDir, "model")); ok {
 			d.Model = strings.TrimSpace(string(b))
+		}
+		if b, ok := read(filepath.Join(devDir, "state")); ok {
+			d.State = strings.TrimSpace(string(b))
 		}
 		if b, ok := read(filepath.Join(sysRoot, "class", "scsi_host", "host"+strconv.Itoa(d.Host), "proc_name")); ok {
 			d.Driver = strings.TrimSpace(string(b))
