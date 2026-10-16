@@ -1,0 +1,9 @@
+VERSION: 5
+
+Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00
+ Vendor identification: IBM
+ Product identification: 03584L32
+
+# drive 11 serves library 10
+Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00
+ Library ID: 10 Slot: 01

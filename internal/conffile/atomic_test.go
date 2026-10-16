@@ -123,7 +123,8 @@ func TestReplaceIfHashLateConflict(t *testing.T) {
 	noTemps(t, dir)
 }
 
-func TestMoveAcrossRename(t *testing.T) {
+// TestMoveAcrossSameFS moves within one filesystem, by link and unlink.
+func TestMoveAcrossSameFS(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
 	os.WriteFile(filepath.Join(src, "library_contents.10.persist"), []byte("Slot 1: A\n"), 0o600)
 	if err := MoveAcross(filepath.Join(src, "library_contents.10.persist"), dst); err != nil {
