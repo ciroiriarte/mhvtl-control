@@ -58,8 +58,9 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 				inDrive[b] = n
 			}
 		}
+		merged := Merge(old, lib, livep, bay)
 		present := map[string]bool{}
-		for _, c := range Merge(old, lib, livep, bay).cartridges() {
+		for _, c := range merged.cartridges() {
 			present[c.barcode] = true
 			// The merge would list it in a second element.
 			if n, loaded := inDrive[c.barcode]; loaded {
@@ -90,9 +91,11 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 			}
 		}
 
+		// Free MAP slots and slot targets are judged on the merged
+		// placement the apply writes.
 		freeMAPs := 0
-		for n, b := range keptMAPs {
-			if b == "" && (!haveLive || lp.MAPs[n] == "") {
+		for n := range keptMAPs {
+			if merged.MAPs[n] == "" {
 				freeMAPs++
 			}
 		}
@@ -111,14 +114,13 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 			case ToExport:
 				exports++
 			case ToSlot:
-				b, kept := keptSlots[d.Slot]
+				_, kept := keptSlots[d.Slot]
+				b := merged.Slots[d.Slot]
 				switch {
 				case !kept:
 					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which the new configuration does not have", lib.ID, g.barcode, d.Slot)
 				case b != "" && b != g.barcode:
-					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which lists %s", lib.ID, g.barcode, d.Slot, b)
-				case haveLive && lp.Slots[d.Slot] != "" && lp.Slots[d.Slot] != g.barcode:
-					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which holds %s now", lib.ID, g.barcode, d.Slot, lp.Slots[d.Slot])
+					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which will hold %s", lib.ID, g.barcode, d.Slot, b)
 				case targets[d.Slot] != "":
 					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s and %s are both to go to slot %d", lib.ID, targets[d.Slot], g.barcode, d.Slot)
 				default:
