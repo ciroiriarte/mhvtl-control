@@ -15,8 +15,11 @@ type displaced struct {
 // with the live state unknown, next's file no longer lists it. Otherwise it
 // would silently leave the library at the next restart. A cartridge that
 // moves within the library needs none, and one imported at run time stays
-// where it is. Deleting a whole library is not covered here: its cartridges
-// stay in its home (AC 12).
+// where it is. A cartridge in a live drive counts as present, even when next
+// deletes that drive: validation does not refuse it, the apply does, since it
+// refuses to touch a loaded drive (plan 3.3, exec step 2, drive_loaded) and,
+// when forced, puts the cartridge back in a storage slot (step 5). Deleting a
+// whole library is not covered here: its cartridges stay in its home (AC 12).
 func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Options) {
 	byLib := map[int][]Disposition{}
 	for _, d := range opts.Dispositions {

@@ -164,3 +164,19 @@ func TestBayCartridgeNeverLeaves(t *testing.T) {
 	r = Validate(cur, next, live, nil, Options{})
 	expect(t, "errors", family(r.Errors, FamilyRemoval), []string{"library 10: G03001L8 (MAP slot 2) would leave the library"})
 }
+
+// A cartridge loaded in a drive that next deletes counts as present: the
+// apply's drive_loaded refusal (plan 3.3) handles it, not validation (probe
+// from the PR 2a re-review).
+func TestLoadedDriveDeleted(t *testing.T) {
+	cur := gen(t)
+	next := clone(cur)
+	l := &next.Libraries[0]
+	b := l.Slots[0].Barcode
+	l.Slots[0].Barcode = ""
+	l.Drives = l.Drives[:3]
+	l.DriveLines = l.DriveLines[:3]
+	live := &Live{Libraries: map[int]Placement{10: {Drives: map[int]string{4: b}}}}
+	r := Validate(cur, next, live, nil, Options{})
+	expect(t, "errors", family(r.Errors, FamilyRemoval), nil)
+}
