@@ -55,4 +55,6 @@ const (
 	CodeRemovalDestination    = "removal.destination"
 	CodeRemovalMAPFull        = "removal.map_full"
 	CodeRemovalMoveBack       = "removal.move_back"
+
+	CodeFileProblem = "file.problem"
 )
