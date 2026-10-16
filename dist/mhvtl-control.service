@@ -30,6 +30,28 @@ NoNewPrivileges=yes
 # under /home, /root and /run/user, which ProtectHome hides.
 ProtectSystem=full
 ProtectHome=yes
+# Keep the daemon away from the service manager and the config-apply helper,
+# so a compromised daemon cannot start units or write to the helper. The paths
+# carry no '-': a '-' path missing at start is skipped silently, so the package
+# creates both helper directories (tmpfiles and /var/lib). /run/dbus is masked
+# as a directory so the mask survives a D-Bus restart that recreates the
+# socket. See systemd.exec(5), "Sandboxing":
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#ReadWritePaths=
+InaccessiblePaths=/run/dbus /run/mhvtl-control-apply /var/lib/mhvtl-control-apply
+# An empty read-only /run/systemd hides the private manager socket and the
+# system/ and transient/ unit dirs; the journal sockets are bound back so
+# syslog and journald logging keep working. The daemon does not use sd_notify:
+# if it ever moves to Type=notify or WatchdogSec=, bind /run/systemd/notify
+# back too, or every start times out waiting for READY=1. With no D-Bus and
+# no private socket, the daemon cannot restart units itself; that is the
+# mhvtl-control-apply helper's job.
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#TemporaryFileSystem=
+TemporaryFileSystem=/run/systemd:ro
+BindReadOnlyPaths=/run/systemd/journal
+# Where /etc/resolv.conf links into /run/systemd/resolve, the link would dangle
+# without this; '-' because hosts without systemd-resolved lack the dir.
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#BindPaths=
+BindReadOnlyPaths=-/run/systemd/resolve
 PrivateTmp=yes
 # PrivateDevices must stay off: it would hide /dev/sg* and the disks to format.
 PrivateDevices=no

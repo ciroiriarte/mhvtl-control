@@ -7,4 +7,7 @@ mhvtl-control (0.3.0-1) UNRELEASED; urgency=medium
   it as mhvtl-control.env.dpkg-new. If you did not, the old file is removed
   and the new default is installed.
 
+  mhvtl-control.service is also confined further: it can no longer reach the
+  systemd and D-Bus sockets; "systemctl cat mhvtl-control" shows the settings.
+
  -- Ciro Iriarte <ciro.iriarte@gmail.com>  Fri, 16 Oct 2026 12:00:00 -0300

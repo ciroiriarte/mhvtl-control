@@ -52,7 +52,7 @@ jobs:
           v=${{ needs.check.outputs.version }}
           GOARCH=${{ matrix.arch }} make build VERSION=$v
           d=mhvtl-control-$v-linux-${{ matrix.arch }}
-          mkdir $d && cp bin/mhvtl-control LICENSE README.md dist/mhvtl-control.service dist/mhvtl-control.env dist/mhvtl-control.8 $d/
+          mkdir $d && cp bin/mhvtl-control LICENSE README.md dist/mhvtl-control.service dist/mhvtl-control.env dist/mhvtl-control.tmpfiles dist/mhvtl-control.8 $d/
           tar -czf $d.tar.gz $d
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -36,11 +36,12 @@ override_dh_auto_install:
 	$(MAKE) install $(MAKE_VARS) UNITDIR=$(SYSTEMD_UNITDIR) DESTDIR=$(CURDIR)/debian/mhvtl-control
 
 # dh_fixperms resets these to 0644/0755. The options file may hold the API
-# token.
+# token; /var/lib/mhvtl-control-apply belongs to the config-apply helper.
 override_dh_fixperms:
 	dh_fixperms
 	chmod 0750 debian/mhvtl-control/etc/mhvtl-control
 	chmod 0600 debian/mhvtl-control/etc/mhvtl-control/mhvtl-control.env
+	chmod 0700 debian/mhvtl-control/var/lib/mhvtl-control-apply
 
 # dwz does not understand the DWARF the Go linker writes.
 override_dh_dwz:

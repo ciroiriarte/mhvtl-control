@@ -1,0 +1,5 @@
+# The config-apply helper's runtime directory. It must exist before
+# mhvtl-control.service starts: the daemon unit masks it with InaccessiblePaths=,
+# which fails the start when the path is missing. See tmpfiles.d(5):
+# https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html
+d /run/mhvtl-control-apply 0700 root root -

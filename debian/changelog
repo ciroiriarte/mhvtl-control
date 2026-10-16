@@ -1,6 +1,8 @@
 mhvtl-control (0.3.0-1) UNRELEASED; urgency=medium
 
   * Move the options file to /etc/mhvtl-control/mhvtl-control.env.
+  * Confine mhvtl-control.service away from systemd, D-Bus and the
+    config-apply helper.
 
  -- Ciro Iriarte <ciro.iriarte@gmail.com>  Fri, 16 Oct 2026 12:00:00 -0300
 
