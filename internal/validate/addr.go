@@ -82,6 +82,24 @@ func checkAddresses(r *Result, next config.Inventory) {
 		for _, n := range lib.Pickers {
 			pickers.numbers, pickers.keys = append(pickers.numbers, n), append(pickers.keys, pickerKey(lib.ID, n))
 		}
+		// vtllibrary reads Slot and MAP lines in file order. A Slot line
+		// numbered below an earlier one adds a second element for a number
+		// that already has one, made when the earlier line filled the gap
+		// before it (usr/cmd/vtllibrary.c:1054-1064, upstream master
+		// c65bff0); MAP elements go into the element list in file order,
+		// which vtllibrary expects to be address order (:1073).
+		for _, w := range []window{slots, maps} {
+			prev, prevKey := 0, ""
+			for i, n := range w.numbers {
+				if n >= 1 && n < prev {
+					r.errorf(FamilyAddress, lib.ID, []string{libKey(lib.ID), prevKey, w.keys[i]},
+						"library %d: %s %d is listed after %s %d; library_contents must list %s in increasing order", lib.ID, w.kind, n, w.kind, prev, w.plural)
+				}
+				if n > prev {
+					prev, prevKey = n, w.keys[i]
+				}
+			}
+		}
 		wins := []window{drives, slots, maps, pickers}
 		for _, w := range wins {
 			seen := map[int]string{}

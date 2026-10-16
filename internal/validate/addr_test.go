@@ -74,6 +74,16 @@ func TestAddresses(t *testing.T) {
 			l.DriveLines = []config.DriveLine{{Number: 1}, {Number: 1}, {Number: 512, Serial: "GHOST"}}
 			return l
 		}(), []string{"drive 512 would sit at element address 0x0300, which overlaps the MAP slot addresses from 0x0300"}},
+		{"slots and MAP slots out of order", func() config.Library {
+			l := withCounts(stk, 1, 3, 3, 1)
+			l.Slots[0].Number, l.Slots[2].Number = 3, 1
+			l.MAPs[1].Number, l.MAPs[2].Number = 3, 2
+			return l
+		}(), []string{
+			"library 10: storage slot 2 is listed after storage slot 3; library_contents must list storage slots in increasing order",
+			"storage slot 1 is listed after storage slot 3",
+			"MAP slot 2 is listed after MAP slot 3",
+		}},
 		{"drive past the last Drive line", func() config.Library {
 			l := withCounts(stk, 3, 3, 0, 1)
 			l.DriveLines = l.DriveLines[:2]
