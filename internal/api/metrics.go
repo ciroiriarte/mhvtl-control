@@ -99,19 +99,20 @@ func (s *Server) latest(ctx context.Context) (col collection, ok bool) {
 
 // refresh runs one collection, stores it and closes done.
 func (s *Server) refresh(done chan struct{}) {
-	// The collection runs outside any request, so recoverMW can't catch a
-	// panic here: log it, keep the previous collection and let the next
-	// request try again, rather than taking the daemon down.
+	c := &s.metrics
 	defer func() {
+		// The collection runs outside any request, so recoverMW can't catch a
+		// panic here: log it and keep the previous collection, rather than
+		// taking the daemon down. The next request starts another.
 		if rv := recover(); rv != nil {
 			log.Printf("panic collecting metrics: %v", rv)
-			c := &s.metrics
-			c.mu.Lock()
-			c.running = nil
-			c.mu.Unlock()
-			close(done)
 		}
+		c.mu.Lock()
+		c.running = nil
+		c.mu.Unlock()
+		close(done)
 	}()
+
 	var set promtext.Set
 	start := time.Now()
 	checks := s.collect(&set)
@@ -121,11 +122,9 @@ func (s *Server) refresh(done chan struct{}) {
 	var b bytes.Buffer
 	_, _ = set.WriteTo(&b)
 
-	c := &s.metrics
 	c.mu.Lock()
-	c.body, c.checks, c.at, c.running = b.Bytes(), checks, time.Now(), nil
+	c.body, c.checks, c.at = b.Bytes(), checks, time.Now()
 	c.mu.Unlock()
-	close(done)
 }
 
 // requestCounter counts handled requests by route pattern and status code.
