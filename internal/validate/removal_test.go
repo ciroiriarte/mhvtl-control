@@ -318,3 +318,36 @@ func TestMergePickerMoves(t *testing.T) {
 		t.Errorf("merge: slots %v, pickers %v; want A00001L8 on picker 1 only", m.Slots, m.Pickers)
 	}
 }
+
+// A next built from cur's file rather than the live view moves a cartridge
+// moved at run time back; that is allowed but warned about (PR 2a round-4
+// probe).
+func TestMoveBackWarning(t *testing.T) {
+	l := lib(10, "IBM", "03584L32", 1, "A00001L8", "", "A00002L8", "", "")
+	l.MAPs = []config.MAPSlot{{Number: 1, Barcode: "M00001L8"}}
+	cur := inv(l)
+	for _, tc := range []struct {
+		name  string
+		live  Placement
+		next  func(config.Inventory, *Live) config.Inventory
+		warns []string
+	}{
+		{"next from cur's file", Placement{Slots: map[int]string{1: "A00001L8", 5: "A00002L8"}, MAPs: map[int]string{1: "M00001L8"}},
+			func(c config.Inventory, _ *Live) config.Inventory { return clone(c) },
+			[]string{"library 10: slot 3 lists A00002L8 as library_contents does, but A00002L8 is in slot 5 now; the apply moves it back"}},
+		{"a MAP entry from cur's file", Placement{Slots: map[int]string{1: "A00001L8", 3: "A00002L8", 4: "M00001L8"}},
+			func(c config.Inventory, _ *Live) config.Inventory { return clone(c) },
+			[]string{"library 10: MAP slot 1 lists M00001L8 as library_contents does, but M00001L8 is in slot 4 now; the apply moves it back"}},
+		{"next from the live view", Placement{Slots: map[int]string{1: "A00001L8", 5: "A00002L8"}, MAPs: map[int]string{1: "M00001L8"}},
+			fromLive, nil},
+		{"nothing moved", Placement{Slots: map[int]string{1: "A00001L8", 3: "A00002L8"}, MAPs: map[int]string{1: "M00001L8"}},
+			func(c config.Inventory, _ *Live) config.Inventory { return clone(c) }, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live := &Live{Libraries: map[int]Placement{10: tc.live}}
+			r := Validate(cur, tc.next(cur, live), live, nil, Options{})
+			expect(t, "errors", family(r.Errors, FamilyRemoval), nil)
+			expect(t, "warnings", family(r.Warnings, FamilyRemoval), tc.warns)
+		})
+	}
+}
