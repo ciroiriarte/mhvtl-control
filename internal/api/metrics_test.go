@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -367,5 +368,45 @@ func TestReadyzHonoursContext(t *testing.T) {
 	})
 	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "no collection has finished yet") {
 		t.Errorf("got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReadyzBusyWithoutState(t *testing.T) {
+	mc := &movingChangers{busy: true}
+	srv := NewServer(Config{ConfigDir: writeConfigDir(t), Changers: mc})
+	rec := get(srv.Handler(), "/readyz", "")
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "no state read yet") {
+		t.Fatalf("readyz on a library busy since start: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// panickyChangers panics on its first read, then answers.
+type panickyChangers struct {
+	movingChangers
+	panicked atomic.Bool
+}
+
+func (p *panickyChangers) TryInventory(lib config.Library) (changer.Inventory, error) {
+	if p.panicked.CompareAndSwap(false, true) {
+		panic("collector bug")
+	}
+	return p.movingChangers.TryInventory(lib)
+}
+
+// TestCollectPanicRecovered pins that a panic in the background collection,
+// which no request middleware can catch, neither kills the daemon nor wedges
+// later collections.
+func TestCollectPanicRecovered(t *testing.T) {
+	pc := &panickyChangers{}
+	pc.inv = changer.Inventory{Slots: []changer.SlotState{{Number: 1}}}
+	srv := NewServer(Config{ConfigDir: writeConfigDir(t), Changers: pc})
+	srv.metrics.ttl = time.Nanosecond
+	h := srv.Handler()
+
+	within(t, 2*time.Second, "a scrape whose collection panics", func() { get(h, "/metrics", "") })
+	var body string
+	within(t, 2*time.Second, "the next scrape", func() { body = get(h, "/metrics", "").Body.String() })
+	if !strings.Contains(body, `mhvtl_library_slots{library="10"} 1`) {
+		t.Fatalf("the collection after a panic is missing library gauges:\n%s", body)
 	}
 }
