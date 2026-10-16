@@ -518,6 +518,52 @@ func bodyAnyProto(f cfile, fn string) (int, int, bool) {
 	return 0, 0, false
 }
 
+var (
+	setWORMRe    = regexp.MustCompile(`\bssc_pm\.set_WORM\s*=`)
+	anyCallRe    = regexp.MustCompile(`\b(\w+)\(`)
+	sscPMStartRe = regexp.MustCompile(`^static struct ssc_personality_template ssc_pm = \{`)
+)
+
+// setsWORM reports whether the drive init function, or a function of the
+// same file it reaches through calls, assigns ssc_pm.set_WORM, or the file's
+// static ssc_pm initializer sets .set_WORM.
+func setsWORM(f cfile, first, last int) bool {
+	for i, l := range f.lines {
+		if !sscPMStartRe.MatchString(l) {
+			continue
+		}
+		for j := i + 1; j < len(f.lines) && !strings.HasPrefix(f.lines[j], "};"); j++ {
+			if strings.Contains(f.lines[j], ".set_WORM") {
+				return true
+			}
+		}
+	}
+	visited := map[int]bool{}
+	var sets func(a, b int) bool
+	sets = func(a, b int) bool {
+		if visited[a] {
+			return false
+		}
+		visited[a] = true
+		for n := a; n <= b; n++ {
+			if setWORMRe.MatchString(f.lines[n-1]) {
+				return true
+			}
+			for _, m := range anyCallRe.FindAllStringSubmatch(f.lines[n-1], -1) {
+				ca, cb, ok := f.body(m[1])
+				if !ok {
+					ca, cb, ok = bodyAnyProto(f, m[1])
+				}
+				if ok && sets(ca, cb) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return sets(first, last)
+}
+
 func TestCrossCheckDriveMedia(t *testing.T) {
 	root := mhvtlRepo(t)
 	files := pmFiles(t, root)
@@ -543,6 +589,9 @@ func TestCrossCheckDriveMedia(t *testing.T) {
 	for _, dm := range DriveModels {
 		f, first, last := findInit(t, files, dm.InitFn)
 		logDrift(t, dm.Source, f.at(first-1))
+		if got := setsWORM(f, first, last); got != dm.WORM {
+			t.Errorf("%s: %s sets set_WORM: %v; DriveModels has WORM %v", f.at(first-1), dm.InitFn, got, dm.WORM)
+		}
 		arrays := genArrays(f)
 		var got []cmedia
 		for n := first; n <= last; n++ {
