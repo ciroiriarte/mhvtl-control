@@ -35,12 +35,10 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 			if barcode == "" {
 				return
 			}
-			if !created && (home == "" || !media.Exists(home, barcode)) {
-				in := "no media home is known to look for it in"
-				if home != "" {
-					in = "it is not in " + home
-				}
-				r.errorf(FamilyMedia, lib.ID, els, "library %d %s: %s: MAP and Picker entries are not created by make_vtl_media, and %s", lib.ID, where, barcode, in)
+			if !created && home == "" {
+				r.warnf(FamilyMedia, lib.ID, "library %d %s: %s: MAP and Picker entries are not created by make_vtl_media, and no media home is known to check that it exists", lib.ID, where, barcode)
+			} else if !created && !media.Exists(home, barcode) {
+				r.errorf(FamilyMedia, lib.ID, els, "library %d %s: %s: MAP and Picker entries are not created by make_vtl_media, and it is not in %s", lib.ID, where, barcode, home)
 				return
 			}
 			density := personality.BarcodeDensity(barcode)
