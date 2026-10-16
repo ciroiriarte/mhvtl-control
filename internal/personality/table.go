@@ -1,0 +1,208 @@
+// Package personality mirrors how mhVTL picks the emulation of a library and
+// a drive from the vendor and product in device.conf: the library dispatch in
+// mhvtl usr/cmd/vtllibrary.c (customise_lu and its customise_*_lu helpers),
+// the element address windows and identifier layout each usr/pm/*_pm.c
+// personality registers, and the media each drive personality loads.
+//
+// Every entry cites the C line it mirrors. crosscheck_test.go parses the C
+// sources ($MHVTL_SRC) and fails on any difference, so an upstream change to
+// the dispatch, a window or a media list cannot go unnoticed.
+package personality
+
+import "strings"
+
+// Rule is one branch of the library dispatch, flattened: the first rule whose
+// prefixes match selects InitFn. A prefix is compared case-insensitively over
+// its own length, as strncasecmp(id, "X", len) does; an empty prefix matches
+// anything (an else branch).
+type Rule struct {
+	Vendor        string // vendor_id prefix
+	ProductPrefix string // product_id prefix
+	InitFn        string
+	Source        string // the strncasecmp, or the call of an else branch
+}
+
+// Model is what a library personality's init function registers.
+type Model struct {
+	InitFn string
+	Name   string // a short human name for messages
+
+	// First element address of each element type (smc_pm.start_*).
+	StartPicker, StartMAP, StartDrive, StartStorage uint16
+	WindowSource                                    string // the first start_* the init function uses
+
+	// VPD83 is whether the changer answers INQUIRY VPD page 83h (Device
+	// Identification). Linux udev derives ID_SCSI_SERIAL from it.
+	VPD83 bool
+
+	// Layout of the drive identifier in READ ELEMENT STATUS with DVCID set
+	// (mhvtl usr/smc.c fill_element_descriptor).
+	DvcidLen           int
+	DvcidSerialOnly    bool
+	DvcidNulTerminated bool
+	StkDteLayout       bool
+}
+
+// Personality is the result of a lookup: the model a library gets and the
+// rule that selected it.
+type Personality struct {
+	Model
+	Rule Rule
+}
+
+// Rules is customise_lu (vtllibrary.c:1524-1541) and its helpers
+// (vtllibrary.c:1478-1522) in evaluation order. An OR of two strncasecmp is
+// two rules.
+var Rules = []Rule{
+	{Vendor: "stk", ProductPrefix: "SL500", InitFn: "init_stkslxx", Source: "usr/cmd/vtllibrary.c:1488"},
+	{Vendor: "stk", ProductPrefix: "L20", InitFn: "init_stkl20", Source: "usr/cmd/vtllibrary.c:1490"},
+	{Vendor: "stk", ProductPrefix: "L40", InitFn: "init_stkl20", Source: "usr/cmd/vtllibrary.c:1492"},
+	{Vendor: "stk", ProductPrefix: "L80", InitFn: "init_stkl20", Source: "usr/cmd/vtllibrary.c:1494"},
+	{Vendor: "stk", InitFn: "init_stklxx", Source: "usr/cmd/vtllibrary.c:1497"},
+	{Vendor: "IBM", ProductPrefix: "3573-TL", InitFn: "init_ibmts3100", Source: "usr/cmd/vtllibrary.c:1479"},
+	{Vendor: "IBM", ProductPrefix: "03584", InitFn: "init_ibm3584", Source: "usr/cmd/vtllibrary.c:1481"},
+	{Vendor: "IBM", InitFn: "init_default_smc", Source: "usr/cmd/vtllibrary.c:1484"},
+	{Vendor: "HP", ProductPrefix: "MSL", InitFn: "init_hp_msl_smc", Source: "usr/cmd/vtllibrary.c:1506"},
+	{Vendor: "HP", ProductPrefix: "1x8", InitFn: "init_hp_msl_smc", Source: "usr/cmd/vtllibrary.c:1507"},
+	{Vendor: "HP", InitFn: "init_hp_eml_smc", Source: "usr/cmd/vtllibrary.c:1510"},
+	{ProductPrefix: "OVERLAND", InitFn: "init_overland_smc", Source: "usr/cmd/vtllibrary.c:1531"},
+	{Vendor: "ADIC", InitFn: "init_scalar_smc", Source: "usr/cmd/vtllibrary.c:1533"},
+	{Vendor: "QUANTUM", InitFn: "init_scalar_smc", Source: "usr/cmd/vtllibrary.c:1534"},
+	{ProductPrefix: "Scalar", InitFn: "init_scalar_smc", Source: "usr/cmd/vtllibrary.c:1535"},
+	// strncasecmp(vendor_id, "SPECTRA ", 7) compares "SPECTRA" only.
+	{Vendor: "SPECTRA", ProductPrefix: "PYTHON", InitFn: "init_spectra_logic_smc", Source: "usr/cmd/vtllibrary.c:1514"},
+	{Vendor: "SPECTRA", ProductPrefix: "GATOR", InitFn: "init_spectra_gator_smc", Source: "usr/cmd/vtllibrary.c:1516"},
+	{Vendor: "SPECTRA", ProductPrefix: "215", InitFn: "init_spectra_215_smc", Source: "usr/cmd/vtllibrary.c:1518"},
+	{Vendor: "SPECTRA", InitFn: "init_spectra_logic_smc", Source: "usr/cmd/vtllibrary.c:1521"},
+	{InitFn: "init_default_smc", Source: "usr/cmd/vtllibrary.c:1540"},
+}
+
+// Models holds the library personalities by init function. Values are the
+// last assignment in the init function, else the static smc_pm initializer of
+// its file: one vtllibrary process runs one personality.
+var Models = map[string]Model{
+	"init_default_smc": {
+		InitFn: "init_default_smc", Name: "mhVTL default library",
+		StartPicker: 0x02f0, StartMAP: 0x0300, StartDrive: 0x0001, StartStorage: 0x0400,
+		WindowSource: "usr/pm/default_smc_pm.c:53",
+		VPD83:        true,
+		DvcidLen:     34,
+	},
+	"init_hp_eml_smc": {
+		InitFn: "init_hp_eml_smc", Name: "HP EML E-Series",
+		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
+		WindowSource: "usr/pm/hp_smc_pm.c:128",
+		VPD83:        true,
+		DvcidLen:     34,
+	},
+	// init_hp_msl_smc sets a 34-byte identifier for the models HPE documents
+	// (MSL6480, MSL3040, 1/8 G3) and a 20-byte serial for the others; the
+	// table keeps the second, the last assignment.
+	"init_hp_msl_smc": {
+		InitFn: "init_hp_msl_smc", Name: "HP MSL",
+		StartPicker: 0x0001, StartMAP: 0x01c0, StartDrive: 0x01e0, StartStorage: 0x0020,
+		WindowSource: "usr/pm/hp_smc_pm.c:168",
+		VPD83:        true,
+		DvcidLen:     20, DvcidSerialOnly: true,
+	},
+	"init_ibmts3100": {
+		InitFn: "init_ibmts3100", Name: "IBM TS3100",
+		StartPicker: 0x0001, StartMAP: 0x0010, StartDrive: 0x0100, StartStorage: 0x1000,
+		WindowSource: "usr/pm/ibm_smc_pm.c:338",
+		VPD83:        true,
+		DvcidLen:     34,
+	},
+	"init_ibm3584": {
+		InitFn: "init_ibm3584", Name: "IBM 03584",
+		StartPicker: 0x0001, StartMAP: 0x0300, StartDrive: 0x0101, StartStorage: 0x0400,
+		WindowSource: "usr/pm/ibm_smc_pm.c:432",
+		VPD83:        true,
+		DvcidLen:     34,
+	},
+	"init_overland_smc": {
+		InitFn: "init_overland_smc", Name: "Overland",
+		StartPicker: 0x0001, StartMAP: 0x0000, StartDrive: 0x00ff, StartStorage: 0x0002,
+		WindowSource: "usr/pm/overland_pm.c:106",
+		VPD83:        true,
+		DvcidLen:     34,
+	},
+	"init_scalar_smc": {
+		InitFn: "init_scalar_smc", Name: "Quantum Scalar",
+		StartPicker: 0x0001, StartMAP: 0x0010, StartDrive: 0x0100, StartStorage: 0x1000,
+		WindowSource: "usr/pm/scalar_pm.c:113",
+		VPD83:        true,
+		DvcidLen:     64,
+	},
+	"init_spectra_215_smc": {
+		InitFn: "init_spectra_215_smc", Name: "Spectra Treefrog (215)",
+		StartPicker: 86, StartMAP: 99, StartDrive: 31, StartStorage: 1,
+		WindowSource: "usr/pm/spectra_pm.c:87",
+		DvcidLen:     0, DvcidSerialOnly: true,
+	},
+	"init_spectra_gator_smc": {
+		InitFn: "init_spectra_gator_smc", Name: "Spectra Gator",
+		StartPicker: 0x02c3, StartMAP: 0x0001, StartDrive: 0x02a3, StartStorage: 0x001e,
+		WindowSource: "usr/pm/spectra_pm.c:113",
+		DvcidLen:     10, DvcidSerialOnly: true,
+	},
+	"init_spectra_logic_smc": {
+		InitFn: "init_spectra_logic_smc", Name: "Spectra T-Series",
+		StartPicker: 0x0001, StartMAP: 0x0010, StartDrive: 0x0100, StartStorage: 0x1000,
+		WindowSource: "usr/pm/spectra_pm.c:142",
+		DvcidLen:     32, DvcidSerialOnly: true, DvcidNulTerminated: true,
+	},
+	"init_stkl20": {
+		InitFn: "init_stkl20", Name: "STK L20/L40/L80",
+		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
+		WindowSource: "usr/pm/stklxx_pm.c:68",
+		DvcidLen:     32, StkDteLayout: true,
+	},
+	"init_stklxx": {
+		InitFn: "init_stklxx", Name: "STK L-series (L180/L700)",
+		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
+		WindowSource: "usr/pm/stklxx_pm.c:98",
+		DvcidLen:     32, StkDteLayout: true,
+	},
+	"init_stkslxx": {
+		InitFn: "init_stkslxx", Name: "STK SL500",
+		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
+		WindowSource: "usr/pm/stklxx_pm.c:124",
+		DvcidLen:     32, StkDteLayout: true,
+	},
+}
+
+// Lookup returns the personality vtllibrary gives a library with this vendor
+// and product identification.
+func Lookup(vendor, product string) Personality {
+	for _, r := range Rules {
+		if hasPrefixFold(vendor, r.Vendor) && hasPrefixFold(product, r.ProductPrefix) {
+			return Personality{Model: Models[r.InitFn], Rule: r}
+		}
+	}
+	// Unreachable: the last rule matches anything.
+	return Personality{}
+}
+
+// hasPrefixFold is strncasecmp(s, prefix, len(prefix)) == 0.
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// SerialArea is how many characters of a drive's serial number the library
+// shows in its READ ELEMENT STATUS drive identifier (mhvtl usr/smc.c
+// fill_element_descriptor): the whole area in the STK layout and the serial
+// only layout (less the NUL when terminated), else what the area leaves after
+// the 8-byte vendor and 16-byte product.
+func (m Model) SerialArea() int {
+	n := m.DvcidLen
+	switch {
+	case m.StkDteLayout:
+	case m.DvcidSerialOnly:
+		if m.DvcidNulTerminated {
+			n--
+		}
+	default:
+		n -= 24
+	}
+	return max(n, 0)
+}
