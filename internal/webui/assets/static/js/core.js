@@ -426,6 +426,8 @@
   function buildValidateBody(libId, app) {
     var body = {};
     var id = Number(libId);
+    // Library IDs are 1..1023 (validate.MaxID): 0 is the System V message
+    // type no daemon can receive on, so it is never a library.
     if (app && Number.isInteger(id) && id > 0) {
       body.target_apps = {};
       body.target_apps[String(id)] = String(app);
