@@ -79,6 +79,10 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 			}
 		}
 
+		if haveLive {
+			warnMoveBack(r, lib.ID, old, lib, lp, merged)
+		}
+
 		disp := map[string]Disposition{}
 		for _, d := range byLib[lib.ID] {
 			if _, dup := disp[d.Barcode]; dup {
@@ -139,6 +143,33 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		}
 		if exports > freeMAPs {
 			r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %d cartridges are to be exported, but only %d MAP slots are free", lib.ID, exports, freeMAPs)
+		}
+	}
+}
+
+// warnMoveBack warns when next keeps an element as cur's library_contents
+// lists it while the live view has that cartridge in another slot or MAP
+// slot: the merge reads it as an edit and moves the cartridge back. That is
+// what a next built from cur's file rather than the live view does to a
+// run-time move, so it may not be meant.
+func warnMoveBack(r *Result, id int, cur, next config.Library, live, merged Placement) {
+	where := map[string]string{}
+	for _, c := range (Placement{Slots: live.Slots, MAPs: live.MAPs}).cartridges() {
+		where[c.barcode] = c.where
+	}
+	for _, e := range []struct {
+		kind              string
+		cur, next, l, mrg map[int]string
+	}{
+		{"slot", fileSlots(cur), fileSlots(next), live.Slots, merged.Slots},
+		{"MAP slot", fileMAPs(cur), fileMAPs(next), live.MAPs, merged.MAPs},
+	} {
+		for _, k := range sortedKeys(e.next) {
+			b := e.next[k]
+			if b == "" || b != e.cur[k] || e.l[k] == b || e.mrg[k] != b || where[b] == "" {
+				continue
+			}
+			r.warnf(FamilyRemoval, id, "library %d: %s %d lists %s as library_contents does, but %s is in %s now; the apply moves it back", id, e.kind, k, b, b, where[b])
 		}
 	}
 }
