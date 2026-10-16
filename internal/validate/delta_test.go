@@ -111,3 +111,27 @@ func TestPreExistingOtherFamilies(t *testing.T) {
 		})
 	}
 }
+
+// A drive serial over the policy limit that the configuration in force
+// already has does not block an edit of another drive; it blocks an edit of
+// that drive.
+func TestLongSerialPreExisting(t *testing.T) {
+	cur := shipped(t)
+	cur.Libraries[0].Drives[0].Serial = "ABCDEFGHIJKL"
+	other := clone(cur)
+	other.Libraries[0].Drives[1].Revision = "0102"
+	r := Validate(cur, other, nil, nil, Options{})
+	expect(t, "errors", family(r.Errors, FamilyIdentity), nil)
+	var pre []string
+	for _, w := range r.Warnings {
+		if w.Code == CodeIdentSerialLength && w.Tag == TagPreExisting {
+			pre = append(pre, w.Message)
+		}
+	}
+	expect(t, "pre-existing warnings", pre, []string{`drive 11: serial "ABCDEFGHIJKL" is 12 characters; mhvtl-control's policy limits drive serials to 10 (mhVTL itself takes 40)`})
+
+	same := clone(cur)
+	same.Libraries[0].Drives[0].Revision = "0102"
+	r = Validate(cur, same, nil, nil, Options{})
+	expect(t, "errors", family(r.Errors, FamilyIdentity), []string{`drive 11: serial "ABCDEFGHIJKL" is 12 characters`})
+}
