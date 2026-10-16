@@ -100,7 +100,9 @@ func devices(inv config.Inventory) []device {
 // numbers and NAAs in next, and serials or NAAs that another SCSI device of
 // the host already reports. mhVTL's own devices on the host are those of cur,
 // recognised by their mhvtl HBA address; any other device, real or virtual,
-// counts.
+// counts, except one that reports both the serial and the NAA a device of cur
+// reports: that is the same device exported again (tcm_loop or TCMU, an
+// iSCSI loopback session), and it does not collide with that device in next.
 func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Device) {
 	devs := devices(next)
 
@@ -186,14 +188,19 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	}
 
 	ours := map[[3]int]bool{}
-	for _, d := range devices(cur) {
+	curDevs := devices(cur)
+	for _, d := range curDevs {
 		ours[[3]int{d.channel, d.target, d.lun}] = true
 	}
 	for _, h := range host {
 		if h.Driver == hostids.MhvtlDriver && ours[[3]int{h.Channel, h.Target, h.LUN}] {
 			continue
 		}
+		self, isSelf := reexport(h, curDevs)
 		for i, d := range devs {
+			if isSelf && d.kind == self.kind && d.id == self.id {
+				continue
+			}
 			if d.serial != "" && d.serial == h.Serial {
 				r.stickyErrorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: serial %q is already used by host device %s (%s)", d, d.serial, h.HCTL(), driverName(h))
 			}
@@ -208,6 +215,29 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 			}
 		}
 	}
+}
+
+// reexport returns the device of cur that h is an export of: one whose serial
+// and reported NAA h both reports.
+func reexport(h hostids.Device, cur []device) (device, bool) {
+	for _, c := range cur {
+		if c.serial == "" || c.serial != h.Serial || !c.sendsNAA {
+			continue
+		}
+		b := derivedNAA(c)
+		if c.naa != "" {
+			var err error
+			if b, err = hostids.ParseNAA(c.naa); err != nil {
+				continue
+			}
+		}
+		for _, hn := range h.NAAs {
+			if hb, err := hostids.ParseNAA(hn); err == nil && hostids.SameNAA(b, hb) {
+				return c, true
+			}
+		}
+	}
+	return device{}, false
 }
 
 func driverName(h hostids.Device) string {
