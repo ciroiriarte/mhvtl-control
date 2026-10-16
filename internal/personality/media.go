@@ -389,10 +389,11 @@ var DensityMedia = map[string]string{
 	"J1A": "03592 JA", "E05": "03592 JB", "E06": "03592 JC", "E07": "03592 JK",
 }
 
-// barcodeRe is set_density's regex in mhvtl usr/cmd/make_vtl_media.in,
-// anchored at the start as well: make_vtl_media's is not, so it would take
-// the media type from the tail of a longer barcode.
-var barcodeRe = regexp.MustCompile(`^[A-Z0-9]{6,8}([SLXTJDP])([123456789ABCHKTUVWXYZ])$`)
+// barcodeRe is set_density's regex in mhvtl usr/cmd/make_vtl_media.in
+// (:93, upstream master c65bff0). Like it, it is not anchored at the start:
+// a longer barcode takes its media type from its tail, as make_vtl_media
+// creates it. vtllibrary's 16-character barcode limit is checked elsewhere.
+var barcodeRe = regexp.MustCompile(`[A-Z0-9]{6,8}([SLXTJDP])([123456789ABCHKTUVWXYZ])$`)
 
 // BarcodeDensity is set_density from make_vtl_media: the density
 // make_vtl_media passes to mktape for a pre-filled barcode, or "UNKNOWN".
@@ -475,8 +476,8 @@ func BarcodeDensity(barcode string) string {
 }
 
 var (
-	worm3592Re = regexp.MustCompile(`^[A-Z0-9]{6,8}([J])([WXY])$`)
-	wormLTORe  = regexp.MustCompile(`^[A-Z0-9]{6,8}([L])([TUVWXYZH])$`)
+	worm3592Re = regexp.MustCompile(`[A-Z0-9]{6,8}([J])([WXY])$`)
+	wormLTORe  = regexp.MustCompile(`[A-Z0-9]{6,8}([L])([TUVWXYZH])$`)
 )
 
 // BarcodeMediaType is set_media_type from make_vtl_media: "data", "WORM" or
