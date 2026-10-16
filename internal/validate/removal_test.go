@@ -56,11 +56,11 @@ func TestRemovals(t *testing.T) {
 		{"to the shelf", dropSlot3, nil, []Disposition{{Library: 10, Barcode: "A00002L8", To: ToShelf}}, nil},
 		{"to a free slot", dropSlot3, nil, []Disposition{{Library: 10, Barcode: "A00002L8", To: ToSlot, Slot: 2}}, nil},
 		{"to a slot that lists another cartridge", dropSlot3, nil, []Disposition{{Library: 10, Barcode: "A00002L8", To: ToSlot, Slot: 1}},
-			[]string{"library 10: A00002L8 is to go to slot 1, which lists A00001L8"}},
+			[]string{"library 10: A00002L8 is to go to slot 1, which will hold A00001L8"}},
 		{"to a slot that holds a cartridge now", dropSlot3,
 			live(Placement{Slots: map[int]string{2: "X00001L8"}}),
 			[]Disposition{{Library: 10, Barcode: "A00002L8", To: ToSlot, Slot: 2}},
-			[]string{"library 10: A00002L8 is to go to slot 2, which lists X00001L8"}},
+			[]string{"library 10: A00002L8 is to go to slot 2, which will hold X00001L8"}},
 		{"to a slot that is gone", dropSlot3, nil, []Disposition{{Library: 10, Barcode: "A00002L8", To: ToSlot, Slot: 9}},
 			[]string{"library 10: A00002L8 is to go to slot 9, which the new configuration does not have"}},
 		{"export with free MAP slots", dropSlot3, nil, []Disposition{{Library: 10, Barcode: "A00002L8", To: ToExport}}, nil},
@@ -124,6 +124,23 @@ func TestRemovals(t *testing.T) {
 		{"a live cartridge moved by an edit", func(i *config.Inventory) {
 			i.Libraries[0].Slots[1].Barcode = "NEW001L8"
 		}, live(Placement{Slots: map[int]string{4: "NEW001L8"}}), nil, nil},
+		// The MAP slot X00001L8 leaves for slot 2 is free for the export.
+		{"export to a MAP slot a move frees", func(i *config.Inventory) {
+			dropSlot3(i)
+			i.Libraries[0].Slots[1].Barcode = "X00001L8"
+		}, live(Placement{MAPs: map[int]string{1: "X00001L8", 2: "Y00001L8"}}),
+			[]Disposition{{Library: 10, Barcode: "A00002L8", To: ToExport}}, nil},
+		{"export with the MAP full on the merge", func(i *config.Inventory) { dropSlot3(i) },
+			live(Placement{MAPs: map[int]string{1: "X00001L8", 2: "Y00001L8"}}),
+			[]Disposition{{Library: 10, Barcode: "A00002L8", To: ToExport}},
+			[]string{"library 10: 1 cartridges are to be exported, but only 0 MAP slots are free"}},
+		// cur's file lists S00001L8 in slot 2, but it has left the library;
+		// the live view shows slot 2 empty.
+		{"to a slot whose file entry is stale", func(i *config.Inventory) {
+			i.Libraries[0].Slots[1].Barcode = ""
+			dropSlot3(i)
+		}, &Live{Libraries: map[int]Placement{10: {Slots: map[int]string{1: "A00001L8", 3: "A00002L8"}}}},
+			[]Disposition{{Library: 10, Barcode: "A00002L8", To: ToSlot, Slot: 2}}, nil},
 		{"a disposition for nothing removed", func(*config.Inventory) {}, nil, []Disposition{{Library: 10, Barcode: "A00001L8", To: ToShelf}},
 			[]string{"library 10: a disposition names A00001L8, but it does not leave the library"}},
 		{"two dispositions", dropSlot3, nil, []Disposition{{Library: 10, Barcode: "A00002L8", To: ToShelf}, {Library: 10, Barcode: "A00002L8", To: ToExport}},
