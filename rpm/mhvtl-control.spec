@@ -4,7 +4,7 @@
 %global debug_package %{nil}
 
 Name:           mhvtl-control
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Management daemon and web dashboard for the mhVTL virtual tape library
 License:        Apache-2.0
@@ -127,5 +127,13 @@ fi
 %dir %attr(0700,root,root) %{_sharedstatedir}/mhvtl-control-apply
 
 %changelog
+* Fri Oct 16 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.3.0-1
+- Read raw-disk cartridges' superblock and MAM: capacity, usage and MAM in the media list (#33).
+- Serve Prometheus metrics at /metrics and readiness at /readyz (#34).
+- Debian: install the unit where the release's systemd looks for it, so the package builds and installs on Debian 12 (#35).
+- Add a lossless model of mhVTL's configuration files and validation of a proposed configuration: personality table, identity generation and checks (#38, #39, #40). Not yet exposed in the API.
+- Move the options file to /etc/mhvtl-control/mhvtl-control.env; an upgrade from 0.2.0 moves an edited file (#41).
+- Confine mhvtl-control.service away from systemd, D-Bus and the config-apply helper (#41).
+
 * Fri Oct 16 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.2.0-1
 - Initial release.
