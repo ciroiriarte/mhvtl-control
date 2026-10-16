@@ -37,8 +37,17 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		}
 		lp, haveLive := live.library(lib.ID)
 		keptSlots, keptMAPs := map[int]string{}, map[int]string{}
+		highest := 0
 		for _, s := range lib.Slots {
 			keptSlots[s.Number] = s.Barcode
+			highest = max(highest, s.Number)
+		}
+		// vtllibrary makes an empty slot for each number the Slot lines skip
+		// (usr/cmd/vtllibrary.c:1054-1064, upstream master c65bff0).
+		for n := 1; n < highest; n++ {
+			if _, ok := keptSlots[n]; !ok {
+				keptSlots[n] = ""
+			}
 		}
 		for _, m := range lib.MAPs {
 			keptMAPs[m.Number] = m.Barcode
