@@ -219,6 +219,16 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 
 	checkDriveLines(r, next, serials)
 
+	// vtllibrary takes a drive only when its Library ID names it
+	// (usr/cmd/vtllibrary.c:686, upstream master 993b193); a drive naming
+	// no library runs on its own, a typo that loses the drive silently.
+	for _, d := range next.Standalone {
+		if d.LibraryID != 0 {
+			r.warnf(CodeIdentNoLibrary, 0, []ElementRef{driveKey(d.ID)}, "drive %d: Library ID %d names no library of device.conf, so no changer reports the drive and it runs standalone",
+				d.ID, d.LibraryID)
+		}
+	}
+
 	// The drive identifier the library reports in READ ELEMENT STATUS can
 	// cut the drive serial short. A personality with no identifier area
 	// reports no serial at all, so nothing is cut (usr/cmd/vtllibrary.c
@@ -348,11 +358,15 @@ func checkDriveLines(r *Result, next config.Inventory, serials map[string]device
 		file := "library_contents." + strconv.Itoa(l.ID)
 		phantom := map[string]int{}
 		for _, dl := range l.DriveLines {
-			if dl.Serial == "" {
-				continue
-			}
 			els := []ElementRef{lineKey(l.ID, dl.Number)}
 			d, ok := bySlot[dl.Number]
+			if dl.Serial == "" {
+				if !ok {
+					r.warnf(CodeIdentDriveLineNoDrive, l.ID, els, "%s line \"Drive %d:\": no drive of device.conf sits in drive slot %d, so the changer reports an empty drive element",
+						file, dl.Number, dl.Number)
+				}
+				continue
+			}
 			switch {
 			case ok && d.Serial == "":
 				r.errorf(CodeIdentDriveLineSerial, l.ID, append(els, driveKey(d.ID)),
