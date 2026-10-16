@@ -10,6 +10,7 @@ import (
 // and pickers.
 func withCounts(l config.Library, drives, slots, maps, pickers int) config.Library {
 	l.Drives, l.Slots, l.MAPs, l.Pickers = nil, nil, nil, nil
+	l.DriveLines = driveLines(drives)
 	for i := 1; i <= drives; i++ {
 		l.Drives = append(l.Drives, config.Drive{ID: 100000 + i, LibraryID: l.ID, Slot: i})
 	}
@@ -73,6 +74,21 @@ func TestAddresses(t *testing.T) {
 			l.DriveLines = []config.DriveLine{{Number: 1}, {Number: 1}, {Number: 512, Serial: "GHOST"}}
 			return l
 		}(), []string{"drive 512 would sit at element address 0x0300, which overlaps the MAP slot addresses from 0x0300"}},
+		{"drive past the last Drive line", func() config.Library {
+			l := withCounts(stk, 3, 3, 0, 1)
+			l.DriveLines = l.DriveLines[:2]
+			return l
+		}(), []string{`library 10: drive 100003 is in drive slot 3, but library_contents.10 has no "Drive 3:" line, so vtllibrary would report it at element address 0`}},
+		{"no Drive lines at all", func() config.Library {
+			l := withCounts(stk, 1, 3, 0, 1)
+			l.DriveLines = nil
+			return l
+		}(), []string{`drive 100001 is in drive slot 1, but library_contents.10 has no "Drive 1:" line`}},
+		{"a later Drive line fills the gap", func() config.Library {
+			l := withCounts(stk, 3, 3, 0, 1)
+			l.DriveLines = []config.DriveLine{{Number: 3}}
+			return l
+		}(), nil},
 		{"Drive lines matching device.conf drives are not counted twice", func() config.Library {
 			l := withCounts(stk, 2, 3, 0, 1)
 			l.DriveLines = []config.DriveLine{{Number: 2}, {Number: 1}}

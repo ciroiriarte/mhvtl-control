@@ -26,29 +26,49 @@ type window struct {
 func checkAddresses(r *Result, next config.Inventory) {
 	for _, lib := range next.Libraries {
 		p := personality.Lookup(lib.Vendor, lib.Product)
-		drives := window{kind: "drive", plural: "drives", start: p.StartDrive}
-		for _, d := range lib.Drives {
-			drives.numbers, drives.keys = append(drives.numbers, d.Slot), append(drives.keys, driveKey(d.ID))
-		}
-		// vtllibrary also makes a drive element for every "Drive N:" line of
+		// vtllibrary makes a drive element for every "Drive N:" line of
 		// library_contents, and an empty one for each number a line skips
-		// over, whether device.conf has a drive there or not; elements share
-		// one per number (usr/cmd/vtllibrary.c __init_slot_info :1031-1039,
-		// init_drive_slot :851-878 → lookup_drive, add_new_slot; check_overflow
-		// at :856; upstream master 6458223).
+		// over, one per number (usr/cmd/vtllibrary.c __init_slot_info
+		// :1031-1039, init_drive_slot :851-878 → lookup_drive, add_new_slot;
+		// check_overflow at :856). update_drive_details then places each
+		// device.conf drive on the element of its Slot (:689). A drive whose
+		// Slot no Drive line reaches gets a new element whose address is
+		// never set, so it reports element address 0, and check_overflow is
+		// never asked (:689-704, after customise_lu at :1711-1713). Line
+		// numbers are upstream master c65bff0. The writer that saves the
+		// configuration adds the Drive lines; a file edited by hand may lack
+		// them.
+		drives := window{kind: "drive", plural: "drives", start: p.StartDrive}
 		have := map[int]bool{}
-		for _, n := range drives.numbers {
-			have[n] = true
-		}
-		next := 1
+		fill := 1
 		for _, dl := range lib.DriveLines {
-			for n := next; n <= dl.Number; n++ {
+			for n := fill; n <= dl.Number; n++ {
 				if !have[n] {
 					have[n] = true
 					drives.numbers, drives.keys = append(drives.numbers, n), append(drives.keys, lineKey(lib.ID, dl.Number))
 				}
 			}
-			next = max(next, dl.Number+1)
+			fill = max(fill, dl.Number+1)
+		}
+		placed := map[int]bool{}
+		for _, d := range lib.Drives {
+			switch {
+			case d.Slot >= 1 && !have[d.Slot]:
+				r.errorf(FamilyAddress, lib.ID, []string{libKey(lib.ID), driveKey(d.ID)},
+					"library %d: drive %d is in drive slot %d, but library_contents.%d has no \"Drive %d:\" line, so vtllibrary would report it at element address 0",
+					lib.ID, d.ID, d.Slot, lib.ID, d.Slot)
+			case placed[d.Slot] || d.Slot < 1:
+				// A second device.conf drive in a slot, or an invalid slot.
+				drives.numbers, drives.keys = append(drives.numbers, d.Slot), append(drives.keys, driveKey(d.ID))
+			default:
+				placed[d.Slot] = true
+				// The element of the Drive line is this drive's.
+				for i, n := range drives.numbers {
+					if n == d.Slot {
+						drives.keys[i] = driveKey(d.ID)
+					}
+				}
+			}
 		}
 		slots := window{kind: "storage slot", plural: "storage slots", start: p.StartStorage}
 		for _, s := range lib.Slots {
