@@ -3,8 +3,9 @@ mhvtl-control (0.3.0-1) unstable; urgency=medium
   * Read raw-disk cartridges' superblock and MAM: capacity, usage and MAM
     in the media list (#33).
   * Serve Prometheus metrics at /metrics and readiness at /readyz (#34).
-  * Debian: install the unit where the release's systemd looks for it, so
-    the package builds and installs on Debian 12 (#35).
+  * Debian: install the unit where the release's systemd looks for it, and
+    build with a versioned Go toolchain (golang-1.2x-go) when one is
+    installed, so the package builds and installs on Debian 12 (#35).
   * Add a lossless model of mhVTL's configuration files and validation of
     a proposed configuration: personality table, identity generation and
     checks (#38, #39, #40). Not yet exposed in the API.
