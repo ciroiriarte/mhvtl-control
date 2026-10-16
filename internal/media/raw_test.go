@@ -189,3 +189,22 @@ func TestRawTruncatedMAM(t *testing.T) {
 		t.Fatalf("got %+v", c)
 	}
 }
+
+func TestRawBrokenTargetPath(t *testing.T) {
+	home := t.TempDir()
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A path component of the target is a regular file: ENOTDIR, not ENOENT.
+	if err := os.Symlink(filepath.Join(file, "disk"), filepath.Join(home, "R00007")); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Read(home, "R00007")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c != (Cartridge{Barcode: "R00007", Backend: BackendRaw, MediaAbsent: true}) {
+		t.Fatalf("got %+v", c)
+	}
+}

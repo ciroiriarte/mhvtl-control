@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"mhvtl-control/internal/rawdisk"
 )
@@ -193,15 +194,29 @@ func read(home string, fi os.FileInfo) Cartridge {
 // cartridge symlink link points to. A symlink whose target is gone is a disk
 // that was removed from its bay: that is reported as MediaAbsent, not an
 // error.
+//
+// vtltape rewrites the MAM region before the superblock that records its
+// length, so a read between the two can see a truncated MAM; that is retried
+// once.
 func readRaw(c *Cartridge, link string) {
-	if _, err := os.Stat(link); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(link); errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 		c.MediaAbsent = true
 		return
 	}
+	base := *c
+	if err := readRawOnce(c, link); errors.Is(err, errTruncated) {
+		*c = base
+		_ = readRawOnce(c, link)
+	}
+}
+
+// readRawOnce reads the superblock and MAM region of the disk at link once.
+// It records any failure in c.Error and also returns it.
+func readRawOnce(c *Cartridge, link string) error {
 	sb, err := rawdisk.ReadSuperblock(link)
 	if err != nil {
 		c.Error = "superblock: " + errText(err)
-		return
+		return err
 	}
 	c.UUID = uuidString(sb.CartridgeUUID)
 	c.GenerationID = sb.GenerationID
@@ -215,14 +230,16 @@ func readRaw(c *Cartridge, link string) {
 	b, err := rawdisk.ReadMAM(link, sb)
 	if err != nil {
 		c.Error = "mam: " + errText(err)
-		return
+		return err
 	}
 	if b == nil {
-		return // freshly formatted: no MAM written yet
+		return nil // freshly formatted: no MAM written yet
 	}
 	if err := parseRawMAM(c, b); err != nil {
 		c.Error = err.Error()
+		return err
 	}
+	return nil
 }
 
 // parseRawMAM decodes the raw backend's MAM region: two host-order u32
