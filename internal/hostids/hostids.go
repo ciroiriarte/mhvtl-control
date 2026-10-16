@@ -33,6 +33,9 @@ type Device struct {
 	// NAAs are the NAA designators of VPD 83h as lower-case hex bytes joined
 	// by ':', the notation of device.conf.
 	NAAs []string
+	// Vendor and Model are the INQUIRY vendor and product identification,
+	// trimmed (the device's sysfs vendor and model attributes).
+	Vendor, Model string
 }
 
 // HCTL formats the device's address as H:C:T:L.
@@ -66,6 +69,12 @@ func Read(sysRoot string) ([]Device, error) {
 		}
 		if b, err := os.ReadFile(filepath.Join(devDir, "vpd_pg83")); err == nil {
 			d.NAAs = parseNAAs(b)
+		}
+		if b, err := os.ReadFile(filepath.Join(devDir, "vendor")); err == nil {
+			d.Vendor = strings.TrimSpace(string(b))
+		}
+		if b, err := os.ReadFile(filepath.Join(devDir, "model")); err == nil {
+			d.Model = strings.TrimSpace(string(b))
 		}
 		if b, err := os.ReadFile(filepath.Join(sysRoot, "class", "scsi_host", "host"+strconv.Itoa(d.Host), "proc_name")); err == nil {
 			d.Driver = strings.TrimSpace(string(b))

@@ -218,10 +218,17 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 }
 
 // reexport returns the device of cur that h is an export of: one whose serial
-// and reported NAA h both reports.
+// and reported NAA h both reports. A changer that sends no NAA is matched on
+// its serial and INQUIRY vendor and product instead.
 func reexport(h hostids.Device, cur []device) (device, bool) {
 	for _, c := range cur {
-		if c.serial == "" || c.serial != h.Serial || !c.sendsNAA {
+		if c.serial == "" || c.serial != h.Serial {
+			continue
+		}
+		if !c.sendsNAA {
+			if strings.TrimSpace(c.vendor) == h.Vendor && strings.TrimSpace(c.product) == h.Model {
+				return c, true
+			}
 			continue
 		}
 		b := derivedNAA(c)
