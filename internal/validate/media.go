@@ -9,10 +9,13 @@ import (
 	"mhvtl-control/internal/personality"
 )
 
-// checkMedia refuses a pre-filled slot or MAP slot whose cartridge none of
-// the library's drives loads. The media type comes from the barcode, as
-// make_vtl_media decides it when it creates the cartridge (set_density in
-// mhvtl usr/cmd/make_vtl_media.in).
+// checkMedia refuses a pre-filled slot, MAP slot or picker whose cartridge
+// none of the library's drives loads. The media type comes from the barcode,
+// as make_vtl_media decides it when it creates the cartridge (set_density in
+// mhvtl usr/cmd/make_vtl_media.in). make_vtl_media creates cartridges only
+// for the Slot lines of library_contents (make_vtl_media.in:313, upstream
+// master c65bff0), so a MAP or Picker barcode must name a cartridge that
+// already exists in the library's home.
 func checkMedia(r *Result, next config.Inventory, opts Options) {
 	for _, lib := range next.Libraries {
 		var models []personality.DriveModel
@@ -27,9 +30,17 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 			drives = append(drives, driveKey(d.ID))
 		}
 		home := homeOf(lib, opts)
-		check := func(where, key, barcode string) {
+		check := func(where, key, barcode string, created bool) {
 			els := append(drives[:len(drives):len(drives)], key)
 			if barcode == "" {
+				return
+			}
+			if !created && (home == "" || !media.Exists(home, barcode)) {
+				in := "no media home is known to look for it in"
+				if home != "" {
+					in = "it is not in " + home
+				}
+				r.errorf(FamilyMedia, lib.ID, els, "library %d %s: %s: MAP and Picker entries are not created by make_vtl_media, and %s", lib.ID, where, barcode, in)
 				return
 			}
 			density := personality.BarcodeDensity(barcode)
@@ -55,10 +66,13 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 				lib.ID, where, barcode, name, strings.Join(products, ", "))
 		}
 		for _, s := range lib.Slots {
-			check(fmt.Sprintf("slot %d", s.Number), slotKey(lib.ID, s.Number), s.Barcode)
+			check(fmt.Sprintf("slot %d", s.Number), slotKey(lib.ID, s.Number), s.Barcode, true)
 		}
 		for _, m := range lib.MAPs {
-			check(fmt.Sprintf("MAP slot %d", m.Number), mapKey(lib.ID, m.Number), m.Barcode)
+			check(fmt.Sprintf("MAP slot %d", m.Number), mapKey(lib.ID, m.Number), m.Barcode, false)
+		}
+		for _, p := range lib.PickerMedia {
+			check(fmt.Sprintf("picker %d", p.Number), pickerKey(lib.ID, p.Number), p.Barcode, false)
 		}
 	}
 }
