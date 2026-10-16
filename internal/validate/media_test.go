@@ -67,6 +67,9 @@ func TestMedia(t *testing.T) {
 		{"WORM media in a drive with WORM support", func(l *config.Library) {
 			l.Slots[0].Barcode = "W00001L6"
 		}, nil, nil},
+		{"a home ProtectHome hides", func(l *config.Library) {
+			l.HomeDir = "/home/tapes"
+		}, nil, []string{"library 10: media home /home/tapes is under /home, /root or /run/user"}},
 		{"no drives", func(l *config.Library) {
 			l.Drives = nil
 			l.Slots = l.Slots[:1]

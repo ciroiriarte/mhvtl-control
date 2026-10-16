@@ -56,6 +56,13 @@ func TestIdentities(t *testing.T) {
 			[]string{"drive 11 and drive 31 share NAA 50:22:33:44:ab:00:01:00"}, nil},
 		{"malformed NAA", func(i *config.Inventory) { i.Libraries[0].Drives[0].NAA = "10:22:33" },
 			[]string{"drive 11: NAA \"10:22:33\": want 8 hex bytes"}, nil},
+		// vtltape then sends the NAA derived from the serial, which is
+		// checked for collisions too.
+		{"malformed NAA, and the derived one collides", func(i *config.Inventory) {
+			i.Libraries[1].Drives[0].NAA, i.Libraries[1].Drives[0].Serial = "10:22:33", "AAZZ_SAME1"
+			i.Libraries[1].Drives[1].NAA, i.Libraries[1].Drives[1].Serial = "", "BBZZ_SAME1"
+		}, []string{`drive 31: NAA "10:22:33": want 8 hex bytes`, "drive 31 and drive 32 share NAA 5a:5a:5f:53:41:4d:45:31 (derived from its serial)"},
+			[]string{"drive 32 has no NAA"}},
 		// The STK L-series has no VPD page 83h: its NAA is never sent.
 		{"STK library NAA is not checked", func(i *config.Inventory) {
 			i.Libraries[0].NAA = "10:22:33"
