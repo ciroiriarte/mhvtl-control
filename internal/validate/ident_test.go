@@ -26,6 +26,13 @@ func TestIdentities(t *testing.T) {
 		{"serial at the limit", func(i *config.Inventory) { i.Libraries[0].Drives[0].Serial = "ABCDEFGHIJ" }, nil, nil},
 		{"serial past the limit", func(i *config.Inventory) { i.Libraries[0].Drives[0].Serial = "ABCDEFGHIJK" },
 			[]string{`drive 11: serial "ABCDEFGHIJK" is 11 characters; mhvtl-control limits serials to 10 characters`}, nil},
+		{"vendor and product at the limit", func(i *config.Inventory) {
+			i.Libraries[0].Drives[0].Vendor, i.Libraries[0].Drives[0].Product = "ABCDEFGH", "ABCDEFGHIJKLMNOP"
+		}, nil, nil},
+		{"vendor past the limit", func(i *config.Inventory) { i.Libraries[0].Drives[0].Vendor = "ABCDEFGHI" },
+			[]string{`drive 11: vendor "ABCDEFGHI" is 9 characters; INQUIRY has room for 8 and mhVTL cuts the rest`}, nil},
+		{"product past the limit", func(i *config.Inventory) { i.Libraries[0].Product = "ABCDEFGHIJKLMNOPQ" },
+			[]string{`library 10: product "ABCDEFGHIJKLMNOPQ" is 17 characters; INQUIRY has room for 16 and mhVTL cuts the rest`}, nil},
 		{"no serial", func(i *config.Inventory) { i.Libraries[0].Serial = "" },
 			[]string{"library 10 has no Unit serial number"}, nil},
 		{"duplicate NAA", func(i *config.Inventory) { i.Libraries[1].Drives[0].NAA = "10:22:33:44:ab:00:01:00" },
@@ -256,4 +263,12 @@ func TestChangerReexport(t *testing.T) {
 			expect(t, "errors", family(r.Errors, FamilyIdentity), tc.errors)
 		})
 	}
+
+	// The host reports the vendor and product mhVTL cut to their INQUIRY
+	// widths; the over-long values themselves are a pre-existing error.
+	long := clone(cur)
+	long.Libraries[0].Vendor, long.Libraries[0].Product = "IBMXXXXXXX", "03584L32XXXXXXXXXX"
+	h := hostids.Device{Host: 7, Target: 0, Driver: "tcm_loop", Serial: "XYZZY_A", Vendor: "IBMXXXXX", Model: "03584L32XXXXXXXX"}
+	r := Validate(long, clone(long), nil, []hostids.Device{h}, Options{})
+	expect(t, "errors with an over-long vendor and product", family(r.Errors, FamilyIdentity), nil)
 }
