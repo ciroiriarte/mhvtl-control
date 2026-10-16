@@ -322,13 +322,17 @@ func TestCraftedMhvtlConf(t *testing.T) {
 	}
 	c := ParseMhvtlConf(b)
 	for k, v := range map[string]string{"MHVTL_HOME_PATH": "/var/lib/mhvtl", "CAPACITY": "500",
-		"VERBOSE": "1", "VTL_DEBUG": "0", "UNMODELLED": "keep"} {
+		"VERBOSE": "1", "UNMODELLED": "keep"} {
 		if got, ok := c.Get(k); !ok || got != v {
 			t.Errorf("%s = %q, %v; want %q", k, got, ok, v)
 		}
 	}
 	if _, ok := c.Get("DAEMON_DEBUG"); ok {
 		t.Error("a commented-out key was read")
+	}
+	// The shell runs "VTL_DEBUG = 0" as a command, so it sets nothing.
+	if v, ok := c.Get("VTL_DEBUG"); ok {
+		t.Errorf("VTL_DEBUG = %q from a line with blanks around '='", v)
 	}
 }
 

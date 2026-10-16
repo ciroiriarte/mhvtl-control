@@ -18,6 +18,8 @@ func TestMhvtlConfCReader(t *testing.T) {
 		"MHVTL_CONFIG_PATH=/etc/mhvtl\r\n":             "CRLF",
 		"MHVTL_CONFIG_PATH=/a\nMHVTL_CONFIG_PATH=/b\n": "the shell the last",
 		"MHVTL_CONFIG_PATH=/a\x00b\n":                  "NUL",
+		"MHVTL_CONFIG_PATH = /etc/mhvtl\n":             "blanks around '='",
+		"MHVTL_CONFIG_PATH= /etc/mhvtl\n":              "blanks around '='",
 	}
 	for in, want := range cases {
 		c := ParseMhvtlConf([]byte(in))
