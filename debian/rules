@@ -15,6 +15,11 @@ export GOPROXY = off
 MAKE_VARS = GO=go VERSION=$(DEB_VERSION_UPSTREAM) LDFLAGS= \
 	GOBUILDFLAGS="-trimpath -buildvcs=false -buildmode=pie"
 
+# Install the unit where this release's systemd looks for it: bookworm's
+# dh_installsystemd only finds units in /lib/systemd/system, later releases
+# use /usr/lib/systemd/system.
+SYSTEMD_UNITDIR = $(shell pkg-config --variable=systemdsystemunitdir systemd)
+
 %:
 	dh $@
 
@@ -27,7 +32,8 @@ ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
 endif
 
 override_dh_auto_install:
-	$(MAKE) install $(MAKE_VARS) DESTDIR=$(CURDIR)/debian/mhvtl-control
+	test -n "$(SYSTEMD_UNITDIR)"
+	$(MAKE) install $(MAKE_VARS) UNITDIR=$(SYSTEMD_UNITDIR) DESTDIR=$(CURDIR)/debian/mhvtl-control
 
 # The options file may hold the API token.
 override_dh_fixperms:
