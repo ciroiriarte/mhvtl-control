@@ -91,8 +91,16 @@ func TestNAA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NAA %q does not parse: %v", n1, err)
 	}
-	if b[0]>>4 != 3 {
-		t.Errorf("NAA %s: field %xh, want 3h (locally assigned)", n1, b[0]>>4)
+	// NAA 5h with mhVTL's placeholder OUI 0x123456, as update_vpd_83 sends.
+	if b[0] != 0x51 || b[1] != 0x23 || b[2] != 0x45 || b[3]>>4 != 6 {
+		t.Errorf("NAA %s: want 51:23:45:6x:...", n1)
+	}
+	if again, _ := g.NAA(func([]byte) bool { return false }); again != n1 {
+		t.Errorf("second call = %s; want %s", again, n1)
+	}
+	other := Generator{Appliance: AppSpecific([16]byte{1}, AppID)}
+	if o, _ := other.NAA(func([]byte) bool { return false }); o == n1 {
+		t.Errorf("two appliances both propose %s", o)
 	}
 	// A collision on the wire (same low 60 bits) moves on.
 	n2, err := g.NAA(func(c []byte) bool { return hostids.SameNAA(c, b) })
