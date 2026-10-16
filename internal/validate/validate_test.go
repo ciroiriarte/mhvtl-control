@@ -1,6 +1,7 @@
 package validate
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
@@ -181,5 +182,29 @@ func TestShippedL700WithPBS(t *testing.T) {
 	r := Validate(cur, clone(cur), nil, nil, Options{TargetApps: map[int]string{10: PresetPBS}})
 	if len(r.Errors) != 1 || r.Errors[0].Family != FamilyPreset || r.Errors[0].Library != 10 {
 		t.Errorf("errors = %+v; want one preset error for library 10", r.Errors)
+	}
+}
+
+// A finding carries a code and the elements it concerns, and serialises them
+// with lowercase field names.
+func TestFindingCodeAndElements(t *testing.T) {
+	cur := inv(lib(10, "IBM", "03584L32", 1, "E01001L8", ""))
+	next := clone(cur)
+	next.Libraries[0].Slots[1].Barcode = "E01001L8"
+	r := Validate(cur, next, nil, nil, Options{})
+	if len(r.Errors) != 1 {
+		t.Fatalf("errors = %+v; want one", r.Errors)
+	}
+	f := r.Errors[0]
+	want := []ElementRef{{ElementSlot, 10, 1}, {ElementSlot, 10, 2}}
+	if f.Code != CodeBarcodeDup || f.Family != FamilyBarcode || len(f.Elements) != 2 || f.Elements[0] != want[0] || f.Elements[1] != want[1] {
+		t.Errorf("finding = %+v; want code %s with elements %+v", f, CodeBarcodeDup, want)
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"code":"barcode.duplicate"`) || !strings.Contains(string(b), `"elements":[{"kind":"slot","library":10,"number":1}`) {
+		t.Errorf("json = %s", b)
 	}
 }

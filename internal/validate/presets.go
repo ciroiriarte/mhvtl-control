@@ -50,18 +50,18 @@ func checkPresets(r *Result, next config.Inventory, opts Options) {
 		if app == "" {
 			for _, k := range names {
 				if why := Presets[k].Check(lib, p); why != "" {
-					r.warnf(FamilyPreset, lib.ID, "library %d would not work with %s: %s", lib.ID, Presets[k].Name, why)
+					r.warnf(CodePresetUnmet, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d would not work with %s: %s", lib.ID, Presets[k].Name, why)
 				}
 			}
 			continue
 		}
 		pr, ok := Presets[app]
 		if !ok {
-			r.stickyErrorf(FamilyPreset, lib.ID, []string{libKey(lib.ID)}, "library %d: unknown target application %q", lib.ID, app)
+			r.stickyErrorf(CodePresetUnknownApp, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: unknown target application %q", lib.ID, app)
 			continue
 		}
 		if why := pr.Check(lib, p); why != "" {
-			r.stickyErrorf(FamilyPreset, lib.ID, []string{libKey(lib.ID)}, "library %d is set up for %s, but %s", lib.ID, pr.Name, why)
+			r.stickyErrorf(CodePresetUnmet, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d is set up for %s, but %s", lib.ID, pr.Name, why)
 		}
 	}
 }

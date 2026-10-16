@@ -14,7 +14,7 @@ type window struct {
 	plural  string
 	start   uint16
 	numbers []int
-	keys    []string // element key of each number
+	keys    []ElementRef // element of each number
 }
 
 // checkAddresses refuses drives, slots, MAP slots and pickers whose element
@@ -54,7 +54,7 @@ func checkAddresses(r *Result, next config.Inventory) {
 		for _, d := range lib.Drives {
 			switch {
 			case d.Slot >= 1 && !have[d.Slot]:
-				r.errorf(FamilyAddress, lib.ID, []string{libKey(lib.ID), driveKey(d.ID)},
+				r.errorf(CodeAddrNoDriveLine, lib.ID, []ElementRef{libKey(lib.ID), driveKey(d.ID)},
 					"library %d: drive %d is in drive slot %d, but library_contents.%d has no \"Drive %d:\" line, so vtllibrary would report it at element address 0",
 					lib.ID, d.ID, d.Slot, lib.ID, d.Slot)
 			case placed[d.Slot] || d.Slot < 1:
@@ -89,10 +89,10 @@ func checkAddresses(r *Result, next config.Inventory) {
 		// c65bff0); MAP elements go into the element list in file order,
 		// which vtllibrary expects to be address order (:1073).
 		for _, w := range []window{slots, maps} {
-			prev, prevKey := 0, ""
+			prev, prevKey := 0, ElementRef{}
 			for i, n := range w.numbers {
 				if n >= 1 && n < prev {
-					r.errorf(FamilyAddress, lib.ID, []string{libKey(lib.ID), prevKey, w.keys[i]},
+					r.errorf(CodeAddrOrder, lib.ID, []ElementRef{libKey(lib.ID), prevKey, w.keys[i]},
 						"library %d: %s %d is listed after %s %d; library_contents must list %s in increasing order", lib.ID, w.kind, n, w.kind, prev, w.plural)
 				}
 				if n > prev {
@@ -102,16 +102,16 @@ func checkAddresses(r *Result, next config.Inventory) {
 		}
 		wins := []window{drives, slots, maps, pickers}
 		for _, w := range wins {
-			seen := map[int]string{}
+			seen := map[int]ElementRef{}
 			highest := 0
 			for i, n := range w.numbers {
 				k := w.keys[i]
 				if n < 1 {
-					r.errorf(FamilyAddress, lib.ID, []string{libKey(lib.ID), k}, "library %d: %s %d is invalid; numbering starts at 1", lib.ID, w.kind, n)
+					r.errorf(CodeAddrNumber, lib.ID, []ElementRef{libKey(lib.ID), k}, "library %d: %s %d is invalid; numbering starts at 1", lib.ID, w.kind, n)
 					continue
 				}
 				if o, dup := seen[n]; dup {
-					r.errorf(FamilyAddress, lib.ID, []string{libKey(lib.ID), o, k}, "library %d: %s %d is configured twice", lib.ID, w.kind, n)
+					r.errorf(CodeAddrDuplicate, lib.ID, []ElementRef{libKey(lib.ID), o, k}, "library %d: %s %d is configured twice", lib.ID, w.kind, n)
 				}
 				seen[n] = k
 				highest = max(highest, n)
@@ -128,7 +128,7 @@ func checkAddresses(r *Result, next config.Inventory) {
 			if highest <= limit {
 				continue
 			}
-			els := []string{libKey(lib.ID)}
+			els := []ElementRef{libKey(lib.ID)}
 			for i, n := range w.numbers {
 				if n > limit {
 					els = append(els, w.keys[i])
@@ -139,7 +139,7 @@ func checkAddresses(r *Result, next config.Inventory) {
 			} else {
 				upto = fmt.Sprintf("which overlaps the %s addresses from 0x%04x", upto, int(w.start)+limit)
 			}
-			r.errorf(FamilyAddress, lib.ID, els,
+			r.errorf(CodeAddrOverflow, lib.ID, els,
 				"library %d (%s): %s %d would sit at element address 0x%04x, %s; the limit is %d %s (%s addresses from 0x%04x, %s)",
 				lib.ID, p.Name, w.kind, highest, int(w.start)+highest-1, upto, limit, w.plural, w.kind, w.start, p.WindowSource)
 		}

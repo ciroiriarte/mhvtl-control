@@ -25,34 +25,34 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 			products = append(products, d.Product)
 		}
 		// Changing the drives changes what loads.
-		drives := []string{libKey(lib.ID)}
+		drives := []ElementRef{libKey(lib.ID)}
 		for _, d := range lib.Drives {
 			drives = append(drives, driveKey(d.ID))
 		}
 		home := homeOf(lib, opts)
-		check := func(where, key, barcode string, created bool) {
+		check := func(where string, key ElementRef, barcode string, created bool) {
 			els := append(drives[:len(drives):len(drives)], key)
 			if barcode == "" {
 				return
 			}
 			if !created && home == "" {
-				r.warnf(FamilyMedia, lib.ID, "library %d %s: %s: MAP and Picker entries are not created by make_vtl_media, and no media home is known to check that it exists", lib.ID, where, barcode)
+				r.warnf(CodeMediaNoHome, lib.ID, els, "library %d %s: %s: MAP and Picker entries are not created by make_vtl_media, and no media home is known to check that it exists", lib.ID, where, barcode)
 			} else if !created && !media.Exists(home, barcode) {
-				r.errorf(FamilyMedia, lib.ID, els, "library %d %s: %s: MAP and Picker entries are not created by make_vtl_media, and it is not in %s", lib.ID, where, barcode, home)
+				r.errorf(CodeMediaNotInHome, lib.ID, els, "library %d %s: %s: MAP and Picker entries are not created by make_vtl_media, and it is not in %s", lib.ID, where, barcode, home)
 				return
 			}
 			density := personality.BarcodeDensity(barcode)
 			name, ok := personality.DensityMedia[density]
 			if !ok {
 				if home != "" && media.Exists(home, barcode) {
-					r.warnf(FamilyMedia, lib.ID, "library %d %s: the media type of %s cannot be told from its barcode; the existing cartridge is used as it is", lib.ID, where, barcode)
+					r.warnf(CodeMediaUnknownType, lib.ID, els, "library %d %s: the media type of %s cannot be told from its barcode; the existing cartridge is used as it is", lib.ID, where, barcode)
 					return
 				}
-				r.errorf(FamilyMedia, lib.ID, els, "library %d %s: make_vtl_media cannot create %s: its barcode gives density %s, which mktape does not accept", lib.ID, where, barcode, density)
+				r.errorf(CodeMediaDensity, lib.ID, els, "library %d %s: make_vtl_media cannot create %s: its barcode gives density %s, which mktape does not accept", lib.ID, where, barcode, density)
 				return
 			}
 			if len(models) == 0 {
-				r.warnf(FamilyMedia, lib.ID, "library %d %s: %s is %s media, but the library has no drives", lib.ID, where, barcode, name)
+				r.warnf(CodeMediaNoDrives, lib.ID, els, "library %d %s: %s is %s media, but the library has no drives", lib.ID, where, barcode, name)
 				return
 			}
 			for _, m := range models {
@@ -60,7 +60,7 @@ func checkMedia(r *Result, next config.Inventory, opts Options) {
 					return
 				}
 			}
-			r.errorf(FamilyMedia, lib.ID, els, "library %d %s: %s is %s media (from its barcode), which none of the library's drives (%s) loads",
+			r.errorf(CodeMediaUnreadable, lib.ID, els, "library %d %s: %s is %s media (from its barcode), which none of the library's drives (%s) loads",
 				lib.ID, where, barcode, name, strings.Join(products, ", "))
 		}
 		for _, s := range lib.Slots {

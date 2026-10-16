@@ -31,7 +31,7 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		_, inCur := findLibrary(cur, id)
 		_, inNext := findLibrary(next, id)
 		if !inCur || !inNext {
-			r.errorf(FamilyRemoval, id, []string{libKey(id)}, "dispositions name library %d, which is not in both the current and the new configuration", id)
+			r.errorf(CodeRemovalUnknownLibrary, id, []ElementRef{libKey(id)}, "dispositions name library %d, which is not in both the current and the new configuration", id)
 		}
 	}
 
@@ -64,7 +64,7 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 			present[c.barcode] = true
 			// The merge would list it in a second element.
 			if n, loaded := inDrive[c.barcode]; loaded {
-				r.stickyErrorf(FamilyBarcode, lib.ID, []string{libKey(lib.ID)}, "library %d: %s (%s) is loaded in drive %d now", lib.ID, c.barcode, c.where, n)
+				r.stickyErrorf(CodeBarcodeLoaded, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: %s (%s) is loaded in drive %d now", lib.ID, c.barcode, c.where, n)
 			}
 		}
 		for b := range inDrive {
@@ -86,12 +86,12 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		disp := map[string]Disposition{}
 		for _, d := range byLib[lib.ID] {
 			if _, dup := disp[d.Barcode]; dup {
-				r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: two dispositions for %s", lib.ID, d.Barcode)
+				r.errorf(CodeRemovalDispositionDup, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: two dispositions for %s", lib.ID, d.Barcode)
 				continue
 			}
 			disp[d.Barcode] = d
 			if !seen[d.Barcode] {
-				r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: a disposition names %s, but it does not leave the library", lib.ID, d.Barcode)
+				r.errorf(CodeRemovalNotLeaving, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: a disposition names %s, but it does not leave the library", lib.ID, d.Barcode)
 			}
 		}
 
@@ -117,7 +117,7 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 			if !ok {
 				// The apply drops it, even when cur already lists it
 				// nowhere (a cartridge only the live state has).
-				r.stickyErrorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s (%s) would leave the library; say where it goes: a storage slot, export, or shelf", lib.ID, g.barcode, g.where)
+				r.stickyErrorf(CodeRemovalLeaves, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: %s (%s) would leave the library; say where it goes: a storage slot, export, or shelf", lib.ID, g.barcode, g.where)
 				continue
 			}
 			switch d.To {
@@ -129,20 +129,20 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 				b := merged.Slots[d.Slot]
 				switch {
 				case !kept:
-					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which the new configuration does not have", lib.ID, g.barcode, d.Slot)
+					r.errorf(CodeRemovalSlotMissing, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which the new configuration does not have", lib.ID, g.barcode, d.Slot)
 				case b != "" && b != g.barcode:
-					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which will hold %s", lib.ID, g.barcode, d.Slot, b)
+					r.errorf(CodeRemovalSlotTaken, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: %s is to go to slot %d, which will hold %s", lib.ID, g.barcode, d.Slot, b)
 				case targets[d.Slot] != "":
-					r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %s and %s are both to go to slot %d", lib.ID, targets[d.Slot], g.barcode, d.Slot)
+					r.errorf(CodeRemovalSlotShared, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: %s and %s are both to go to slot %d", lib.ID, targets[d.Slot], g.barcode, d.Slot)
 				default:
 					targets[d.Slot] = g.barcode
 				}
 			default:
-				r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: unknown destination %q for %s; want slot, export or shelf", lib.ID, d.To, g.barcode)
+				r.errorf(CodeRemovalDestination, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: unknown destination %q for %s; want slot, export or shelf", lib.ID, d.To, g.barcode)
 			}
 		}
 		if exports > freeMAPs {
-			r.errorf(FamilyRemoval, lib.ID, []string{libKey(lib.ID)}, "library %d: %d cartridges are to be exported, but only %d MAP slots are free", lib.ID, exports, freeMAPs)
+			r.errorf(CodeRemovalMAPFull, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: %d cartridges are to be exported, but only %d MAP slots are free", lib.ID, exports, freeMAPs)
 		}
 	}
 }
@@ -159,17 +159,18 @@ func warnMoveBack(r *Result, id int, cur, next config.Library, live, merged Plac
 	}
 	for _, e := range []struct {
 		kind              string
+		ref               func(lib, n int) ElementRef
 		cur, next, l, mrg map[int]string
 	}{
-		{"slot", fileSlots(cur), fileSlots(next), live.Slots, merged.Slots},
-		{"MAP slot", fileMAPs(cur), fileMAPs(next), live.MAPs, merged.MAPs},
+		{"slot", slotKey, fileSlots(cur), fileSlots(next), live.Slots, merged.Slots},
+		{"MAP slot", mapKey, fileMAPs(cur), fileMAPs(next), live.MAPs, merged.MAPs},
 	} {
 		for _, k := range sortedKeys(e.next) {
 			b := e.next[k]
 			if b == "" || b != e.cur[k] || e.l[k] == b || e.mrg[k] != b || where[b] == "" {
 				continue
 			}
-			r.warnf(FamilyRemoval, id, "library %d: %s %d lists %s as library_contents does, but %s is in %s now; the apply moves it back", id, e.kind, k, b, b, where[b])
+			r.warnf(CodeRemovalMoveBack, id, []ElementRef{e.ref(id, k)}, "library %d: %s %d lists %s as library_contents does, but %s is in %s now; the apply moves it back", id, e.kind, k, b, b, where[b])
 		}
 	}
 }
