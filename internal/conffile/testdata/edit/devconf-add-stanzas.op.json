@@ -1,0 +1,18 @@
+{"file": "device.conf", "ops": [
+  {"op": "add_stanza", "kind": "Library", "id": 40, "channel": 0, "target": 16, "lun": 0, "attrs": [
+    {"key": "Vendor identification", "value": "IBM"},
+    {"key": "Product identification", "value": "03584L32"},
+    {"key": "Unit serial number", "value": "XYZZY_C"},
+    {"key": "NAA", "value": "40:22:33:44:ab:00:16:00"},
+    {"key": "Home directory", "value": "/var/lib/mhvtl/40"},
+    {"key": "PERSIST", "value": "False"}]},
+  {"op": "add_stanza", "kind": "Drive", "id": 41, "channel": 0, "target": 17, "lun": 0, "attrs": [
+    {"key": "Library ID", "value": "40 Slot: 01"},
+    {"key": "Vendor identification", "value": "IBM"},
+    {"key": "Product identification", "value": "ULT3580-TD8"},
+    {"key": "Product revision level", "value": "HB81"},
+    {"key": "Unit serial number", "value": "XYZZY_C1"},
+    {"key": "NAA", "value": "40:22:33:44:ab:00:17:00"},
+    {"key": "Compression", "value": "factor 1 enabled 1"},
+    {"key": "Compression type", "value": "lzo"}]}
+]}

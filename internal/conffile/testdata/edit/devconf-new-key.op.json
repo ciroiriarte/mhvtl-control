@@ -1,0 +1,3 @@
+{"file": "device.conf", "ops": [
+  {"op": "set_attr", "kind": "Library", "id": 10, "key": "NAA", "value": "10:22:33:44:ab:00:00:00"}
+]}

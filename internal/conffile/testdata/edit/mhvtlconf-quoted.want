@@ -1,0 +1,8 @@
+# quoted values and an export
+MHVTL_HOME_PATH="/srv/tapes"
+CAPACITY='1000'
+export VERBOSE=2 # trailing comment
+VTL_DEBUG = 1
+#DAEMON_DEBUG=-d
+UNMODELLED=keep me
+MHVTL_CONFIG_PATH=/etc/mhvtl

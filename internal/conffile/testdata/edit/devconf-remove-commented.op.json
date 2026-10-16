@@ -1,0 +1,3 @@
+{"file": "device.conf", "ops": [
+  {"op": "remove_stanza", "kind": "Library", "id": 10}
+]}

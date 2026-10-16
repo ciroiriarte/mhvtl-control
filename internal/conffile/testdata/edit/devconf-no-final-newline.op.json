@@ -1,0 +1,3 @@
+{"file": "device.conf", "ops": [
+  {"op": "add_stanza", "kind": "Drive", "id": 12, "target": 2, "attrs": [{"key": "Library ID", "value": "10 Slot: 02"}]}
+]}
