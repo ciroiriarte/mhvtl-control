@@ -113,6 +113,9 @@ func TestParseLibraryContents(t *testing.T) {
 	if len(drives) != 8 || len(pickers) != 1 || len(maps) != 4 || len(slots) != 32 {
 		t.Fatalf("counts drives=%d pickers=%d maps=%d slots=%d", len(drives), len(pickers), len(maps), len(slots))
 	}
+	if drives[0] != (DriveLine{Number: 1}) || drives[7].Number != 8 {
+		t.Errorf("drives = %+v", drives)
+	}
 	for _, tc := range []struct {
 		n    int
 		code string
@@ -120,6 +123,17 @@ func TestParseLibraryContents(t *testing.T) {
 		if s := slots[tc.n-1]; s.Number != tc.n || s.Barcode != tc.code {
 			t.Errorf("slot %d = %+v, want %q", tc.n, s, tc.code)
 		}
+	}
+}
+
+func TestParseLibraryContentsDriveSerial(t *testing.T) {
+	drives, _, _, _, _, err := ParseLibraryContents(strings.NewReader("Drive 1: SN0001 extra\nDrive 2:\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []DriveLine{{1, "SN0001"}, {2, ""}}
+	if len(drives) != 2 || drives[0] != want[0] || drives[1] != want[1] {
+		t.Errorf("drives = %+v; want %+v", drives, want)
 	}
 }
 

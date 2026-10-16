@@ -29,6 +29,7 @@ func clone(inv config.Inventory) config.Inventory {
 		l.Slots = append([]config.Slot(nil), l.Slots...)
 		l.MAPs = append([]config.MAPSlot(nil), l.MAPs...)
 		l.Pickers = append([]int(nil), l.Pickers...)
+		l.DriveLines = append([]config.DriveLine(nil), l.DriveLines...)
 		out.Libraries = append(out.Libraries, l)
 	}
 	return out

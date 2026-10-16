@@ -81,6 +81,7 @@ func driveKey(id int) string      { return fmt.Sprintf("drive %d", id) }
 func slotKey(lib, n int) string   { return fmt.Sprintf("library %d slot %d", lib, n) }
 func mapKey(lib, n int) string    { return fmt.Sprintf("library %d MAP slot %d", lib, n) }
 func pickerKey(lib, n int) string { return fmt.Sprintf("library %d picker %d", lib, n) }
+func lineKey(lib, n int) string   { return fmt.Sprintf("library %d Drive line %d", lib, n) }
 
 // prints fingerprints every element of inv by its key, to tell what a change
 // touches. An element listed twice under one key gets both values, so adding
@@ -89,7 +90,7 @@ func prints(inv config.Inventory) map[string]string {
 	m := map[string]string{}
 	for _, l := range inv.Libraries {
 		bare := l
-		bare.Drives, bare.Slots, bare.MAPs, bare.Pickers = nil, nil, nil, nil
+		bare.Drives, bare.Slots, bare.MAPs, bare.Pickers, bare.DriveLines = nil, nil, nil, nil, nil
 		m[libKey(l.ID)] = fmt.Sprintf("%+v", bare)
 		for _, d := range l.Drives {
 			m[driveKey(d.ID)] += fmt.Sprintf("%+v", d)
@@ -102,6 +103,9 @@ func prints(inv config.Inventory) map[string]string {
 		}
 		for _, n := range l.Pickers {
 			m[pickerKey(l.ID, n)] += "="
+		}
+		for _, d := range l.DriveLines {
+			m[lineKey(l.ID, d.Number)] += "=" + d.Serial
 		}
 	}
 	for _, d := range inv.Standalone {
