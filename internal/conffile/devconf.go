@@ -16,6 +16,12 @@
 //   - MoveAcross falls back to copying only on EXDEV, not when link(2)
 //     fails with EPERM (a filesystem without hard links, or
 //     protected_hardlinks for a non-owner).
+//   - make_vtl_media reads both files with awk, not like vtllibrary
+//     (mhvtl usr/cmd/make_vtl_media.in:304, :313). '/Library:/ {print $2}'
+//     also matches a commented-out "# Library: 20 ..." line, which ends
+//     the script when library_contents.20 is missing, and '/^Slot/ {print
+//     $3}' makes no media for "Slot 1:ABC", which vtllibrary loads. Neither
+//     is flagged here: that is the script's behaviour, not the files'.
 package conffile
 
 import (

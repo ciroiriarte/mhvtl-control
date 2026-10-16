@@ -136,11 +136,17 @@ func (c *LibContents) index() {
 			number[k] = true
 		}
 		// Drives and slots fill holes up to each number in turn
-		// (vtllibrary.c:1032-1063), so a number not above the previous one
-		// creates the element twice.
+		// (vtllibrary.c:1032-1063). A slot number not above the previous
+		// one creates the slot twice. init_drive_slot finds the existing
+		// drive instead (lookup_drive, :859), but still counts it again
+		// (num_drives++, :874).
 		if e.Kind == "Drive" || e.Kind == "Slot" {
 			if prev, ok := last[e.Kind]; ok && e.Number <= prev {
-				problem(e.Line, true, "%s %d after %s %d: mhVTL creates the element twice; keep them in ascending order", e.Kind, e.Number, e.Kind, prev)
+				effect := "mhVTL creates the slot twice"
+				if e.Kind == "Drive" {
+					effect = "vtllibrary counts the drive twice in num_drives"
+				}
+				problem(e.Line, true, "%s %d after %s %d: %s; keep them in ascending order", e.Kind, e.Number, e.Kind, prev, effect)
 			}
 			last[e.Kind] = e.Number
 		}
@@ -211,8 +217,10 @@ func checkBarcode(kind, barcode string) error {
 	if kind == "Drive" && barcode != "" {
 		return ErrDriveBarcode
 	}
+	// vtllibrary loads a Picker barcode (init_transport_slot,
+	// vtllibrary.c:906-924), but a cartridge goes in a Slot or MAP here.
 	if kind != "Slot" && kind != "MAP" && barcode != "" {
-		return fmt.Errorf("library_contents: a %s line takes no barcode", kind)
+		return fmt.Errorf("library_contents: the editor puts cartridges only in Slot and MAP lines, not %s", kind)
 	}
 	for _, r := range barcode {
 		if r <= ' ' || r == 0x7f {
