@@ -2,7 +2,9 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -614,9 +616,9 @@ func (c *gatedChangers) Inventory(lib config.Library) (changer.Inventory, error)
 	return changer.Inventory{}, nil
 }
 
-// GET /config, the slots route and validation share one READ ELEMENT STATUS
-// per library: concurrent calls wait for the read in progress, and later
-// ones within the TTL reuse it.
+// The library list, the media lists, GET /config, the slots route and
+// validation share one READ ELEMENT STATUS per library: concurrent calls
+// wait for the read in progress, and later ones within the TTL reuse it.
 func TestConfigSharesLiveReads(t *testing.T) {
 	dir := genDir(t)
 	cc := &gatedChangers{release: make(chan struct{}), reads: map[int]int{}}
@@ -627,7 +629,11 @@ func TestConfigSharesLiveReads(t *testing.T) {
 		h.ServeHTTP(rec, r)
 		return rec.Code
 	}
+	// What a dashboard refresh calls.
 	reqs := [][3]string{
+		{http.MethodGet, "/api/v1/libraries", ""},
+		{http.MethodGet, "/api/v1/libraries/10/media", ""},
+		{http.MethodGet, "/api/v1/libraries/30/media", ""},
 		{http.MethodGet, "/api/v1/config", ""},
 		{http.MethodPost, "/api/v1/config/validate", "{}"},
 		{http.MethodGet, "/api/v1/config/libraries/10/slots", ""},
@@ -647,6 +653,7 @@ func TestConfigSharesLiveReads(t *testing.T) {
 	close(cc.release)
 	wg.Wait()
 	call(http.MethodPost, "/api/v1/config/validate", "{}") // within the TTL
+	call(http.MethodGet, "/api/v1/libraries", "")
 	for i, c := range codes {
 		if c != http.StatusOK {
 			t.Errorf("%s %s: %d", reqs[i][0], reqs[i][1], c)
@@ -663,15 +670,80 @@ func TestConfigSharesLiveReads(t *testing.T) {
 func TestLiveCacheExpires(t *testing.T) {
 	c := liveCache{ttl: time.Millisecond}
 	n := 0
-	read := func() (validate.Placement, error) { n++; return validate.Placement{}, nil }
+	read := func() (changer.Inventory, error) { n++; return changer.Inventory{}, nil }
 	lib := config.Library{ID: 10, Serial: "S"}
-	c.get(lib, read)
-	c.get(lib, read)
+	ctx := context.Background()
+	c.get(ctx, lib, read)
+	c.get(ctx, lib, read)
 	time.Sleep(5 * time.Millisecond)
-	c.get(lib, read)
+	c.get(ctx, lib, read)
 	lib.Serial = "T" // another changer
-	c.get(lib, read)
+	c.get(ctx, lib, read)
 	if n != 3 {
 		t.Errorf("%d reads, want 3", n)
+	}
+}
+
+// A read that panics still releases its waiters, with an error, and is not
+// kept: the next caller reads again.
+func TestLiveCacheReadPanics(t *testing.T) {
+	var c liveCache
+	lib := config.Library{ID: 10}
+	ctx := context.Background()
+	started, release := make(chan struct{}), make(chan struct{})
+	panicked := make(chan any, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		c.get(ctx, lib, func() (changer.Inventory, error) {
+			close(started)
+			<-release
+			panic("changer read")
+		})
+	}()
+	<-started
+	waited := make(chan error, 1)
+	go func() {
+		_, err := c.get(ctx, lib, func() (changer.Inventory, error) {
+			t.Error("a waiter read the changer itself")
+			return changer.Inventory{}, nil
+		})
+		waited <- err
+	}()
+	time.Sleep(20 * time.Millisecond) // let the waiter reach the read in progress
+	close(release)
+	if p := <-panicked; p != "changer read" {
+		t.Errorf("panic = %v, want it passed on", p)
+	}
+	select {
+	case err := <-waited:
+		if err == nil {
+			t.Error("the waiter got no error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter hangs")
+	}
+	n := 0
+	c.get(ctx, lib, func() (changer.Inventory, error) { n++; return changer.Inventory{}, nil })
+	if n != 1 {
+		t.Error("the failed read was kept")
+	}
+}
+
+// A caller waiting for another's read gives up with its request.
+func TestLiveCacheWaiterCancels(t *testing.T) {
+	var c liveCache
+	lib := config.Library{ID: 10}
+	started, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	go c.get(context.Background(), lib, func() (changer.Inventory, error) {
+		close(started)
+		<-release
+		return changer.Inventory{}, nil
+	})
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.get(ctx, lib, nil); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }

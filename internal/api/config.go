@@ -15,8 +15,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
@@ -207,126 +205,14 @@ func (s *Server) readConfigOrFail(w http.ResponseWriter) (configSnapshot, bool) 
 	return snap, true
 }
 
-// liveTTL is how long one READ ELEMENT STATUS of a library serves the
-// configuration routes. A dashboard refresh reads GET /config and then
-// validates; sharing the read keeps it to one READ ELEMENT STATUS per
-// library. Each one can consume the changer's POWER-ON unit attention, which
-// is one flag per vtllibrary, not per initiator (check_reset, mhvtl
-// usr/vtllib.c:620-628, called at usr/cmd/vtllibrary.c:227 and raised at
-// :1702, upstream master 993b193), and so hide the reset from backup hosts
-// (plan, fact 13).
-const liveTTL = 5 * time.Second
-
-// liveCache shares the live placement of each library among the
-// configuration routes: one read at a time per library, served for liveTTL,
-// with concurrent callers waiting for the read in progress. Failures are
-// cached too, so a missing changer is not probed on every call.
-type liveCache struct {
-	ttl time.Duration // liveTTL when zero
-
-	mu   sync.Mutex
-	libs map[string]*liveRead
-}
-
-// liveRead is one READ ELEMENT STATUS of a library. p and err are set before
-// done is closed.
-type liveRead struct {
-	done chan struct{}
-	at   time.Time
-	p    validate.Placement
-	err  error
-}
-
-// get returns the placement of lib, from a read still fresh or in progress,
-// else from read.
-func (c *liveCache) get(lib config.Library, read func() (validate.Placement, error)) (validate.Placement, error) {
-	// The serial is what the changer is found by: a changed one is another
-	// changer.
-	key := strconv.Itoa(lib.ID) + "/" + lib.Serial
-	ttl := c.ttl
-	if ttl == 0 {
-		ttl = liveTTL
-	}
-	c.mu.Lock()
-	if c.libs == nil {
-		c.libs = map[string]*liveRead{}
-	}
-	e := c.libs[key]
-	if e != nil {
-		select {
-		case <-e.done:
-			if time.Since(e.at) >= ttl {
-				e = nil
-			}
-		default: // in progress: wait for it
-		}
-	}
-	if e == nil {
-		e = &liveRead{done: make(chan struct{})}
-		c.libs[key] = e
-		c.mu.Unlock()
-		e.p, e.err = read()
-		e.at = time.Now()
-		close(e.done)
-		return e.p, e.err
-	}
-	c.mu.Unlock()
-	<-e.done
-	return e.p, e.err
-}
-
-// readLive reads the live placement of each library by READ ELEMENT STATUS,
-// through the shared liveCache. A library whose changer cannot be read is
-// missing from the result, with the reason in errs.
-func (s *Server) readLive(libs []config.Library) (live map[int]validate.Placement, errs map[int]string) {
-	live, errs = map[int]validate.Placement{}, map[int]string{}
-	for _, l := range libs {
-		if s.cfg.Changers == nil {
-			errs[l.ID] = "changer access not configured"
-			continue
-		}
-		p, err := s.live.get(l, func() (validate.Placement, error) { return s.readPlacement(l) })
-		if err != nil {
-			errs[l.ID] = err.Error()
-			continue
-		}
-		live[l.ID] = p
-	}
-	return live, errs
-}
-
-// readPlacement reads where lib's changer holds cartridges now.
-func (s *Server) readPlacement(l config.Library) (validate.Placement, error) {
-	inv, err := s.cfg.Changers.Inventory(l)
-	if err != nil {
-		return validate.Placement{}, err
-	}
-	p := validate.Placement{Slots: map[int]string{}, MAPs: map[int]string{}, Drives: map[int]string{}}
-	for _, sl := range inv.Slots {
-		if sl.Full && sl.Barcode != "" {
-			p.Slots[sl.Number] = sl.Barcode
-		}
-	}
-	for _, sl := range inv.MAPs {
-		if sl.Full && sl.Barcode != "" {
-			p.MAPs[sl.Number] = sl.Barcode
-		}
-	}
-	for _, d := range inv.Drives {
-		if d.Full && d.Barcode != "" {
-			p.Drives[d.Number] = d.Barcode
-		}
-	}
-	return p, nil
-}
-
 // liveContents returns lib's library_contents (data) with its live placement
 // written in, the base a client edits to build a proposed library_contents
 // (plan, amendment "Phase 4 client contract for next"): the live cartridge on
 // each Slot and MAP line, a Slot line for each slot the Slot lines skip that
 // holds a cartridge live, and no barcode on a Picker line whose cartridge the
-// live view places elsewhere, since READ ELEMENT STATUS never reports
-// pickers.
+// live view places elsewhere: the live view has no picker to say where it
+// is, as changer.Inventory keeps no medium transport elements (mhVTL's READ
+// ELEMENT STATUS does report them).
 func liveContents(data []byte, lib config.Library, live validate.Placement) ([]byte, error) {
 	c := conffile.ParseLibContents(data)
 	base := validate.Baseline(lib, &live, nil)
@@ -496,12 +382,12 @@ type configFileDTO struct {
 	LiveContent *string `json:"live_content,omitempty"`
 }
 
-func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	snap, ok := s.readConfigOrFail(w)
 	if !ok {
 		return
 	}
-	live, liveErrs := s.readLive(snap.inv.Libraries)
+	live, liveErrs := s.readLive(r.Context(), snap.inv.Libraries)
 	names := make([]string, 0, len(snap.files))
 	for n := range snap.files {
 		names = append(names, n)
@@ -653,7 +539,7 @@ func (s *Server) handleConfigSlots(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	live, liveErrs := s.readLive([]config.Library{l})
+	live, liveErrs := s.readLive(r.Context(), []config.Library{l})
 	p, isLive := live[l.ID]
 	writeJSON(w, http.StatusOK, slotsView(l, p, isLive, liveErrs[l.ID]))
 }
@@ -819,7 +705,7 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cur := snap.inv
-	liveP, liveErrs := s.readLive(cur.Libraries)
+	liveP, liveErrs := s.readLive(r.Context(), cur.Libraries)
 	base := map[string][]byte{}
 	for name, b := range snap.files {
 		base[name] = b
