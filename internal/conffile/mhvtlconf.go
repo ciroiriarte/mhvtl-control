@@ -22,7 +22,10 @@ type assignment struct {
 	prefix, suffix   string
 	quote            byte
 	indented, export bool
-	line             int
+	// spaced is set for blanks around '=': mhVTL's sscanf accepts them, the
+	// shell does not read the line as an assignment.
+	spaced bool
+	line   int
 }
 
 // MhvtlConf is a lossless mhvtl.conf. It is read two ways. The shell (the
@@ -60,7 +63,11 @@ func (c *MhvtlConf) index() {
 			continue
 		}
 		a.line = i
-		c.assigns = append(c.assigns, a)
+		// The shell runs "KEY = value" as a command, so it is no
+		// assignment to model; mhVTL's sscanf still reads it.
+		if !a.spaced {
+			c.assigns = append(c.assigns, a)
+		}
 		if !cReadKeys[a.key] {
 			continue
 		}
@@ -81,6 +88,8 @@ func (c *MhvtlConf) index() {
 // shell does, or "".
 func cProblem(a assignment, l Line) string {
 	switch {
+	case a.spaced:
+		return "blanks around '=': mhVTL reads the line, the shell does not"
 	case a.indented:
 		return "indented: mhVTL skips the line"
 	case a.export:
@@ -117,13 +126,17 @@ func parseAssignment(text string) (assignment, bool) {
 		return assignment{}, false
 	}
 	key := text[k:p]
+	eq := p
 	skipSpace()
 	if p == len(text) || text[p] != '=' {
 		return assignment{}, false
 	}
+	spaced := p > eq
 	p++
+	eq = p
 	skipSpace()
-	a := assignment{key: key, prefix: text[:p], indented: indented, export: export}
+	spaced = spaced || p > eq
+	a := assignment{key: key, prefix: text[:p], indented: indented, export: export, spaced: spaced}
 	rest := strings.TrimSuffix(text[p:], "\r")
 	if rest != "" && (rest[0] == '"' || rest[0] == '\'') {
 		end := strings.IndexByte(rest[1:], rest[0])

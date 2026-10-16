@@ -2,7 +2,8 @@
 MHVTL_HOME_PATH="/srv/tapes"
 CAPACITY='1000'
 export VERBOSE=2 # trailing comment
-VTL_DEBUG = 1
+VTL_DEBUG = 0
 #DAEMON_DEBUG=-d
 UNMODELLED=keep me
+VTL_DEBUG=1
 MHVTL_CONFIG_PATH=/etc/mhvtl
