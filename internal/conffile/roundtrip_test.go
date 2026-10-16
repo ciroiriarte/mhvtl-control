@@ -2,6 +2,7 @@ package conffile
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -247,6 +248,59 @@ func TestCraftedLibContents(t *testing.T) {
 	}
 	if v, ok := c.Version(); !ok || v != "2" {
 		t.Errorf("VERSION = %q, %v", v, ok)
+	}
+}
+
+// TestPersistLibContents reads library_contents.10.persist as save_config
+// writes it (mhvtl usr/cmd/vtllibrary.c:1177-1212): no VERSION line, a blank
+// line before each element type, "Slot N: " with a trailing space when
+// empty, and barcodes padded to 16 by add_barcode's "%-16.16s"
+// (vtllibrary.c:345). Drive lines never carry a barcode: save_config prints
+// "Drive %d:" whatever the drive holds. The fixture is library 10 after the
+// phase 0 S3 moves; its 976 bytes match the file the VM wrote.
+func TestPersistLibContents(t *testing.T) {
+	b, err := os.ReadFile("testdata/roundtrip/persist/library_contents.10.persist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := ParseLibContents(b)
+	if len(c.Problems) != 0 {
+		t.Fatalf("problems: %v", c.Problems)
+	}
+	if v, ok := c.Version(); ok {
+		t.Errorf("VERSION = %q, want none", v)
+	}
+	got := map[string]string{}
+	count := map[string]int{}
+	for _, e := range c.Entries() {
+		got[fmt.Sprintf("%s %d", e.Kind, e.Number)] = e.Barcode
+		count[e.Kind]++
+	}
+	if count["Picker"] != 1 || count["MAP"] != 4 || count["Drive"] != 4 || count["Slot"] != 39 {
+		t.Errorf("counts = %v", count)
+	}
+	for k, want := range map[string]string{"MAP 1": "E01002L8", "MAP 2": "", "Picker 1": "",
+		"Drive 4": "", "Slot 1": "", "Slot 2": "", "Slot 21": "E01001L8", "Slot 30": "F01030L6"} {
+		if got[k] != want {
+			t.Errorf("%s = %q, want %q", k, got[k], want)
+		}
+	}
+
+	// Rewriting a padded line changes that line only.
+	if err := c.SetBarcode("Slot", 21, "E01021L8"); err != nil {
+		t.Fatal(err)
+	}
+	in, out := splitLines(b), c.Lines()
+	if len(in) != len(out) {
+		t.Fatalf("line count %d -> %d", len(in), len(out))
+	}
+	for i := range in {
+		if in[i] != out[i] && in[i].Text != "Slot 21: E01001L8        " {
+			t.Errorf("line %d changed: %q -> %q", i+1, in[i].Text, out[i].Text)
+		}
+	}
+	if again := ParseLibContents(c.Render()); len(again.Problems) != 0 {
+		t.Errorf("problems after edit: %v", again.Problems)
 	}
 }
 
