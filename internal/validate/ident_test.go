@@ -39,12 +39,14 @@ func TestIdentities(t *testing.T) {
 		{"standalone drive counts", func(i *config.Inventory) {
 			i.Standalone = []config.Drive{{ID: 90, Target: 90, Serial: "XYZZY_B1", NAA: "40:00:00:00:00:00:00:90"}}
 		}, []string{`drive 31 and drive 90 share serial "XYZZY_B1"`}, nil},
-		{"Spectra 215 hides drive serials", func(i *config.Inventory) {
+		{"Spectra Gator cuts an 11-character serial short", func(i *config.Inventory) {
+			i.Libraries[1].Vendor, i.Libraries[1].Product = "SPECTRA", "GATOR"
+			i.Libraries[1].Drives[0].Serial = "ABCDEFGHIJK"
+		}, []string{`drive 31: serial "ABCDEFGHIJK" is 11 characters`},
+			[]string{`library 30 (Spectra Gator) shows only 10 characters of a drive serial; drive 31's "ABCDEFGHIJK" is cut short`}},
+		{"Spectra 215 reports no drive serial, so cuts none short", func(i *config.Inventory) {
 			i.Libraries[1].Vendor, i.Libraries[1].Product = "SPECTRA", "215"
-		}, nil, []string{
-			`library 30 (Spectra Treefrog (215)) shows only 0 characters of a drive serial; drive 31's "XYZZY_B1"`,
-			"drive 32's", "drive 33's", "drive 34's",
-		}},
+		}, nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cur := shipped(t)

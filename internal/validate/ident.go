@@ -118,11 +118,13 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	checkDriveLines(r, next, serials)
 
 	// The drive identifier the library reports in READ ELEMENT STATUS can
-	// cut the drive serial short.
+	// cut the drive serial short. A personality with no identifier area
+	// reports no serial at all, so nothing is cut (usr/cmd/vtllibrary.c
+	// set_drive_serial :631-632, upstream master c65bff0).
 	for _, l := range next.Libraries {
 		p := personality.Lookup(l.Vendor, l.Product)
 		for _, d := range l.Drives {
-			if area := p.SerialArea(); len(d.Serial) > area {
+			if area := p.SerialArea(); area > 0 && len(d.Serial) > area {
 				r.warnf(FamilyIdentity, l.ID, "library %d (%s) shows only %d characters of a drive serial; drive %d's %q is cut short in READ ELEMENT STATUS",
 					l.ID, p.Name, area, d.ID, d.Serial)
 			}
