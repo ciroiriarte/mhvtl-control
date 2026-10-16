@@ -49,7 +49,8 @@ go test ./...
 
 %install
 make install DESTDIR=%{buildroot} BINDIR=%{_bindir} UNITDIR=%{_unitdir} \
-    SYSCONFDIR=%{_sysconfdir} MANDIR=%{_mandir}
+    TMPFILESDIR=%{_tmpfilesdir} SYSCONFDIR=%{_sysconfdir} \
+    LOCALSTATEDIR=%{_localstatedir} MANDIR=%{_mandir}
 
 # The options file moved from /etc/mhvtl to /etc/mhvtl-control after 0.2.0.
 # rpm decides each file's fate before %%pre runs, so a copy %%pre put at the
@@ -90,6 +91,8 @@ if [ -f $f.rpm-migrate ]; then
 fi
 
 %post
+# The unit masks /run/mhvtl-control-apply, so create it before any restart.
+%tmpfiles_create %{_tmpfilesdir}/mhvtl-control.conf
 %if 0%{?suse_version}
 %service_add_post mhvtl-control.service
 %else
@@ -115,10 +118,13 @@ fi
 %doc README.md
 %{_bindir}/mhvtl-control
 %{_unitdir}/mhvtl-control.service
+%{_tmpfilesdir}/mhvtl-control.conf
 %{_mandir}/man8/mhvtl-control.8*
 %dir %attr(0750,root,root) %{_sysconfdir}/mhvtl-control
 # The options file may hold the API token.
 %config(noreplace) %attr(0600,root,root) %{_sysconfdir}/mhvtl-control/mhvtl-control.env
+# The config-apply helper's state; mhvtl-control.service masks it.
+%dir %attr(0700,root,root) %{_sharedstatedir}/mhvtl-control-apply
 
 %changelog
 * Fri Oct 16 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.2.0-1

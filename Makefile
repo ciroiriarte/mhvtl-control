@@ -12,6 +12,8 @@ PREFIX ?= /usr
 BINDIR ?= $(PREFIX)/bin
 SYSCONFDIR ?= /etc
 UNITDIR ?= $(PREFIX)/lib/systemd/system
+TMPFILESDIR ?= $(PREFIX)/lib/tmpfiles.d
+LOCALSTATEDIR ?= /var
 MANDIR ?= $(PREFIX)/share/man
 
 .PHONY: all build test vet fmt fmt-check jstest install
@@ -25,10 +27,14 @@ build:
 # install stages the binary, the unit, the man page and the default options
 # file. The options file may hold a token, so it is installed mode 0600 in a
 # 0750 directory, and an existing one is left alone so that reinstalling keeps
-# the configuration.
+# the configuration. The unit masks the two helper directories with
+# InaccessiblePaths=, which fails the start if they are missing, so both are
+# created here: /run's through tmpfiles.d, /var/lib's directly.
 install:
 	install -D -m 0755 $(MODDIR)bin/mhvtl-control $(DESTDIR)$(BINDIR)/mhvtl-control
 	install -D -m 0644 $(MODDIR)dist/mhvtl-control.service $(DESTDIR)$(UNITDIR)/mhvtl-control.service
+	install -D -m 0644 $(MODDIR)dist/mhvtl-control.tmpfiles $(DESTDIR)$(TMPFILESDIR)/mhvtl-control.conf
+	install -d -m 0700 $(DESTDIR)$(LOCALSTATEDIR)/lib/mhvtl-control-apply
 	install -d -m 0750 $(DESTDIR)$(SYSCONFDIR)/mhvtl-control
 	test -e $(DESTDIR)$(SYSCONFDIR)/mhvtl-control/mhvtl-control.env || \
 		install -m 0600 $(MODDIR)dist/mhvtl-control.env $(DESTDIR)$(SYSCONFDIR)/mhvtl-control/mhvtl-control.env

@@ -36,10 +36,14 @@ The dashboard is then at <http://127.0.0.1:8080/>. mhvtl-control needs a configu
 mhVTL (`/etc/mhvtl/device.conf`) to show anything, but may start before it.
 
 To install the static binary instead, copy it to `/usr/bin/mhvtl-control`,
-`dist/mhvtl-control.service` from the source to `/usr/lib/systemd/system/`, and
+`dist/mhvtl-control.service` from the source to `/usr/lib/systemd/system/`,
 `dist/mhvtl-control.env` to `/etc/mhvtl-control/` (directory mode 0750, file
-mode 0600). `make install` does the same from a source tree, and keeps an
-existing `mhvtl-control.env`.
+mode 0600), and `dist/mhvtl-control.tmpfiles` to
+`/usr/lib/tmpfiles.d/mhvtl-control.conf`; then create `/var/lib/mhvtl-control-apply`
+mode 0700 and run `systemd-tmpfiles --create mhvtl-control.conf`. The unit
+refuses to start without those two directories. `make install` does the same
+from a source tree, except the `systemd-tmpfiles` run, and keeps an existing
+`mhvtl-control.env`.
 
 ## Configure
 
