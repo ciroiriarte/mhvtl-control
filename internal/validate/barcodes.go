@@ -16,6 +16,7 @@ import (
 type place struct {
 	lib  int
 	what string // "slot 3", "MAP slot 1"
+	key  string // element key
 }
 
 func (p place) String() string { return fmt.Sprintf("library %d %s", p.lib, p.what) }
@@ -25,12 +26,12 @@ func listed(lib config.Library) map[string][]place {
 	m := map[string][]place{}
 	for _, s := range lib.Slots {
 		if s.Barcode != "" {
-			m[s.Barcode] = append(m[s.Barcode], place{lib.ID, "slot " + strconv.Itoa(s.Number)})
+			m[s.Barcode] = append(m[s.Barcode], place{lib.ID, "slot " + strconv.Itoa(s.Number), slotKey(lib.ID, s.Number)})
 		}
 	}
 	for _, s := range lib.MAPs {
 		if s.Barcode != "" {
-			m[s.Barcode] = append(m[s.Barcode], place{lib.ID, "MAP slot " + strconv.Itoa(s.Number)})
+			m[s.Barcode] = append(m[s.Barcode], place{lib.ID, "MAP slot " + strconv.Itoa(s.Number), mapKey(lib.ID, s.Number)})
 		}
 	}
 	return m
@@ -63,7 +64,11 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 	}
 	for _, b := range sortedStrings(all) {
 		if ps := all[b]; len(ps) > 1 {
-			r.errorf(FamilyBarcode, ps[1].lib, "barcode %s is listed %d times: %s", b, len(ps), joinPlaces(ps))
+			var els []string
+			for _, p := range ps {
+				els = append(els, p.key)
+			}
+			r.errorf(FamilyBarcode, ps[1].lib, els, "barcode %s is listed %d times: %s", b, len(ps), joinPlaces(ps))
 		}
 	}
 
@@ -76,14 +81,14 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 				continue
 			}
 			if err != nil {
-				r.errorf(FamilyBarcode, lib.ID, "cannot read %s: %v", p, err)
+				r.errorf(FamilyBarcode, lib.ID, []string{libKey(lib.ID)}, "cannot read %s: %v", p, err)
 				continue
 			}
 			// Only the barcodes count here; lines conffile flags are skipped.
 			_, _, maps, slots, _, err := config.ParseLibraryContents(f)
 			f.Close()
 			if err != nil {
-				r.errorf(FamilyBarcode, lib.ID, "%s: %v", p, err)
+				r.errorf(FamilyBarcode, lib.ID, []string{libKey(lib.ID)}, "%s: %v", p, err)
 				continue
 			}
 			persisted[lib.ID] = barcodes(listed(config.Library{ID: lib.ID, Slots: slots, MAPs: maps}))
@@ -114,13 +119,13 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		for _, b := range sortedStrings(mine) {
 			for _, other := range sortedKeys(persisted) {
 				if other != lib.ID && persisted[other][b] {
-					r.errorf(FamilyBarcode, lib.ID, "barcode %s (%s) is in library %d's library_contents.%d.persist", b, mine[b][0], other, other)
+					r.errorf(FamilyBarcode, lib.ID, []string{mine[b][0].key}, "barcode %s (%s) is in library %d's library_contents.%d.persist", b, mine[b][0], other, other)
 				}
 			}
 			if live != nil {
 				for _, other := range sortedKeys(live.Libraries) {
 					if other != lib.ID && live.Libraries[other].holds()[b] {
-						r.errorf(FamilyBarcode, lib.ID, "barcode %s (%s) is held by library %d now", b, mine[b][0], other)
+						r.stickyErrorf(FamilyBarcode, lib.ID, []string{mine[b][0].key}, "barcode %s (%s) is held by library %d now", b, mine[b][0], other)
 					}
 				}
 			}
@@ -129,7 +134,7 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 			}
 			for _, h := range sortedStrings(homes) {
 				if h != home && media.Exists(h, b) {
-					r.errorf(FamilyBarcode, lib.ID, "barcode %s (%s) is new to library %d, but a cartridge %s already exists in %s, the home of library %s",
+					r.errorf(FamilyBarcode, lib.ID, []string{mine[b][0].key}, "barcode %s (%s) is new to library %d, but a cartridge %s already exists in %s, the home of library %s",
 						b, mine[b][0], lib.ID, b, h, joinInts(homes[h]))
 				}
 			}

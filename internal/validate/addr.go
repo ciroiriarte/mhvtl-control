@@ -14,6 +14,7 @@ type window struct {
 	plural  string
 	start   uint16
 	numbers []int
+	keys    []string // element key of each number
 }
 
 // checkAddresses refuses drives, slots, MAP slots and pickers whose element
@@ -25,35 +26,36 @@ type window struct {
 func checkAddresses(r *Result, next config.Inventory) {
 	for _, lib := range next.Libraries {
 		p := personality.Lookup(lib.Vendor, lib.Product)
-		var drives []int
+		drives := window{kind: "drive", plural: "drives", start: p.StartDrive}
 		for _, d := range lib.Drives {
-			drives = append(drives, d.Slot)
+			drives.numbers, drives.keys = append(drives.numbers, d.Slot), append(drives.keys, driveKey(d.ID))
 		}
-		var slots, maps []int
+		slots := window{kind: "storage slot", plural: "storage slots", start: p.StartStorage}
 		for _, s := range lib.Slots {
-			slots = append(slots, s.Number)
+			slots.numbers, slots.keys = append(slots.numbers, s.Number), append(slots.keys, slotKey(lib.ID, s.Number))
 		}
+		maps := window{kind: "MAP slot", plural: "MAP slots", start: p.StartMAP}
 		for _, m := range lib.MAPs {
-			maps = append(maps, m.Number)
+			maps.numbers, maps.keys = append(maps.numbers, m.Number), append(maps.keys, mapKey(lib.ID, m.Number))
 		}
-		wins := []window{
-			{"drive", "drives", p.StartDrive, drives},
-			{"storage slot", "storage slots", p.StartStorage, slots},
-			{"MAP slot", "MAP slots", p.StartMAP, maps},
-			{"picker", "pickers", p.StartPicker, lib.Pickers},
+		pickers := window{kind: "picker", plural: "pickers", start: p.StartPicker}
+		for _, n := range lib.Pickers {
+			pickers.numbers, pickers.keys = append(pickers.numbers, n), append(pickers.keys, pickerKey(lib.ID, n))
 		}
+		wins := []window{drives, slots, maps, pickers}
 		for _, w := range wins {
-			seen := map[int]bool{}
+			seen := map[int]string{}
 			highest := 0
-			for _, n := range w.numbers {
+			for i, n := range w.numbers {
+				k := w.keys[i]
 				if n < 1 {
-					r.errorf(FamilyAddress, lib.ID, "library %d: %s %d is invalid; numbering starts at 1", lib.ID, w.kind, n)
+					r.errorf(FamilyAddress, lib.ID, []string{libKey(lib.ID), k}, "library %d: %s %d is invalid; numbering starts at 1", lib.ID, w.kind, n)
 					continue
 				}
-				if seen[n] {
-					r.errorf(FamilyAddress, lib.ID, "library %d: %s %d is configured twice", lib.ID, w.kind, n)
+				if o, dup := seen[n]; dup {
+					r.errorf(FamilyAddress, lib.ID, []string{libKey(lib.ID), o, k}, "library %d: %s %d is configured twice", lib.ID, w.kind, n)
 				}
-				seen[n] = true
+				seen[n] = k
 				highest = max(highest, n)
 			}
 			if highest == 0 {
@@ -68,12 +70,18 @@ func checkAddresses(r *Result, next config.Inventory) {
 			if highest <= limit {
 				continue
 			}
+			els := []string{libKey(lib.ID)}
+			for i, n := range w.numbers {
+				if n > limit {
+					els = append(els, w.keys[i])
+				}
+			}
 			if upto == "" {
 				upto = "beyond the 16-bit element address space"
 			} else {
 				upto = fmt.Sprintf("which overlaps the %s addresses from 0x%04x", upto, int(w.start)+limit)
 			}
-			r.errorf(FamilyAddress, lib.ID,
+			r.errorf(FamilyAddress, lib.ID, els,
 				"library %d (%s): %s %d would sit at element address 0x%04x, %s; the limit is %d %s (%s addresses from 0x%04x, %s)",
 				lib.ID, p.Name, w.kind, highest, int(w.start)+highest-1, upto, limit, w.plural, w.kind, w.start, p.WindowSource)
 		}

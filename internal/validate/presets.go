@@ -57,11 +57,11 @@ func checkPresets(r *Result, next config.Inventory, opts Options) {
 		}
 		pr, ok := Presets[app]
 		if !ok {
-			r.errorf(FamilyPreset, lib.ID, "library %d: unknown target application %q", lib.ID, app)
+			r.stickyErrorf(FamilyPreset, lib.ID, []string{libKey(lib.ID)}, "library %d: unknown target application %q", lib.ID, app)
 			continue
 		}
 		if why := pr.Check(lib, p); why != "" {
-			r.errorf(FamilyPreset, lib.ID, "library %d is set up for %s, but %s", lib.ID, pr.Name, why)
+			r.stickyErrorf(FamilyPreset, lib.ID, []string{libKey(lib.ID)}, "library %d is set up for %s, but %s", lib.ID, pr.Name, why)
 		}
 	}
 }
