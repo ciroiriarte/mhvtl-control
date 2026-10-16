@@ -44,7 +44,16 @@ func TestIdentities(t *testing.T) {
 			i.Libraries[1].NAA = i.Libraries[1].Drives[0].NAA
 		}, []string{"library 30 and drive 31 share NAA"}, nil},
 		{"missing NAA", func(i *config.Inventory) { i.Libraries[0].Drives[1].NAA = "" },
-			nil, []string{"drive 12 has no NAA"}},
+			nil, []string{"drive 12 has no NAA; mhVTL then derives 58:59:5a:5a:59:5f:41:32 from the end of the serial"}},
+		{"derived NAAs that collide", func(i *config.Inventory) {
+			i.Libraries[1].Drives[0].NAA, i.Libraries[1].Drives[0].Serial = "", "AAZZ_SAME1"
+			i.Libraries[1].Drives[1].NAA, i.Libraries[1].Drives[1].Serial = "", "BBZZ_SAME1"
+		}, []string{"drive 31 and drive 32 share NAA 5a:5a:5f:53:41:4d:45:31 (derived from its serial)"},
+			[]string{"drive 31 has no NAA", "drive 32 has no NAA"}},
+		{"a derived NAA equal to a configured one", func(i *config.Inventory) {
+			i.Libraries[1].Drives[0].NAA = "3a:5a:5f:53:41:4d:45:31"
+			i.Libraries[1].Drives[1].NAA, i.Libraries[1].Drives[1].Serial = "", "BBZZ_SAME1"
+		}, []string{"drive 31 and drive 32 share NAA 5a:5a:5f:53:41:4d:45:31 (derived from its serial)"}, []string{"drive 32 has no NAA"}},
 		{"standalone drive counts", func(i *config.Inventory) {
 			i.Standalone = []config.Drive{{ID: 90, Target: 90, Serial: "XYZZY_B1", NAA: "40:00:00:00:00:00:00:90"}}
 		}, []string{`drive 31 and drive 90 share serial "XYZZY_B1"`}, nil},
@@ -104,6 +113,27 @@ func TestHostCollisions(t *testing.T) {
 			expect(t, "errors", family(r.Errors, FamilyIdentity), tc.errors)
 		})
 	}
+}
+
+// A device with no NAA in device.conf reports one derived from its serial;
+// the host check uses that.
+func TestHostCollisionsDerivedNAA(t *testing.T) {
+	cur := shipped(t)
+	// An IBM LTO serial shorter than 10 is zero-filled on the left before
+	// the NAA is taken from its last 8 bytes: "0000001234".
+	cur.Libraries[0].Drives[0].Serial, cur.Libraries[0].Drives[0].NAA = "1234", ""
+	// An HP EML library holds its serial padded to 14: "XYZZY_B       ".
+	cur.Libraries[1].Vendor, cur.Libraries[1].Product, cur.Libraries[1].NAA = "HP", "EML E-Series", ""
+	host := []hostids.Device{
+		{Host: 5, Target: 3, Driver: "qla2xxx", NAAs: []string{"60:30:30:31:32:33:34:00"}},
+		{Host: 5, Target: 4, Driver: "qla2xxx", NAAs: []string{"60:30:30:30:31:32:33:34"}},
+		{Host: 5, Target: 5, Driver: "qla2xxx", NAAs: []string{"52:20:20:20:20:20:20:20"}},
+	}
+	r := Validate(cur, clone(cur), nil, host, Options{})
+	expect(t, "errors", family(r.Errors, FamilyIdentity), []string{
+		"drive 11: NAA 50:30:30:30:31:32:33:34 (derived from its serial) is already used by host device 5:0:4:0 (qla2xxx), which reports 60:30:30:30:31:32:33:34",
+		"library 30: NAA 52:20:20:20:20:20:20:20 (derived from its serial) is already used by host device 5:0:5:0 (qla2xxx)",
+	})
 }
 
 func TestHostCollisionsFromSysfs(t *testing.T) {

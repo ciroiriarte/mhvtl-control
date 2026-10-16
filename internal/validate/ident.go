@@ -3,6 +3,7 @@ package validate
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/hostids"
@@ -24,6 +25,7 @@ type device struct {
 	id                   int
 	lib                  int // the library a drive belongs to, else its own ID
 	channel, target, lun int
+	vendor, product      string
 	serial, naa          string
 	// sendsNAA is whether the device reports an NAA in VPD page 83h. Every
 	// drive does (vtltape calls update_vpd_83); a library only if its
@@ -41,14 +43,49 @@ func (d device) key() string {
 	return driveKey(d.id)
 }
 
+// derivedNAA is the NAA mhVTL reports for a device whose device.conf entry
+// has none: the last 8 bytes of the serial as the daemon holds it, with the
+// NAA field rewritten to 5h (usr/vtllib.c update_vpd_83 :2471-2480; the
+// changers' update_eml_vpd_83 do the same). Line numbers are upstream master
+// c65bff0. vtltape holds a drive serial padded with %-10s
+// (usr/cmd/vtltape.c:2157), with an IBM LTO serial shorter than 10 then
+// zero-filled on the left to 10 (usr/vtllib.c ibm_lto_serial_pad :2371-2392,
+// called at usr/cmd/vtltape.c:2256); vtllibrary holds its own serial padded
+// with %-14s, cut to 15 (usr/cmd/vtllibrary.c:1301).
+func derivedNAA(d device) []byte {
+	sn := fmt.Sprintf("%-10s", d.serial)
+	if d.kind == "library" {
+		sn = fmt.Sprintf("%-14s", d.serial)
+		if len(sn) > 15 {
+			sn = sn[:15]
+		}
+	} else if strings.TrimRight(d.vendor, " ") == "IBM" &&
+		(strings.HasPrefix(d.product, "ULT3580-") || strings.HasPrefix(d.product, "ULTRIUM-")) {
+		if t := strings.TrimRight(sn, " "); len(t) > 0 && len(t) < 10 {
+			sn = strings.Repeat("0", 10-len(t)) + t
+		}
+	}
+	b := []byte(sn[len(sn)-8:])
+	b[0] = b[0]&0x0f | 0x50
+	return b
+}
+
+// naaText names the NAA a device reports, for messages.
+func naaText(d device, b []byte) string {
+	if d.naa != "" {
+		return d.naa
+	}
+	return hostids.FormatNAA(b) + " (derived from its serial)"
+}
+
 func devices(inv config.Inventory) []device {
 	var devs []device
 	drive := func(d config.Drive, lib int) device {
-		return device{"drive", d.ID, lib, d.Channel, d.Target, d.LUN, d.Serial, d.NAA, true}
+		return device{"drive", d.ID, lib, d.Channel, d.Target, d.LUN, d.Vendor, d.Product, d.Serial, d.NAA, true}
 	}
 	for _, l := range inv.Libraries {
 		sends := personality.Lookup(l.Vendor, l.Product).SendsNAA
-		devs = append(devs, device{"library", l.ID, l.ID, l.Channel, l.Target, l.LUN, l.Serial, l.NAA, sends})
+		devs = append(devs, device{"library", l.ID, l.ID, l.Channel, l.Target, l.LUN, l.Vendor, l.Product, l.Serial, l.NAA, sends})
 		for _, d := range l.Drives {
 			devs = append(devs, drive(d, l.ID))
 		}
@@ -75,7 +112,8 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		d device
 	}
 	var naas []naaOwner
-	for _, d := range devs {
+	wire := make([][]byte, len(devs)) // the NAA each device reports, if known
+	for i, d := range devs {
 		if o, dup := ids[d.id]; dup {
 			r.errorf(FamilyIdentity, d.lib, []string{o.key(), d.key()}, "%s and %s share ID %d; mhVTL addresses its daemons by ID", o, d, d.id)
 		} else {
@@ -106,18 +144,25 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 			// Its device.conf NAA never reaches the host.
 			continue
 		}
-		if d.naa == "" {
-			r.warnf(FamilyIdentity, d.lib, "%s has no NAA; mhVTL then derives one from the end of the serial (usr/vtllib.c update_vpd_83), which other devices can repeat", d)
-			continue
+		var b []byte
+		switch {
+		case d.naa != "":
+			var err error
+			if b, err = hostids.ParseNAA(d.naa); err != nil {
+				r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: %v", d, err)
+				continue
+			}
+		case d.serial == "":
+			continue // already refused above
+		default:
+			b = derivedNAA(d)
+			r.warnf(FamilyIdentity, d.lib, "%s has no NAA; mhVTL then derives %s from the end of the serial (usr/vtllib.c update_vpd_83), which other devices can repeat",
+				d, hostids.FormatNAA(b))
 		}
-		b, err := hostids.ParseNAA(d.naa)
-		if err != nil {
-			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: %v", d, err)
-			continue
-		}
+		wire[i] = b
 		for _, o := range naas {
 			if hostids.SameNAA(o.b, b) {
-				r.errorf(FamilyIdentity, d.lib, []string{o.d.key(), d.key()}, "%s and %s share NAA %s (mhVTL rewrites the NAA field of drives to 5h, so only the last 60 bits count)", o.d, d, d.naa)
+				r.errorf(FamilyIdentity, d.lib, []string{o.d.key(), d.key()}, "%s and %s share NAA %s (mhVTL rewrites the NAA field to 5h, so only the last 60 bits count)", o.d, d, naaText(d, b))
 				break
 			}
 		}
@@ -148,17 +193,17 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		if h.Driver == hostids.MhvtlDriver && ours[[3]int{h.Channel, h.Target, h.LUN}] {
 			continue
 		}
-		for _, d := range devs {
+		for i, d := range devs {
 			if d.serial != "" && d.serial == h.Serial {
 				r.stickyErrorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: serial %q is already used by host device %s (%s)", d, d.serial, h.HCTL(), driverName(h))
 			}
-			b, err := hostids.ParseNAA(d.naa)
-			if err != nil || !d.sendsNAA {
+			b := wire[i]
+			if b == nil {
 				continue
 			}
 			for _, hn := range h.NAAs {
 				if hb, err := hostids.ParseNAA(hn); err == nil && hostids.SameNAA(b, hb) {
-					r.stickyErrorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: NAA %s is already used by host device %s (%s), which reports %s", d, d.naa, h.HCTL(), driverName(h), hn)
+					r.stickyErrorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: NAA %s is already used by host device %s (%s), which reports %s", d, naaText(d, b), h.HCTL(), driverName(h), hn)
 				}
 			}
 		}
