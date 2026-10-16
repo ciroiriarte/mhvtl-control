@@ -243,6 +243,7 @@ func Validate(cur, next config.Inventory, live *Live, host []hostids.Device, opt
 	}
 	r.Errors = errs
 	checkProblems(&r, cur, next)
+	checkHomes(&r, cur, next)
 	return r
 }
 
@@ -289,8 +290,36 @@ func check(cur, next config.Inventory, live *Live, host []hostids.Device, opts O
 	return r
 }
 
-// homeOf returns the media home of lib, resolved as mhVTL does (mhvtl
-// usr/vtllib.c find_media_home_directory), or "" when unknown.
+// checkHomes refuses a "Home directory" with a blank in it.
+// find_media_home_directory reads it with sscanf "%s" and stops at the blank
+// (usr/vtllib.c:1723, upstream master 993b193), and make_vtl_media uses
+// $LIBHOME unquoted (usr/cmd/make_vtl_media.in:355-377), so neither finds the
+// directory meant. One the configuration in force already has unchanged is a
+// pre-existing warning, whatever else the change touches in the library.
+func checkHomes(r *Result, cur, next config.Inventory) {
+	for _, lib := range next.Libraries {
+		if !strings.ContainsAny(lib.HomeDir, " \t\v\f\r") {
+			continue
+		}
+		f := newFinding(CodeMediaHomeBlank, lib.ID, []ElementRef{libKey(lib.ID)},
+			"library %d: Home directory %q has a blank in it; vtltape reads the home up to the first blank and make_vtl_media splits it into words", []any{lib.ID, lib.HomeDir})
+		if c, ok := findLibrary(cur, lib.ID); ok && c.HomeDir == lib.HomeDir {
+			f.Tag = TagPreExisting
+			r.Warnings = append(r.Warnings, f)
+			continue
+		}
+		r.Errors = append(r.Errors, f)
+	}
+}
+
+// homeOf returns the media home of lib, or "" when unknown: its own
+// "Home directory", else the default. That is how vtltape finds a library's
+// cartridges (find_media_home_directory, mhvtl usr/vtllib.c:1673-1746) and
+// where make_vtl_media creates them (library_home, usr/cmd/make_vtl_media.in
+// :58-73, used by default since PER_LIBRARY_HOME is 1, :32 and :349-353)
+// from upstream master 993b193 on, with markh794/mhvtl#275 and #276
+// (f20c8bc, 62c0d01). Before them, a library without a home took the next
+// library's, and make_vtl_media put every cartridge in MHVTL_HOME_PATH.
 func homeOf(lib config.Library, opts Options) string {
 	if lib.HomeDir != "" {
 		return lib.HomeDir
