@@ -112,6 +112,9 @@ func TestConfValue(t *testing.T) {
 	if err := c.SetAttr("Drive", 11, "Compression", ""); err == nil {
 		t.Error("SetAttr(Compression, \"\") accepted")
 	}
+	if err := c.AddStanza(Header{Kind: "Drive", ID: 12, Target: 2}, []Attr{{Key: "Compression"}}); err == nil {
+		t.Error("AddStanza with an empty Compression accepted")
+	}
 
 	for _, v := range []string{"HP #x", "HP\t#x", " HP", "HP ", "A\x00B"} {
 		if err := c.SetAttr("Drive", 11, "Vendor identification", v); err == nil {
