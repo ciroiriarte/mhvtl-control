@@ -47,7 +47,7 @@ func TestAddresses(t *testing.T) {
 		// STK L700: MAP 0x000a, drives 0x01f4, storage 0x03e8.
 		{"L700 at the drive limit", withCounts(stk, 500, 39, 4, 1), nil},
 		{"L700 drive 501", withCounts(stk, 501, 39, 4, 1),
-			[]string{"library 10 (STK L-series (L180/L700)): drive 501 would sit at element address 0x03e8, which overlaps the storage slot addresses from 0x03e8; the limit is 500 drives (drive addresses from 0x01f4, usr/pm/stklxx_pm.c:98)"}},
+			[]string{"library 10 (STK L-series (L180/L700)): drive 501 would sit at element address 0x03e8, which overlaps the storage slot addresses from 0x03e8; the limit is 500 drives (drive addresses from 0x01f4, usr/pm/stklxx_pm.c:109)"}},
 		// Overland puts the MAP at 0 and the picker at 1: one MAP slot only.
 		{"Overland one MAP slot", withCounts(overland, 1, 1, 1, 1), nil},
 		{"Overland two MAP slots", withCounts(overland, 1, 1, 2, 1),
