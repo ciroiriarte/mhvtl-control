@@ -297,21 +297,30 @@ func hasVPD83(f cfile, first, last int) bool {
 // device.conf NAA.
 var naaRe = regexp.MustCompile(`\bupdate_vpd_83\(|lu->naa\b`)
 
-// sendsNAA reports whether the init function, or a function it calls in the
-// same file, writes an NAA designator.
+// sendsNAA reports whether the init function, or any function it reaches
+// through calls of the form f(lu) within the same file, writes an NAA
+// designator.
 func sendsNAA(f cfile, first, last int) bool {
-	writes := func(a, b int) bool { return naaRe.MatchString(strings.Join(f.lines[a-1:b], "\n")) }
-	if writes(first, last) {
-		return true
-	}
-	for n := first; n <= last; n++ {
-		for _, m := range callRe.FindAllStringSubmatch(f.lines[n-1], -1) {
-			if a, b, ok := f.body(m[1]); ok && writes(a, b) {
-				return true
+	visited := map[int]bool{}
+	var writes func(a, b int) bool
+	writes = func(a, b int) bool {
+		if visited[a] {
+			return false
+		}
+		visited[a] = true
+		if naaRe.MatchString(strings.Join(f.lines[a-1:b], "\n")) {
+			return true
+		}
+		for n := a; n <= b; n++ {
+			for _, m := range callRe.FindAllStringSubmatch(f.lines[n-1], -1) {
+				if ca, cb, ok := f.body(m[1]); ok && writes(ca, cb) {
+					return true
+				}
 			}
 		}
+		return false
 	}
-	return false
+	return writes(first, last)
 }
 
 func TestCrossCheckLibraryModels(t *testing.T) {
