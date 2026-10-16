@@ -15,8 +15,12 @@ func ParseLibraryContents(r io.Reader) (drives []int, pickers []int, maps []MAPS
 		return nil, nil, nil, nil, err
 	}
 	c := conffile.ParseLibContents(data)
-	if len(c.Problems) > 0 {
-		return nil, nil, nil, nil, fmt.Errorf("library_contents %w", c.Problems[0])
+	// Ambiguous lines are read as mhVTL reads them; the editor refuses to
+	// write over them.
+	for _, p := range c.Problems {
+		if !p.Ambiguous {
+			return nil, nil, nil, nil, fmt.Errorf("library_contents %w", p)
+		}
 	}
 	for _, e := range c.Entries() {
 		switch e.Kind {

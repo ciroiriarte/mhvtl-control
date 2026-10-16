@@ -3,24 +3,32 @@ package conffile
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
 
-// ErrDriveBarcode is returned for an edit that would put a barcode on a
-// Drive line. vtllibrary loads that cartridge into the drive at start
-// (mhvtl usr/cmd/vtllibrary.c:1029-1039, init_drive_slot), so a merge must
-// never write one.
-var ErrDriveBarcode = errors.New("library_contents: a Drive line must not carry a barcode")
+// ErrDriveBarcode is returned for an edit that would put a value on a Drive
+// line. That value is not a cartridge: it sets the drive's serial number as
+// the changer reports it (init_drive_slot -> set_drive_serial, mhvtl
+// usr/cmd/vtllibrary.c:850-881 and :621), overriding device.conf. The editor
+// keeps serial numbers in device.conf only.
+var ErrDriveBarcode = errors.New("library_contents: a Drive line's value is the drive's serial number; set it in device.conf")
+
+// maxBarcode is MAX_BARCODE_LEN (mhvtl include/vtllib.h:82). add_barcode
+// exits on a longer barcode, and on a duplicate one (mhvtl
+// usr/cmd/vtllibrary.c:324-331).
+const maxBarcode = 16
 
 // Entry is one "Drive N:", "Picker N:", "MAP N: X" or "Slot N: X" line.
 type Entry struct {
 	Kind   string // "Drive", "Picker", "MAP" or "Slot"
 	Number int
-	// Barcode is empty when the element is empty. It is trimmed: the
-	// .persist file vtllibrary writes at stop pads barcodes to 16 with
-	// spaces ("%-16.16s", mhvtl usr/cmd/vtllibrary.c:345 and :1206), and
-	// mhVTL's own sscanf "%s" drops the padding too.
+	// Barcode is the value as sscanf "Slot %d: %s" (mhvtl
+	// usr/cmd/vtllibrary.c:1030-1063) reads it: the first word after the
+	// colon, empty when the element is empty. That drops the padding of a
+	// .persist file, which save_config writes with "%-16.16s" (:345, :1206).
+	// On a Drive line it is the drive's serial number (see DriveSerial).
 	Barcode string
 	Line    int // index into the file's lines
 }
@@ -45,10 +53,13 @@ func ParseLibContents(data []byte) *LibContents {
 
 func (c *LibContents) index() {
 	c.entries, c.Problems, c.versionLine = nil, nil, -1
-	problem := func(i int, format string, a ...any) {
-		c.Problems = append(c.Problems, Problem{Line: i + 1, Msg: fmt.Sprintf(format, a...)})
+	problem := func(i int, ambiguous bool, format string, a ...any) {
+		c.Problems = append(c.Problems, Problem{Line: i + 1, Ambiguous: ambiguous, Msg: fmt.Sprintf(format, a...)})
 	}
 	for i, l := range c.lines {
+		if msg := lineProblem(l); msg != "" {
+			problem(i, true, "%s", msg)
+		}
 		// mhVTL skips only a column-1 '#' (mhvtl usr/cmd/vtllibrary.c:1025),
 		// but an indented one fails every sscanf pattern there and is
 		// ignored too.
@@ -64,26 +75,82 @@ func (c *LibContents) index() {
 		}
 		head, rest, ok := strings.Cut(text, ":")
 		if !ok {
-			problem(i, "missing ':' in %q", text)
+			problem(i, false, "missing ':' in %q", text)
 			continue
 		}
 		f := strings.Fields(head)
 		if len(f) != 2 {
-			problem(i, "malformed %q", text)
+			problem(i, false, "malformed %q", text)
 			continue
 		}
 		n, err := strconv.Atoi(f[1])
 		if err != nil {
-			problem(i, "bad number %q", f[1])
+			problem(i, false, "bad number %q", f[1])
 			continue
 		}
 		switch f[0] {
 		case "Drive", "Picker", "MAP", "Slot":
-			c.entries = append(c.entries, Entry{Kind: f[0], Number: n, Barcode: strings.TrimSpace(rest), Line: i})
 		default:
-			problem(i, "unknown entry %q", f[0])
+			problem(i, false, "unknown entry %q", f[0])
+			continue
 		}
+		// The sscanf formats start with the kind, so mhVTL ignores an
+		// indented entry.
+		if l.Text[0] == ' ' || l.Text[0] == '\t' {
+			problem(i, true, "indented %s %d: mhVTL ignores this line", f[0], n)
+			continue
+		}
+		e := Entry{Kind: f[0], Number: n, Line: i}
+		words := strings.Fields(rest)
+		switch {
+		case strings.TrimRight(head, " \t") != head:
+			// sscanf stops at the blank before ':' with the number read, and
+			// the element is created empty.
+			problem(i, true, "blank before ':' in %q: mhVTL reads %s %d as empty", text, f[0], n)
+		case len(words) > 1:
+			problem(i, true, "white space inside %q: mhVTL reads only %q", strings.TrimSpace(rest), words[0])
+			e.Barcode = words[0]
+		case len(words) == 1:
+			e.Barcode = words[0]
+		}
+		c.entries = append(c.entries, e)
 	}
+
+	// Whole-file checks of what vtllibrary does with the entries.
+	seen := map[string]int{}
+	last := map[string]int{}
+	for _, e := range c.entries {
+		// Drives and slots fill holes up to each number in turn
+		// (vtllibrary.c:1032-1063), so a number not above the previous one
+		// creates the element twice.
+		if e.Kind == "Drive" || e.Kind == "Slot" {
+			if prev, ok := last[e.Kind]; ok && e.Number <= prev {
+				problem(e.Line, true, "%s %d after %s %d: mhVTL creates the element twice; keep them in ascending order", e.Kind, e.Number, e.Kind, prev)
+			}
+			last[e.Kind] = e.Number
+		}
+		if e.Kind == "Drive" || e.Barcode == "" {
+			continue
+		}
+		if len(e.Barcode) > maxBarcode {
+			problem(e.Line, true, "barcode %q is longer than %d characters: vtllibrary exits on start", e.Barcode, maxBarcode)
+		}
+		if j, dup := seen[e.Barcode]; dup {
+			problem(e.Line, true, "barcode %s already at line %d: vtllibrary exits on start", e.Barcode, j+1)
+			continue
+		}
+		seen[e.Barcode] = e.Line
+	}
+	sort.SliceStable(c.Problems, func(a, b int) bool { return c.Problems[a].Line < c.Problems[b].Line })
+}
+
+// DriveSerial returns the serial number the last "Drive n: X" line sets for
+// drive n, if any (see ErrDriveBarcode).
+func (c *LibContents) DriveSerial(n int) (string, bool) {
+	if j := c.lookup("Drive", n); j >= 0 && c.entries[j].Barcode != "" {
+		return c.entries[j].Barcode, true
+	}
+	return "", false
 }
 
 // Lines returns the file's lines. The slice must not be modified.
@@ -117,9 +184,10 @@ func (c *LibContents) lookup(kind string, n int) int {
 	return found
 }
 
-// checkBarcode refuses a barcode mhVTL would not read back whole: sscanf
-// "Slot %d: %s" stops at the first white space
-// (mhvtl usr/cmd/vtllibrary.c:1055).
+// checkBarcode refuses a barcode mhVTL would not read back whole, sscanf
+// "Slot %d: %s" stopping at the first white space (mhvtl
+// usr/cmd/vtllibrary.c:1055), or one add_barcode exits on for its length
+// (:324-328). Duplicates are a whole-file matter, reported in Problems.
 func checkBarcode(kind, barcode string) error {
 	if kind == "Drive" && barcode != "" {
 		return ErrDriveBarcode
@@ -131,6 +199,9 @@ func checkBarcode(kind, barcode string) error {
 		if r <= ' ' || r == 0x7f {
 			return fmt.Errorf("library_contents: invalid barcode %q", barcode)
 		}
+	}
+	if len(barcode) > maxBarcode {
+		return fmt.Errorf("library_contents: barcode %q is longer than %d characters", barcode, maxBarcode)
 	}
 	return nil
 }
@@ -175,8 +246,12 @@ func (c *LibContents) SetBarcode(kind string, n int, barcode string) error {
 	return nil
 }
 
-// AddEntry adds "Kind N:" (with a barcode for Slot and MAP) after the last
-// entry of the same kind, or at the end of the file after a blank line.
+// AddEntry adds "Kind N:" (with a barcode for Slot and MAP) in numeric order
+// among the entries of its kind: before the first with a higher number, else
+// after the last. vtllibrary creates the missing drives and slots below each
+// number as it reads them (vtllibrary.c:1032-1063), so one out of order would
+// be created twice. With no entry of its kind it goes at the end of the
+// file, after a blank line.
 func (c *LibContents) AddEntry(kind string, n int, barcode string) error {
 	if err := checkKind(kind); err != nil {
 		return err
@@ -191,9 +266,14 @@ func (c *LibContents) AddEntry(kind string, n int, barcode string) error {
 	add := []Line{{Text: entryText(kind, n, barcode), EOL: nl}}
 	at := -1
 	for _, e := range c.entries {
-		if e.Kind == kind {
-			at = e.Line + 1
+		if e.Kind != kind {
+			continue
 		}
+		if e.Number > n {
+			at = e.Line
+			break
+		}
+		at = e.Line + 1
 	}
 	if at < 0 {
 		at = len(c.lines)

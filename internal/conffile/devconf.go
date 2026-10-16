@@ -162,11 +162,12 @@ var ErrNotFound = errors.New("not found")
 type Problem struct {
 	Line int // 1-based
 	Msg  string
-	// Ambiguous marks a file mhVTL still loads, but where a line does not
-	// mean what its shape says or mhVTL's parsers read it differently (a
-	// white-space line inside a record, a duplicate record, a value mhVTL
-	// truncates). The others are malformed: mhVTL ignores the line or will
-	// not start. Readers may go on past an ambiguous problem; writes may not.
+	// Ambiguous marks a line the model still reads, but which does not mean
+	// to mhVTL what its shape says: mhVTL's parsers read it differently from
+	// the model or from each other (a white-space line inside a record, a
+	// duplicate record, a barcode vtllibrary exits on). The others are lines
+	// the model cannot read at all. Readers may go on past an ambiguous
+	// problem; writes may not.
 	Ambiguous bool
 }
 
