@@ -216,3 +216,36 @@ func (m Model) SerialArea() int {
 	}
 	return max(n, 0)
 }
+
+// Limits is how many elements of each type a library personality holds.
+type Limits struct {
+	Pickers int `json:"pickers"`
+	MAPs    int `json:"maps"`
+	Drives  int `json:"drives"`
+	Slots   int `json:"slots"`
+}
+
+// Limits returns the most elements of each type the model's windows hold.
+// Element N of a type sits at start+N-1, so with the next higher start at
+// next the largest N is next-start, and with none, 0x10000-start: past the
+// next start vtllibrary drops the element (check_overflow, mhvtl
+// usr/cmd/vtllibrary.c:761-849, upstream master 993b193), and package
+// validate refuses it, as it does past the 16-bit address space.
+func (m Model) Limits() Limits {
+	starts := []uint16{m.StartPicker, m.StartMAP, m.StartDrive, m.StartStorage}
+	limit := func(start uint16) int {
+		n := 0x10000 - int(start)
+		for _, o := range starts {
+			if o > start && int(o-start) < n {
+				n = int(o - start)
+			}
+		}
+		return n
+	}
+	return Limits{
+		Pickers: limit(m.StartPicker),
+		MAPs:    limit(m.StartMAP),
+		Drives:  limit(m.StartDrive),
+		Slots:   limit(m.StartStorage),
+	}
+}
