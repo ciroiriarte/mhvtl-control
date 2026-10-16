@@ -3,7 +3,7 @@
 // are unique in device.conf and on the host (ident.go), the target backup
 // application's needs are met (presets.go), pre-filled media can be read by
 // the library's drives (media.go), barcodes are unique (barcodes.go), and no
-// cartridge is dropped with a removed slot (removal.go).
+// cartridge leaves its library unaccounted for (removal.go).
 //
 // Every family blocks: a finding in Result.Errors means the configuration
 // must not be applied. Warnings are advisory.
@@ -13,8 +13,9 @@
 // (none of its libraries, drives or slots differ) is reported as a warning
 // tagged TagPreExisting, so a hand edit made earlier does not block every
 // later apply. A collision with another device of the host or a cartridge
-// another library holds now always blocks, being a live conflict, and so does
-// a library that fails the target application asked for.
+// another library holds now always blocks, being a live conflict, and so do a
+// library that fails the target application asked for and a cartridge the
+// change makes leave its library.
 package validate
 
 import (
@@ -141,8 +142,8 @@ func (l *Live) library(id int) (Placement, bool) {
 	return p, ok
 }
 
-// Disposition says what happens to a cartridge whose slot or MAP slot is
-// removed.
+// Disposition says what happens to a cartridge the change makes leave its
+// library.
 type Disposition struct {
 	Library int    `json:"library"`
 	Barcode string `json:"barcode"`
@@ -165,7 +166,7 @@ type Options struct {
 	// for (a Presets key). A library without one gets the preset checks of
 	// every application as warnings.
 	TargetApps map[int]string
-	// Dispositions say where the cartridges of removed slots go.
+	// Dispositions say where the cartridges leaving a library go.
 	Dispositions []Disposition
 	// ConfigDir holds library_contents.<id>.persist; empty skips them.
 	ConfigDir string
