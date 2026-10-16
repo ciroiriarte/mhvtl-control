@@ -73,7 +73,10 @@ func TestAddresses(t *testing.T) {
 			l := withCounts(ibm, 0, 1, 1, 1)
 			l.DriveLines = []config.DriveLine{{Number: 1}, {Number: 1}, {Number: 512, Serial: "GHOST"}}
 			return l
-		}(), []string{"drive 512 would sit at element address 0x0300, which overlaps the MAP slot addresses from 0x0300"}},
+		}(), []string{
+			`library 10: library_contents.10 lists "Drive 1:" twice; vtllibrary counts the drive twice in num_drives`,
+			"drive 512 would sit at element address 0x0300, which overlaps the MAP slot addresses from 0x0300",
+		}},
 		{"slots and MAP slots out of order", func() config.Library {
 			l := withCounts(stk, 1, 3, 3, 1)
 			l.Slots[0].Number, l.Slots[2].Number = 3, 1
@@ -99,11 +102,12 @@ func TestAddresses(t *testing.T) {
 			l.DriveLines = []config.DriveLine{{Number: 3}}
 			return l
 		}(), nil},
-		{"Drive lines matching device.conf drives are not counted twice", func() config.Library {
+		// The drives get one element each; only the order is wrong.
+		{"Drive lines out of order", func() config.Library {
 			l := withCounts(stk, 2, 3, 0, 1)
 			l.DriveLines = []config.DriveLine{{Number: 2}, {Number: 1}}
 			return l
-		}(), nil},
+		}(), []string{`library 10: "Drive 1:" is listed after "Drive 2:"; vtllibrary counts the drive twice in num_drives`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Validate(config.Inventory{}, inv(tc.lib), nil, nil, Options{})
