@@ -2,6 +2,8 @@ package validate
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -206,5 +208,40 @@ func TestFindingCodeAndElements(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"code":"barcode.duplicate"`) || !strings.Contains(string(b), `"elements":[{"kind":"slot","library":10,"number":1}`) {
 		t.Errorf("json = %s", b)
+	}
+}
+
+// A conffile Problem in the proposed files blocks, since no writer writes
+// one; one only the configuration in force has is a pre-existing warning.
+func TestFileProblems(t *testing.T) {
+	d := t.TempDir()
+	conf := "Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00\n Vendor identification: IBM\n Product identification: 03584L32\n Unit serial number: LIB10\n NAA: 30:aa:bb:cc:00:00:00:0a\n\n" +
+		"Drive: 011 CHANNEL: 00 TARGET: 01 LUN: 00\n Library ID: 10 Slot: 01\n Vendor identification: IBM\n Product identification: ULT3580-TD8\n Unit serial number: DRV11\n NAA: 30:aa:bb:cc:00:00:00:0b\n"
+	if err := os.WriteFile(filepath.Join(d, "device.conf"), []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "library_contents.10"), []byte("Drive 1:\nPicker 1:\nSlot 1:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad, err := config.LoadInventory(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bad.Problems) != 1 {
+		t.Fatalf("problems = %+v; want the leading 0", bad.Problems)
+	}
+	good := clone(bad) // the same configuration, without the Problems
+
+	r := Validate(good, bad, nil, nil, Options{})
+	expect(t, "errors", family(r.Errors, FamilyFile), []string{"Drive id with a leading 0"})
+	if len(r.Errors) != 1 || r.Errors[0].Code != CodeFileProblem {
+		t.Errorf("errors = %+v", r.Errors)
+	}
+
+	r = Validate(bad, good, nil, nil, Options{})
+	expect(t, "errors", family(r.Errors, FamilyFile), nil)
+	expect(t, "warnings", family(r.Warnings, FamilyFile), []string{"Drive id with a leading 0"})
+	if len(r.Warnings) != 1 || r.Warnings[0].Tag != TagPreExisting {
+		t.Errorf("warnings = %+v", r.Warnings)
 	}
 }

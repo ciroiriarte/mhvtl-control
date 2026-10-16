@@ -3,7 +3,9 @@
 // are unique in device.conf and on the host (ident.go), the target backup
 // application's needs are met (presets.go), pre-filled media can be read by
 // the library's drives (media.go), barcodes are unique (barcodes.go), and no
-// cartridge leaves its library unaccounted for (removal.go).
+// cartridge leaves its library unaccounted for (removal.go). A line of the
+// proposed files that mhVTL would not read as written (a conffile Problem)
+// blocks as well.
 //
 // Every family blocks: a finding in Result.Errors means the configuration
 // must not be applied. Warnings are advisory.
@@ -35,6 +37,7 @@ const (
 	FamilyMedia    = "media"
 	FamilyBarcode  = "barcode"
 	FamilyRemoval  = "removal"
+	FamilyFile     = "file"
 )
 
 // TagPreExisting marks a warning that is an error the configuration in force
@@ -239,7 +242,27 @@ func Validate(cur, next config.Inventory, live *Live, host []hostids.Device, opt
 		r.Warnings = append(r.Warnings, f)
 	}
 	r.Errors = errs
+	checkProblems(&r, cur, next)
 	return r
+}
+
+// checkProblems reports the lines of the files read that mhVTL does not read
+// as written (config.Inventory.Problems, from conffile). Every writer refuses
+// a file with one (conffile Writable), so one in next blocks; one in cur
+// that next no longer has is a pre-existing warning.
+func checkProblems(r *Result, cur, next config.Inventory) {
+	inNext := map[config.Problem]bool{}
+	for _, p := range next.Problems {
+		inNext[p] = true
+		r.stickyErrorf(CodeFileProblem, 0, nil, "%v", p)
+	}
+	for _, p := range cur.Problems {
+		if !inNext[p] {
+			f := newFinding(CodeFileProblem, 0, nil, "%v", []any{p})
+			f.Tag = TagPreExisting
+			r.Warnings = append(r.Warnings, f)
+		}
+	}
 }
 
 // touches reports whether the change alters an element f concerns.
