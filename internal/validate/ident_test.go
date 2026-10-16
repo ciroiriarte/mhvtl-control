@@ -103,6 +103,17 @@ func TestHostCollisions(t *testing.T) {
 		// Library 10 is an STK L700, which sends no NAA.
 		{"a real device with the STK library's device.conf NAA", cur, []hostids.Device{{Host: 5, Target: 3, Driver: "qla2xxx",
 			NAAs: []string{"50:22:33:44:ab:00:00:00"}}}, nil},
+		// Drive 11 exported again through tcm_loop: both its serial and its
+		// NAA, so it is drive 11 itself.
+		{"drive 11 re-exported through tcm_loop", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "XYZZY_A1",
+			NAAs: []string{"50:22:33:44:ab:00:01:00"}}}, nil},
+		{"the serial of drive 11 with another NAA", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "XYZZY_A1",
+			NAAs: []string{"50:99:88:77:66:55:44:33"}}},
+			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loop)`}},
+		{"drive 11's serial and drive 12's NAA", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "XYZZY_A1",
+			NAAs: []string{"50:22:33:44:ab:00:02:00"}}},
+			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loop)`,
+				"drive 12: NAA 10:22:33:44:ab:00:02:00 is already used by host device 7:0:11:0 (tcm_loop)"}},
 		// The same identity on another HBA (e.g. a target re-exporting it)
 		// is a collision.
 		{"same serial on another HBA", cur, []hostids.Device{{Host: 7, Target: 1, Driver: "iscsi_tcp", Serial: "XYZZY_A1"}},
@@ -113,6 +124,25 @@ func TestHostCollisions(t *testing.T) {
 			expect(t, "errors", family(r.Errors, FamilyIdentity), tc.errors)
 		})
 	}
+}
+
+// A re-export of a device of cur is that device, not a collision for it; it
+// still collides with any other device of next that takes its identity.
+func TestHostReexport(t *testing.T) {
+	cur := shipped(t)
+	host := []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "XYZZY_A1",
+		NAAs: []string{"50:22:33:44:ab:00:01:00"}}}
+	// Drive 11 is deleted and drive 31 takes its serial and NAA.
+	next := clone(cur)
+	d11 := next.Libraries[0].Drives[0]
+	next.Libraries[0].Drives = next.Libraries[0].Drives[1:]
+	next.Libraries[0].DriveLines = next.Libraries[0].DriveLines[1:]
+	next.Libraries[1].Drives[0].Serial, next.Libraries[1].Drives[0].NAA = d11.Serial, d11.NAA
+	r := Validate(cur, next, nil, host, Options{})
+	expect(t, "errors", family(r.Errors, FamilyIdentity), []string{
+		`drive 31: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loop)`,
+		"drive 31: NAA 10:22:33:44:ab:00:01:00 is already used by host device 7:0:11:0 (tcm_loop)",
+	})
 }
 
 // A device with no NAA in device.conf reports one derived from its serial;
