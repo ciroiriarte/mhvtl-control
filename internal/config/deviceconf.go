@@ -41,6 +41,10 @@ func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, err erro
 			drv = &Drive{ID: st.ID, Channel: st.Channel, Target: st.Target, LUN: st.LUN}
 		}
 		for _, a := range st.Attrs {
+			// mhVTL ignores a field with no value (conf_value).
+			if a.Value == "" {
+				continue
+			}
 			if aerr := applyAttr(lib, drv, a.Key, a.Value); aerr != nil {
 				return nil, nil, fmt.Errorf("device.conf line %d: %w", a.Line+1, aerr)
 			}
