@@ -130,6 +130,9 @@ type Placement struct {
 	Slots  map[int]string
 	MAPs   map[int]string
 	Drives map[int]string
+	// Pickers is filled by Merge, from library_contents; READ ELEMENT
+	// STATUS results leave it empty.
+	Pickers map[int]string
 }
 
 // library returns the placement of library id; ok is false when it is not
