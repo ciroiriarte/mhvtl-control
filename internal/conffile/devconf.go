@@ -153,8 +153,12 @@ func lineProblem(l Line) string {
 // An empty line, LF or CRLF ("\r" alone, strlen 1), separates records for
 // all of them, and so does a single white-space character. Two characters,
 // such as "  " or " \r", separate only for the home-directory lookup, and
-// three or more for none. Every non-empty white-space line is flagged, not
-// just the ones they disagree on, so no edit has to reason about them.
+// three or more for none. Inside a Drive record, a line vtltape does not end
+// the record at (strlen 2 or more) also reaches its sscanf " Compression:
+// factor %d enabled %d" (mhvtl usr/cmd/vtltape.c:2204), which returns EOF on
+// it; vtltape takes that as a match and loads uninitialised compression
+// settings. Every non-empty white-space line is flagged, not just the ones
+// they disagree on, so no edit has to reason about them.
 // The model ends a record at the lines all of them agree on (separates).
 // An indented line of cLen 2 (" #", "\ta") is split on the same way, and
 // flagged too. (A column-1 one is a comment, which every parser skips first,
@@ -190,7 +194,10 @@ func (p Problem) Error() string { return fmt.Sprintf("line %d: %s", p.Line, p.Ms
 // Attr is one " Key: value" line of a device.conf stanza, read as mhVTL's
 // conf_value (mhvtl usr/vtllib.c:1090-1144) reads it: Key with each run of
 // blanks collapsed to one space, Value without a trailing comment (a '#'
-// after a blank) and trimmed.
+// after a blank) and trimmed. mhVTL reads a few keys with sscanf on the
+// whole line instead (Compression, NAA, and vtllibrary's Library ID); a
+// value it reads differently from that, or not at all, is an ambiguous
+// Problem (see scanfProblem).
 type Attr struct {
 	Key, Value string
 	Line       int // index into the file's lines
@@ -253,6 +260,8 @@ func (c *DeviceConf) index() {
 		}
 		if cur >= 0 && !isComment(l.Text) {
 			switch {
+			case ambiguousBlank(l) && c.stanzas[cur].Kind == "Drive" && cLen(l) > 1:
+				problem(i, true, "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record, and vtltape's Compression sscanf (vtltape.c:2204) takes it as a match and loads uninitialised compression settings; make it empty")
 			case ambiguousBlank(l):
 				problem(i, true, "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record; make it empty")
 			case cLen(l) == 2 && (l.Text[0] == ' ' || l.Text[0] == '\t'):
@@ -328,6 +337,9 @@ func (c *DeviceConf) index() {
 			key := strings.Join(strings.Fields(rawKey), " ")
 			value := attrValue(val)
 			st := &c.stanzas[cur]
+			if msg := scanfProblem(st.Kind, key, cText(l)); msg != "" {
+				problem(i, true, "%s", msg)
+			}
 			st.Attrs = append(st.Attrs, Attr{Key: key, Value: value, Line: i})
 			if j, seen := st.Attr[key]; !seen || value != "" || c.attrValue(j) == "" {
 				st.Attr[key] = i
@@ -474,6 +486,15 @@ func checkKV(key, value string) error {
 	return nil
 }
 
+// checkScanf refuses a value of a field mhVTL reads with sscanf that it would
+// not read as written (see scanfProblem), such as an NAA short of 8 bytes.
+func checkScanf(kind, key, value string) error {
+	if msg := scanfProblem(kind, key, attrText(key, value)); msg != "" {
+		return fmt.Errorf("invalid value for %s: %s", key, msg)
+	}
+	return nil
+}
+
 func (c *DeviceConf) find(kind string, id int) (Stanza, error) {
 	st, ok := c.Stanza(kind, id)
 	if !ok {
@@ -492,6 +513,9 @@ func (c *DeviceConf) SetAttr(kind string, id int, key, value string) error {
 	}
 	st, err := c.find(kind, id)
 	if err != nil {
+		return err
+	}
+	if err := checkScanf(kind, key, value); err != nil {
 		return err
 	}
 	if i, ok := st.Attr[key]; ok {
@@ -577,6 +601,9 @@ func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 	}
 	for _, a := range attrs {
 		if err := checkKV(a.Key, a.Value); err != nil {
+			return err
+		}
+		if err := checkScanf(h.Kind, a.Key, a.Value); err != nil {
 			return err
 		}
 	}

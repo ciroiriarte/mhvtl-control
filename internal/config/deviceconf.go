@@ -41,7 +41,10 @@ func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, err erro
 			drv = &Drive{ID: st.ID, Channel: st.Channel, Target: st.Target, LUN: st.LUN}
 		}
 		for _, a := range st.Attrs {
-			// mhVTL ignores a field with no value (conf_value).
+			// conf_value ignores a field with no value, and so do the sscanf
+			// reads of NAA, Library ID and Home directory. An empty
+			// Compression is not ignored (vtltape.c:2204): conffile flags it,
+			// and there is no value to project.
 			if a.Value == "" {
 				continue
 			}
@@ -79,6 +82,15 @@ func applyAttr(lib *Library, drv *Drive, key, val string) error {
 			drv.Serial = val
 		}
 	case "NAA":
+		// sscanf needs all 8 bytes (vtltape.c:2217, vtllibrary.c:1342).
+		// With fewer, mhVTL drops the NAA for its default; with none it
+		// ignores the line.
+		switch n := conffile.ScanNAA(val); {
+		case n < 1:
+			return nil
+		case n < 8:
+			val = ""
+		}
 		if lib != nil {
 			lib.NAA = val
 		} else {
@@ -93,7 +105,9 @@ func applyAttr(lib *Library, drv *Drive, key, val string) error {
 			drv.Revision = val
 		}
 	case "Library ID":
-		// Form: "10 Slot: 01"
+		// Form: "10 Slot: 01". vtllibrary puts a drive in a library only
+		// with both numbers (vtllibrary.c:686); conffile flags a bare
+		// "10", and it is not projected.
 		if drv == nil {
 			return nil
 		}
@@ -105,14 +119,14 @@ func applyAttr(lib *Library, drv *Drive, key, val string) error {
 		if err != nil {
 			return fmt.Errorf("bad Library ID %q", val)
 		}
-		drv.LibraryID = id
-		if len(f) == 3 {
-			s, err := strconv.Atoi(f[2])
-			if err != nil {
-				return fmt.Errorf("bad Slot %q", val)
-			}
-			drv.Slot = s
+		if len(f) == 1 {
+			return nil
 		}
+		s, err := strconv.Atoi(f[2])
+		if err != nil {
+			return fmt.Errorf("bad Slot %q", val)
+		}
+		drv.LibraryID, drv.Slot = id, s
 	case "Slot":
 		if drv != nil {
 			s, err := strconv.Atoi(val)
@@ -126,6 +140,19 @@ func applyAttr(lib *Library, drv *Drive, key, val string) error {
 			return nil
 		}
 		f := strings.Fields(val)
+		// "Compression: N" sets the factor alone, 0 when N is out of 1-9
+		// (vtltape.c:2208-2212).
+		if len(f) == 1 {
+			n, err := strconv.Atoi(f[0])
+			if err != nil {
+				return fmt.Errorf("malformed Compression %q", val)
+			}
+			if n < 1 || n > 9 {
+				n = 0
+			}
+			drv.CompressionFactor = n
+			return nil
+		}
 		if len(f) != 4 || f[0] != "factor" || f[2] != "enabled" {
 			return fmt.Errorf("malformed Compression %q", val)
 		}
