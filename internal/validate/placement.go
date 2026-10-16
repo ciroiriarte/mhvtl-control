@@ -11,9 +11,11 @@ import (
 // Baseline returns the placement in force for library cur: with the live
 // placement known, the live cartridge of each storage slot (including the
 // slots the Slot lines skip, which vtllibrary makes empty) and MAP slot of
-// cur; otherwise cur's library_contents. Pickers come from cur's file. A
-// barcode bay reports true for (a cartridge the bay monitor placed) is left
-// out: the bay monitor places it again itself.
+// cur; otherwise cur's library_contents. Pickers come from cur's file. A MAP
+// entry bay reports true for (a cartridge the bay monitor placed) is left
+// out: the bay monitor places it again itself (plan 3.3, exec step 5). A bay
+// cartridge a host moved into a storage slot or drive stays: the bay monitor
+// only re-places MAP entries.
 func Baseline(cur config.Library, live *Placement, bay func(barcode string) bool) Placement {
 	out := newPlacement()
 	slots, maps := fileSlots(cur), fileMAPs(cur)
@@ -25,9 +27,9 @@ func Baseline(cur config.Library, live *Placement, bay func(barcode string) bool
 			maps[k] = live.MAPs[k]
 		}
 	}
-	keep(out.Slots, slots, bay)
+	keep(out.Slots, slots, nil)
 	keep(out.MAPs, maps, bay)
-	keep(out.Pickers, pickerMedia(cur), bay)
+	keep(out.Pickers, pickerMedia(cur), nil)
 	return out
 }
 
@@ -46,7 +48,7 @@ func Baseline(cur config.Library, live *Placement, bay func(barcode string) bool
 // picker) has moved and is not kept at its old element. A cartridge edits
 // displace and place nowhere leaves the library. With the live placement
 // unknown, the baseline is cur's file, so the result is next's file.
-// Pickers come from next's file. Bay cartridges are left out as in Baseline.
+// Pickers come from next's file. Bay MAP entries are left out as in Baseline.
 // Live drives are not part of the result.
 func Merge(cur, next config.Library, live *Placement, bay func(barcode string) bool) Placement {
 	out := newPlacement()
@@ -65,7 +67,7 @@ func Merge(cur, next config.Library, live *Placement, bay func(barcode string) b
 		}
 	}
 
-	fill := func(dst, base, next map[int]string) {
+	fill := func(dst, base, next map[int]string, bay func(string) bool) {
 		vals := map[int]string{}
 		for k, b := range next {
 			if b == base[k] {
@@ -79,9 +81,9 @@ func Merge(cur, next config.Library, live *Placement, bay func(barcode string) b
 		}
 		keep(dst, vals, bay)
 	}
-	fill(out.Slots, base.Slots, nextS)
-	fill(out.MAPs, base.MAPs, nextM)
-	keep(out.Pickers, pickerMedia(next), bay)
+	fill(out.Slots, base.Slots, nextS, nil)
+	fill(out.MAPs, base.MAPs, nextM, bay)
+	keep(out.Pickers, pickerMedia(next), nil)
 	return out
 }
 
