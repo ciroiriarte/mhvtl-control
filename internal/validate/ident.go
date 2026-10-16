@@ -19,6 +19,24 @@ import (
 // the same limit.
 const MaxSerialLen = 10
 
+// MaxVendorLen and MaxProductLen are the INQUIRY vendor and product
+// identification field widths. mhVTL cuts a longer device.conf value to
+// them, logging only (conf_clamp_string, usr/vtllib.c:1150; called at
+// usr/cmd/vtllibrary.c:1305 and :1316, usr/cmd/vtltape.c:2161 and :2167 in
+// upstream c65bff0).
+const (
+	MaxVendorLen  = 8
+	MaxProductLen = 16
+)
+
+// cut returns s cut to n bytes, as conf_clamp_string does.
+func cut(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
 // device is a library or drive of device.conf, for the identity checks.
 type device struct {
 	kind                 string // "library" or "drive"
@@ -133,6 +151,12 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		case len(d.serial) > MaxSerialLen:
 			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: serial %q is %d characters; mhvtl-control limits serials to %d characters, the fixed field some changers report them in (e.g. VPD page 83h, usr/pm/hp_smc_pm.c:79)", d, d.serial, len(d.serial), MaxSerialLen)
 		}
+		if len(d.vendor) > MaxVendorLen {
+			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: vendor %q is %d characters; INQUIRY has room for %d and mhVTL cuts the rest", d, d.vendor, len(d.vendor), MaxVendorLen)
+		}
+		if len(d.product) > MaxProductLen {
+			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: product %q is %d characters; INQUIRY has room for %d and mhVTL cuts the rest", d, d.product, len(d.product), MaxProductLen)
+		}
 		if d.serial != "" {
 			if o, dup := serials[d.serial]; dup {
 				r.errorf(FamilyIdentity, d.lib, []string{o.key(), d.key()}, "%s and %s share serial %q", o, d, d.serial)
@@ -224,7 +248,8 @@ const TCMLoopDriver = "tcm_loop"
 
 // reexport returns the device of cur that h, a tcm_loop device, is an export
 // of: one whose serial and reported NAA h both reports. A changer that sends
-// no NAA is matched on its serial and INQUIRY vendor and product instead.
+// no NAA is matched on its serial and INQUIRY vendor and product instead,
+// cut to the INQUIRY field widths as mhVTL reports them.
 //
 // Only tcm_loop counts: the loopback fabric presents LIO backstores of this
 // host to this host, so a match there is mhVTL's device exported again
@@ -241,7 +266,7 @@ func reexport(h hostids.Device, cur []device) (device, bool) {
 			continue
 		}
 		if !c.sendsNAA {
-			if strings.TrimSpace(c.vendor) == h.Vendor && strings.TrimSpace(c.product) == h.Model {
+			if strings.TrimSpace(cut(c.vendor, MaxVendorLen)) == h.Vendor && strings.TrimSpace(cut(c.product, MaxProductLen)) == h.Model {
 				return c, true
 			}
 			continue
