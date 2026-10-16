@@ -294,11 +294,11 @@ func MoveAcross(src, dstDir string) error {
 	if err := os.Remove(tmp); err != nil {
 		return err
 	}
-	if err := durable(dstDir); err != nil {
-		return err
-	}
+	// The copy is in place even if its fsync fails: finish the move, so
+	// the file is not left in both places, and report it as not durable.
+	notDurable := durable(dstDir)
 	if err := os.Remove(src); err != nil {
-		return err
+		return errors.Join(err, notDurable)
 	}
-	return durable(filepath.Dir(src))
+	return errors.Join(notDurable, durable(filepath.Dir(src)))
 }
