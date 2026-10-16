@@ -58,6 +58,26 @@ func TestAddresses(t *testing.T) {
 			l.Slots[2].Number = 0
 			return l
 		}(), []string{"drive 1 is configured twice", "storage slot 0 is invalid; numbering starts at 1"}},
+		{"L700 Drive line 501 without a device.conf drive", func() config.Library {
+			l := withCounts(stk, 2, 39, 4, 1)
+			l.DriveLines = []config.DriveLine{{Number: 1}, {Number: 2}, {Number: 501}}
+			return l
+		}(), []string{"drive 501 would sit at element address 0x03e8, which overlaps the storage slot addresses from 0x03e8; the limit is 500 drives"}},
+		{"L700 Drive line 500 fills the gap up to the limit", func() config.Library {
+			l := withCounts(stk, 2, 39, 4, 1)
+			l.DriveLines = []config.DriveLine{{Number: 500, Serial: "X"}}
+			return l
+		}(), nil},
+		{"03584 repeated Drive lines, then one past the drives", func() config.Library {
+			l := withCounts(ibm, 0, 1, 1, 1)
+			l.DriveLines = []config.DriveLine{{Number: 1}, {Number: 1}, {Number: 512, Serial: "GHOST"}}
+			return l
+		}(), []string{"drive 512 would sit at element address 0x0300, which overlaps the MAP slot addresses from 0x0300"}},
+		{"Drive lines matching device.conf drives are not counted twice", func() config.Library {
+			l := withCounts(stk, 2, 3, 0, 1)
+			l.DriveLines = []config.DriveLine{{Number: 2}, {Number: 1}}
+			return l
+		}(), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Validate(config.Inventory{}, inv(tc.lib), nil, nil, Options{})

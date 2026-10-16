@@ -30,6 +30,26 @@ func checkAddresses(r *Result, next config.Inventory) {
 		for _, d := range lib.Drives {
 			drives.numbers, drives.keys = append(drives.numbers, d.Slot), append(drives.keys, driveKey(d.ID))
 		}
+		// vtllibrary also makes a drive element for every "Drive N:" line of
+		// library_contents, and an empty one for each number a line skips
+		// over, whether device.conf has a drive there or not; elements share
+		// one per number (usr/cmd/vtllibrary.c __init_slot_info :1031-1039,
+		// init_drive_slot :851-878 → lookup_drive, add_new_slot; check_overflow
+		// at :856; upstream master 6458223).
+		have := map[int]bool{}
+		for _, n := range drives.numbers {
+			have[n] = true
+		}
+		next := 1
+		for _, dl := range lib.DriveLines {
+			for n := next; n <= dl.Number; n++ {
+				if !have[n] {
+					have[n] = true
+					drives.numbers, drives.keys = append(drives.numbers, n), append(drives.keys, lineKey(lib.ID, dl.Number))
+				}
+			}
+			next = max(next, dl.Number+1)
+		}
 		slots := window{kind: "storage slot", plural: "storage slots", start: p.StartStorage}
 		for _, s := range lib.Slots {
 			slots.numbers, slots.keys = append(slots.numbers, s.Number), append(slots.keys, slotKey(lib.ID, s.Number))
