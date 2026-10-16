@@ -336,6 +336,103 @@
     });
   }
 
+  /* ---- configuration view (read-only; plan 2.4, AC 17) ---------------- */
+
+  // HELPER_ENABLE is how the apply helper is enabled once it is installed
+  // (plan 3.1: the socket unit, never enabled by packaging).
+  var HELPER_ENABLE = "systemctl enable --now mhvtl-control-apply.socket";
+
+  // capabilityNotice turns GET /config/capabilities into the configuration
+  // view's banner: why the configuration is read-only here and what enables
+  // editing. It never suggests that this dashboard can write: there are no
+  // write controls (AC 17). command is a shell command to show, or null.
+  function capabilityNotice(caps) {
+    caps = caps || {};
+    var lines = [];
+    var command = null;
+    var tone = "info";
+    switch (String(caps.helper || "")) {
+      case "present":
+        lines.push("The apply helper is enabled. This version of mhvtl-control shows the configuration read-only.");
+        break;
+      case "legacy_env_blocks":
+        tone = "warn";
+        lines.push("Read-only. The apply helper refuses to run while /etc/mhvtl/mhvtl-control.env exists.");
+        lines.push("Move it to /etc/mhvtl-control/mhvtl-control.env and restart mhvtl-control.");
+        break;
+      case "incomplete_apply":
+        tone = "warn";
+        lines.push("Read-only. An earlier apply did not finish; the apply helper recovers it before any new change.");
+        break;
+      default:
+        lines.push("Read-only. Editing the configuration needs the privileged apply helper, mhvtl-control-apply, which is not enabled on this host.");
+        lines.push("Once it is installed, enable it with:");
+        command = HELPER_ENABLE;
+    }
+    if (caps.writes === "tls_required") {
+      tone = "warn";
+      lines.push("This daemon listens on a non-loopback address without TLS, so it would refuse changes: start it with --tls-cert and --tls-key, or listen on loopback.");
+    }
+    var facts = [
+      ["mhVTL systemd generator", caps.generator === true ? "installed" : "not installed"],
+      ["make_vtl_media per-library home", caps.per_library_home_media === true ? "supported" : "not supported (mhVTL before markh794/mhvtl#276)"],
+    ];
+    return { tone: tone, lines: lines, command: command, facts: facts };
+  }
+
+  var ELEMENT_NAMES = { library: "library", drive: "drive", slot: "slot", map: "MAP", picker: "picker", drive_line: "Drive line" };
+
+  // elementText names one element a finding concerns, e.g. "MAP 2".
+  function elementText(el) {
+    if (!el) { return ""; }
+    var name = Object.prototype.hasOwnProperty.call(ELEMENT_NAMES, el.kind) ? ELEMENT_NAMES[el.kind] : String(el.kind || "element");
+    return name + " " + coerceNumber(el.number);
+  }
+
+  // findingRows flattens a POST /config/validate result into display rows,
+  // errors first. The library element itself is left out of "where": the
+  // row names the library already.
+  function findingRows(res) {
+    var rows = [];
+    [["error", res && res.errors], ["warning", res && res.warnings]].forEach(function (p) {
+      coerceArray(p[1]).forEach(function (f) {
+        if (!f) { return; }
+        var where = coerceArray(f.elements)
+          .filter(function (el) { return el && el.kind !== "library"; })
+          .map(elementText);
+        rows.push({
+          severity: p[0],
+          code: String(f.code || ""),
+          library: coerceNumber(f.library),
+          message: String(f.message || ""),
+          tag: String(f.tag || ""),
+          where: where.join(", "),
+        });
+      });
+    });
+    return rows;
+  }
+
+  // problemText renders a Problem of GET /config: "file:line: message".
+  function problemText(p) {
+    p = p || {};
+    return String(p.file || "?") + ":" + coerceNumber(p.line) + ": " + String(p.message || "");
+  }
+
+  // buildValidateBody is the POST /config/validate body that checks the
+  // configuration in force, with library libId set up for target
+  // application app ("" for none). It proposes no file: validation then
+  // reads the files as they are and the live placement.
+  function buildValidateBody(libId, app) {
+    var body = {};
+    var id = Number(libId);
+    if (app && Number.isInteger(id) && id > 0) {
+      body.target_apps = {};
+      body.target_apps[String(id)] = String(app);
+    }
+    return body;
+  }
+
   var API = {
     esc: esc,
     fmtRatio: fmtRatio,
@@ -360,6 +457,11 @@
     filterSlots: filterSlots,
     countSlots: countSlots,
     nodeRows: nodeRows,
+    capabilityNotice: capabilityNotice,
+    elementText: elementText,
+    findingRows: findingRows,
+    problemText: problemText,
+    buildValidateBody: buildValidateBody,
   };
 
   /* ---- UMD tail ------------------------------------------------------- */

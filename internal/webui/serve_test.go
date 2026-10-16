@@ -322,3 +322,37 @@ func TestReferencedAssetsDoNotFourOhFour(t *testing.T) {
 		}
 	}
 }
+
+// The configuration view is read-only (AC 17): it has its panels and the
+// banner, and the client sends nothing to the configuration but GETs and a
+// validation, which never writes.
+func TestConfigViewIsReadOnly(t *testing.T) {
+	h := newServer()
+	_, index := get(t, h, "/")
+	for _, id := range []string{"config-panel", "config-status", "config-notice", "config-library", "config-target-app",
+		"config-view", "findings-panel", "findings-status", "config-findings"} {
+		if !strings.Contains(index, `id="`+id+`"`) {
+			t.Errorf("index.html missing element id %q", id)
+		}
+	}
+	_, app := get(t, h, "/static/js/app.js")
+	for _, want := range []string{"/api/v1/config/capabilities", "/api/v1/config/personalities", "/api/v1/config/validate", "/slots", "capabilityNotice"} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js missing marker %q", want)
+		}
+	}
+	if strings.Contains(app, "/api/v1/config/apply") {
+		t.Error("app.js names the apply route")
+	}
+	// Every call to a configuration route is a GET, but the validation.
+	for _, line := range strings.Split(app, "\n") {
+		if strings.Contains(line, `api("/api/v1/config`) && strings.Contains(line, "method:") &&
+			!strings.Contains(line, `api("/api/v1/config/validate", { method: "POST"`) {
+			t.Errorf("app.js sends a configuration request other than a GET or the validation: %s", strings.TrimSpace(line))
+		}
+	}
+	_, core := get(t, h, "/static/js/core.js")
+	if !strings.Contains(core, "systemctl enable --now mhvtl-control-apply.socket") {
+		t.Error("core.js does not say how to enable the apply helper")
+	}
+}

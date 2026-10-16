@@ -82,6 +82,33 @@
         <div class="body" id="media-list"><p class="muted">Loading media…</p></div>
       </section>
 
+      <!-- Configuration (device.conf, library_contents): read-only. Editing
+           needs the privileged apply helper; there are no write controls (AC 17). -->
+      <section class="panel col-12" id="config-panel" aria-busy="false">
+        <header>Configuration <span class="count">read-only</span></header>
+        <div class="panel-status" id="config-status" data-panel-status role="alert" aria-live="polite"></div>
+        <div class="cfg-notice" id="config-notice" role="note"></div>
+        <div class="lib-toolbar" id="config-toolbar">
+          <label class="ctl">Library
+            <select id="config-library" aria-label="Library to show"></select>
+          </label>
+          <label class="ctl">Check for
+            <select id="config-target-app" aria-label="Backup application to check the library against">
+              <option value="">Any application (warnings only)</option>
+            </select>
+          </label>
+        </div>
+        <div class="body" id="config-view"><p class="muted">Loading configuration…</p></div>
+      </section>
+
+      <!-- Findings: lines mhVTL would not read as written, and validation of
+           the configuration in force against the live state and the host. -->
+      <section class="panel col-12" id="findings-panel" aria-busy="false">
+        <header>Findings <span class="count" id="findings-count"></span></header>
+        <div class="panel-status" id="findings-status" data-panel-status role="alert" aria-live="polite"></div>
+        <div class="body" id="config-findings"><p class="muted">Loading findings…</p></div>
+      </section>
+
       <section class="panel col-12" id="disk-panel" aria-busy="false">
         <header>Raw Disk Dock <span class="count" id="disk-count"></span></header>
         <div class="panel-status" id="disk-status" data-panel-status role="alert" aria-live="polite"></div>

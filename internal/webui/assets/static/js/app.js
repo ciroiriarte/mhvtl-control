@@ -36,6 +36,8 @@
   var expandBarcodes = core.expandBarcodes, parseSizeMB = core.parseSizeMB, buildMediaPatch = core.buildMediaPatch;
   var mediaLocText = core.mediaLocText, filterMedia = core.filterMedia;
   var nodeRows = core.nodeRows;
+  var capabilityNotice = core.capabilityNotice, findingRows = core.findingRows, problemText = core.problemText;
+  var buildValidateBody = core.buildValidateBody;
 
   /* ---- library view state (US-F6: search / filter / table / multi-lib) --
    * These persist across refreshes so a running search/filter is not reset by
@@ -49,6 +51,13 @@
    * payload with the library and generation it was fetched for.           */
   var mediaView = { query: "", where: "all" };
   var lastMedia = null; // { libId, gen, data }
+
+  /* ---- configuration view state: the library shown, the application it
+   * is checked for, and the last payloads, so the selectors re-render
+   * without a refetch.                                                   */
+  var cfgView = { selected: null, app: "" };
+  var lastCfg = null;    // { caps, config, personalities }
+  var lastSlots = null;  // { libId, data }
 
   /* ---- localStorage (errors surfaced, never silently implying success) -- */
   var LS_THEME = "mhvtl-control.theme";
@@ -183,6 +192,8 @@
   var libStatus = PanelStatus("lib-status");
   var diskStatus = PanelStatus("disk-status");
   var mediaStatus = PanelStatus("media-status");
+  var configStatus = PanelStatus("config-status");
+  var findingsStatus = PanelStatus("findings-status");
 
   // busy toggles aria-busy on a panel <section> for assistive tech during loads.
   function busy(panelId, on) {
@@ -1631,6 +1642,273 @@
     return e.message;
   }
 
+  /* ---- configuration view (read-only; AC 17) --------------------------
+   * Shows device.conf and library_contents as mhvtl-control reads them, the
+   * personality each library gets, and the findings of validating the
+   * configuration in force. It has no control that changes anything: editing
+   * needs the privileged apply helper, and the banner says how to enable it.  */
+  function renderConfigNotice(caps) {
+    var box = $("config-notice");
+    if (!box) { return; }
+    clear(box);
+    var n = capabilityNotice(caps);
+    box.className = "cfg-notice " + n.tone;
+    n.lines.forEach(function (l) { box.appendChild(mk("p", { text: l })); });
+    if (n.command) { box.appendChild(mk("code", { class: "cfg-command", text: n.command })); }
+    var facts = mk("p", { class: "cfg-facts muted" });
+    n.facts.forEach(function (f, i) {
+      if (i) { facts.appendChild(document.createTextNode(" · ")); }
+      facts.appendChild(document.createTextNode(f[0] + ": " + f[1]));
+    });
+    box.appendChild(facts);
+  }
+
+  function hex4(n) { return "0x" + ("0000" + coerceNumber(n).toString(16)).slice(-4); }
+
+  // windowText describes one element type's window: its first address and
+  // how many elements fit before the next type.
+  function windowText(start, limit, what) {
+    return what + " from " + hex4(start) + ", up to " + coerceNumber(limit);
+  }
+
+  function configLibrarySummary(lib) {
+    var p = lib.personality || {};
+    var st = p.start || {}, lim = p.limits || {};
+    var rows = [
+      ["Address", scsiAddr(lib).addr],
+      ["Vendor / product", String(lib.vendor || "") + " " + String(lib.product || "")],
+      ["Serial", String(lib.serial || "—")],
+      ["NAA", String(lib.naa || "—")],
+      ["Media home", String(lib.home || "—") + (lib.home_dir ? "" : " (MHVTL_HOME_PATH)")],
+      ["Personality", String(p.name || "?") + " (" + String(p.init_fn || "?") + ", selected at " + String(p.rule_source || "?") + ")"],
+      ["VPD page 83h", p.vpd83 ? "yes" : "no"],
+      ["Element windows", [
+        windowText(st.drive, lim.drives, "drives"),
+        windowText(st.storage, lim.slots, "storage slots"),
+        windowText(st.map, lim.maps, "MAP slots"),
+        windowText(st.picker, lim.pickers, "pickers"),
+      ].join(" · ") + " (" + String(p.window_source || "?") + ")"],
+    ];
+    return mk("table", { class: "cfg-kv", children: [mk("tbody", { children: rows.map(function (r) { return kvRow(r[0], r[1]); }) })] });
+  }
+
+  function configDrivesTable(lib) {
+    var drives = coerceArray(lib.drives);
+    if (!drives.length) { return mk("p", { class: "muted", text: "No drives." }); }
+    var head = mk("thead", { children: [mk("tr", { children: ["ID", "Slot", "Address", "Vendor / product", "Rev", "Serial", "NAA", "Compression"].map(function (h) { return mk("th", { text: h }); }) })] });
+    var rows = drives.map(function (d) {
+      var comp = d.compression_enabled
+        ? String(d.compression_type || "on") + " (factor " + coerceNumber(d.compression_factor) + ")"
+        : "off";
+      return mk("tr", { children: [
+        mk("td", { class: "mono", text: coerceNumber(d.id) }),
+        mk("td", { class: "mono", text: coerceNumber(d.slot) }),
+        mk("td", { class: "mono", text: scsiAddr(d).addr }),
+        mk("td", { text: String(d.vendor || "") + " " + String(d.product || "") }),
+        mk("td", { class: "mono", text: String(d.revision || "") }),
+        mk("td", { class: "mono", text: String(d.serial || "") }),
+        mk("td", { class: "mono", text: String(d.naa || "") }),
+        mk("td", { text: comp }),
+      ] });
+    });
+    return mk("table", { class: "slot-table", children: [head, mk("tbody", { children: rows })] });
+  }
+
+  // configSlotsTable lists every storage slot vtllibrary makes and every MAP
+  // slot: the cartridge library_contents puts there and, with the changer
+  // readable, the one there now.
+  function configSlotsTable(data) {
+    var live = !!(data && data.live);
+    var cols = ["Element", "library_contents"].concat(live ? ["Live"] : []);
+    var head = mk("thead", { children: [mk("tr", { children: cols.map(function (h) { return mk("th", { text: h }); }) })] });
+    var rows = [];
+    function add(kind, sl) {
+      var file = sl.listed === false ? "(not listed: empty)" : (String(sl.barcode || "") || "empty");
+      var cells = [mk("td", { class: "mono", text: kind + " " + coerceNumber(sl.number) }), mk("td", { class: "mono", text: file })];
+      if (live) {
+        var lb = sl.live_barcode == null ? "?" : (String(sl.live_barcode) || "empty");
+        var differs = sl.live_barcode != null && String(sl.live_barcode) !== String(sl.barcode || "");
+        cells.push(mk("td", { class: "mono" + (differs ? " warn" : ""), text: lb }));
+      }
+      rows.push(mk("tr", { children: cells }));
+    }
+    coerceArray(data && data.maps).forEach(function (sl) { if (sl) { add("MAP", sl); } });
+    coerceArray(data && data.slots).forEach(function (sl) { if (sl) { add("Slot", sl); } });
+    if (!rows.length) { return mk("p", { class: "muted", text: "No storage or MAP slots." }); }
+    return mk("table", { class: "slot-table", children: [head, mk("tbody", { children: rows })] });
+  }
+
+  function personalitiesBlock(pers) {
+    var libs = coerceArray(pers && pers.libraries);
+    var det = mk("details", { class: "cfg-section" });
+    det.appendChild(mk("summary", { text: "Library personalities (" + libs.length + ")" }));
+    var head = mk("thead", { children: [mk("tr", { children: ["Personality", "Selected by vendor / product prefix", "VPD 83h", "Drives", "Storage", "MAP"].map(function (h) { return mk("th", { text: h }); }) })] });
+    var rows = libs.map(function (p) {
+      var rules = coerceArray(p.rules).map(function (r) {
+        return (String(r.vendor || "*") + " / " + String(r.product_prefix || "*"));
+      }).join("; ");
+      var lim = p.limits || {};
+      return mk("tr", { children: [
+        mk("td", { text: String(p.name || "") + " (" + String(p.init_fn || "") + ")" }),
+        mk("td", { class: "mono", text: rules }),
+        mk("td", { text: p.vpd83 ? "yes" : "no" }),
+        mk("td", { class: "mono", text: coerceNumber(lim.drives) }),
+        mk("td", { class: "mono", text: coerceNumber(lim.slots) }),
+        mk("td", { class: "mono", text: coerceNumber(lim.maps) }),
+      ] });
+    });
+    det.appendChild(mk("div", { class: "slot-scroll", children: [mk("table", { class: "slot-table", children: [head, mk("tbody", { children: rows })] })] }));
+    return det;
+  }
+
+  function renderConfig() {
+    var view = $("config-view");
+    if (!view || !lastCfg) { return; }
+    clear(view);
+    renderConfigNotice(lastCfg.caps);
+    var libs = coerceArray(lastCfg.config && lastCfg.config.libraries);
+    var sel = $("config-library");
+    if (sel) {
+      clear(sel);
+      libs.forEach(function (lib) {
+        var id = String(coerceNumber(lib.id));
+        sel.appendChild(mk("option", { text: "#" + id + " — " + String(lib.vendor || "") + " " + String(lib.product || ""), attrs: { value: id } }));
+      });
+    }
+    var appSel = $("config-target-app");
+    if (appSel) {
+      clear(appSel);
+      appSel.appendChild(mk("option", { text: "Any application (warnings only)", attrs: { value: "" } }));
+      coerceArray(lastCfg.personalities && lastCfg.personalities.target_apps).forEach(function (a) {
+        appSel.appendChild(mk("option", { text: String(a.name || a.id), attrs: { value: String(a.id || "") } }));
+      });
+      appSel.value = cfgView.app;
+      if (appSel.value !== cfgView.app) { cfgView.app = ""; appSel.value = ""; }
+    }
+    if (!libs.length) {
+      view.appendChild(mk("p", { class: "muted", text: "No libraries configured (" + String(lastCfg.config && lastCfg.config.config_dir || "") + "/device.conf)." }));
+    } else {
+      var lib = null;
+      libs.forEach(function (l) { if (String(coerceNumber(l.id)) === String(cfgView.selected)) { lib = l; } });
+      if (!lib) { lib = libs[0]; }
+      cfgView.selected = String(coerceNumber(lib.id));
+      if (sel) { sel.value = cfgView.selected; }
+
+      view.appendChild(configLibrarySummary(lib));
+      view.appendChild(mk("h4", { class: "cfg-h", text: "Drives (device.conf)" }));
+      view.appendChild(mk("div", { class: "cfg-scroll", children: [configDrivesTable(lib)] }));
+      view.appendChild(mk("h4", { class: "cfg-h", text: "Slots (library_contents." + cfgView.selected + ")" }));
+      var slots = lastSlots && lastSlots.libId === cfgView.selected ? lastSlots.data : null;
+      if (!slots) {
+        view.appendChild(mk("p", { class: "muted", text: "Loading slots…" }));
+      } else {
+        if (!slots.live) {
+          view.appendChild(mk("p", { class: "muted", text: "Live changer state unavailable" + (slots.live_error ? ": " + String(slots.live_error) : "") + ". Showing library_contents only." }));
+        }
+        view.appendChild(mk("div", { class: "slot-scroll", children: [configSlotsTable(slots)] }));
+      }
+    }
+    var standalone = coerceArray(lastCfg.config && lastCfg.config.standalone_drives);
+    if (standalone.length) {
+      view.appendChild(mk("h4", { class: "cfg-h", text: "Drives without a library" }));
+      view.appendChild(mk("div", { class: "cfg-scroll", children: [configDrivesTable({ drives: standalone })] }));
+    }
+    view.appendChild(personalitiesBlock(lastCfg.personalities));
+  }
+
+  function renderFindings(problems, result) {
+    var box = $("config-findings");
+    if (!box) { return; }
+    clear(box);
+    var rows = findingRows(result);
+    var errs = rows.filter(function (r) { return r.severity === "error"; }).length;
+    var count = $("findings-count");
+    if (count) { count.textContent = "(" + errs + " blocking · " + (rows.length - errs) + " warnings)"; }
+
+    problems = coerceArray(problems);
+    if (problems.length) {
+      box.appendChild(mk("h4", { class: "cfg-h", text: "Lines mhVTL does not read as written" }));
+      box.appendChild(mk("ul", { class: "cfg-problems", children: problems.map(function (p) { return mk("li", { class: "mono", text: problemText(p) }); }) }));
+    }
+    var liveErrs = result && result.live_errors && typeof result.live_errors === "object" ? result.live_errors : {};
+    Object.keys(liveErrs).forEach(function (id) {
+      box.appendChild(mk("p", { class: "muted", text: "Library " + coerceNumber(id) + ": live state not read (" + String(liveErrs[id]) + "); its library_contents stands in for it." }));
+    });
+    if (!rows.length) {
+      box.appendChild(mk("p", { class: "ok", text: "No findings: the configuration in force passes validation." }));
+      return;
+    }
+    var head = mk("thead", { children: [mk("tr", { children: ["", "Library", "Code", "Finding", "Elements"].map(function (h) { return mk("th", { text: h }); }) })] });
+    var trs = rows.map(function (r) {
+      var sev = r.severity === "error" ? "blocking" : (r.tag === "pre-existing" ? "pre-existing" : "warning");
+      return mk("tr", { class: "finding " + r.severity, children: [
+        mk("td", { children: [mk("span", { class: "badge sev-" + r.severity, text: sev })] }),
+        mk("td", { class: "mono", text: r.library ? String(r.library) : "—" }),
+        mk("td", { class: "mono", text: r.code }),
+        mk("td", { text: r.message }),
+        mk("td", { class: "mono", text: r.where }),
+      ] });
+    });
+    box.appendChild(mk("div", { class: "media-scroll", children: [mk("table", { class: "slot-table findings-table", children: [head, mk("tbody", { children: trs })] })] }));
+  }
+
+  // refreshConfigLibrary reads the selected library's slots and validates the
+  // configuration in force for the application it is checked for. Validation
+  // proposes no file and never writes.
+  function refreshConfigLibrary(gen, signal) {
+    if (gen === undefined) { gen = NodeState.generation; }
+    if (!lastCfg || isStale(gen, NodeState.generation)) { return Promise.resolve(); }
+    var libId = cfgView.selected;
+    var problems = lastCfg.config && lastCfg.config.problems;
+    findingsStatus.loading();
+    busy("findings-panel", true);
+    var slotsP = libId == null ? Promise.resolve(null) : api("/api/v1/config/libraries/" + encodeURIComponent(libId) + "/slots", { signal: signal });
+    var checkP = api("/api/v1/config/validate", { method: "POST", body: buildValidateBody(libId, cfgView.app), signal: signal });
+    slotsP.then(function (d) {
+      if (isStale(gen, NodeState.generation) || cfgView.selected !== libId) { return; }
+      lastSlots = d ? { libId: libId, data: d } : null;
+      renderConfig();
+    }).catch(function (e) {
+      if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      configStatus.error("slots: " + e.message);
+    });
+    return checkP.then(function (res) {
+      busy("findings-panel", false);
+      if (isStale(gen, NodeState.generation)) { return; }
+      renderFindings(problems, res);
+      setPanelGrey("config-findings", false);
+      findingsStatus.ok();
+    }).catch(function (e) {
+      busy("findings-panel", false);
+      if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      findingsStatus.error("validate: " + e.message);
+    });
+  }
+
+  function refreshConfig(gen, signal) {
+    configStatus.loading();
+    setPanelGrey("config-view", true);
+    setPanelGrey("config-findings", true);
+    busy("config-panel", true);
+    return Promise.all([
+      api("/api/v1/config/capabilities", { signal: signal }),
+      api("/api/v1/config", { signal: signal }),
+      api("/api/v1/config/personalities", { signal: signal }),
+    ]).then(function (r) {
+      busy("config-panel", false);
+      if (isStale(gen, NodeState.generation)) { return; }
+      lastCfg = { caps: r[0] || {}, config: r[1] || {}, personalities: r[2] || {} };
+      renderConfig();
+      setPanelGrey("config-view", false);
+      configStatus.ok();
+      return refreshConfigLibrary(gen, signal);
+    }).catch(function (e) {
+      busy("config-panel", false);
+      if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      configStatus.error("configuration: " + e.message);
+    });
+  }
+
   /* ---- refresh cycle (generation-guarded, abortable) ------------------- */
   function refreshSystem(gen, signal) {
     sysStatus.loading();
@@ -1720,6 +1998,7 @@
     refreshSystem(gen, signal);
     refreshLibraries(gen, signal).then(function () { return refreshMedia(gen, signal); });
     refreshDisks(gen, signal);
+    refreshConfig(gen, signal);
   }
 
   /* ---- node switching + health probe ----------------------------------- */
@@ -1734,10 +2013,13 @@
   }
   function greyPanels() {
     sysStatus.grey(); libStatus.grey(); diskStatus.grey(); mediaStatus.grey();
+    configStatus.grey(); findingsStatus.grey();
     setPanelGrey("system-status", true);
     setPanelGrey("library-rack", true);
     setPanelGrey("disk-dock", true);
     setPanelGrey("media-list", true);
+    setPanelGrey("config-view", true);
+    setPanelGrey("config-findings", true);
     ["media-create-dialog", "media-edit-dialog", "import-dialog", "move-dialog", "confirm-dialog", "stats-dialog"].forEach(closeDialog);
   }
 
@@ -1788,6 +2070,7 @@
         // Panels stay greyed (controls uninteractive) while the node is down.
         var m = "node unreachable — controls disabled until it responds";
         sysStatus.error(m); libStatus.error(m); diskStatus.error(m); mediaStatus.error(m);
+        configStatus.error(m); findingsStatus.error(m);
       }
     });
   }
@@ -1854,6 +2137,20 @@
     $("media-search").addEventListener("input", function (e) { mediaView.query = e.target.value; renderMedia(); });
     $("media-where").addEventListener("change", function (e) { mediaView.where = e.target.value; renderMedia(); });
     $("media-new-btn").addEventListener("click", openCreateDialog);
+
+    // Configuration view: the library shown and the application it is
+    // checked for. Both only read: slots and a validation of the files as
+    // they are.
+    $("config-library").addEventListener("change", function (e) {
+      cfgView.selected = e.target.value;
+      lastSlots = null;
+      renderConfig();
+      refreshConfigLibrary(NodeState.generation, currentAbort ? currentAbort.signal : undefined);
+    });
+    $("config-target-app").addEventListener("change", function (e) {
+      cfgView.app = e.target.value;
+      refreshConfigLibrary(NodeState.generation, currentAbort ? currentAbort.signal : undefined);
+    });
 
     // Enter in a text field runs the dialog's primary action instead of the
     // form's default (first) button, which is Cancel.

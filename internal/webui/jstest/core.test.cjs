@@ -390,3 +390,55 @@ test("nodeRows orders device nodes and separates the udev links", () => {
   assert.deepStrictEqual(core.nodeRows(undefined), { rows: [], links: [] });
   assert.deepStrictEqual(core.nodeRows({ sg: 3, by_id: "x" }), { rows: [], links: [] });
 });
+
+test("capabilityNotice: helper absent says how to enable it and offers no write", () => {
+  const n = core.capabilityNotice({ helper: "absent", writes: "helper_absent", generator: true, per_library_home_media: false });
+  assert.strictEqual(n.tone, "info");
+  assert.strictEqual(n.command, "systemctl enable --now mhvtl-control-apply.socket");
+  assert.ok(n.lines[0].startsWith("Read-only."));
+  assert.deepStrictEqual(n.facts, [
+    ["mhVTL systemd generator", "installed"],
+    ["make_vtl_media per-library home", "not supported (mhVTL before markh794/mhvtl#276)"],
+  ]);
+});
+
+test("capabilityNotice: legacy env file, TLS and an unknown payload", () => {
+  const legacy = core.capabilityNotice({ helper: "legacy_env_blocks", writes: "ok" });
+  assert.strictEqual(legacy.tone, "warn");
+  assert.strictEqual(legacy.command, null);
+  assert.ok(legacy.lines.join(" ").includes("/etc/mhvtl-control/mhvtl-control.env"));
+  const tls = core.capabilityNotice({ helper: "present", writes: "tls_required" });
+  assert.strictEqual(tls.tone, "warn");
+  assert.ok(tls.lines.some((l) => l.includes("--tls-cert")));
+  // Anything unexpected reads as "no helper": read-only, with the enable hint.
+  const junk = core.capabilityNotice({ helper: "<img src=x>" });
+  assert.strictEqual(junk.command, "systemctl enable --now mhvtl-control-apply.socket");
+  assert.strictEqual(core.capabilityNotice(null).facts[0][1], "not installed");
+});
+
+test("findingRows flattens errors then warnings with their elements", () => {
+  const rows = core.findingRows({
+    errors: [{ code: "preset.unmet", library: 10, message: "m1", elements: [{ kind: "library", library: 10, number: 10 }] }],
+    warnings: [
+      { code: "removal.move_back", library: 10, message: "m2", tag: "pre-existing",
+        elements: [{ kind: "library", number: 10 }, { kind: "map", library: 10, number: 2 }, { kind: "drive", number: 11 }, { kind: "drive_line", number: 1 }] },
+      null,
+    ],
+  });
+  assert.deepStrictEqual(rows, [
+    { severity: "error", code: "preset.unmet", library: 10, message: "m1", tag: "", where: "" },
+    { severity: "warning", code: "removal.move_back", library: 10, message: "m2", tag: "pre-existing", where: "MAP 2, drive 11, Drive line 1" },
+  ]);
+  assert.deepStrictEqual(core.findingRows(undefined), []);
+  assert.deepStrictEqual(core.findingRows({ errors: "x" }), []);
+  assert.strictEqual(core.elementText({ kind: "__proto__", number: "x" }), "__proto__ 0");
+});
+
+test("problemText and buildValidateBody", () => {
+  assert.strictEqual(core.problemText({ file: "device.conf", line: 12, message: "bad" }), "device.conf:12: bad");
+  assert.strictEqual(core.problemText(null), "?:0: ");
+  assert.deepStrictEqual(core.buildValidateBody(10, "pbs"), { target_apps: { "10": "pbs" } });
+  assert.deepStrictEqual(core.buildValidateBody("10", ""), {});
+  assert.deepStrictEqual(core.buildValidateBody(null, "pbs"), {});
+  assert.deepStrictEqual(core.buildValidateBody(1.5, "pbs"), {});
+});
