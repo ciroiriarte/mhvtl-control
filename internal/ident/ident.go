@@ -93,19 +93,33 @@ func (g Generator) Serial(taken func(serial string) bool) (string, error) {
 }
 
 // NAA returns the first NAA identifier of this appliance's sequence that taken
-// rejects, in device.conf notation. It is a locally assigned NAA: the NAA
-// field (the top four bits) is 3h and the other 60 bits are the locally
-// administered value. SPC-4 r37 §7.8.6.6 (NAA designator format), NAA Locally
-// Assigned designator format; https://www.t10.org/. The table and page
-// numbers are not confirmed against a copy of the standard.
+// rejects, in device.conf notation.
 //
-// mhVTL puts 5h in the NAA field on the wire for drives and several changers
-// (mhvtl usr/vtllib.c update_vpd_83), so taken should compare the low 60 bits
-// (hostids.SameNAA).
+// It is an IEEE Registered NAA (NAA field 5h: the NAA nibble, a 24-bit OUI and
+// a 36-bit vendor specific identifier; SPC-4 r37 §7.8.6.6, NAA designator
+// format, https://www.t10.org/, table and page numbers not confirmed against
+// a copy of the standard). mhVTL forces the NAA field to 5h on the wire
+// whatever device.conf says (mhvtl usr/vtllib.c update_vpd_83, lines
+// 2420-2481 on upstream master 6458223: the placeholder 51:23:45:60:... at
+// 2446-2458, the rewrite at 2479-2480), so a locally assigned NAA 3h could
+// never reach the host. Generating 5h keeps the wire value identical to what
+// device.conf holds.
+//
+// The OUI is 0x123456, the placeholder mhVTL's own default designator uses.
+// It is not an IEEE registered OUI: the identifier is unique per appliance
+// but makes no registration claim beyond what mhVTL already makes.
+//
+// Uniqueness across appliances rests on the 36 vendor specific bits, taken
+// from an HMAC of the appliance ID and the sequence number. Among N
+// identifiers from different appliances the chance of any collision is about
+// N^2/2^37: under 1e-5 for 1,000 devices, 0.07% for 10,000, and 50% only near
+// 300,000. Collisions with devices this host can see are excluded by taken,
+// which should ignore the NAA field (hostids.SameNAA), as host devices and
+// older device.conf entries may carry another one.
 func (g Generator) NAA(taken func(naa []byte) bool) (string, error) {
 	for n := uint32(0); n < maxTries; n++ {
-		b := g.candidate("naa", n)[:8]
-		b[0] = 0x30 | b[0]&0x0f
+		c := g.candidate("naa", n)
+		b := []byte{0x51, 0x23, 0x45, 0x60 | c[0]&0x0f, c[1], c[2], c[3], c[4]}
 		if !taken(b) {
 			return hostids.FormatNAA(b), nil
 		}
