@@ -23,6 +23,12 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 		{"long line", lib + " Vendor identification: " + strings.Repeat("x", 500) + "\n", 2, "longer than 510"},
 		{"NUL", lib + " Vendor identification: A\x00B\n", 2, "NUL"},
 		{"text after LUN", "Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00 # x\n", 1, "text after LUN"},
+		{"empty Compression", drv + " Compression:\n", 2, "partial or empty Compression"},
+		{"Compression without enabled", drv + " Compression: factor 1\n", 2, "partial or empty Compression"},
+		{"Compression ignored", drv + " Compression: bogus\n", 2, "vtltape ignores it"},
+		{"white space in a Drive", drv + "  \n", 2, "Compression sscanf"},
+		{"short NAA", lib + " NAA: 10:22\n", 2, "NAA has 2 of 8"},
+		{"Library ID without Slot", drv + " Library ID: 10\n", 2, "without 'Slot: N'"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -43,6 +49,12 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 				t.Errorf("problems %v, want %q on line %d", c.Problems, tc.msg, tc.line)
 			}
 		})
+	}
+
+	// The forms vtltape and vtllibrary read as written.
+	if c := ParseDeviceConf([]byte(drv + " Compression: 5\n NAA: 1:2:3:4:5:6:7:8\n NAA:\n" +
+		" Library ID: 10 Slot: 01\n Compression: factor 1 enabled 0\n")); len(c.Problems) != 0 {
+		t.Errorf("valid sscanf fields flagged: %v", c.Problems)
 	}
 
 	// Adjacent Libraries read as written: each header switches vtllibrary
@@ -69,12 +81,22 @@ func TestConfValue(t *testing.T) {
 		" Vendor identification: IBM # vendor\n" +
 		" Product  identification:\tULT3580-TD8\n" +
 		" Unit serial number: X#1\n" +
-		" NAA: 10:22\n NAA:\n"))
+		" NAA: 10:22:33:44:ab:00:01:00\n NAA:\n"))
 	st := mustStanza(t, c, "Drive", 11)
 	wantAttr(t, st, "Vendor identification", "IBM")
 	wantAttr(t, st, "Product identification", "ULT3580-TD8")
 	wantAttr(t, st, "Unit serial number", "X#1")
-	wantAttr(t, st, "NAA", "10:22") // an empty field is ignored, not a reset
+	// An empty NAA is ignored, not a reset: sscanf returns EOF, and mhVTL
+	// acts only on a positive count (vtltape.c:2217-2236).
+	wantAttr(t, st, "NAA", "10:22:33:44:ab:00:01:00")
+	for _, v := range []string{"10:22", "zz"} {
+		if err := c.SetAttr("Drive", 11, "NAA", v); err == nil {
+			t.Errorf("SetAttr(NAA, %q) accepted", v)
+		}
+	}
+	if err := c.SetAttr("Drive", 11, "Compression", ""); err == nil {
+		t.Error("SetAttr(Compression, \"\") accepted")
+	}
 
 	for _, v := range []string{"HP #x", "HP\t#x", " HP", "HP ", "A\x00B"} {
 		if err := c.SetAttr("Drive", 11, "Vendor identification", v); err == nil {
@@ -128,5 +150,44 @@ func TestRemoveStanzaBoundaries(t *testing.T) {
 	}
 	if len(c.Problems) != 0 {
 		t.Errorf("problems after removal: %v", c.Problems)
+	}
+}
+
+// TestCScanf pins cScanf to what glibc's sscanf returns for the same input
+// and format.
+func TestCScanf(t *testing.T) {
+	const (
+		c1  = " Compression: factor %d enabled %d"
+		c2  = " Compression: %d"
+		lid = " Library ID: %ld Slot: %d"
+		hdr = "Drive: %d CHANNEL: %d TARGET: %d LUN: %d"
+	)
+	for _, tc := range []struct {
+		s, format string
+		want      int
+	}{
+		{" Compression:", c1, -1}, {" Compression:", c2, -1},
+		{"  ", c1, -1}, {" \t ", c1, -1}, {" Compression:\r", c1, -1},
+		{" Compression: f", c1, -1}, {" Compression: f", c2, 0},
+		{" Compression: factor", c1, -1},
+		{" Compression: factor 1", c1, 1}, {" Compression: factor 1 enabled", c1, 1},
+		{" Compression: factor 1 enabled 0", c1, 2},
+		{" Compression: 5", c1, 0}, {" Compression: 5", c2, 1},
+		{" Compression: bogus", c1, 0}, {" Compression: bogus", c2, 0},
+		{" Compression: factor x enabled 1", c1, 0},
+		{" Vendor identification: IBM", c1, 0}, {" Compression type: lzo", c1, 0},
+		{" NAA:", naaFormat, -1}, {" NAA: 10:22", naaFormat, 2},
+		{" NAA: 10:22:33:44:ab:00:00:00", naaFormat, 8}, {" NAA: zz", naaFormat, 0},
+		{" NAA: 1:2:3:4:5:6:7:8", naaFormat, 8}, {" NAA: 100:22:33:44:55:66:77:88", naaFormat, 1},
+		{" NAA: 10:22:33:44:AB:00:00:0g", naaFormat, 8}, {" NAA: -1:2", naaFormat, 2},
+		{" Library ID: 10", lid, 1}, {" Library ID: 10 Slot: 01", lid, 2},
+		{" Library ID: 10 Slot:", lid, 1}, {" Library ID:", lid, -1},
+		{" Library ID: x", lid, 0}, {" Library  ID: 10 Slot: 2", lid, 2},
+		{"Drive: 11", hdr, 1}, {"Drive: 11 CHANNEL: 00", hdr, 2},
+		{"Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00", hdr, 4}, {"Dr", hdr, -1},
+	} {
+		if got := cScanf(tc.s, tc.format); got != tc.want {
+			t.Errorf("sscanf(%q, %q) = %d, want %d", tc.s, tc.format, got, tc.want)
+		}
 	}
 }
