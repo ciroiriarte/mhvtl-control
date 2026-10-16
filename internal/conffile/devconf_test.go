@@ -45,9 +45,16 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 		})
 	}
 
-	// Same-kind adjacency is how vtltape reads it too: no problem.
-	if c := ParseDeviceConf([]byte(drv + " Unit serial number: A\nDrive: 12 CHANNEL: 00 TARGET: 02 LUN: 00\n")); len(c.Problems) != 0 {
-		t.Errorf("adjacent drives flagged: %v", c.Problems)
+	// Adjacent Libraries read as written: each header switches vtllibrary
+	// to the new library (vtllibrary.c:1283).
+	if c := ParseDeviceConf([]byte(lib + " Unit serial number: A\nLibrary: 30 CHANNEL: 00 TARGET: 08 LUN: 00\n")); len(c.Problems) != 0 {
+		t.Errorf("adjacent libraries flagged: %v", c.Problems)
+	}
+	// Adjacent Drives do not: vtllibrary moves to the new drive only at its
+	// Library ID line, so a serial before it lands on the previous drive.
+	c := ParseDeviceConf([]byte(drv + " Library ID: 10 Slot: 01\nDrive: 12 CHANNEL: 00 TARGET: 02 LUN: 00\n Unit serial number: B\n Library ID: 10 Slot: 02\n"))
+	if len(c.Problems) != 1 || c.Problems[0].Line != 3 || !strings.Contains(c.Problems[0].Msg, "after Drive 11") {
+		t.Errorf("adjacent drives: %v", c.Problems)
 	}
 	// A 600-byte column-1 comment is still split by readline.
 	if c := ParseDeviceConf([]byte(strings.Repeat("#", 600) + "\n")); len(c.Problems) != 1 {
