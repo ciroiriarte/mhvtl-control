@@ -10,12 +10,14 @@ type displaced struct {
 // checkRemovals refuses to let a cartridge leave a library without a
 // Disposition saying where it goes. The apply writes next's library_contents
 // merged with the live placement (Merge), so a cartridge leaves when it is in
-// the placement in force, Merge(cur, cur), and nowhere in Merge(cur, next) or
-// a live drive: its element was deleted, next put another barcode there, or,
-// with the live state unknown, next's file no longer lists it. Otherwise it
-// would silently leave the library at the next restart. A cartridge that
-// moves within the library needs none, and one imported at run time stays
-// where it is. A cartridge in a live drive counts as present, even when next
+// the placement in force, Baseline(cur), and nowhere in Merge(cur, next) or a
+// live drive: its element was deleted, cleared or made a gap, or next put
+// another barcode there. Otherwise it would silently leave the library at the
+// next restart. With the live placement known, next is read as an edit of
+// the live view, so a cartridge imported at run time stays unless next
+// clears its element; a next built from cur's file instead of the live view
+// clears it. A cartridge that moves within the library needs none. A
+// cartridge in a live drive counts as present, even when next
 // deletes that drive: validation does not refuse it, the apply does, since it
 // refuses to touch a loaded drive (plan 3.3, exec step 2, drive_loaded) and,
 // when forced, puts the cartridge back in a storage slot (step 5). Deleting a
@@ -59,7 +61,7 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		}
 		var gone []displaced
 		seen := map[string]bool{}
-		for _, c := range Merge(old, old, livep, bay).cartridges() {
+		for _, c := range Baseline(old, livep, bay).cartridges() {
 			if !present[c.barcode] {
 				seen[c.barcode] = true
 				gone = append(gone, c)

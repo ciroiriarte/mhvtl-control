@@ -60,7 +60,7 @@ func TestRemovals(t *testing.T) {
 		{"to a slot that holds a cartridge now", dropSlot3,
 			live(Placement{Slots: map[int]string{2: "X00001L8"}}),
 			[]Disposition{{Library: 10, Barcode: "A00002L8", To: ToSlot, Slot: 2}},
-			[]string{"library 10: A00002L8 is to go to slot 2, which holds X00001L8 now"}},
+			[]string{"library 10: A00002L8 is to go to slot 2, which lists X00001L8"}},
 		{"to a slot that is gone", dropSlot3, nil, []Disposition{{Library: 10, Barcode: "A00002L8", To: ToSlot, Slot: 9}},
 			[]string{"library 10: A00002L8 is to go to slot 9, which the new configuration does not have"}},
 		{"export with free MAP slots", dropSlot3, nil, []Disposition{{Library: 10, Barcode: "A00002L8", To: ToExport}}, nil},
@@ -88,16 +88,35 @@ func TestRemovals(t *testing.T) {
 			i.Libraries[0].Slots = append(i.Libraries[0].Slots, config.Slot{Number: 8})
 			i.Libraries[0].MAPs = i.Libraries[0].MAPs[:1]
 		}, live(Placement{MAPs: map[int]string{2: "M00002L8"}}),
-			// Slot 3 is now a gap, so A00002L8 stays in it.
-			[]Disposition{{Library: 10, Barcode: "M00002L8", To: ToSlot, Slot: 6}}, nil},
+			[]Disposition{{Library: 10, Barcode: "M00002L8", To: ToSlot, Slot: 6}, {Library: 10, Barcode: "A00002L8", To: ToShelf}}, nil},
 		{"remove a MAP slot holding a cartridge", func(i *config.Inventory) { i.Libraries[0].MAPs = i.Libraries[0].MAPs[:1] },
 			live(Placement{MAPs: map[int]string{2: "M00002L8"}}), nil,
 			[]string{"library 10: M00002L8 (MAP slot 2) would leave the library"}},
 		// The apply writes next merged with the live placement (plan 3.3 P1).
 		{"a cartridge imported at run time stays", func(*config.Inventory) {},
 			live(Placement{Slots: map[int]string{4: "NEW001L8"}, MAPs: map[int]string{1: "NEW002L8"}}), nil, nil},
-		{"a live cartridge stays in a slot next clears", func(i *config.Inventory) { i.Libraries[0].Slots[2].Barcode = "" },
-			live(Placement{}), nil, nil},
+		// next is an edit of the live view: clearing a slot or turning it
+		// into a gap takes its cartridge out (PR 2a round-3 probes).
+		{"clear a slot, live known", func(i *config.Inventory) { i.Libraries[0].Slots[2].Barcode = "" },
+			live(Placement{}), nil, []string{"library 10: A00002L8 (slot 3) would leave the library"}},
+		{"clear a slot to the shelf, live known", func(i *config.Inventory) { i.Libraries[0].Slots[2].Barcode = "" },
+			live(Placement{}), []Disposition{{Library: 10, Barcode: "A00002L8", To: ToShelf}}, nil},
+		{"turn a slot into a gap, live known", func(i *config.Inventory) {
+			l := &i.Libraries[0]
+			l.Slots = []config.Slot{l.Slots[0], l.Slots[1], l.Slots[3]}
+		}, live(Placement{}), nil, []string{"library 10: A00002L8 (slot 3) would leave the library"}},
+		{"turn a slot into a gap to the shelf, live known", func(i *config.Inventory) {
+			l := &i.Libraries[0]
+			l.Slots = []config.Slot{l.Slots[0], l.Slots[1], l.Slots[3]}
+		}, live(Placement{}), []Disposition{{Library: 10, Barcode: "A00002L8", To: ToShelf}}, nil},
+		// A00002L8 was moved to slot 4 at run time; next moves it back.
+		{"move back to the file's slot", func(i *config.Inventory) {
+			i.Libraries[0].Slots[2].Barcode, i.Libraries[0].Slots[3].Barcode = "A00002L8", ""
+		}, &Live{Libraries: map[int]Placement{10: {Slots: map[int]string{1: "A00001L8", 4: "A00002L8"}}}}, nil, nil},
+		// C00001L8 was imported to slot 3 and A00002L8 moved to 4; next swaps them.
+		{"a swap built from the live view", func(i *config.Inventory) {
+			i.Libraries[0].Slots[2].Barcode, i.Libraries[0].Slots[3].Barcode = "A00002L8", "C00001L8"
+		}, &Live{Libraries: map[int]Placement{10: {Slots: map[int]string{1: "A00001L8", 3: "C00001L8", 4: "A00002L8"}}}}, nil, nil},
 		{"a slot reassigned to another barcode", func(i *config.Inventory) { i.Libraries[0].Slots[2].Barcode = "B00009L8" },
 			live(Placement{}), nil, []string{"library 10: A00002L8 (slot 3) would leave the library"}},
 		{"a slot reassigned to another barcode, live unknown", func(i *config.Inventory) { i.Libraries[0].Slots[2].Barcode = "B00009L8" },
@@ -115,7 +134,12 @@ func TestRemovals(t *testing.T) {
 			[]string{"dispositions name library 99, which is not in both the current and the new configuration"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// With the live placement known, next is edited from the live
+			// view, as Merge expects.
 			next := cur()
+			if tc.live != nil {
+				next = fromLive(next, tc.live)
+			}
 			tc.next(&next)
 			r := Validate(cur(), next, tc.live, nil, Options{Dispositions: tc.disp})
 			expect(t, "errors", family(r.Errors, FamilyRemoval), tc.errors)
@@ -140,12 +164,19 @@ func TestLiveImports(t *testing.T) {
 		{"no change, a cartridge imported to a MAP slot", func(*config.Inventory) {}, Placement{MAPs: map[int]string{1: "NEW002L8"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			next := clone(cur)
+			live := &Live{Libraries: map[int]Placement{10: tc.live}}
+			next := fromLive(cur, live)
 			tc.edit(&next)
-			r := Validate(cur, next, &Live{Libraries: map[int]Placement{10: tc.live}}, nil, Options{})
+			r := Validate(cur, next, live, nil, Options{})
 			expect(t, "errors", family(r.Errors, FamilyRemoval), nil)
 		})
 	}
+	// next must be an edit of the live view: one built from cur's stale file
+	// clears the slot the import went to.
+	live := &Live{Libraries: map[int]Placement{10: Baseline(cur.Libraries[0], nil, nil)}}
+	live.Libraries[10].Slots[20] = "NEW001L8"
+	r := Validate(cur, clone(cur), live, nil, Options{})
+	expect(t, "errors from a stale file", family(r.Errors, FamilyRemoval), []string{"library 10: NEW001L8 (slot 20) would leave the library"})
 }
 
 // A cartridge the bay monitor placed (a symlink in the home) never leaves:
