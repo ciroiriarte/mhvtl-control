@@ -198,7 +198,7 @@ type Problem struct {
 func (p Problem) Error() string { return fmt.Sprintf("line %d: %s", p.Line, p.Msg) }
 
 // Attr is one " Key: value" line of a device.conf stanza, read as mhVTL's
-// conf_value (mhvtl usr/vtllib.c:1090-1144) reads it: Key with each run of
+// conf_value (mhvtl usr/vtllib.c:1089-1144) reads it: Key with each run of
 // blanks collapsed to one space, Value without a trailing comment (a '#'
 // after a blank) and trimmed. mhVTL reads a few keys with sscanf on the
 // whole line instead (Compression, NAA, and vtllibrary's Library ID); a

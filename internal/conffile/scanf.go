@@ -12,7 +12,7 @@ func isCSpace(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r'
 }
 
-// isBlankRune is a blank to conf_value (mhvtl usr/vtllib.c:1093-1108):
+// isBlankRune is a blank to conf_value (mhvtl usr/vtllib.c:1093-1105):
 // space or tab only.
 func isBlankRune(r rune) bool { return r == ' ' || r == '\t' }
 
