@@ -36,6 +36,25 @@ func TestBarcodes(t *testing.T) {
 			"library 10 MAP slot 1: barcode MAPDEFGHIJK0001L8 is 17 characters",
 			"library 30 picker 1: barcode PCKDEFGHIJK0001L8 is 17 characters",
 		}},
+		{"a path in a slot, a MAP slot and a picker", nil, func(i *config.Inventory) {
+			i.Libraries[0].Slots[1].Barcode = "../E01001L8"
+			i.Libraries[0].MAPs = []config.MAPSlot{{Number: 1, Barcode: "a/b"}}
+			i.Libraries[1].PickerMedia = []config.Slot{{Number: 1, Barcode: ".."}}
+		}, nil, []string{
+			`library 30 picker 1: barcode ".." may hold only ASCII letters and digits`,
+			`library 10 slot 2: barcode "../E01001L8" may hold only ASCII letters and digits; make_vtl_media passes it to mktape`,
+			`library 10 MAP slot 1: barcode "a/b" may hold only ASCII letters and digits`,
+		}},
+		{"white space, a control character and non-ASCII", nil, func(i *config.Inventory) {
+			i.Libraries[0].Slots[1].Barcode = "E01 001L8"
+			i.Libraries[1].Slots[1].Barcode = "E01\x01001L8"
+			i.Libraries[1].Slots = append(i.Libraries[1].Slots, config.Slot{Number: 3, Barcode: "\u00c901001L8"})
+		}, nil, []string{
+			`library 30 slot 2: barcode "E01\x01001L8"`,
+			`library 10 slot 2: barcode "E01 001L8"`,
+			`library 30 slot 3: barcode "\u00c901001L8"`,
+		}},
+		{"lower case letters", nil, func(i *config.Inventory) { i.Libraries[0].Slots[1].Barcode = "e01001l8" }, nil, nil},
 		{"a picker barcode counts for duplicates", nil, func(i *config.Inventory) {
 			i.Libraries[1].PickerMedia = []config.Slot{{Number: 1, Barcode: "A00001L8"}}
 		}, nil, []string{"barcode A00001L8 is listed 2 times: library 10 slot 1, library 30 picker 1"}},

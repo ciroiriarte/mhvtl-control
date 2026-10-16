@@ -58,7 +58,29 @@ func (p Placement) holds() map[string]bool {
 // usr/cmd/vtllibrary.c add_barcode :324-327, upstream master c65bff0).
 const MaxBarcodeLen = 16
 
-// checkBarcodes refuses a barcode longer than vtllibrary accepts, and one
+// barcodeChars reports whether b is only ASCII letters and digits, the
+// barcodes mhvtl-control creates (media.ValidBarcode) and upstream's
+// generate_library_contents writes ([A-Z0-9], etc/generate_library_contents.in
+// :94-119, upstream master 993b193). vtllibrary takes the first word of a
+// Slot, MAP or Picker line as the barcode ("Slot %d: %s",
+// usr/cmd/vtllibrary.c:1045-1055), and vtltape opens the cartridge at
+// <home>/<barcode> (usr/vtlcart.c:1306); make_vtl_media passes awk's third field to "mktape -m" and to
+// "rm -rf $LIBHOME/$a" unchecked (usr/cmd/make_vtl_media.in:364-377). So a
+// '/', a "..", or a shell metacharacter would reach outside the home as
+// root. The media type rules (personality.BarcodeDensity) stay unanchored, as
+// make_vtl_media's are; this is checked apart from them.
+func barcodeChars(b string) bool {
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// checkBarcodes refuses a barcode longer than vtllibrary accepts, one with
+// characters other than letters and digits, and one
 // that two places would claim: listed twice
 // in next, listed by one library while another library's .persist file or
 // live state has it, or a new pre-fill naming a cartridge that already
@@ -72,10 +94,14 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		}
 	}
 	for _, b := range sortedStrings(all) {
-		if len(b) > MaxBarcodeLen {
-			for _, p := range all[b] {
+		for _, p := range all[b] {
+			if len(b) > MaxBarcodeLen {
 				r.errorf(CodeBarcodeLength, p.lib, []ElementRef{p.key}, "%s: barcode %s is %d characters; vtllibrary stops on a barcode longer than %d",
 					p, b, len(b), MaxBarcodeLen)
+			}
+			if !barcodeChars(b) {
+				r.errorf(CodeBarcodeChars, p.lib, []ElementRef{p.key}, "%s: barcode %+q may hold only ASCII letters and digits; make_vtl_media passes it to mktape, run as root, as a directory name under the media home",
+					p, b)
 			}
 		}
 	}
