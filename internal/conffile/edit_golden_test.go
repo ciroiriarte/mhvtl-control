@@ -105,7 +105,7 @@ func TestEditGolden(t *testing.T) {
 				if lines := problemLines(c.Problems); !reflect.DeepEqual(lines, ef.Problems) {
 					t.Fatalf("problems on lines %v, want %v: %v", lines, ef.Problems, c.Problems)
 				}
-				if len(c.Problems) > 0 {
+				if c.Writable() != nil {
 					got = in
 					break
 				}

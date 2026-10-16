@@ -219,3 +219,18 @@ func TestCScanf(t *testing.T) {
 		}
 	}
 }
+
+func TestWritable(t *testing.T) {
+	if err := ParseDeviceConf([]byte("Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00\n")).Writable(); err != nil {
+		t.Errorf("clean device.conf: %v", err)
+	}
+	if err := ParseDeviceConf([]byte("Drive: 11\n")).Writable(); err == nil {
+		t.Error("device.conf with a Problem is writable")
+	}
+	if err := ParseLibContents([]byte("Slot 1: A\nSlot 2: A\n")).Writable(); err == nil {
+		t.Error("library_contents with a Problem is writable")
+	}
+	if err := ParseMhvtlConf([]byte("MHVTL_CONFIG_PATH=\"/etc/mhvtl\"\n")).Writable(); err == nil {
+		t.Error("mhvtl.conf with a Problem is writable")
+	}
+}

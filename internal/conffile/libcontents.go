@@ -169,6 +169,9 @@ func (c *LibContents) index() {
 	sort.SliceStable(c.Problems, func(a, b int) bool { return c.Problems[a].Line < c.Problems[b].Line })
 }
 
+// Writable is DeviceConf.Writable for library_contents.
+func (c *LibContents) Writable() error { return writable("library_contents", c.Problems) }
+
 // DriveSerial returns the serial number the last "Drive n: X" line sets for
 // drive n, if any (see ErrDriveBarcode).
 func (c *LibContents) DriveSerial(n int) (string, bool) {
