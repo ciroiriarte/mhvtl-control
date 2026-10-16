@@ -21,7 +21,7 @@ func TestPresets(t *testing.T) {
 		{"no target: an L700 warns", lib(10, "STK", "L700", 1), "", nil,
 			[]string{"library 10 would not work with Proxmox Backup Server: it finds changers by udev's ID_SCSI_SERIAL"}},
 		{"no target: an 03584 is quiet", lib(10, "IBM", "03584L32", 1), "", nil, nil},
-		{"unknown target", lib(10, "IBM", "03584L32", 1), "veeam", []string{`library 10: unknown target application "veeam"`}, nil},
+		{"unknown target", lib(10, "IBM", "03584L32", 1), "other-app", []string{`library 10: unknown target application "other-app"`}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Validate(config.Inventory{}, inv(tc.lib), nil, nil, Options{TargetApps: map[int]string{10: tc.app}})
