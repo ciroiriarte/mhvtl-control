@@ -5,7 +5,7 @@ Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00
 
 Drive: 11
  Library ID: 10 Slot: 01
- Product identification: ULT3580-TD9
+ Product identification: ULT3580-TD8
 
 Drive: 12 CHANNEL: 00 TARGET: 02 LUN: 00
  Library ID: 10 Slot: 02

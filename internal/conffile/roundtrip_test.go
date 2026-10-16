@@ -176,7 +176,7 @@ func TestCraftedDeviceConf(t *testing.T) {
 		}
 	})
 	t.Run("headerless drive", func(t *testing.T) {
-		c := readConf(t, "crafted/headerless-drive.device.conf")
+		c := readConf(t, "ambiguous/headerless-drive.device.conf")
 		d11 := mustStanza(t, c, "Drive", 11)
 		if d11.HasAddress {
 			t.Errorf("drive 11 should have no address: %+v", d11)

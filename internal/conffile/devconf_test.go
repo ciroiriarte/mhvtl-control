@@ -29,6 +29,8 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 		{"white space in a Drive", drv + "  \n", 2, "Compression sscanf"},
 		{"short NAA", lib + " NAA: 10:22\n", 2, "NAA has 2 of 8"},
 		{"Library ID without Slot", drv + " Library ID: 10\n", 2, "without 'Slot: N'"},
+		{"bare Library header", "Library: 10\n Vendor identification: STK\n", 1, "Library 10 has no CHANNEL"},
+		{"partial Drive header", "Drive: 11 CHANNEL: 00\n", 1, "Drive 11 has no CHANNEL"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
