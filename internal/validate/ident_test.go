@@ -112,15 +112,21 @@ func TestHostCollisions(t *testing.T) {
 			NAAs: []string{"50:22:33:44:ab:00:00:00"}}}, nil},
 		// Drive 11 exported again through tcm_loop: both its serial and its
 		// NAA, so it is drive 11 itself.
-		{"drive 11 re-exported through tcm_loop", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "XYZZY_A1",
+		{"drive 11 re-exported through tcm_loopback", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "XYZZY_A1",
 			NAAs: []string{"50:22:33:44:ab:00:01:00"}}}, nil},
-		{"the serial of drive 11 with another NAA", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "XYZZY_A1",
-			NAAs: []string{"50:99:88:77:66:55:44:33"}}},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loop)`}},
-		{"drive 11's serial and drive 12's NAA", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "XYZZY_A1",
-			NAAs: []string{"50:22:33:44:ab:00:02:00"}}},
+		// "tcm_loop" is the fabric's bus name; no SCSI host has it as its
+		// proc_name, so it gets no exemption.
+		{"drive 11 on a host named after the tcm_loop bus", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "XYZZY_A1",
+			NAAs: []string{"50:22:33:44:ab:00:01:00"}}},
 			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loop)`,
-				"drive 12: NAA 10:22:33:44:ab:00:02:00 is already used by host device 7:0:11:0 (tcm_loop)"}},
+				"drive 11: NAA 10:22:33:44:ab:00:01:00 is already used by host device 7:0:11:0 (tcm_loop)"}},
+		{"the serial of drive 11 with another NAA", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "XYZZY_A1",
+			NAAs: []string{"50:99:88:77:66:55:44:33"}}},
+			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loopback)`}},
+		{"drive 11's serial and drive 12's NAA", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "XYZZY_A1",
+			NAAs: []string{"50:22:33:44:ab:00:02:00"}}},
+			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loopback)`,
+				"drive 12: NAA 10:22:33:44:ab:00:02:00 is already used by host device 7:0:11:0 (tcm_loopback)"}},
 		// The same identity on another HBA (e.g. a target re-exporting it)
 		// is a collision.
 		// A second, default-configured mhVTL node's drive seen over iSCSI
@@ -144,7 +150,7 @@ func TestHostCollisions(t *testing.T) {
 // still collides with any other device of next that takes its identity.
 func TestHostReexport(t *testing.T) {
 	cur := shipped(t)
-	host := []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "XYZZY_A1",
+	host := []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "XYZZY_A1",
 		NAAs: []string{"50:22:33:44:ab:00:01:00"}}}
 	// Drive 11 is deleted and drive 31 takes its serial and NAA.
 	next := clone(cur)
@@ -154,8 +160,8 @@ func TestHostReexport(t *testing.T) {
 	next.Libraries[1].Drives[0].Serial, next.Libraries[1].Drives[0].NAA = d11.Serial, d11.NAA
 	r := Validate(cur, next, nil, host, Options{})
 	expect(t, "errors", family(r.Errors, FamilyIdentity), []string{
-		`drive 31: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loop)`,
-		"drive 31: NAA 10:22:33:44:ab:00:01:00 is already used by host device 7:0:11:0 (tcm_loop)",
+		`drive 31: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loopback)`,
+		"drive 31: NAA 10:22:33:44:ab:00:01:00 is already used by host device 7:0:11:0 (tcm_loopback)",
 	})
 }
 
@@ -254,9 +260,9 @@ func TestChangerReexport(t *testing.T) {
 		h      hostids.Device
 		errors []string
 	}{
-		{"the changer itself", hostids.Device{Host: 7, Target: 0, Driver: "tcm_loop", Serial: "XYZZY_A", Vendor: "IBM", Model: "03584L32"}, nil},
-		{"another product with its serial", hostids.Device{Host: 7, Target: 0, Driver: "tcm_loop", Serial: "XYZZY_A", Vendor: "IBM", Model: "3573-TL"},
-			[]string{`library 10: serial "XYZZY_A" is already used by host device 7:0:0:0 (tcm_loop)`}},
+		{"the changer itself", hostids.Device{Host: 7, Target: 0, Driver: "tcm_loopback", Serial: "XYZZY_A", Vendor: "IBM", Model: "03584L32"}, nil},
+		{"another product with its serial", hostids.Device{Host: 7, Target: 0, Driver: "tcm_loopback", Serial: "XYZZY_A", Vendor: "IBM", Model: "3573-TL"},
+			[]string{`library 10: serial "XYZZY_A" is already used by host device 7:0:0:0 (tcm_loopback)`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Validate(cur, clone(cur), nil, []hostids.Device{tc.h}, Options{})
@@ -268,7 +274,7 @@ func TestChangerReexport(t *testing.T) {
 	// widths; the over-long values themselves are a pre-existing error.
 	long := clone(cur)
 	long.Libraries[0].Vendor, long.Libraries[0].Product = "IBMXXXXXXX", "03584L32XXXXXXXXXX"
-	h := hostids.Device{Host: 7, Target: 0, Driver: "tcm_loop", Serial: "XYZZY_A", Vendor: "IBMXXXXX", Model: "03584L32XXXXXXXX"}
+	h := hostids.Device{Host: 7, Target: 0, Driver: "tcm_loopback", Serial: "XYZZY_A", Vendor: "IBMXXXXX", Model: "03584L32XXXXXXXX"}
 	r := Validate(long, clone(long), nil, []hostids.Device{h}, Options{})
 	expect(t, "errors with an over-long vendor and product", family(r.Errors, FamilyIdentity), nil)
 }

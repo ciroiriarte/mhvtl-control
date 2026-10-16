@@ -243,8 +243,11 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	}
 }
 
-// TCMLoopDriver is the proc_name of the LIO loopback fabric's SCSI hosts.
-const TCMLoopDriver = "tcm_loop"
+// TCMLoopDriver is the proc_name of the LIO loopback fabric's SCSI hosts
+// (Linux drivers/target/loopback/tcm_loop.c:296, tcm_loop_driver_template,
+// https://github.com/torvalds/linux/blob/v6.12/drivers/target/loopback/tcm_loop.c#L296).
+// "tcm_loop" is the fabric's bus and driver name (:87, :93), not the host's.
+const TCMLoopDriver = "tcm_loopback"
 
 // reexport returns the device of cur that h, a tcm_loop device, is an export
 // of: one whose serial and reported NAA h both reports. A changer that sends
