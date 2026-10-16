@@ -35,7 +35,12 @@ func TestIdentities(t *testing.T) {
 			[]string{`drive 11 and drive 31 share serial "XYZZY_A1"`}, nil},
 		{"serial at the limit", func(i *config.Inventory) { i.Libraries[0].Drives[0].Serial = "ABCDEFGHIJ" }, nil, nil},
 		{"serial past the limit", func(i *config.Inventory) { i.Libraries[0].Drives[0].Serial = "ABCDEFGHIJK" },
-			[]string{`drive 11: serial "ABCDEFGHIJK" is 11 characters; mhvtl-control limits serials to 10 characters`}, nil},
+			[]string{`drive 11: serial "ABCDEFGHIJK" is 11 characters; mhvtl-control limits drive serials to 10`}, nil},
+		{"library serial past the limit, STK", func(i *config.Inventory) { i.Libraries[0].Serial = "ABCDEFGHIJK" },
+			nil, []string{`library 10: serial "ABCDEFGHIJK" is 11 characters; this personality reports it whole`}},
+		{"library serial past the limit, HP EML", func(i *config.Inventory) {
+			i.Libraries[0].Vendor, i.Libraries[0].Product, i.Libraries[0].Serial = "HP", "EML E-Series", "ABCDEFGHIJK"
+		}, []string{`library 10: serial "ABCDEFGHIJK" is 11 characters; the HP EML E-Series personality reports only the first 10 in VPD page 83h`}, nil},
 		{"vendor and product at the limit", func(i *config.Inventory) {
 			i.Libraries[0].Drives[0].Vendor, i.Libraries[0].Drives[0].Product = "ABCDEFGH", "ABCDEFGHIJKLMNOP"
 		}, nil, nil},
