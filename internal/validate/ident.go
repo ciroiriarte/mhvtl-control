@@ -25,6 +25,10 @@ type device struct {
 	lib                  int // the library a drive belongs to, else its own ID
 	channel, target, lun int
 	serial, naa          string
+	// sendsNAA is whether the device reports an NAA in VPD page 83h. Every
+	// drive does (vtltape calls update_vpd_83); a library only if its
+	// personality does (personality.Model.SendsNAA).
+	sendsNAA bool
 }
 
 func (d device) String() string { return fmt.Sprintf("%s %d", d.kind, d.id) }
@@ -40,10 +44,11 @@ func (d device) key() string {
 func devices(inv config.Inventory) []device {
 	var devs []device
 	drive := func(d config.Drive, lib int) device {
-		return device{"drive", d.ID, lib, d.Channel, d.Target, d.LUN, d.Serial, d.NAA}
+		return device{"drive", d.ID, lib, d.Channel, d.Target, d.LUN, d.Serial, d.NAA, true}
 	}
 	for _, l := range inv.Libraries {
-		devs = append(devs, device{"library", l.ID, l.ID, l.Channel, l.Target, l.LUN, l.Serial, l.NAA})
+		sends := personality.Lookup(l.Vendor, l.Product).SendsNAA
+		devs = append(devs, device{"library", l.ID, l.ID, l.Channel, l.Target, l.LUN, l.Serial, l.NAA, sends})
 		for _, d := range l.Drives {
 			devs = append(devs, drive(d, l.ID))
 		}
@@ -97,6 +102,10 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 			}
 		}
 
+		if !d.sendsNAA {
+			// Its device.conf NAA never reaches the host.
+			continue
+		}
 		if d.naa == "" {
 			r.warnf(FamilyIdentity, d.lib, "%s has no NAA; mhVTL then derives one from the end of the serial (usr/vtllib.c update_vpd_83), which other devices can repeat", d)
 			continue
@@ -144,7 +153,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 				r.stickyErrorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: serial %q is already used by host device %s (%s)", d, d.serial, h.HCTL(), driverName(h))
 			}
 			b, err := hostids.ParseNAA(d.naa)
-			if err != nil {
+			if err != nil || !d.sendsNAA {
 				continue
 			}
 			for _, hn := range h.NAAs {
