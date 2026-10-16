@@ -505,6 +505,18 @@ type slotsViewDTO struct {
 	LiveError string          `json:"live_error,omitempty"`
 	Slots     []configSlotDTO `json:"slots"`
 	MAPs      []configSlotDTO `json:"maps"`
+	// Drives are the drive elements holding a cartridge now, by drive slot
+	// number; empty when the library is not live.
+	Drives []liveDriveDTO `json:"drives"`
+	// Warning says that the running library holds cartridges in storage or
+	// MAP slots library_contents does not make: the file changed since the
+	// library started.
+	Warning string `json:"warning,omitempty"`
+}
+
+type liveDriveDTO struct {
+	Number  int    `json:"number"`
+	Barcode string `json:"barcode"`
 }
 
 // slotsView lists l's storage and MAP slots with the file's and, when the
@@ -531,7 +543,42 @@ func slotsView(l config.Library, p validate.Placement, isLive bool, liveErr stri
 	for _, m := range l.MAPs {
 		maps = append(maps, configSlotDTO{Number: m.Number, Barcode: m.Barcode, Listed: true, LiveBarcode: liveOf(p.MAPs, m.Number)})
 	}
-	return slotsViewDTO{Library: l.ID, Live: isLive, LiveError: liveErr, Slots: slots, MAPs: maps}
+	v := slotsViewDTO{Library: l.ID, Live: isLive, LiveError: liveErr, Slots: slots, MAPs: maps, Drives: []liveDriveDTO{}}
+	if !isLive {
+		return v
+	}
+	for _, n := range sortedInts(p.Drives) {
+		v.Drives = append(v.Drives, liveDriveDTO{n, p.Drives[n]})
+	}
+	inFile := map[int]bool{}
+	for _, m := range l.MAPs {
+		inFile[m.Number] = true
+	}
+	var extra []string
+	for _, n := range sortedInts(p.Slots) {
+		if n > highest {
+			extra = append(extra, fmt.Sprintf("slot %d (%s)", n, p.Slots[n]))
+		}
+	}
+	for _, n := range sortedInts(p.MAPs) {
+		if !inFile[n] {
+			extra = append(extra, fmt.Sprintf("MAP slot %d (%s)", n, p.MAPs[n]))
+		}
+	}
+	if len(extra) > 0 {
+		v.Warning = fmt.Sprintf("the running library holds cartridges in %s, which library_contents.%d does not list: the file changed since the library started, and the library makes other slots when it restarts",
+			strings.Join(extra, ", "), l.ID)
+	}
+	return v
+}
+
+func sortedInts(m map[int]string) []int {
+	keys := make([]int, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	return keys
 }
 
 func (s *Server) handleConfigSlots(w http.ResponseWriter, r *http.Request) {

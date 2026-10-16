@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -116,8 +117,14 @@ func TestConfigView(t *testing.T) {
 	if sv := got.Slots["10"]; !sv.Live || sv.MAPs[0].LiveBarcode == nil || *sv.MAPs[0].LiveBarcode != "ZZ0001L8" {
 		t.Errorf("slots of library 10 = %+v", sv)
 	}
-	if sv := got.Slots["30"]; sv.Live || sv.LiveError == "" || len(sv.Slots) == 0 {
+	if sv := got.Slots["30"]; sv.Live || sv.LiveError == "" || len(sv.Slots) == 0 || len(sv.Drives) != 0 {
 		t.Errorf("slots of library 30 = %+v", sv)
+	}
+	if d := got.Slots["10"].Drives; !reflect.DeepEqual(d, []liveDriveDTO{{1, "E01001L8"}}) {
+		t.Errorf("live drives of library 10 = %+v", d)
+	}
+	if w := got.Slots["10"].Warning; w != "" {
+		t.Errorf("warning for library 10: %s", w)
 	}
 
 	if len(got.Files) != 3 {
@@ -745,5 +752,21 @@ func TestLiveCacheWaiterCancels(t *testing.T) {
 	cancel()
 	if _, err := c.get(ctx, lib, nil); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+// A running library holding cartridges in slots library_contents does not
+// list is reported: the file changed after the library started.
+func TestConfigSlotsWarnsOfOtherSlots(t *testing.T) {
+	dir := genDir(t)
+	live := liveOf(t, dir, 10, func(inv *changer.Inventory) {
+		n := inv.Slots[len(inv.Slots)-1].Number
+		inv.Slots = append(inv.Slots, changer.SlotState{Number: n + 1, Full: true, Barcode: "ZZ0002L8"})
+	})
+	fc := &fakeChangers{invByLib: map[int]changer.Inventory{10: live}}
+	rec := do(t, Config{ConfigDir: dir, Changers: fc}, http.MethodGet, "/api/v1/config/libraries/10/slots", "")
+	sv := decodeBody[slotsViewDTO](t, rec)
+	if !strings.Contains(sv.Warning, "(ZZ0002L8)") || !strings.Contains(sv.Warning, "library_contents.10") {
+		t.Errorf("warning = %q", sv.Warning)
 	}
 }
