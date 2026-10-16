@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,13 +24,23 @@ func (e *DeviceConfError) Unwrap() error { return e.Err }
 
 // LoadInventory reads device.conf and library_contents.<id> from configDir.
 func LoadInventory(configDir string) (Inventory, error) {
+	return ReadInventory(configDir, func(name string) ([]byte, error) {
+		return os.ReadFile(filepath.Join(configDir, name))
+	})
+}
+
+// ReadInventory is LoadInventory with the files' contents coming from read,
+// which is given a file name (device.conf, library_contents.<id>) and
+// reports a missing file with an error matching fs.ErrNotExist. Paths in
+// errors and Problems are joined to configDir, as LoadInventory's are. It
+// lets the configuration editor read a proposed set of files.
+func ReadInventory(configDir string, read func(name string) ([]byte, error)) (Inventory, error) {
 	path := filepath.Join(configDir, "device.conf")
-	f, err := os.Open(path)
+	data, err := read("device.conf")
 	if err != nil {
 		return Inventory{}, &DeviceConfError{Path: path, Err: err}
 	}
-	libs, drives, problems, err := ParseDeviceConf(f)
-	f.Close()
+	libs, drives, problems, err := ParseDeviceConf(bytes.NewReader(data))
 	if err != nil {
 		return Inventory{}, fmt.Errorf("%s: %w", path, err)
 	}
@@ -52,16 +64,16 @@ func LoadInventory(configDir string) (Inventory, error) {
 				lib.Drives = append(lib.Drives, d)
 			}
 		}
-		cpath := filepath.Join(configDir, "library_contents."+strconv.Itoa(lib.ID))
-		cf, err := os.Open(cpath)
-		if errors.Is(err, os.ErrNotExist) {
+		name := "library_contents." + strconv.Itoa(lib.ID)
+		cpath := filepath.Join(configDir, name)
+		data, err := read(name)
+		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return Inventory{}, err
 		}
-		driveLines, pickers, maps, slots, problems, err := ParseLibraryContents(cf)
-		cf.Close()
+		driveLines, pickers, maps, slots, problems, err := ParseLibraryContents(bytes.NewReader(data))
 		if err != nil {
 			return Inventory{}, fmt.Errorf("%s: %w", cpath, err)
 		}
