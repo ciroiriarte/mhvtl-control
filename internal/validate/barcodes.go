@@ -16,7 +16,7 @@ import (
 type place struct {
 	lib  int
 	what string // "slot 3", "MAP slot 1"
-	key  string // element key
+	key  ElementRef
 }
 
 func (p place) String() string { return fmt.Sprintf("library %d %s", p.lib, p.what) }
@@ -74,18 +74,18 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 	for _, b := range sortedStrings(all) {
 		if len(b) > MaxBarcodeLen {
 			for _, p := range all[b] {
-				r.errorf(FamilyBarcode, p.lib, []string{p.key}, "%s: barcode %s is %d characters; vtllibrary stops on a barcode longer than %d",
+				r.errorf(CodeBarcodeLength, p.lib, []ElementRef{p.key}, "%s: barcode %s is %d characters; vtllibrary stops on a barcode longer than %d",
 					p, b, len(b), MaxBarcodeLen)
 			}
 		}
 	}
 	for _, b := range sortedStrings(all) {
 		if ps := all[b]; len(ps) > 1 {
-			var els []string
+			var els []ElementRef
 			for _, p := range ps {
 				els = append(els, p.key)
 			}
-			r.errorf(FamilyBarcode, ps[1].lib, els, "barcode %s is listed %d times: %s", b, len(ps), joinPlaces(ps))
+			r.errorf(CodeBarcodeDup, ps[1].lib, els, "barcode %s is listed %d times: %s", b, len(ps), joinPlaces(ps))
 		}
 	}
 
@@ -98,14 +98,14 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 				continue
 			}
 			if err != nil {
-				r.errorf(FamilyBarcode, lib.ID, []string{libKey(lib.ID)}, "cannot read %s: %v", p, err)
+				r.errorf(CodeBarcodePersistRead, lib.ID, []ElementRef{libKey(lib.ID)}, "cannot read %s: %v", p, err)
 				continue
 			}
 			// Only the barcodes count here; lines conffile flags are skipped.
 			_, pickers, maps, slots, _, err := config.ParseLibraryContents(f)
 			f.Close()
 			if err != nil {
-				r.errorf(FamilyBarcode, lib.ID, []string{libKey(lib.ID)}, "%s: %v", p, err)
+				r.errorf(CodeBarcodePersistRead, lib.ID, []ElementRef{libKey(lib.ID)}, "%s: %v", p, err)
 				continue
 			}
 			var held []config.Slot
@@ -142,13 +142,13 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		for _, b := range sortedStrings(mine) {
 			for _, other := range sortedKeys(persisted) {
 				if other != lib.ID && persisted[other][b] {
-					r.errorf(FamilyBarcode, lib.ID, []string{mine[b][0].key}, "barcode %s (%s) is in library %d's library_contents.%d.persist", b, mine[b][0], other, other)
+					r.errorf(CodeBarcodeInPersist, lib.ID, []ElementRef{mine[b][0].key}, "barcode %s (%s) is in library %d's library_contents.%d.persist", b, mine[b][0], other, other)
 				}
 			}
 			if live != nil {
 				for _, other := range sortedKeys(live.Libraries) {
 					if other != lib.ID && live.Libraries[other].holds()[b] {
-						r.stickyErrorf(FamilyBarcode, lib.ID, []string{mine[b][0].key}, "barcode %s (%s) is held by library %d now", b, mine[b][0], other)
+						r.stickyErrorf(CodeBarcodeHeldLive, lib.ID, []ElementRef{mine[b][0].key}, "barcode %s (%s) is held by library %d now", b, mine[b][0], other)
 					}
 				}
 			}
@@ -157,7 +157,7 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 			}
 			for _, h := range sortedStrings(homes) {
 				if h != home && media.Exists(h, b) {
-					r.errorf(FamilyBarcode, lib.ID, []string{mine[b][0].key}, "barcode %s (%s) is new to library %d, but a cartridge %s already exists in %s, the home of library %s",
+					r.errorf(CodeBarcodeInOtherHome, lib.ID, []ElementRef{mine[b][0].key}, "barcode %s (%s) is new to library %d, but a cartridge %s already exists in %s, the home of library %s",
 						b, mine[b][0], lib.ID, b, h, joinInts(homes[h]))
 				}
 			}

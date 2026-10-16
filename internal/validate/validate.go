@@ -21,6 +21,7 @@ package validate
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/hostids"
@@ -43,14 +44,42 @@ const TagPreExisting = "pre-existing"
 // Finding is one problem found in a configuration.
 type Finding struct {
 	Family string `json:"family"`
+	// Code names the check (see codes.go): "<family>.<check>".
+	Code string `json:"code"`
 	// Library is the ID of the library concerned, or 0.
 	Library int    `json:"library,omitempty"`
 	Message string `json:"message"`
 	Tag     string `json:"tag,omitempty"`
+	// Elements are the libraries, drives and elements the finding concerns.
+	// A change to any of them makes an error the configuration in force
+	// already has block again.
+	Elements []ElementRef `json:"elements,omitempty"`
 
-	elements []string // keys of the libraries, drives and slots concerned
-	sticky   bool     // never reported as pre-existing
+	sticky bool // never reported as pre-existing
 }
+
+// ElementRef names a library, a drive, or an element of a library.
+type ElementRef struct {
+	Kind string `json:"kind"` // one of the Element* kinds
+	// Library is the library the element belongs to. It is 0 for a drive:
+	// device.conf numbers drives apart from libraries, and a drive can move
+	// from one library to another.
+	Library int `json:"library,omitempty"`
+	// Number is the library or drive ID, or the element number (1-based, as
+	// in library_contents).
+	Number int `json:"number"`
+}
+
+// Element kinds.
+const (
+	ElementLibrary = "library"
+	ElementDrive   = "drive"
+	ElementSlot    = "slot"
+	ElementMAP     = "map"
+	ElementPicker  = "picker"
+	// ElementDriveLine is a "Drive N:" line of library_contents.
+	ElementDriveLine = "drive_line"
+)
 
 // Result holds the findings of Validate.
 type Result struct {
@@ -61,34 +90,41 @@ type Result struct {
 // OK reports whether nothing blocks the configuration.
 func (r Result) OK() bool { return len(r.Errors) == 0 }
 
-func (r *Result) errorf(family string, lib int, els []string, format string, a ...any) {
-	r.Errors = append(r.Errors, Finding{Family: family, Library: lib, Message: fmt.Sprintf(format, a...), elements: els})
+func newFinding(code string, lib int, els []ElementRef, format string, a []any) Finding {
+	family, _, _ := strings.Cut(code, ".")
+	return Finding{Family: family, Code: code, Library: lib, Message: fmt.Sprintf(format, a...), Elements: els}
+}
+
+func (r *Result) errorf(code string, lib int, els []ElementRef, format string, a ...any) {
+	r.Errors = append(r.Errors, newFinding(code, lib, els, format, a))
 }
 
 // stickyErrorf records an error that blocks even when the configuration in
 // force already has it: a conflict with the live host, or a library that does
 // not meet the target application asked for.
-func (r *Result) stickyErrorf(family string, lib int, els []string, format string, a ...any) {
-	r.Errors = append(r.Errors, Finding{Family: family, Library: lib, Message: fmt.Sprintf(format, a...), elements: els, sticky: true})
+func (r *Result) stickyErrorf(code string, lib int, els []ElementRef, format string, a ...any) {
+	f := newFinding(code, lib, els, format, a)
+	f.sticky = true
+	r.Errors = append(r.Errors, f)
 }
 
-func (r *Result) warnf(family string, lib int, format string, a ...any) {
-	r.Warnings = append(r.Warnings, Finding{Family: family, Library: lib, Message: fmt.Sprintf(format, a...)})
+func (r *Result) warnf(code string, lib int, els []ElementRef, format string, a ...any) {
+	r.Warnings = append(r.Warnings, newFinding(code, lib, els, format, a))
 }
 
-// Element keys name what a finding concerns.
-func libKey(id int) string        { return fmt.Sprintf("library %d", id) }
-func driveKey(id int) string      { return fmt.Sprintf("drive %d", id) }
-func slotKey(lib, n int) string   { return fmt.Sprintf("library %d slot %d", lib, n) }
-func mapKey(lib, n int) string    { return fmt.Sprintf("library %d MAP slot %d", lib, n) }
-func pickerKey(lib, n int) string { return fmt.Sprintf("library %d picker %d", lib, n) }
-func lineKey(lib, n int) string   { return fmt.Sprintf("library %d Drive line %d", lib, n) }
+// Element references.
+func libKey(id int) ElementRef        { return ElementRef{ElementLibrary, id, id} }
+func driveKey(id int) ElementRef      { return ElementRef{ElementDrive, 0, id} }
+func slotKey(lib, n int) ElementRef   { return ElementRef{ElementSlot, lib, n} }
+func mapKey(lib, n int) ElementRef    { return ElementRef{ElementMAP, lib, n} }
+func pickerKey(lib, n int) ElementRef { return ElementRef{ElementPicker, lib, n} }
+func lineKey(lib, n int) ElementRef   { return ElementRef{ElementDriveLine, lib, n} }
 
-// prints fingerprints every element of inv by its key, to tell what a change
-// touches. An element listed twice under one key gets both values, so adding
-// or removing a copy touches it.
-func prints(inv config.Inventory) map[string]string {
-	m := map[string]string{}
+// prints fingerprints every element of inv, to tell what a change touches.
+// An element listed twice gets both values, so adding or removing a copy
+// touches it.
+func prints(inv config.Inventory) map[ElementRef]string {
+	m := map[ElementRef]string{}
 	for _, l := range inv.Libraries {
 		bare := l
 		bare.Drives, bare.Slots, bare.MAPs, bare.Pickers, bare.PickerMedia, bare.DriveLines = nil, nil, nil, nil, nil, nil
@@ -184,18 +220,18 @@ func Validate(cur, next config.Inventory, live *Live, host []hostids.Device, opt
 	r := check(cur, next, live, host, opts)
 	before := check(cur, cur, live, host, Options{TargetApps: opts.TargetApps, ConfigDir: opts.ConfigDir, DefaultHome: opts.DefaultHome})
 	type key struct {
-		family  string
+		code    string
 		lib     int
 		message string
 	}
 	had := map[key]bool{}
 	for _, f := range before.Errors {
-		had[key{f.Family, f.Library, f.Message}] = true
+		had[key{f.Code, f.Library, f.Message}] = true
 	}
 	pc, pn := prints(cur), prints(next)
 	errs := r.Errors[:0]
 	for _, f := range r.Errors {
-		if f.sticky || !had[key{f.Family, f.Library, f.Message}] || touches(f, pc, pn) {
+		if f.sticky || !had[key{f.Code, f.Library, f.Message}] || touches(f, pc, pn) {
 			errs = append(errs, f)
 			continue
 		}
@@ -207,8 +243,8 @@ func Validate(cur, next config.Inventory, live *Live, host []hostids.Device, opt
 }
 
 // touches reports whether the change alters an element f concerns.
-func touches(f Finding, cur, next map[string]string) bool {
-	for _, k := range f.elements {
+func touches(f Finding, cur, next map[ElementRef]string) bool {
+	for _, k := range f.Elements {
 		c, inCur := cur[k]
 		n, inNext := next[k]
 		if inCur != inNext || c != n {

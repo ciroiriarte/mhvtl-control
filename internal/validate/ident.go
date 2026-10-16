@@ -53,8 +53,8 @@ type device struct {
 
 func (d device) String() string { return fmt.Sprintf("%s %d", d.kind, d.id) }
 
-// key is the element key of the device.
-func (d device) key() string {
+// key is the element reference of the device.
+func (d device) key() ElementRef {
 	if d.kind == "library" {
 		return libKey(d.id)
 	}
@@ -134,32 +134,32 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	wire := make([][]byte, len(devs)) // the NAA each device reports, if known
 	for i, d := range devs {
 		if o, dup := ids[d.id]; dup {
-			r.errorf(FamilyIdentity, d.lib, []string{o.key(), d.key()}, "%s and %s share ID %d; mhVTL addresses its daemons by ID", o, d, d.id)
+			r.errorf(CodeIdentIDDup, d.lib, []ElementRef{o.key(), d.key()}, "%s and %s share ID %d; mhVTL addresses its daemons by ID", o, d, d.id)
 		} else {
 			ids[d.id] = d
 		}
 		k := [3]int{d.channel, d.target, d.lun}
 		if o, dup := ctl[k]; dup {
-			r.errorf(FamilyIdentity, d.lib, []string{o.key(), d.key()}, "%s and %s share CHANNEL %d TARGET %d LUN %d", o, d, d.channel, d.target, d.lun)
+			r.errorf(CodeIdentAddressDup, d.lib, []ElementRef{o.key(), d.key()}, "%s and %s share CHANNEL %d TARGET %d LUN %d", o, d, d.channel, d.target, d.lun)
 		} else {
 			ctl[k] = d
 		}
 
 		switch {
 		case d.serial == "":
-			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s has no Unit serial number", d)
+			r.errorf(CodeIdentSerialMissing, d.lib, []ElementRef{d.key()}, "%s has no Unit serial number", d)
 		case len(d.serial) > MaxSerialLen:
-			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: serial %q is %d characters; mhvtl-control limits serials to %d characters, the fixed field some changers report them in (e.g. VPD page 83h, usr/pm/hp_smc_pm.c:79)", d, d.serial, len(d.serial), MaxSerialLen)
+			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; mhvtl-control limits serials to %d characters, the fixed field some changers report them in (e.g. VPD page 83h, usr/pm/hp_smc_pm.c:79)", d, d.serial, len(d.serial), MaxSerialLen)
 		}
 		if len(d.vendor) > MaxVendorLen {
-			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: vendor %q is %d characters; INQUIRY has room for %d and mhVTL cuts the rest", d, d.vendor, len(d.vendor), MaxVendorLen)
+			r.errorf(CodeIdentVendorLength, d.lib, []ElementRef{d.key()}, "%s: vendor %q is %d characters; INQUIRY has room for %d and mhVTL cuts the rest", d, d.vendor, len(d.vendor), MaxVendorLen)
 		}
 		if len(d.product) > MaxProductLen {
-			r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: product %q is %d characters; INQUIRY has room for %d and mhVTL cuts the rest", d, d.product, len(d.product), MaxProductLen)
+			r.errorf(CodeIdentProductLength, d.lib, []ElementRef{d.key()}, "%s: product %q is %d characters; INQUIRY has room for %d and mhVTL cuts the rest", d, d.product, len(d.product), MaxProductLen)
 		}
 		if d.serial != "" {
 			if o, dup := serials[d.serial]; dup {
-				r.errorf(FamilyIdentity, d.lib, []string{o.key(), d.key()}, "%s and %s share serial %q", o, d, d.serial)
+				r.errorf(CodeIdentSerialDup, d.lib, []ElementRef{o.key(), d.key()}, "%s and %s share serial %q", o, d, d.serial)
 			} else {
 				serials[d.serial] = d
 			}
@@ -174,20 +174,20 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		case d.naa != "":
 			var err error
 			if b, err = hostids.ParseNAA(d.naa); err != nil {
-				r.errorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: %v", d, err)
+				r.errorf(CodeIdentNAAInvalid, d.lib, []ElementRef{d.key()}, "%s: %v", d, err)
 				continue
 			}
 		case d.serial == "":
 			continue // already refused above
 		default:
 			b = derivedNAA(d)
-			r.warnf(FamilyIdentity, d.lib, "%s has no NAA; mhVTL then derives %s from the end of the serial (usr/vtllib.c update_vpd_83), which other devices can repeat",
+			r.warnf(CodeIdentNAADerived, d.lib, []ElementRef{d.key()}, "%s has no NAA; mhVTL then derives %s from the end of the serial (usr/vtllib.c update_vpd_83), which other devices can repeat",
 				d, hostids.FormatNAA(b))
 		}
 		wire[i] = b
 		for _, o := range naas {
 			if hostids.SameNAA(o.b, b) {
-				r.errorf(FamilyIdentity, d.lib, []string{o.d.key(), d.key()}, "%s and %s share NAA %s (mhVTL rewrites the NAA field to 5h, so only the last 60 bits count)", o.d, d, naaText(d, b))
+				r.errorf(CodeIdentNAADup, d.lib, []ElementRef{o.d.key(), d.key()}, "%s and %s share NAA %s (mhVTL rewrites the NAA field to 5h, so only the last 60 bits count)", o.d, d, naaText(d, b))
 				break
 			}
 		}
@@ -204,7 +204,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		p := personality.Lookup(l.Vendor, l.Product)
 		for _, d := range l.Drives {
 			if area := p.SerialArea(); area > 0 && len(d.Serial) > area {
-				r.warnf(FamilyIdentity, l.ID, "library %d (%s) shows only %d characters of a drive serial; drive %d's %q is cut short in READ ELEMENT STATUS",
+				r.warnf(CodeIdentSerialCut, l.ID, []ElementRef{libKey(l.ID), driveKey(d.ID)}, "library %d (%s) shows only %d characters of a drive serial; drive %d's %q is cut short in READ ELEMENT STATUS",
 					l.ID, p.Name, area, d.ID, d.Serial)
 			}
 		}
@@ -228,7 +228,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 				continue
 			}
 			if d.serial != "" && d.serial == h.Serial {
-				r.stickyErrorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: serial %q is already used by host device %s (%s)", d, d.serial, h.HCTL(), driverName(h))
+				r.stickyErrorf(CodeIdentHostSerial, d.lib, []ElementRef{d.key()}, "%s: serial %q is already used by host device %s (%s)", d, d.serial, h.HCTL(), driverName(h))
 			}
 			b := wire[i]
 			if b == nil {
@@ -236,7 +236,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 			}
 			for _, hn := range h.NAAs {
 				if hb, err := hostids.ParseNAA(hn); err == nil && hostids.SameNAA(b, hb) {
-					r.stickyErrorf(FamilyIdentity, d.lib, []string{d.key()}, "%s: NAA %s is already used by host device %s (%s), which reports %s", d, naaText(d, b), h.HCTL(), driverName(h), hn)
+					r.stickyErrorf(CodeIdentHostNAA, d.lib, []ElementRef{d.key()}, "%s: NAA %s is already used by host device %s (%s), which reports %s", d, naaText(d, b), h.HCTL(), driverName(h), hn)
 				}
 			}
 		}
@@ -328,24 +328,24 @@ func checkDriveLines(r *Result, next config.Inventory, serials map[string]device
 			if dl.Serial == "" {
 				continue
 			}
-			els := []string{lineKey(l.ID, dl.Number)}
+			els := []ElementRef{lineKey(l.ID, dl.Number)}
 			d, ok := bySlot[dl.Number]
 			switch {
 			case ok && d.Serial == "":
-				r.errorf(FamilyIdentity, l.ID, append(els, driveKey(d.ID)),
+				r.errorf(CodeIdentDriveLineSerial, l.ID, append(els, driveKey(d.ID)),
 					"%s line \"Drive %d: %s\" makes the changer report serial %q for drive %d, which has no Unit serial number in device.conf; the changer and the drive would report different serials",
 					file, dl.Number, dl.Serial, dl.Serial, d.ID)
 			case ok && d.Serial != dl.Serial:
-				r.warnf(FamilyIdentity, l.ID, "%s line \"Drive %d: %s\" is ignored: device.conf gives drive %d serial %q, which vtllibrary applies afterwards",
+				r.warnf(CodeIdentDriveLineIgnored, l.ID, append(els, driveKey(d.ID)), "%s line \"Drive %d: %s\" is ignored: device.conf gives drive %d serial %q, which vtllibrary applies afterwards",
 					file, dl.Number, dl.Serial, d.ID, d.Serial)
 			case !ok:
-				r.warnf(FamilyIdentity, l.ID, "%s line \"Drive %d: %s\": no drive of device.conf sits in drive slot %d, so the changer reports a drive that does not exist",
+				r.warnf(CodeIdentDriveLineNoDrive, l.ID, els, "%s line \"Drive %d: %s\": no drive of device.conf sits in drive slot %d, so the changer reports a drive that does not exist",
 					file, dl.Number, dl.Serial, dl.Number)
 				if o, dup := serials[dl.Serial]; dup {
-					r.errorf(FamilyIdentity, l.ID, append(els, o.key()), "%s line \"Drive %d: %s\" gives the changer a drive with serial %q, which %s already uses",
+					r.errorf(CodeIdentDriveLineSerialDup, l.ID, append(els, o.key()), "%s line \"Drive %d: %s\" gives the changer a drive with serial %q, which %s already uses",
 						file, dl.Number, dl.Serial, dl.Serial, o)
 				} else if n, dup := phantom[dl.Serial]; dup {
-					r.errorf(FamilyIdentity, l.ID, append(els, lineKey(l.ID, n)), "%s lines \"Drive %d\" and \"Drive %d\" both give the changer serial %q",
+					r.errorf(CodeIdentDriveLineSerialDup, l.ID, append(els, lineKey(l.ID, n)), "%s lines \"Drive %d\" and \"Drive %d\" both give the changer serial %q",
 						file, n, dl.Number, dl.Serial)
 				} else {
 					phantom[dl.Serial] = dl.Number
