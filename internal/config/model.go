@@ -14,6 +14,9 @@ type Library struct {
 	Slots                   []Slot
 	MAPs                    []MAPSlot
 	Pickers                 []int
+	// PickerMedia are the pickers library_contents lists holding a
+	// cartridge ("Picker N: BARCODE").
+	PickerMedia []Slot
 	// DriveLines are the "Drive N: [serial]" lines of library_contents.
 	DriveLines []DriveLine
 }

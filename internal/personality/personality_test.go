@@ -101,6 +101,9 @@ func TestBarcodeDensity(t *testing.T) {
 		{"E01001TB", "T10KB", "data"},
 		{"E01001S3", "SDLT600", "data"},
 		{"SHORT", "UNKNOWN", "data"},
+		// make_vtl_media's unanchored regex would read LTO8 from the tail.
+		{"ABCDEFGHIJ01L8", "UNKNOWN", "data"},
+		{"ABCDEFGHIJ01LY", "UNKNOWN", "data"},
 	} {
 		if got := BarcodeDensity(tc.barcode); got != tc.density {
 			t.Errorf("BarcodeDensity(%s) = %s; want %s", tc.barcode, got, tc.density)

@@ -137,6 +137,16 @@ func TestParseLibraryContentsDriveSerial(t *testing.T) {
 	}
 }
 
+func TestParseLibraryContentsPickerBarcode(t *testing.T) {
+	_, pickers, _, _, _, err := ParseLibraryContents(strings.NewReader("Picker 1: ABC123L8\nPicker 2:\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pickers) != 2 || pickers[0] != (Slot{1, "ABC123L8"}) || pickers[1] != (Slot{2, ""}) {
+		t.Errorf("pickers = %+v", pickers)
+	}
+}
+
 func TestParseLibraryContentsMalformed(t *testing.T) {
 	for _, in := range []string{"Slot x: ABC\n", "Slot 1 ABC\n", "Bogus 1:\n", "Slot:\n", "IEPort 1: B\n"} {
 		_, _, _, slots, problems, err := ParseLibraryContents(strings.NewReader(in + "Slot 2: A\n"))

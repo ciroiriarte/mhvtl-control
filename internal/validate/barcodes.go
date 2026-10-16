@@ -34,6 +34,9 @@ func listed(lib config.Library) map[string][]place {
 			m[s.Barcode] = append(m[s.Barcode], place{lib.ID, "MAP slot " + strconv.Itoa(s.Number), mapKey(lib.ID, s.Number)})
 		}
 	}
+	for _, s := range lib.PickerMedia {
+		m[s.Barcode] = append(m[s.Barcode], place{lib.ID, "picker " + strconv.Itoa(s.Number), pickerKey(lib.ID, s.Number)})
+	}
 	return m
 }
 
@@ -50,7 +53,13 @@ func (p Placement) holds() map[string]bool {
 	return m
 }
 
-// checkBarcodes refuses a barcode that two places would claim: listed twice
+// MaxBarcodeLen is the longest barcode vtllibrary accepts; add_barcode exits
+// on a longer one (mhvtl include/vtllib.h MAX_BARCODE_LEN :90,
+// usr/cmd/vtllibrary.c add_barcode :324-327, upstream master c65bff0).
+const MaxBarcodeLen = 16
+
+// checkBarcodes refuses a barcode longer than vtllibrary accepts, and one
+// that two places would claim: listed twice
 // in next, listed by one library while another library's .persist file or
 // live state has it, or a new pre-fill naming a cartridge that already
 // exists in another library's home. mhVTL itself does not notice: two
@@ -60,6 +69,14 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 	for _, lib := range next.Libraries {
 		for b, ps := range listed(lib) {
 			all[b] = append(all[b], ps...)
+		}
+	}
+	for _, b := range sortedStrings(all) {
+		if len(b) > MaxBarcodeLen {
+			for _, p := range all[b] {
+				r.errorf(FamilyBarcode, p.lib, []string{p.key}, "%s: barcode %s is %d characters; vtllibrary stops on a barcode longer than %d",
+					p, b, len(b), MaxBarcodeLen)
+			}
 		}
 	}
 	for _, b := range sortedStrings(all) {
@@ -85,13 +102,19 @@ func checkBarcodes(r *Result, cur, next config.Inventory, live *Live, opts Optio
 				continue
 			}
 			// Only the barcodes count here; lines conffile flags are skipped.
-			_, _, maps, slots, _, err := config.ParseLibraryContents(f)
+			_, pickers, maps, slots, _, err := config.ParseLibraryContents(f)
 			f.Close()
 			if err != nil {
 				r.errorf(FamilyBarcode, lib.ID, []string{libKey(lib.ID)}, "%s: %v", p, err)
 				continue
 			}
-			persisted[lib.ID] = barcodes(listed(config.Library{ID: lib.ID, Slots: slots, MAPs: maps}))
+			var held []config.Slot
+			for _, p := range pickers {
+				if p.Barcode != "" {
+					held = append(held, p)
+				}
+			}
+			persisted[lib.ID] = barcodes(listed(config.Library{ID: lib.ID, Slots: slots, MAPs: maps, PickerMedia: held}))
 		}
 	}
 
