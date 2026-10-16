@@ -10,10 +10,12 @@ import (
 	"mhvtl-control/internal/personality"
 )
 
-// MaxSerialLen is the longest unit serial number mhvtl-control allows.
-// mhVTL itself takes up to 40 characters (include/vtllib.h MAX_DRIVE_SN_LEN
-// :88, upstream master 993b193), but etc/generate_device_conf.in:52 states a
-// limit of 10, and parts of what it reports have room for 10 only:
+// MaxSerialLen is the longest unit serial number mhvtl-control allows. It is
+// mhvtl-control policy, not an mhVTL limit: mhVTL holds serials of up to
+// MaxMhvtlSerialLen characters (include/vtllib.h MAX_DRIVE_SN_LEN :88, the
+// arrays at :620 and :649, upstream master 993b193). But
+// etc/generate_device_conf.in:52 states a limit of 10, and parts of what
+// mhVTL reports have room for 10 only:
 //   - a drive serial: the changers whose READ ELEMENT STATUS drive identifier
 //     leaves 10 characters for it (personality.Model.SerialArea: the mhVTL
 //     default, HP EML and the documented MSLs, IBM, Overland, Spectra Gator)
@@ -21,9 +23,17 @@ import (
 //     the limit holds for every drive.
 //   - a library's own serial: only the HP EML/MSL and Overland changers copy
 //     exactly 10 bytes of it into VPD page 83h (usr/pm/hp_smc_pm.c:79,
-//     usr/pm/overland_pm.c:63). A library does not move, so for the other
+//     usr/pm/overland_pm.c:63), and into page 80h too (hp_smc_pm.c:44,
+//     overland_pm.c:24). A library does not move, so for the other
 //     personalities a longer serial is only warned about.
+//
+// A drive the change does not touch keeps a longer serial it already has: the
+// error is reported as pre-existing (Validate), so an unrelated edit is not
+// blocked.
 const MaxSerialLen = 10
+
+// MaxMhvtlSerialLen is MAX_DRIVE_SN_LEN, the longest serial mhVTL holds.
+const MaxMhvtlSerialLen = 40
 
 // cutsLibrarySerial holds the library personalities that cut their own
 // serial to MaxSerialLen in VPD page 83h (update_eml_vpd_83, called from
@@ -187,13 +197,13 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		case d.serial == "":
 			r.errorf(CodeIdentSerialMissing, d.lib, []ElementRef{d.key()}, "%s has no Unit serial number", d)
 		case len(d.serial) > MaxSerialLen && d.kind == "drive":
-			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; mhvtl-control limits drive serials to %d, since several changers (the mhVTL default, HP, IBM, Overland) show no more in READ ELEMENT STATUS and a drive can move to any library",
-				d, d.serial, len(d.serial), MaxSerialLen)
+			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; mhvtl-control's policy limits drive serials to %d (mhVTL itself takes %d), since several changers (the mhVTL default, HP, IBM, Overland) show no more in READ ELEMENT STATUS and a drive can move to any library",
+				d, d.serial, len(d.serial), MaxSerialLen, MaxMhvtlSerialLen)
 		case len(d.serial) > MaxSerialLen && cutsLibrarySerial[personality.Lookup(d.vendor, d.product).InitFn]:
-			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; the %s personality reports only the first %d in VPD page 83h (usr/pm/hp_smc_pm.c:79, usr/pm/overland_pm.c:63)",
+			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; the %s personality reports only the first %d in VPD pages 80h and 83h (usr/pm/hp_smc_pm.c:44, :79; usr/pm/overland_pm.c:24, :63)",
 				d, d.serial, len(d.serial), personality.Lookup(d.vendor, d.product).Name, MaxSerialLen)
 		case len(d.serial) > MaxSerialLen:
-			r.warnf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; this personality reports it whole, but generate_device_conf and mhvtl-control keep serials to %d, and the HP and Overland personalities would cut it",
+			r.warnf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; this personality reports it whole, but mhvtl-control's policy (not an mhVTL limit) and generate_device_conf keep serials to %d, and the HP and Overland personalities would cut it",
 				d, d.serial, len(d.serial), MaxSerialLen)
 		}
 		if len(d.vendor) > MaxVendorLen {
