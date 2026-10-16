@@ -67,7 +67,7 @@ func (c *LibContents) index() {
 		// mhVTL skips only a column-1 '#' (mhvtl usr/cmd/vtllibrary.c:1025),
 		// but an indented one fails every sscanf pattern there and is
 		// ignored too.
-		text := strings.TrimSpace(l.Text)
+		text := cTrim(l.Text)
 		if text == "" || strings.HasPrefix(text, "#") {
 			continue
 		}
@@ -82,7 +82,7 @@ func (c *LibContents) index() {
 			problem(i, false, "missing ':' in %q", text)
 			continue
 		}
-		f := strings.Fields(head)
+		f := cFields(head)
 		if len(f) != 2 {
 			problem(i, false, "malformed %q", text)
 			continue
@@ -105,14 +105,14 @@ func (c *LibContents) index() {
 			continue
 		}
 		e := Entry{Kind: f[0], Number: n, Line: i}
-		words := strings.Fields(rest)
+		words := cFields(rest)
 		switch {
 		case strings.TrimRight(head, " \t") != head:
 			// sscanf stops at the blank before ':' with the number read, and
 			// the element is created empty.
 			problem(i, true, "blank before ':' in %q: mhVTL reads %s %d as empty", text, f[0], n)
 		case len(words) > 1:
-			problem(i, true, "white space inside %q: mhVTL reads only %q", strings.TrimSpace(rest), words[0])
+			problem(i, true, "white space inside %q: mhVTL reads only %q", cTrim(rest), words[0])
 			e.Barcode = words[0]
 		case len(words) == 1:
 			e.Barcode = words[0]

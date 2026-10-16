@@ -160,6 +160,19 @@ func TestRemoveStanzaBoundaries(t *testing.T) {
 	}
 }
 
+// TestCWhiteSpace checks only C's white space is taken as such: conf_value
+// blanks are space and tab, and sscanf's %s stops at isspace, not at NBSP.
+func TestCWhiteSpace(t *testing.T) {
+	c := ParseDeviceConf([]byte("Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00\n Vendor\u00a0identification: IBM\n"))
+	if v, ok := mustStanza(t, c, "Drive", 11).Get("Vendor identification"); ok {
+		t.Errorf("NBSP in a key read as a blank: %q", v)
+	}
+	lc := ParseLibContents([]byte("Slot 1: A\u00a0B\n"))
+	if e := lc.Entries(); len(e) != 1 || e[0].Barcode != "A\u00a0B" || len(lc.Problems) != 0 {
+		t.Errorf("entries %+v, problems %v", e, lc.Problems)
+	}
+}
+
 // TestCScanf pins cScanf to what glibc's sscanf returns for the same input
 // and format.
 func TestCScanf(t *testing.T) {

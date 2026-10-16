@@ -102,7 +102,7 @@ func deleteLines(lines []Line, from, to int) []Line {
 
 // isBlank reports a line with nothing but white space. Whether it separates
 // records depends on its length (see separates).
-func isBlank(text string) bool { return strings.TrimSpace(text) == "" }
+func isBlank(text string) bool { return cTrim(text) == "" }
 
 // cLen is strlen(b) for the line as mhVTL's readline (mhvtl
 // usr/vtllib.c:1064) leaves it: fgets, then every '\n' past the first byte
@@ -327,7 +327,7 @@ func (c *DeviceConf) index() {
 			c.stanzas = append(c.stanzas, st)
 			cur = len(c.stanzas) - 1
 		default:
-			trimmed := strings.TrimSpace(text)
+			trimmed := strings.TrimLeft(text, " \t")
 			if strings.HasPrefix(trimmed, "#") {
 				continue
 			}
@@ -345,7 +345,7 @@ func (c *DeviceConf) index() {
 				problem(i, true, "blank before ':' in %q: mhVTL ignores this line", trimmed)
 				continue
 			}
-			key := strings.Join(strings.Fields(rawKey), " ")
+			key := canonicalKey(rawKey)
 			value := attrValue(val)
 			st := &c.stanzas[cur]
 			if msg := scanfProblem(st.Kind, key, cText(l)); msg != "" {
@@ -411,7 +411,7 @@ func (c *DeviceConf) attrValue(i int) string {
 // trailing reports text after a full address, which mhVTL's sscanf ignores
 // but leaves HasAddress false here.
 func parseStanzaHeader(text string) (st Stanza, trailing, ok bool) {
-	f := strings.Fields(strings.ReplaceAll(text, ":", " "))
+	f := cFields(strings.ReplaceAll(text, ":", " "))
 	if len(f) < 2 || (f[0] != "Library" && f[0] != "Drive") ||
 		!strings.HasPrefix(text, f[0]+":") {
 		return Stanza{}, false, false
@@ -492,7 +492,7 @@ func (c *DeviceConf) Render() []byte { return renderLines(c.lines) }
 // or trailing blanks (trimmed), or a '#' after a blank (a comment), and a
 // line too long for readline.
 func checkKV(key, value string) error {
-	if key == "" || strings.ContainsAny(key, ":\r\n#\x00") || strings.Join(strings.Fields(key), " ") != key {
+	if key == "" || strings.ContainsAny(key, ":\r\n#\x00") || canonicalKey(key) != key {
 		return fmt.Errorf("invalid key %q", key)
 	}
 	switch {
