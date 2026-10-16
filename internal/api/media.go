@@ -83,9 +83,7 @@ func (s *Server) handleMediaList(w http.ResponseWriter, r *http.Request) {
 		"live":      false,
 	}
 	var inv *changer.Inventory
-	if s.cfg.Changers == nil {
-		resp["live_error"] = "changer access not configured"
-	} else if live, err := s.cfg.Changers.Inventory(lib); err != nil {
+	if live, err := s.liveInventory(r.Context(), lib); err != nil {
 		resp["live_error"] = err.Error()
 	} else {
 		inv, resp["live"] = &live, true

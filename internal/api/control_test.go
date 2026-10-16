@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"mhvtl-control/internal/changer"
@@ -29,6 +30,7 @@ func postJSON(t *testing.T, h http.Handler, path, body string) *httptest.Respons
 // fakeChangers is a ChangerService that records calls and returns canned
 // results.
 type fakeChangers struct {
+	mu     sync.Mutex // Inventory runs for several libraries at once
 	calls  []string
 	inv    changer.Inventory
 	invErr error
@@ -41,6 +43,8 @@ type fakeChangers struct {
 }
 
 func (f *fakeChangers) Inventory(lib config.Library) (changer.Inventory, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, fmt.Sprintf("Inventory lib=%d", lib.ID))
 	if inv, ok := f.invByLib[lib.ID]; ok {
 		return inv, f.invErr

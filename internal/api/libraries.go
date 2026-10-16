@@ -174,7 +174,7 @@ func liveSlots(in []changer.SlotState) []slotDTO {
 	return out
 }
 
-func (s *Server) handleLibraries(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleLibraries(w http.ResponseWriter, r *http.Request) {
 	inv, err := config.LoadInventory(s.cfg.ConfigDir)
 	if err != nil {
 		// A missing device.conf is expected before the daemon is configured:
@@ -187,15 +187,14 @@ func (s *Server) handleLibraries(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusInternalServerError, "config_error", err.Error())
 		return
 	}
+	live, liveErrs := s.liveInventories(r.Context(), inv.Libraries)
 	libs := make([]libraryDTO, 0, len(inv.Libraries))
 	for _, l := range inv.Libraries {
 		dto := toLibraryDTO(l)
-		if s.cfg.Changers == nil {
-			dto.LiveError = "changer access not configured"
-		} else if live, err := s.cfg.Changers.Inventory(l); err != nil {
-			dto.LiveError = err.Error()
+		if inv, ok := live[l.ID]; ok {
+			applyLive(&dto, inv)
 		} else {
-			applyLive(&dto, live)
+			dto.LiveError = liveErrs[l.ID]
 		}
 		s.applyNodes(&dto, l)
 		libs = append(libs, dto)
