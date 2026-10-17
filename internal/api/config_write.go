@@ -711,7 +711,14 @@ type applyRequest struct {
 
 // applyPlanDTO is what the apply does: the units it stops and starts, what
 // applies without a restart, and the libraries offline to hosts meanwhile.
+//
+// Plan 4.1 also names "merges" and "unloads"; the helper does not return
+// them as lists of their own, and they are where applyResultDTO says.
 type applyPlanDTO struct {
+	// Units are the vtllibrary@ and vtltape@ instances the apply stops and
+	// starts. After a plan refused with drive_loaded they are the forced
+	// apply's: with the vtltape@ of each loaded drive it would unload
+	// (mhvtl-control#58), which is where a plan shows the unloads.
 	Units            []string `json:"units"`
 	Notes            []string `json:"notes"`
 	OfflineLibraries []int    `json:"offline_libraries"`
