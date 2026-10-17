@@ -746,6 +746,268 @@
     return withStage(stage, { kind: kind === "map" ? "map" : "slot", count: n });
   }
 
+  /* ---- create wizard and system settings (plan 4.2) ------------------- */
+
+  // MAX_ID is the highest device.conf ID (validate.MaxID); MAX_NEW the most
+  // Slot or MAP lines one create request adds (maxNewElements in
+  // internal/api); MAX_SERIAL mhvtl-control's serial policy
+  // (validate.MaxSerialLen).
+  var MAX_ID = 1023, MAX_NEW = 4096, MAX_SERIAL = 10;
+
+  function hasPrefixFold(s, prefix) {
+    s = String(s || ""); prefix = String(prefix || "");
+    return s.length >= prefix.length && s.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
+  }
+
+  // allRules flattens the personalities' rules with their personality, in
+  // vtllibrary's evaluation order.
+  function allRules(pers) {
+    var out = [];
+    coerceArray(pers && pers.libraries).forEach(function (p) {
+      coerceArray(p && p.rules).forEach(function (r) { out.push({ rule: r, p: p }); });
+    });
+    return out.sort(function (a, b) { return coerceNumber(a.rule.order) - coerceNumber(b.rule.order); });
+  }
+
+  // resolvePersonality is the personality vtllibrary gives a library of
+  // this vendor and product: the first rule whose vendor and product
+  // prefixes both match, case-insensitively (personality.Lookup).
+  function resolvePersonality(pers, vendor, product) {
+    var rules = allRules(pers);
+    for (var i = 0; i < rules.length; i++) {
+      var r = rules[i].rule;
+      if (hasPrefixFold(vendor, r.vendor) && hasPrefixFold(product, r.product_prefix)) { return rules[i].p; }
+    }
+    return null;
+  }
+
+  // modelPresets are the models the wizard offers to fill in: each rule
+  // that names both a vendor and a product, in rule order.
+  function modelPresets(pers) {
+    return allRules(pers).filter(function (x) { return x.rule.vendor && x.rule.product_prefix; }).map(function (x) {
+      return { vendor: String(x.rule.vendor).toUpperCase(), product: String(x.rule.product_prefix), name: String(x.p.name || "") };
+    });
+  }
+
+  // createLimits are the most storage slots, MAP slots and drives a new
+  // library of personality p can have: its element windows
+  // (personality.Model.Limits), the slots one create request adds, and
+  // for drives also the IDs left after libID.
+  function createLimits(p, libID) {
+    var l = (p && p.limits) || {};
+    var drives = Math.max(0, coerceNumber(l.drives));
+    if (libID) { drives = Math.min(drives, Math.max(0, MAX_ID - coerceNumber(libID))); }
+    return {
+      slots: Math.min(Math.max(0, coerceNumber(l.slots)), MAX_NEW),
+      maps: Math.min(Math.max(0, coerceNumber(l.maps)), MAX_NEW),
+      drives: drives,
+    };
+  }
+
+  // nextLibraryID is the first multiple of ten whose ID and the drives'
+  // after it are free, as mhVTL's own device.conf numbers them; else the
+  // first free run of that length; null when there is none.
+  function nextLibraryID(used, drives) {
+    var taken = {};
+    coerceArray(used).forEach(function (id) { taken[coerceNumber(id)] = true; });
+    drives = Math.max(0, coerceNumber(drives));
+    function free(id) {
+      if (id < 1 || id + drives > MAX_ID) { return false; }
+      for (var i = id; i <= id + drives; i++) { if (taken[i]) { return false; } }
+      return true;
+    }
+    for (var t = 10; t <= MAX_ID; t += 10) { if (free(t)) { return t; } }
+    for (var id = 1; id <= MAX_ID; id++) { if (free(id)) { return id; } }
+    return null;
+  }
+
+  // freeTargets are count targets on channel whose LUN 0 no device uses,
+  // lowest first.
+  function freeTargets(used, count, channel) {
+    var taken = {};
+    coerceArray(used).forEach(function (a) {
+      if (a && coerceNumber(a.channel) === coerceNumber(channel) && coerceNumber(a.lun) === 0) { taken[coerceNumber(a.target)] = true; }
+    });
+    var out = [];
+    for (var t = 0; out.length < count; t++) { if (!taken[t]) { out.push(t); } }
+    return out;
+  }
+
+  // devices lists every library and drive of GET /config.
+  function devices(config) {
+    var out = [];
+    coerceArray(config && config.libraries).forEach(function (l) {
+      if (!l) { return; }
+      out.push(l);
+      coerceArray(l.drives).forEach(function (d) { if (d) { out.push(d); } });
+    });
+    coerceArray(config && config.standalone_drives).forEach(function (d) { if (d) { out.push(d); } });
+    return out;
+  }
+
+  function usedIDs(config) {
+    return devices(config).map(function (d) { return coerceNumber(d.id); });
+  }
+
+  function usedAddresses(config) {
+    return devices(config).map(function (d) {
+      return { channel: coerceNumber(d.channel), target: coerceNumber(d.target), lun: coerceNumber(d.lun) };
+    });
+  }
+
+  function usedSerials(config) {
+    return devices(config).map(function (d) { return String(d.serial || ""); }).filter(function (s) { return s !== ""; });
+  }
+
+  // wizardDefaults are the wizard's starting values: a free library ID,
+  // and 20 storage slots, 4 MAP slots and 2 drives, within personality
+  // p's limits.
+  function wizardDefaults(config, p) {
+    var lim = createLimits(p);
+    var drives = Math.min(2, lim.drives);
+    var id = nextLibraryID(usedIDs(config), drives);
+    return { id: id, slots: Math.min(20, lim.slots), maps: Math.min(4, lim.maps), drives: Math.min(drives, createLimits(p, id).drives) };
+  }
+
+  function pad(n, width) {
+    var s = String(n);
+    while (s.length < width) { s = "0" + s; }
+    return s;
+  }
+
+  // librarySerial and driveSerial are serials unique by ID and drive slot,
+  // within the 10-character policy for IDs up to 1023 and 999 drives.
+  function librarySerial(id) { return "MHV" + pad(coerceNumber(id), 4); }
+
+  function driveSerial(libID, slot, count) {
+    return librarySerial(libID) + pad(coerceNumber(slot), Math.max(2, String(coerceNumber(count)).length));
+  }
+
+  function hex2(n) { return pad((coerceNumber(n) & 0xff).toString(16), 2); }
+
+  // naaFor is the NAA mhVTL's generate_device_conf writes, in hex: the
+  // library ID, then the device's channel, target and LUN, which no two
+  // devices share.
+  function naaFor(libID, channel, target, lun) {
+    return [hex2(libID), "22", "33", "44", "ab", hex2(channel), hex2(target), hex2(lun)].join(":");
+  }
+
+  // driveVendorFor is the vendor a drive product is sold under, for its
+  // Vendor identification.
+  function driveVendorFor(product) {
+    var p = String(product || "");
+    if (/^(ULT3580|ULTRIUM|0359)/.test(p)) { return "IBM"; }
+    if (/^Ultrium /.test(p)) { return "HP"; }
+    if (/^T(10000|9[89]40)/.test(p)) { return "STK"; }
+    if (/^S?DLT/.test(p)) { return "QUANTUM"; }
+    if (/^SDX-/.test(p)) { return "SONY"; }
+    return "";
+  }
+
+  // wizardErrors checks the wizard's values w (id, vendor, product,
+  // serial, home, slots, maps, drives, driveProduct, targets) against the
+  // limits and what device.conf already uses (taken: {ids, serials}).
+  function wizardErrors(w, lim, taken) {
+    var errs = [];
+    var ids = {}, serials = {};
+    coerceArray(taken && taken.ids).forEach(function (i) { ids[coerceNumber(i)] = true; });
+    coerceArray(taken && taken.serials).forEach(function (s) { serials[String(s)] = true; });
+    var id = coerceNumber(w.id);
+    if (!(Number.isInteger(id) && id >= 1 && id <= MAX_ID)) { errs.push("The library ID must be 1 to " + MAX_ID + "."); }
+    if (!String(w.vendor || "").trim()) { errs.push("Vendor identification is required."); }
+    if (!String(w.product || "").trim()) { errs.push("Product identification is required."); }
+    var slots = coerceNumber(w.slots), maps = coerceNumber(w.maps), drives = coerceNumber(w.drives);
+    var lim1 = Math.min(1, lim.slots);
+    if (!(Number.isInteger(slots) && slots >= lim1 && slots <= lim.slots)) { errs.push("Storage slots must be " + lim1 + " to " + lim.slots + "."); }
+    if (!(Number.isInteger(maps) && maps >= 0 && maps <= lim.maps)) { errs.push("MAP slots must be 0 to " + lim.maps + "."); }
+    var drivesOK = Number.isInteger(drives) && drives >= 0 && drives <= lim.drives;
+    if (!drivesOK) { errs.push("Drives must be 0 to " + lim.drives + "."); }
+    var serial = String(w.serial || "").trim();
+    if (!serial) {
+      errs.push("The library serial is required.");
+    } else if (serial.length > MAX_SERIAL) {
+      errs.push("The library serial is longer than " + MAX_SERIAL + " characters.");
+    }
+    var home = String(w.home || "").trim();
+    if (home && home.charAt(0) !== "/") { errs.push("The home directory must be an absolute path."); }
+    if (errs.length) { return errs; }
+    if (ids[id]) { errs.push("ID " + id + ", for the library, is taken."); }
+    if (serials[serial]) { errs.push("Serial " + serial + ", for the library, is taken."); }
+    if (drives > 0 && !w.driveProduct) { errs.push("Choose a drive model."); }
+    for (var i = 1; i <= drives; i++) {
+      if (ids[id + i]) { errs.push("ID " + (id + i) + ", for drive " + i + ", is taken."); }
+      var ds = driveSerial(id, i, drives);
+      if (serials[ds]) { errs.push("Serial " + ds + ", for drive " + i + ", is taken."); }
+    }
+    if (coerceArray(w.targets).length < 1 + drives) { errs.push("Not enough free SCSI targets on channel 0."); }
+    return errs;
+  }
+
+  // wizardRequests are the write requests that stage the wizard's library
+  // (w as wizardErrors takes it, without errors): the library, on the
+  // first target, then each drive in slot order on the next ones, all on
+  // channel 0 LUN 0. The caller adds the stage.
+  function wizardRequests(w) {
+    var id = coerceNumber(w.id), drives = coerceNumber(w.drives), targets = coerceArray(w.targets);
+    var attrs = [
+      { key: "Vendor identification", value: String(w.vendor).trim() },
+      { key: "Product identification", value: String(w.product).trim() },
+      { key: "Unit serial number", value: String(w.serial).trim() },
+      { key: "NAA", value: naaFor(id, 0, targets[0], 0) },
+    ];
+    if (String(w.home || "").trim()) { attrs.push({ key: "Home directory", value: String(w.home).trim() }); }
+    var reqs = [{ method: "POST", path: "/api/v1/config/libraries",
+      body: { id: id, channel: 0, target: targets[0], lun: 0, slots: coerceNumber(w.slots), maps: coerceNumber(w.maps), attrs: attrs } }];
+    for (var i = 1; i <= drives; i++) {
+      reqs.push({ method: "POST", path: "/api/v1/config/libraries/" + id + "/drives", body: {
+        id: id + i, channel: 0, target: targets[i], lun: 0, slot: i, attrs: [
+          { key: "Vendor identification", value: String(w.driveVendor || driveVendorFor(w.driveProduct)) },
+          { key: "Product identification", value: String(w.driveProduct) },
+          { key: "Unit serial number", value: driveSerial(id, i, drives) },
+          { key: "NAA", value: naaFor(id, 0, targets[i], 0) },
+        ] } });
+    }
+    return reqs;
+  }
+
+  // SYSTEM_KEYS are the mhvtl.conf keys PATCH /config/system sets, with
+  // the values mhVTL's etc/mhvtl.conf.in ships and what each takes
+  // (apply's editableKeys).
+  var SYSTEM_KEYS = [
+    { key: "CAPACITY", shipped: "500", valid: function (v) { return /^[1-9][0-9]*$/.test(v) && Number(v) <= 4294967296; }, says: "a size in MiB, 1 to 4294967296" },
+    { key: "VERBOSE", shipped: "1", valid: function (v) { return /^[0-3]$/.test(v); }, says: "0 to 3" },
+    { key: "VTL_DEBUG", shipped: "0", valid: function (v) { return /^[01]$/.test(v); }, says: "0 or 1" },
+  ];
+
+  // systemFields are the settings form's fields from GET /config's system:
+  // the file's value, or "" with the shipped one to show when it has none.
+  function systemFields(system) {
+    var vals = (system && system.values) || {};
+    return SYSTEM_KEYS.map(function (k) {
+      var set = Object.prototype.hasOwnProperty.call(vals, k.key);
+      return { key: k.key, value: set ? String(vals[k.key]) : "", set: set, shipped: k.shipped };
+    });
+  }
+
+  // buildSystemPatch is PATCH /config/system's values: each field whose
+  // trimmed value changed, checked as the helper checks it. null when
+  // nothing changes. A value cannot be removed.
+  function buildSystemPatch(fields, form) {
+    form = form || {};
+    var out = {}, any = false;
+    coerceArray(fields).forEach(function (f) {
+      if (!f || !Object.prototype.hasOwnProperty.call(form, f.key)) { return; }
+      var v = String(form[f.key] == null ? "" : form[f.key]).trim();
+      if (v === f.value) { return; }
+      var k = SYSTEM_KEYS.filter(function (x) { return x.key === f.key; })[0];
+      if (v === "") { throw new RangeError(f.key + " cannot be removed here; give it a value"); }
+      if (!k.valid(v)) { throw new RangeError(f.key + " must be " + k.says); }
+      out[f.key] = v;
+      any = true;
+    });
+    return any ? out : null;
+  }
+
   var API = {
     writesEditable: writesEditable,
     lineDiff: lineDiff,
@@ -758,6 +1020,24 @@
     stageEditable: stageEditable,
     stageOutcome: stageOutcome,
     outcomeUnread: outcomeUnread,
+    intField: intField,
+    resolvePersonality: resolvePersonality,
+    modelPresets: modelPresets,
+    createLimits: createLimits,
+    nextLibraryID: nextLibraryID,
+    freeTargets: freeTargets,
+    usedIDs: usedIDs,
+    usedAddresses: usedAddresses,
+    usedSerials: usedSerials,
+    wizardDefaults: wizardDefaults,
+    librarySerial: librarySerial,
+    driveSerial: driveSerial,
+    naaFor: naaFor,
+    driveVendorFor: driveVendorFor,
+    wizardErrors: wizardErrors,
+    wizardRequests: wizardRequests,
+    systemFields: systemFields,
+    buildSystemPatch: buildSystemPatch,
     libraryAttrFields: libraryAttrFields,
     driveAttrFields: driveAttrFields,
     buildAttrPatch: buildAttrPatch,

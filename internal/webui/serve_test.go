@@ -341,7 +341,8 @@ func TestConfigView(t *testing.T) {
 	for _, want := range []string{"/api/v1/config/capabilities", "/api/v1/config/personalities", "/api/v1/config/validate", "config.slots", "capabilityNotice",
 		"writesEditable(lastCfg.caps)", `if (!cfgEditable()) { done(new Error("Editing is not available now.")); return; }`, `cfgPath("/apply")`, "dry_run: true",
 		`api(cfgPath("/stages/" + encodeURIComponent(st.id)), { method: "DELETE" })`, "cfgStage.data.notes",
-		"setApplying(st, true)", "discard.disabled = !editable"} {
+		"setApplying(st, true)", "discard.disabled = !editable",
+		`editButton("New library…"`, `stageEdit("PATCH", cfgPath("/system"), body, done)`, "wizardRequests(v.w)"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js missing marker %q", want)
 		}
@@ -368,7 +369,7 @@ func TestConfigView(t *testing.T) {
 	// stageEdit, which refuses unless cfgEditable. The other requests that
 	// send a method go to the library and storage routes.
 	sends := map[string]bool{`cfgPath("/apply")`: true, `cfgPath("/stages/" + encodeURIComponent(st.id))`: true,
-		`"/api/v1/config/validate"`: true, "path": true, "o.path": true}
+		`"/api/v1/config/validate"`: true, `cfgPath("/validate")`: true, "path": true, "o.path": true}
 	for _, line := range strings.Split(app, "\n") {
 		i := strings.Index(line, "api(")
 		if i < 0 || !strings.Contains(line, "method:") {
