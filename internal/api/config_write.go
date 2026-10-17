@@ -17,6 +17,7 @@ import (
 	"mhvtl-control/internal/applyclient"
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/personality"
 	"mhvtl-control/internal/validate"
 )
 
@@ -138,26 +139,40 @@ func confErr(err error) error {
 	return badEdit("%v", err)
 }
 
-// stageEdit runs edit on the stage stageID names, or on a new one, and
-// answers with the stage. edit changes the stage only when it succeeds.
-func (s *Server) stageEdit(w http.ResponseWriter, r *http.Request, stageID string, edit func(context.Context, *stage) error) {
-	st, expires, err := s.openStage(stageID)
+// writeStageError answers a request whose stage could not be opened.
+func writeStageError(w http.ResponseWriter, err error) {
+	var applied *stageAppliedError
 	switch {
 	case errors.Is(err, errStageNotFound):
 		writeError(w, http.StatusNotFound, "stage_not_found", err.Error())
-		return
 	case errors.Is(err, errTooManyStages):
 		writeError(w, http.StatusTooManyRequests, "too_many_stages", err.Error())
-		return
-	case err != nil:
+	case errors.Is(err, errStageBusy):
+		writeError(w, http.StatusConflict, "stage_busy", err.Error())
+	case errors.As(err, &applied):
+		writeError(w, http.StatusConflict, "stage_applied", err.Error())
+	default:
 		writeError(w, http.StatusInternalServerError, "config_error", err.Error())
+	}
+}
+
+// stageEdit runs edit on the stage stageID names, or on a new one, and
+// answers with the stage. edit changes the stage only when it succeeds and
+// leaves the stage within its bounds (checkBounds).
+func (s *Server) stageEdit(w http.ResponseWriter, r *http.Request, stageID string, edit func(context.Context, *stage) error) {
+	st, expires, err := s.openStage(stageID)
+	if err != nil {
+		writeStageError(w, err)
 		return
 	}
-	defer st.mu.Unlock()
+	defer s.releaseStage(st)
 	next, disp := maps.Clone(st.next), maps.Clone(st.dispositions)
 	err = edit(r.Context(), st)
 	if err == nil {
 		err = st.writable()
+	}
+	if err == nil {
+		err = s.checkBounds(st)
 	}
 	if err = confErr(err); err != nil {
 		st.next, st.dispositions = next, disp
@@ -174,6 +189,72 @@ func (s *Server) stageEdit(w http.ResponseWriter, r *http.Request, stageID strin
 	}
 	st.edited()
 	writeJSON(w, http.StatusOK, st.dto(expires))
+}
+
+// elementLimit is the highest Slot or MAP number lib's personality windows
+// hold (personality.Model.Limits; maxNewElements if it gives none).
+func elementLimit(lib config.Library, kind string) int {
+	l := personality.Lookup(lib.Vendor, lib.Product).Model.Limits()
+	n := l.Slots
+	if kind == "MAP" {
+		n = l.MAPs
+	}
+	if n <= 0 {
+		n = maxNewElements
+	}
+	return n
+}
+
+// highestElement is lib's highest Slot or MAP number.
+func highestElement(lib config.Library, kind string) int {
+	n := 0
+	if kind == "MAP" {
+		for _, m := range lib.MAPs {
+			n = max(n, m.Number)
+		}
+		return n
+	}
+	for _, sl := range lib.Slots {
+		n = max(n, sl.Number)
+	}
+	return n
+}
+
+func slotsOutOfRange(lib config.Library, kind string, n, limit int) error {
+	return &editError{http.StatusUnprocessableEntity, "slots_out_of_range", fmt.Sprintf("library %d: %s %d is past the %d the %s personality holds",
+		lib.ID, kind, n, limit, personality.Lookup(lib.Vendor, lib.Product).Model.Name)}
+}
+
+// checkBounds refuses a stage over maxStageBytes, or with a library's
+// highest Slot or MAP past its personality's window, unless the file on
+// disk already went that far (#61 review M1): each edit parses and renders
+// the stage, under its lock.
+func (s *Server) checkBounds(st *stage) error {
+	total := 0
+	for _, b := range st.next {
+		total += len(b)
+	}
+	if total > maxStageBytes {
+		return &editError{http.StatusRequestEntityTooLarge, "stage_too_large",
+			fmt.Sprintf("the stage would hold %d bytes of files, over %d: apply or discard it first", total, maxStageBytes)}
+	}
+	inv, err := st.inventory(s.cfg.ConfigDir)
+	if err != nil {
+		return err
+	}
+	for _, lib := range inv.Libraries {
+		if st.next[contentsFile(lib.ID)] == nil {
+			continue // not edited
+		}
+		was, _ := findConfigLibrary(st.cur, lib.ID)
+		for _, kind := range []string{"Slot", "MAP"} {
+			n, limit := highestElement(lib, kind), elementLimit(lib, kind)
+			if n > limit && n > highestElement(was, kind) {
+				return slotsOutOfRange(lib, kind, n, limit)
+			}
+		}
+	}
+	return nil
 }
 
 // pathInt reads an integer path value.
@@ -596,23 +677,20 @@ func (s *Server) handleConfigSlotsAdd(w http.ResponseWriter, r *http.Request) {
 		if req.Count < 1 || req.Count > maxNewElements {
 			return badEdit("count must be 1 to %d", maxNewElements)
 		}
-		if _, err := stageLibrary(s.cfg.ConfigDir, st, id); err != nil {
+		lib, err := stageLibrary(s.cfg.ConfigDir, st, id)
+		if err != nil {
 			return err
+		}
+		// Refused before the lines are built.
+		if n, limit := highestElement(lib, kind)+req.Count, elementLimit(lib, kind); n > limit {
+			return slotsOutOfRange(lib, kind, n, limit)
 		}
 		lc, err := s.contents(ctx, st, id)
 		if err != nil {
 			return err
 		}
-		highest := 0
-		for _, e := range lc.Entries() {
-			if e.Kind == kind {
-				highest = max(highest, e.Number)
-			}
-		}
-		for n := highest + 1; n <= highest+req.Count; n++ {
-			if err := lc.AddEntry(kind, n, ""); err != nil {
-				return err
-			}
+		if err := lc.AppendEntries(kind, req.Count); err != nil {
+			return err
 		}
 		st.next[contentsFile(id)] = lc.Render()
 		return nil
@@ -713,7 +791,7 @@ type applyRequest struct {
 	// as it is now.
 	DryRun bool `json:"dry_run"`
 	// ForceToken is a drive_loaded plan's token, for an apply that
-	// unloads those drives.
+	// unloads those drives; a dry run with one is refused.
 	ForceToken string `json:"force_token"`
 }
 
@@ -748,8 +826,10 @@ type applyResultDTO struct {
 	// cartridge missing from its home, created blank at the library's
 	// start (mhvtl-control#43).
 	Warnings []string `json:"warnings,omitempty"`
-	// ForceToken and ForceExpires answer a plan refused for drive_loaded,
-	// whose error message names the loaded drives.
+	// ForceToken and ForceExpires answer a dry run refused for
+	// drive_loaded, whose error message names the loaded drives. An apply
+	// refused for drive_loaded gives none: the client plans again and
+	// confirms the unloads that plan lists.
 	ForceToken   string     `json:"force_token,omitempty"`
 	ForceExpires *time.Time `json:"force_expires,omitempty"`
 	// ForcedUnloads are the unloads done: each cartridge a forced apply,
@@ -780,7 +860,9 @@ func applyStatus(resp apply.Response) (int, string) {
 	case apply.ResultValidated, apply.ResultApplied:
 		return http.StatusOK, ""
 	case apply.ResultRefused:
-		if resp.Error == apply.ErrIntentUnreadable {
+		// The helper's durable refusals: nothing the request changes
+		// helps (capabilities.writes helper_blocked).
+		if resp.Error == apply.ErrIntentUnreadable || resp.Error == apply.ErrLegacyEnv {
 			return http.StatusConflict, resp.Error
 		}
 		return http.StatusUnprocessableEntity, resp.Error
@@ -839,12 +921,16 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "stage is required")
 		return
 	}
-	st, _, err := s.openStage(req.Stage)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "stage_not_found", err.Error())
+	if req.DryRun && req.ForceToken != "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "force_token is for an apply, not a dry run")
 		return
 	}
-	defer st.mu.Unlock()
+	st, _, err := s.openStage(req.Stage)
+	if err != nil {
+		writeStageError(w, err)
+		return
+	}
+	defer s.releaseStage(st)
 	files, del := st.changes()
 	if len(files) == 0 && len(del) == 0 {
 		writeError(w, http.StatusBadRequest, "no_changes", "the stage changes nothing")
@@ -884,9 +970,6 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 	if req.DryRun && (resp.Result == apply.ResultValidated || resp.Result == apply.ResultRefused && resp.Error == apply.ErrDriveLoaded) {
 		st.plan = &stagePlan{rev: st.rev, units: resp.Units}
 	}
-	if resp.Result == apply.ResultApplied {
-		s.dropStage(st.id)
-	}
 	if !req.DryRun {
 		for _, id := range offlineLibraries(resp.Units) {
 			s.live.forget(id)
@@ -916,5 +999,79 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 	if code != "" {
 		out.Error = &errorDetail{Code: code, Message: applyMessage(resp)}
 	}
+	if !req.DryRun {
+		out.ForceToken, out.ForceExpires = "", nil
+		last := out
+		st.last = &last
+		if resp.Result == apply.ResultApplied {
+			s.closeStage(st, out)
+		}
+	}
 	writeJSON(w, status, out)
+}
+
+// handleConfigStage shows a stage: its files, its last apply's result, or
+// for an applied one the tombstone with that result. It does not wait for
+// a request using the stage: it answers busy.
+func (s *Server) handleConfigStage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	c := &s.stages
+	c.mu.Lock()
+	now := s.now()
+	if t, ok := c.tombs[id]; ok && now.Before(t.expires) {
+		c.mu.Unlock()
+		res := t.result
+		writeJSON(w, http.StatusOK, stageDTO{Stage: id, Expires: t.expires, State: stageApplied, Files: map[string]*string{},
+			Base: map[string]string{}, Dispositions: res.Dispositions, LastApply: &res})
+		return
+	}
+	st, err := c.find(id, now)
+	if err != nil {
+		c.mu.Unlock()
+		writeStageError(w, err)
+		return
+	}
+	st.busy++
+	c.mu.Unlock()
+	if !st.mu.TryLock() {
+		c.mu.Lock()
+		st.busy--
+		expires := st.expires
+		c.mu.Unlock()
+		writeJSON(w, http.StatusOK, stageDTO{Stage: id, Expires: expires, State: stageBusy, Files: map[string]*string{}, Base: map[string]string{}})
+		return
+	}
+	if st.closed {
+		// Applied since find: the tombstone answers.
+		s.releaseStage(st)
+		s.handleConfigStage(w, r)
+		return
+	}
+	d := st.dto(now.Add(stageTTL))
+	s.releaseStage(st)
+	writeJSON(w, http.StatusOK, d)
+}
+
+// handleConfigStageDelete discards a stage (#61 review L1). A stage an
+// apply uses is not discarded.
+func (s *Server) handleConfigStageDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.writeAllowed(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	c := &s.stages
+	c.mu.Lock()
+	st, err := c.find(id, s.now())
+	if err == nil && st.busy > 0 {
+		err = errStageBusy
+	}
+	if err == nil {
+		delete(c.m, id)
+	}
+	c.mu.Unlock()
+	if err != nil {
+		writeStageError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

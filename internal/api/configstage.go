@@ -22,17 +22,31 @@ import (
 )
 
 // stageTTL is how long a stage lives after its last use; maxStages bounds
-// the stages held at once. Stages are in memory only: a daemon restart
-// drops them, and the client stages its change again.
+// the stages held at once, and the tombstones of applied ones. Stages are
+// in memory only: a daemon restart drops them, and the client stages its
+// change again.
 const (
 	stageTTL  = 30 * time.Minute
 	maxStages = 32
 )
 
+// maxStageBytes bounds the files a stage holds, so no edit of it parses
+// and renders more (#61 review M1). A variable for the tests.
+var maxStageBytes = 2 << 20
+
 var (
 	errStageNotFound = errors.New("no such stage, or it expired: stage the change again")
 	errTooManyStages = fmt.Errorf("%d stages are open; apply one or let it expire (%v)", maxStages, stageTTL)
+	errStageBusy     = errors.New("an apply of this stage is running")
 )
+
+// stageAppliedError: the stage was applied; its tombstone holds the
+// result.
+type stageAppliedError struct{ id string }
+
+func (e *stageAppliedError) Error() string {
+	return "stage " + e.id + " was applied; GET /api/v1/config/stages/" + e.id + " gives the result"
+}
 
 // stage is a change set the write routes build and POST /config/apply sends
 // to the helper (plan 4.1). It starts from the configuration on disk when
@@ -44,9 +58,16 @@ type stage struct {
 	// mu is held by the request using the stage, an apply included.
 	mu sync.Mutex
 	id string
-	// expires is guarded by stages.mu, so a sweep never waits for an
-	// apply.
+	// expires and busy are guarded by stages.mu, so a sweep never waits
+	// for an apply. busy counts the requests that hold or wait for mu: a
+	// sweep or a discard leaves a busy stage alone.
 	expires time.Time
+	busy    int
+	// closed is set, under mu, when the stage is applied: a request that
+	// waited for mu finds the tombstone instead.
+	closed bool
+	// last is the result of the last apply (not dry run) of the stage.
+	last *applyResultDTO
 	// cur is the configuration on disk when the stage was made; disk and
 	// base its files and their hashes ("" for none).
 	cur  config.Inventory
@@ -70,10 +91,33 @@ type stagePlan struct {
 	units []string
 }
 
-// stages holds the open stages.
+// stages holds the open stages, and the tombstones of applied ones.
 type stages struct {
-	mu sync.Mutex
-	m  map[string]*stage
+	mu    sync.Mutex
+	m     map[string]*stage
+	tombs map[string]stageTomb
+}
+
+// stageTomb is an applied stage's result, kept stageTTL so a client that
+// lost the apply's answer can learn it (#61 review L4).
+type stageTomb struct {
+	expires time.Time
+	result  applyResultDTO
+}
+
+// sweep drops the expired stages that no request uses, and the expired
+// tombstones. c.mu is held.
+func (c *stages) sweep(now time.Time) {
+	for id, o := range c.m {
+		if o.busy == 0 && !now.Before(o.expires) {
+			delete(c.m, id)
+		}
+	}
+	for id, t := range c.tombs {
+		if !now.Before(t.expires) {
+			delete(c.tombs, id)
+		}
+	}
 }
 
 // newStage makes a stage from the configuration on disk, and says when it
@@ -102,11 +146,7 @@ func (s *Server) newStage() (*stage, time.Time, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := s.now()
-	for id, o := range c.m {
-		if !now.Before(o.expires) {
-			delete(c.m, id)
-		}
-	}
+	c.sweep(now)
 	if len(c.m) >= maxStages {
 		return nil, time.Time{}, errTooManyStages
 	}
@@ -114,12 +154,14 @@ func (s *Server) newStage() (*stage, time.Time, error) {
 		c.m = map[string]*stage{}
 	}
 	st.expires = now.Add(stageTTL)
+	st.busy = 1
 	c.m[st.id] = st
 	return st, st.expires, nil
 }
 
 // openStage returns stage id, or a new one when id is empty, locked (the
-// caller unlocks it), and when it now expires.
+// caller calls releaseStage), and when it now expires. It waits for a
+// request using the stage, an apply included.
 func (s *Server) openStage(id string) (*stage, time.Time, error) {
 	if id == "" {
 		st, expires, err := s.newStage()
@@ -131,27 +173,77 @@ func (s *Server) openStage(id string) (*stage, time.Time, error) {
 	}
 	c := &s.stages
 	c.mu.Lock()
+	st, err := c.find(id, s.now())
+	if err != nil {
+		c.mu.Unlock()
+		return nil, time.Time{}, err
+	}
+	st.busy++
+	st.expires = s.now().Add(stageTTL)
+	expires := st.expires
+	c.mu.Unlock()
+	st.mu.Lock()
+	if st.closed {
+		s.releaseStage(st)
+		return nil, time.Time{}, &stageAppliedError{id}
+	}
+	return st, expires, nil
+}
+
+// find returns stage id: errStageNotFound when there is none or it
+// expired unused, a stageAppliedError for a tombstone. c.mu is held.
+func (c *stages) find(id string, now time.Time) (*stage, error) {
+	if t, ok := c.tombs[id]; ok && now.Before(t.expires) {
+		return nil, &stageAppliedError{id}
+	}
 	st := c.m[id]
-	now := s.now()
-	if st != nil && !now.Before(st.expires) {
+	if st != nil && st.busy == 0 && !now.Before(st.expires) {
 		delete(c.m, id)
 		st = nil
 	}
 	if st == nil {
-		c.mu.Unlock()
-		return nil, time.Time{}, errStageNotFound
+		return nil, errStageNotFound
 	}
-	st.expires = now.Add(stageTTL)
-	expires := st.expires
+	return st, nil
+}
+
+// releaseStage ends a request's use of st: it unlocks it, and the stage
+// lives stageTTL from now, after an apply however long.
+func (s *Server) releaseStage(st *stage) {
+	st.mu.Unlock()
+	c := &s.stages
+	c.mu.Lock()
+	st.busy--
+	st.expires = s.now().Add(stageTTL)
 	c.mu.Unlock()
-	st.mu.Lock()
-	return st, expires, nil
 }
 
 func (s *Server) dropStage(id string) {
 	s.stages.mu.Lock()
 	delete(s.stages.m, id)
 	s.stages.mu.Unlock()
+}
+
+// closeStage replaces the applied stage st, locked, with its tombstone.
+func (s *Server) closeStage(st *stage, result applyResultDTO) {
+	st.closed = true
+	c := &s.stages
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.m, st.id)
+	if c.tombs == nil {
+		c.tombs = map[string]stageTomb{}
+	}
+	if len(c.tombs) >= maxStages {
+		oldest := ""
+		for id, t := range c.tombs {
+			if oldest == "" || t.expires.Before(c.tombs[oldest].expires) {
+				oldest = id
+			}
+		}
+		delete(c.tombs, oldest)
+	}
+	c.tombs[st.id] = stageTomb{expires: s.now().Add(stageTTL), result: result}
 }
 
 // file returns the stage's content of name: as edited, else as on disk; ok
@@ -306,19 +398,33 @@ func (st *stage) dispose(d validate.Disposition) {
 	st.dispositions[fmt.Sprintf("%d/%s", d.Library, d.Barcode)] = d
 }
 
+// Values of stageDTO.State.
+const (
+	stageOpen    = "open"
+	stageBusy    = "busy"
+	stageApplied = "applied"
+)
+
 // stageDTO is a stage as the write routes return it: the files it changes
 // (null deletes one) and the hash of each as it was read ("" when it did
 // not exist).
 type stageDTO struct {
-	Stage        string                 `json:"stage"`
-	Expires      time.Time              `json:"expires"`
+	Stage   string    `json:"stage"`
+	Expires time.Time `json:"expires"`
+	// State is open; busy while a request, an apply most likely, uses it
+	// (GET /config/stages/{id} then gives no files); or applied, a
+	// tombstone that gives only the apply's result.
+	State        string                 `json:"state"`
 	Files        map[string]*string     `json:"files"`
 	Base         map[string]string      `json:"base_sha256"`
 	Dispositions []validate.Disposition `json:"dispositions"`
+	// LastApply is the answer of the stage's last apply, not a dry run.
+	LastApply *applyResultDTO `json:"last_apply,omitempty"`
 }
 
 func (st *stage) dto(expires time.Time) stageDTO {
-	d := stageDTO{Stage: st.id, Expires: expires, Files: map[string]*string{}, Base: map[string]string{}, Dispositions: st.dispositionList()}
+	d := stageDTO{Stage: st.id, Expires: expires, State: stageOpen, Files: map[string]*string{}, Base: map[string]string{},
+		Dispositions: st.dispositionList(), LastApply: st.last}
 	files, del := st.changes()
 	for _, f := range files {
 		c := string(f.Content)

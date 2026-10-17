@@ -378,8 +378,9 @@ func TestConfigApply(t *testing.T) {
 	if last.Op != apply.OpApply || !reflect.DeepEqual(last.ExpectUnits, units) || len(last.Files) != 1 {
 		t.Errorf("apply request: %+v", last)
 	}
-	// An applied stage is gone.
-	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage, "dry_run": true}); rec.Code != http.StatusNotFound {
+	// An applied stage is a tombstone.
+	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage, "dry_run": true}); rec.Code != http.StatusConflict ||
+		!strings.Contains(rec.Body.String(), "stage_applied") {
 		t.Errorf("stage after apply: %d %s", rec.Code, rec.Body)
 	}
 }
@@ -444,6 +445,7 @@ func TestConfigApplyResults(t *testing.T) {
 		{apply.Response{Result: apply.ResultConflict, File: "library_contents.10", CurrentSHA256: &cur}, http.StatusConflict, "conflict"},
 		{apply.Response{Result: apply.ResultRefused, Error: apply.ErrIntentUnreadable, Message: "recover by hand"}, http.StatusConflict, apply.ErrIntentUnreadable},
 		{apply.Response{Result: apply.ResultInProgress}, http.StatusConflict, apply.ResultInProgress},
+		{apply.Response{Result: apply.ResultRefused, Error: apply.ErrLegacyEnv, Message: "remove /etc/mhvtl/mhvtl-control.env"}, http.StatusConflict, apply.ErrLegacyEnv},
 		{apply.Response{Result: apply.ResultRecovered}, http.StatusConflict, apply.ResultRecovered},
 		{apply.Response{Result: apply.ResultRefused, Error: apply.ErrInvalid, Findings: &validate.Result{Errors: []validate.Finding{{Code: "e.x"}}}}, http.StatusUnprocessableEntity, apply.ErrInvalid},
 		{apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrStart, FailedUnit: "vtllibrary@10.service"}, http.StatusInternalServerError, apply.ResultRolledBack},
