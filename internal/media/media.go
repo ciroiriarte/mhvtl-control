@@ -8,11 +8,13 @@
 package media
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -395,4 +397,26 @@ func trimASCII(v []byte) string {
 		v = v[:i]
 	}
 	return strings.TrimSpace(string(v))
+}
+
+// PerLibraryHome reports whether the make_vtl_media at path (or found in
+// PATH) has the --per-library-home option, the marker of
+// markh794/mhvtl#276 (usr/cmd/make_vtl_media.in:43,271, upstream master
+// 993b193). make_vtl_media is a shell script, so its text names the option
+// that --help lists; reading it runs nothing.
+func PerLibraryHome(path string) bool {
+	if !strings.Contains(path, "/") {
+		found, err := exec.LookPath(path)
+		if err != nil {
+			return false
+		}
+		path = found
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 1<<20))
+	return err == nil && bytes.Contains(b, []byte("--per-library-home"))
 }
