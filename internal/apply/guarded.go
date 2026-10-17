@@ -151,6 +151,10 @@ type stopper struct {
 	// R1′ and the MAP are durable: a helper killed between the offline
 	// and the stop leaves an intent recovery can re-online from.
 	prepared func([]*LibStop) error
+	// offlining runs just before each library's offline, so that a helper
+	// killed anywhere in the prepare loop leaves an intent naming every
+	// library that may be offline.
+	offlining func(id int) error
 	// expect is, in apply mode, the live placement validation read: R1′
 	// must equal it, else the change was validated against a stale view.
 	expect *validate.Live
@@ -252,6 +256,11 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if s.offlining != nil {
+		if err := s.offlining(sl.Lib.ID); err != nil {
+			return err
+		}
 	}
 	if err := s.cfg.Queue.Offline(int64(sl.Lib.ID)); err != nil {
 		return fmt.Errorf("library %d: offline: %w", sl.Lib.ID, err)

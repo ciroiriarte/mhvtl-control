@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -466,5 +467,42 @@ func TestKilledOffline(t *testing.T) {
 	}
 	if s.index("online 10", 0) < 0 || s.unitState("vtllibrary@10.service") != "active" {
 		t.Errorf("library 10 not back online: %v", s.calls)
+	}
+}
+
+// TestKilledMidPrepare: an apply over libraries 10 and 30 killed after
+// library 10's offline, during library 30's prepare, has journaled both
+// as possibly offline; recovery brings both back online.
+func TestKilledMidPrepare(t *testing.T) {
+	e, s := newExecEnv(t)
+	dc := string(e.read("device.conf"))
+	i := strings.Index(dc, "Drive: 31 ")
+	next := strings.Replace(dc[:i], " Compression type: lzo", " Compression type: zlib", 1) +
+		strings.Replace(dc[i:], " Compression type: lzo", " Compression type: zlib", 1)
+	req := Request{Op: OpApply, Actor: "admin", Files: []File{{Name: "device.conf", BaseSHA256: e.sha("device.conf"), Content: []byte(next)}},
+		ExpectUnits: []string{"vtllibrary@10.service", "vtllibrary@30.service", "vtltape@11.service", "vtltape@31.service"}}
+	e.h.killPoint = func(st string) bool { return st == "apply: offlining 30" }
+	if resp := e.do(req); resp.Result != ResultError {
+		t.Fatalf("killed apply: %+v", resp)
+	}
+	if !s.has("offline 10") || s.has("offline 30") || s.has("stop vtllibrary@10.service") {
+		t.Errorf("calls before the kill: %v", s.calls)
+	}
+	it, err := e.h.loadIntent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(it.Exec.Offlining) != "[10 30]" {
+		t.Errorf("offlining %v", it.Exec.Offlining)
+	}
+	s.calls = nil
+	e.rebuild()
+	if resp := e.do(Request{Op: OpRecover}); resp.Result != ResultRecovered || e.intentExists() {
+		t.Fatalf("recover: %+v", resp)
+	}
+	for _, id := range []string{"10", "30"} {
+		if !s.has("online "+id) || s.unitState("vtllibrary@"+id+".service") != "active" {
+			t.Errorf("library %s not back online: %v", id, s.calls)
+		}
 	}
 }
