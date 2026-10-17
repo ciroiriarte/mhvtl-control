@@ -504,10 +504,18 @@ func TestKilledMidPrepare(t *testing.T) {
 	if fmt.Sprint(it.Exec.Offlining) != "[10 30]" {
 		t.Errorf("offlining %v", it.Exec.Offlining)
 	}
+	// Library 10 is offline, so it answers READ ELEMENT STATUS with
+	// 02/04/12 until recovery puts it online.
+	if !s.offline[10] || s.offline[30] {
+		t.Fatalf("offline after the kill: %v", s.offline)
+	}
 	s.calls = nil
 	e.rebuild()
 	if resp := e.do(Request{Op: OpRecover}); resp.Result != ResultRecovered || e.intentExists() {
 		t.Fatalf("recover: %+v", resp)
+	}
+	if !s.before("online 10", "RES 10") {
+		t.Errorf("READ ELEMENT STATUS of library 10 before online: %v", s.calls)
 	}
 	for _, id := range []string{"10", "30"} {
 		if !s.has("online "+id) || s.unitState("vtllibrary@"+id+".service") != "active" {
