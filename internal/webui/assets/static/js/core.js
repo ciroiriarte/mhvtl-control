@@ -813,6 +813,16 @@
     return config && config.default_home ? String(config.default_home) : "";
   }
 
+  // wizardHomeHint is the hint under the wizard's "Home directory": the
+  // home a blank one gets (wizardDefaultHome) or, when that is unknown
+  // because mhvtl.conf cannot be read, the read error.
+  function wizardHomeHint(config, stageData) {
+    var home = wizardDefaultHome(config, stageData);
+    var err = config && config.system && config.system.file_error;
+    var what = home || (err ? "unknown (mhvtl.conf: " + String(err) + ")" : "unknown");
+    return "Blank: the default home, " + what + ". Another must be a new, empty directory.";
+  }
+
   // modelPresets are the models the wizard offers to fill in: each rule
   // that names both a vendor and a product, in rule order.
   function modelPresets(pers) {
@@ -1091,6 +1101,7 @@
     fmtCountdown: fmtCountdown,
     applyErrorAction: applyErrorAction,
     stageEditable: stageEditable,
+    wizardHomeHint: wizardHomeHint,
     stagedDevices: stagedDevices,
     usedNAAs: usedNAAs,
     stageOutcome: stageOutcome,

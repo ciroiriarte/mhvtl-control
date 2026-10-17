@@ -42,6 +42,7 @@
   var forceRemaining = core.forceRemaining, fmtCountdown = core.fmtCountdown, applyErrorAction = core.applyErrorAction;
   var stageEditable = core.stageEditable;
   var presetWarning = core.presetWarning, wizardDefaultHome = core.wizardDefaultHome;
+  var wizardHomeHint = core.wizardHomeHint;
   var stageOutcome = core.stageOutcome, outcomeUnread = core.outcomeUnread;
   var resolvePersonality = core.resolvePersonality, modelPresets = core.modelPresets, createLimits = core.createLimits;
   var freeTargets = core.freeTargets, usedIDs = core.usedIDs, usedAddresses = core.usedAddresses, usedSerials = core.usedSerials;
@@ -2245,8 +2246,7 @@
     var driveVendor = field("Drive vendor", input("text", driveVendorFor(driveModel.value)));
     var defHome = wizardDefaultHome(config, cfgStage && cfgStage.data);
     var home = field("Home directory", input("text", ""), mk("small", { class: "muted",
-      text: (defHome ? "Blank: the default home, " + defHome + "." : "Blank: the default home, unknown while mhvtl.conf cannot be read.") +
-        " Another must be a new, empty directory." }));
+      text: wizardHomeHint(config, cfgStage && cfgStage.data) }));
     home.placeholder = defHome;
     var app = mk("select");
     app.appendChild(mk("option", { text: "Any application", attrs: { value: "" } }));
