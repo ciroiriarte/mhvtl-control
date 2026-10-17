@@ -488,7 +488,7 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 	if err != nil {
 		return nil, err
 	}
-	if err := deriveMhvtlConf(curRaw.data, nextRaw.data); err != nil {
+	if err := DeriveMhvtlConf(curRaw.data, nextRaw.data); err != nil {
 		return nil, err
 	}
 
@@ -520,7 +520,7 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 		return nil, err
 	}
 	curHome, nextHome := h.defaultHome(curConf), h.defaultHome(nextConf)
-	if err := checkHomes(cur, nextInv, curHome, nextHome); err != nil {
+	if err := CheckHomes(cur, nextInv, curHome, nextHome); err != nil {
 		return nil, err
 	}
 

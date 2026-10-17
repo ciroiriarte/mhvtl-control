@@ -16,7 +16,7 @@ import (
 
 // mhvtl.conf keys a change may set (plan 3.2, guard.go; AC 30), each with
 // the pattern a new value must match. MHVTL_HOME_PATH also goes through
-// the home rules (checkHomes, validate.HomeProblem).
+// the home rules (CheckHomes, validate.HomeProblem).
 var editableKeys = []struct {
 	key   string
 	valid func(string) bool
@@ -89,7 +89,7 @@ func (h *Helper) checkConfigPath(cur, next *conffile.MhvtlConf) error {
 	return nil
 }
 
-// deriveMhvtlConf refuses a new mhvtl.conf unless it is the current one
+// DeriveMhvtlConf refuses a new mhvtl.conf unless it is the current one
 // with only the values of the editable keys changed, each through
 // conffile's round-trip setter and each matching its pattern.
 // make_vtl_media sources mhvtl.conf as bash, as root, from
@@ -98,7 +98,7 @@ func (h *Helper) checkConfigPath(cur, next *conffile.MhvtlConf) error {
 // https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/make_vtl_media.in#L307),
 // so any other line or value would be code run as root: the request's
 // bytes are never trusted, only compared with the helper's derivation.
-func deriveMhvtlConf(cur, next []byte) error {
+func DeriveMhvtlConf(cur, next []byte) error {
 	c, n := conffile.ParseMhvtlConf(cur), conffile.ParseMhvtlConf(next)
 	derived := conffile.ParseMhvtlConf(cur)
 	for _, k := range editableKeys {
@@ -156,7 +156,7 @@ func homeProblem(home string) string {
 	return ""
 }
 
-// checkHomes applies the home rules of plan 4.3 (AC 30): a library that
+// CheckHomes applies the home rules of plan 4.3 (AC 30): a library that
 // stays in device.conf may change its media home, through its own "Home
 // directory" or MHVTL_HOME_PATH, only when the old home holds no cartridge
 // and no other library uses it. Otherwise the move is mhvtl-move-home's. A
@@ -164,7 +164,7 @@ func homeProblem(home string) string {
 // checks its barcodes against the cartridges already there. A "Home
 // directory" the change sets, for a new library or an old one, must pass
 // validate.HomeProblem: mktape and make_vtl_media create the home as root.
-func checkHomes(cur, next config.Inventory, curDefault, nextDefault string) error {
+func CheckHomes(cur, next config.Inventory, curDefault, nextDefault string) error {
 	homeOf := func(l config.Library, def string) string {
 		if l.HomeDir != "" {
 			return l.HomeDir
