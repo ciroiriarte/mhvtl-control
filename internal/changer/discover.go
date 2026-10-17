@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/hostids"
 	"mhvtl-control/internal/personality"
 	"mhvtl-control/internal/scsi"
 )
@@ -54,10 +55,12 @@ func (l *Locator) Find(lib config.Library) (string, error) {
 // FindBySerial returns the sg path of the device of peripheralType (sysfs
 // "type", else the INQUIRY peripheral device type) whose unit serial number
 // (sysfs vpd_pg80, else INQUIRY VPD 80h) equals serial. It reads every
-// node: when more than one device of the type reports serial, such as two
-// IBM 03584 libraries whose serials share their first 10 characters, or a
-// device and a re-export of it, it names them all and returns none rather
-// than the first. Errors wrap ErrUnavailable.
+// node. When more than one device of the type reports serial, the one on
+// mhVTL's pseudo HBA is meant: a local re-export of an mhVTL device (a
+// tcm_loop LUN on a pscsi backstore) reports the same page. When that
+// leaves none or several, such as two IBM 03584 libraries whose serials
+// share their first 10 characters, it names them all and returns none
+// rather than the first. Errors wrap ErrUnavailable.
 func (l *Locator) FindBySerial(serial string, peripheralType uint8) (string, error) {
 	want := strings.TrimSpace(serial)
 	if want == "" {
@@ -92,8 +95,33 @@ func (l *Locator) FindBySerial(serial string, peripheralType uint8) (string, err
 	case 1:
 		return found[0], nil
 	}
+	var ours []string
+	for _, node := range found {
+		if l.onMhvtl(filepath.Join(classDir, filepath.Base(node), "device")) {
+			ours = append(ours, node)
+		}
+	}
+	if len(ours) == 1 {
+		return ours[0], nil
+	}
 	return "", fmt.Errorf("%w: %d devices of type %s report serial %q (%s); cannot tell which is meant",
 		ErrUnavailable, len(found), typeName(peripheralType), want, strings.Join(found, ", "))
+}
+
+// onMhvtl reports whether the device whose sysfs directory devDir is (the
+// scsi_generic "device" link, which leads to its H:C:T:L directory) sits
+// on a SCSI host whose proc_name is mhVTL's pseudo HBA.
+func (l *Locator) onMhvtl(devDir string) bool {
+	dir, err := filepath.EvalSymlinks(devDir)
+	if err != nil {
+		return false
+	}
+	host, _, ok := strings.Cut(filepath.Base(dir), ":")
+	if _, err := strconv.Atoi(host); !ok || err != nil {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(l.SysRoot, "class", "scsi_host", "host"+host, "proc_name"))
+	return err == nil && strings.TrimSpace(string(b)) == hostids.MhvtlDriver
 }
 
 // typeName names a peripheral device type in discovery errors.

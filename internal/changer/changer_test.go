@@ -606,3 +606,72 @@ func TestLocatorFindAmbiguous(t *testing.T) {
 		t.Errorf("tape = %q, %v; want /dev/sg2", p, err)
 	}
 }
+
+// hostedSysfs adds sg node name for a device at hctl on a SCSI host whose
+// proc_name is driver, laid out as sysfs does: the scsi_generic device
+// link leads to the H:C:T:L directory of the device.
+func hostedSysfs(t *testing.T, root, name, hctl, driver, typ, serial string) {
+	t.Helper()
+	host := hctl[:strings.Index(hctl, ":")]
+	dev := filepath.Join(root, "devices", "platform", "host"+host, "target"+hctl[:strings.LastIndex(hctl, ":")], hctl)
+	if err := os.MkdirAll(dev, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dev, "type"), []byte(typ+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dev, "vpd_pg80"), vpd80(serial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sg := filepath.Join(root, "class", "scsi_generic", name)
+	if err := os.MkdirAll(sg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dev, filepath.Join(sg, "device")); err != nil {
+		t.Fatal(err)
+	}
+	sh := filepath.Join(root, "class", "scsi_host", "host"+host)
+	if err := os.MkdirAll(sh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sh, "proc_name"), []byte(driver+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A local re-export of an mhVTL device (tcm_loop) reports the same serial:
+// the device on the mhvtl HBA is the one meant. Two on the mhvtl HBA, or
+// none there, stay ambiguous.
+func TestLocatorFindPrefersMhvtlHBA(t *testing.T) {
+	root := t.TempDir()
+	hostedSysfs(t, root, "sg0", "3:0:0:0", "mhvtl", "8", "XYZZY_A")
+	hostedSysfs(t, root, "sg5", "7:0:0:0", "tcm_loopback", "8", "XYZZY_A")
+	hostedSysfs(t, root, "sg1", "3:0:1:0", "mhvtl", "1", "00XYZZY_A1")
+	hostedSysfs(t, root, "sg6", "7:0:1:0", "tcm_loopback", "1", "00XYZZY_A1")
+	hostedSysfs(t, root, "sg7", "7:0:2:0", "tcm_loopback", "1", "LOOP_ONLY")
+	hostedSysfs(t, root, "sg8", "8:0:2:0", "iscsi_tcp", "1", "LOOP_ONLY")
+	hostedSysfs(t, root, "sg2", "3:0:2:0", "mhvtl", "8", "XYZZY_4000")
+	hostedSysfs(t, root, "sg3", "3:0:3:0", "mhvtl", "8", "XYZZY_4000")
+	loc := &Locator{SysRoot: root, DevRoot: "/dev"}
+	for _, tc := range []struct {
+		serial string
+		typ    uint8
+		want   string
+	}{
+		{"XYZZY_A", scsi.PeripheralMediumChanger, "/dev/sg0"},
+		{"00XYZZY_A1", scsi.PeripheralSequential, "/dev/sg1"},
+	} {
+		if p, err := loc.FindBySerial(tc.serial, tc.typ); err != nil || p != tc.want {
+			t.Errorf("%s: %q, %v; want %s", tc.serial, p, err, tc.want)
+		}
+	}
+	for _, serial := range []string{"LOOP_ONLY", "XYZZY_4000"} {
+		var typ uint8 = scsi.PeripheralSequential
+		if serial == "XYZZY_4000" {
+			typ = scsi.PeripheralMediumChanger
+		}
+		if p, err := loc.FindBySerial(serial, typ); !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "cannot tell which") {
+			t.Errorf("%s: %q, %v; want ambiguous", serial, p, err)
+		}
+	}
+}
