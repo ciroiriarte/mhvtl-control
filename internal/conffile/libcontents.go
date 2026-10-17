@@ -316,6 +316,38 @@ func (c *LibContents) AddEntry(kind string, n int, barcode string) error {
 	return nil
 }
 
+// AppendEntries adds count empty Slot or MAP lines numbered after the
+// highest of their kind: what AddEntry of each next number does, in one
+// pass rather than one re-index per line.
+func (c *LibContents) AppendEntries(kind string, count int) error {
+	if kind != "Slot" && kind != "MAP" {
+		return fmt.Errorf("library_contents: appends only Slot and MAP lines, not %s", kind)
+	}
+	if count < 1 {
+		return fmt.Errorf("library_contents: count %d is not positive", count)
+	}
+	highest, at := 0, -1
+	for _, e := range c.entries {
+		if e.Kind == kind {
+			highest, at = max(highest, e.Number), e.Line+1
+		}
+	}
+	nl := eol(c.lines)
+	add := make([]Line, 0, count+1)
+	if at < 0 {
+		at = len(c.lines)
+		if at > 0 && !isBlank(c.lines[at-1].Text) {
+			add = append(add, Line{EOL: nl})
+		}
+	}
+	for n := highest + 1; n <= highest+count; n++ {
+		add = append(add, Line{Text: entryText(kind, n, ""), EOL: nl})
+	}
+	c.lines = insertLines(c.lines, at, add)
+	c.index()
+	return nil
+}
+
 // RemoveEntry removes every line for kind and n.
 func (c *LibContents) RemoveEntry(kind string, n int) error {
 	if c.lookup(kind, n) < 0 {
