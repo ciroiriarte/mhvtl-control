@@ -58,7 +58,10 @@ func (h *Helper) checkLegacyEnv() error {
 // at d65d25f,
 // https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/vtllib.c#L279-L308),
 // and their units load mhvtl.conf as an EnvironmentFile too
-// (etc/vtllibrary@.service.in:16, etc/vtltape@.service.in:13). The helper's
+// (etc/vtllibrary@.service.in:16,
+// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtllibrary@.service.in#L16,
+// and etc/vtltape@.service.in:13,
+// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtltape@.service.in#L13). The helper's
 // own environment stands for the one systemd gives it; mhvtl.conf is checked
 // as it is and as the request leaves it. A mhvtl.conf with a Problem leaves
 // the path mhVTL reads unclear (conffile.MhvtlConf), so it is refused too.
@@ -163,8 +166,9 @@ func checkHomes(cur, next config.Inventory, curDefault, nextDefault string) erro
 
 // homeEmpty fails when dir holds a directory (a cartridge) or a symbolic
 // link (a raw-disk cartridge, ensure_symlink in markh794/mhvtl
-// usr/raw_bay_ops.c:96-132 at d65d25f), or
-// cannot be listed. A missing dir is empty.
+// usr/raw_bay_ops.c:96-132 at d65d25f,
+// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/raw_bay_ops.c#L96-L132),
+// or cannot be listed. A missing dir is empty.
 func homeEmpty(dir string) error {
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
