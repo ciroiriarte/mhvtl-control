@@ -75,7 +75,8 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 //   - intent.json exists and records a boot ID other than this boot's, so
 //     the apply did not run in this boot;
 //   - exclusive.lock is free (taken with LOCK_NB: waiting could deadlock
-//     against a helper that waits for systemctl start);
+//     against a helper that waits for systemctl start), and intent.json,
+//     read again under it, is the same intent (boot ID and start time);
 //   - no vtllibrary@ or vtltape@ instance is active; if one is, recovery is
 //     left to the runtime path (op recover), which can stop it.
 //
@@ -96,6 +97,7 @@ func (h *Helper) RecoverBoot(ctx context.Context) (string, error) {
 	if it.BootID == boot {
 		return "the interrupted apply ran in this boot; left to runtime recovery", nil
 	}
+	h.beforeBootLock()
 	l, held, err := h.tryLock()
 	if err != nil {
 		return "", err
@@ -104,6 +106,18 @@ func (h *Helper) RecoverBoot(ctx context.Context) (string, error) {
 		return exclusiveHeld, nil
 	}
 	defer l.release()
+	// Read again under the lock: a helper that held it until now may have
+	// recovered that intent, or recovered it and died in a new apply.
+	again, err := h.loadIntent()
+	if err != nil {
+		return "", err
+	}
+	if again == nil {
+		return "no interrupted apply", nil
+	}
+	if again.BootID != it.BootID || !again.Started.Equal(it.Started) {
+		return intentChanged, nil
+	}
 	active, err := h.activeInstances(ctx)
 	if err != nil {
 		return "", err
@@ -118,7 +132,10 @@ func (h *Helper) RecoverBoot(ctx context.Context) (string, error) {
 	return resp.Message, nil
 }
 
-const exclusiveHeld = lockFile + " is held; left to its holder"
+const (
+	exclusiveHeld = lockFile + " is held; left to its holder"
+	intentChanged = "intent.json changed before " + lockFile + " was taken; left to runtime recovery"
+)
 
 // activeInstances lists the vtllibrary@ and vtltape@ units in any state
 // but inactive or failed.
