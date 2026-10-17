@@ -205,6 +205,18 @@ func (h *Helper) loadedDrives(ctx context.Context, c *checked) (map[int][]change
 		if !ok {
 			continue
 		}
+		// A standalone drive whose vtltape@ is inactive or failed holds no
+		// cartridge: vtltape keeps no mount state, it starts unloaded
+		// (init_lu_ssc, usr/cmd/vtltape.c:2324 at 852b78a,
+		// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtltape.c#L2324),
+		// and no changer holds one for it (#53).
+		state, err := showProp(ctx, &h.cfg, driveUnit(id), "ActiveState")
+		if err != nil {
+			return nil, nil, err
+		}
+		if state == "inactive" || state == "failed" {
+			continue
+		}
 		hctl, err := h.cfg.Devices.LocateDrive(d)
 		if err != nil {
 			return nil, nil, refuse(ErrLive, "drive %d: %v", id, err)

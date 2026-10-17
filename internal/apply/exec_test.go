@@ -815,6 +815,32 @@ func TestExecDriveDown(t *testing.T) {
 	}
 }
 
+// TestExecStandaloneDown: the same for a standalone drive, which no
+// changer reports: whose vtltape@ is down holds no cartridge, since
+// vtltape keeps no mount state, and its edit applies.
+func TestExecStandaloneDown(t *testing.T) {
+	e, s := newExecEnv(t)
+	e.replaceFile("device.conf", " Library ID: 30 Slot: 04", " Library ID: 0 Slot: 00")
+	e.replaceFile("library_contents.30", "Drive 4:\n", "")
+	s.state["vtltape@34.service"] = "failed"
+	dc := string(e.read("device.conf"))
+	i := strings.Index(dc, "Drive: 34 ")
+	req := Request{Op: OpApply, Actor: "admin", Files: []File{{Name: "device.conf", BaseSHA256: e.sha("device.conf"),
+		Content: []byte(dc[:i] + strings.Replace(dc[i:], " Compression type: lzo", " Compression type: zlib", 1))}},
+		ExpectUnits: []string{"vtltape@34.service"}}
+	plan := req
+	plan.Op = OpPlan
+	if pr := e.do(plan); pr.Result != ResultValidated {
+		t.Fatalf("plan: %+v", pr)
+	}
+	if resp := e.do(req); resp.Result != ResultApplied {
+		t.Fatalf("apply: %+v", resp)
+	}
+	if !s.before("stop vtltape@34.service", "start vtltape@34.service") {
+		t.Errorf("drive 34 not restarted: %v", s.calls)
+	}
+}
+
 // TestExecDriveDownLoaded: a down drive that READ ELEMENT STATUS shows
 // full cannot be asked, so the cartridge counts as loaded: drive_loaded,
 // and forced, it goes back to its slot and the drive restarts.
