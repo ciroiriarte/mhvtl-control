@@ -341,6 +341,10 @@ func (s *Server) contents(ctx context.Context, st *stage, id int) (*conffile.Lib
 	return c, c.Writable()
 }
 
+// unitsWait bounds the wait for the helper's units answer: its own
+// systemctl calls stop after 5 s (apply.unitsTimeout).
+const unitsWait = 10 * time.Second
+
 // libraryState is the ActiveState of vtllibrary@id, which the daemon asks
 // the apply helper for: its unit keeps it away from systemd
 // (dist/mhvtl-control.service, InaccessiblePaths=/run/dbus).
@@ -348,6 +352,8 @@ func (s *Server) libraryState(ctx context.Context, id int) (string, error) {
 	if s.cfg.Helper == nil {
 		return "", errors.New("the apply helper is not configured")
 	}
+	ctx, cancel := context.WithTimeout(ctx, unitsWait)
+	defer cancel()
 	resp, err := s.cfg.Helper.Do(ctx, apply.Request{Op: apply.OpUnits})
 	if err != nil {
 		return "", err

@@ -28,7 +28,11 @@ const (
 // Version is the protocol version, Request.V and Response.V.
 const Version = 1
 
-// Operations.
+// Operations. A request is one JSON object on its own connection, and the
+// answer one JSON object back on it. Every op goes through the same peer
+// check (CheckPeer). hello and units answer before exclusive.lock, so they
+// never wait behind an apply, and are not audited; plan, apply and recover
+// take the lock and are audited.
 const (
 	// OpHello reports the helper's state and changes nothing.
 	OpHello = "hello"
@@ -39,8 +43,12 @@ const (
 	// OpRecover recovers an apply that died, and does nothing else.
 	OpRecover = "recover"
 	// OpUnits reports the ActiveState of each library's vtllibrary@
-	// instance and changes nothing. The daemon's unit keeps it away from
-	// systemd, so it asks here whether a library runs.
+	// instance (Response.LibraryStates) and changes nothing. The daemon's
+	// unit keeps it away from systemd, so it asks here whether a library
+	// runs. It takes no input but its name: the libraries are those of the
+	// helper's own device.conf. Its systemctl calls are bounded
+	// (unitsTimeout), and a unit an apply is stopping or starting shows as
+	// deactivating or activating.
 	OpUnits = "units"
 )
 

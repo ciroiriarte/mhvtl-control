@@ -309,6 +309,18 @@ func TestUnits(t *testing.T) {
 	if resp := serveOnce(t, e.h, `{"v":1,"op":"units"}`); resp.Result != ResultOK || resp.LibraryStates[30] != "failed" {
 		t.Errorf("units over the socket: %+v", resp)
 	}
+	// A manager that does not answer is given up on after unitsTimeout.
+	defer func(d time.Duration) { unitsTimeout = d }(unitsTimeout)
+	unitsTimeout = 50 * time.Millisecond
+	e.cfg.Systemctl = func(ctx context.Context, _ ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	e.rebuild()
+	start := time.Now()
+	if resp := e.do(Request{Op: OpUnits}); resp.Result == ResultOK || time.Since(start) > 5*time.Second {
+		t.Errorf("units with a hung systemctl: %+v after %v", resp, time.Since(start))
+	}
 	e.cfg.Systemctl = func(context.Context, ...string) ([]byte, error) { return nil, errors.New("no bus") }
 	e.rebuild()
 	if resp := e.do(Request{Op: OpUnits}); resp.Result == ResultOK || !strings.Contains(resp.Message, "no bus") {
