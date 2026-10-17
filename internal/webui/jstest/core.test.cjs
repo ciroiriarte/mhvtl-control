@@ -410,6 +410,10 @@ test("capabilityNotice: legacy env file, TLS and an unknown payload", () => {
   const tls = core.capabilityNotice({ helper: "present", writes: "tls_required" });
   assert.strictEqual(tls.tone, "warn");
   assert.ok(tls.lines.some((l) => l.includes("--tls-cert")));
+  const token = core.capabilityNotice({ helper: "present", writes: "token_required" });
+  assert.strictEqual(token.tone, "warn");
+  assert.ok(token.lines.some((l) => l.includes("MHVTL_CONTROL_API_TOKEN") && l.includes("/etc/mhvtl-control/mhvtl-control.env")), token.lines.join(" "));
+  assert.strictEqual(core.capabilityNotice({ helper: "intent_unreadable", writes: "token_required" }).tone, "error");
   // Anything unexpected reads as "no helper": read-only, with the enable hint.
   const junk = core.capabilityNotice({ helper: "<img src=x>" });
   assert.strictEqual(junk.command, "systemctl enable --now mhvtl-control-apply.socket");

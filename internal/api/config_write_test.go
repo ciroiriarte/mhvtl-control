@@ -30,6 +30,9 @@ type writeEnv struct {
 	srv     *Server
 	handler http.Handler
 	clock   time.Time
+	// anon sends no bearer token; otherwise each request has the
+	// configured one.
+	anon bool
 }
 
 func newWriteEnv(t *testing.T, edit func(*Config)) *writeEnv {
@@ -52,6 +55,7 @@ func newWriteEnv(t *testing.T, edit func(*Config)) *writeEnv {
 		ConfigDir: dir,
 		Changers:  &errByLib{fakeChangers: fc, fail: map[int]error{30: fmt.Errorf("no medium changer")}},
 		Helper:    &applyclient.Client{Socket: e.socket},
+		Token:     "s3cret",
 	}
 	if edit != nil {
 		edit(&cfg)
@@ -74,6 +78,9 @@ func (e *writeEnv) call(method, path string, body any) *httptest.ResponseRecorde
 			e.t.Fatal(err)
 		}
 		r = httptest.NewRequest(method, path, strings.NewReader(string(b)))
+	}
+	if e.srv.cfg.Token != "" && !e.anon {
+		r.Header.Set("Authorization", "Bearer "+e.srv.cfg.Token)
 	}
 	rec := httptest.NewRecorder()
 	e.handler.ServeHTTP(rec, r)
@@ -472,9 +479,24 @@ func TestConfigWriteGate(t *testing.T) {
 		t.Errorf("insecure apply: %d %s", rec.Code, rec.Body)
 	}
 
-	e = newWriteEnv(t, func(c *Config) { c.Token = "s3cret" })
+	e = newWriteEnv(t, nil)
+	e.anon = true
 	if rec := e.call(http.MethodPatch, path, slot); rec.Code != http.StatusUnauthorized {
 		t.Errorf("no bearer: %d %s", rec.Code, rec.Body)
+	}
+
+	// Without a configured token, config writes are refused, on loopback
+	// too: they make root rewrite /etc/mhvtl and restart services.
+	e = newWriteEnv(t, func(c *Config) { c.Token = "" })
+	for _, req := range []struct {
+		method, path string
+		body         any
+	}{{http.MethodPatch, path, slot}, {http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": "x", "dry_run": true}}} {
+		rec := e.call(req.method, req.path, req.body)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "token_required") ||
+			!strings.Contains(rec.Body.String(), "MHVTL_CONTROL_API_TOKEN") || !strings.Contains(rec.Body.String(), "/etc/mhvtl-control/mhvtl-control.env") {
+			t.Errorf("%s %s without a token: %d %s", req.method, req.path, rec.Code, rec.Body)
+		}
 	}
 
 	e = newWriteEnv(t, func(c *Config) { c.Helper = nil })
