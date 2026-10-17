@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -21,7 +22,10 @@ func (h *Helper) recover(ctx context.Context, it *Intent, boot bool, actor strin
 		rec.Files = append(rec.Files, AuditFile{Name: f.Name, Before: f.NewSHA, After: f.OriginalSHA})
 	}
 	resp := h.recoverIntent(ctx, it, boot)
-	rec.Result, rec.Error, rec.Message, rec.Conflicts = resp.Result, resp.Error, resp.Message, resp.Conflicts
+	if it.RollbackDir != "" {
+		resp.RollbackDir = filepath.Join(h.cfg.StateDir, rollbackDir, it.RollbackDir)
+	}
+	rec.Result, rec.Error, rec.Message, rec.Conflicts, rec.RollbackDir = resp.Result, resp.Error, resp.Message, resp.Conflicts, resp.RollbackDir
 	h.audit(rec)
 	return resp
 }
