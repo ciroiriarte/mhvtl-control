@@ -446,6 +446,13 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 		}
 	}
 	resp := Response{Result: ResultApplied, Units: c.plan.Units(), Notes: x.plan.Notes, Warnings: warnings, PlacementDrift: x.readback(), ForcedUnloads: x.forcedReport()}
+	// A forced drive whose cartridge no READ ELEMENT STATUS showed (its
+	// library was not running) unloads a cartridge no slot was given.
+	for _, f := range x.it.Exec.Forced {
+		if f.Unknown {
+			resp.Unplaced = append(resp.Unplaced, unknownCartridge(f.Drive))
+		}
+	}
 
 	// 11. Done.
 	if err := h.removeIntent(); err != nil {
@@ -1044,7 +1051,7 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 		for _, list := range [][]ForcedUnload{ex.Forced, forcedOf(l)} {
 			for _, f := range list {
 				if f.Library == id && (f.Unknown || f.Barcode == "") {
-					unplaced = append(unplaced, fmt.Sprintf("the cartridge of drive %d (not shown by READ ELEMENT STATUS)", f.Drive))
+					unplaced = append(unplaced, unknownCartridge(f.Drive))
 					continue
 				}
 				if f.Library == id {
@@ -1263,6 +1270,12 @@ func startLibs(p UnitPlan) []int {
 	out := append(append([]int{}, p.Restart...), p.Start...)
 	sort.Ints(out)
 	return out
+}
+
+// unknownCartridge names, in Unplaced, the cartridge of a forced drive
+// that no READ ELEMENT STATUS showed.
+func unknownCartridge(drive int) string {
+	return fmt.Sprintf("the cartridge of drive %d (not shown by READ ELEMENT STATUS)", drive)
 }
 
 // withoutBarcodes is p without the cartridges in drop.

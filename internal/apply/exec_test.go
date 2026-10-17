@@ -856,6 +856,15 @@ func TestExecInactiveLibraryLoaded(t *testing.T) {
 	if len(resp.ForcedUnloads) != 1 || resp.ForcedUnloads[0] != (ForcedUnload{Library: 10, Drive: 12, Unknown: true}) {
 		t.Errorf("forced unloads %+v", resp.ForcedUnloads)
 	}
+	// Its cartridge has no slot: reported unplaced, in the audit too.
+	if fmt.Sprint(resp.Unplaced) != "["+unknownCartridge(12)+"]" {
+		t.Errorf("unplaced %v", resp.Unplaced)
+	}
+	lines := e.auditLines()
+	var r AuditRecord
+	if len(lines) == 0 || json.Unmarshal([]byte(lines[len(lines)-1]), &r) != nil || fmt.Sprint(r.Unplaced) != fmt.Sprint(resp.Unplaced) {
+		t.Errorf("audit %v", lines)
+	}
 	if !s.before("stop vtltape@12.service", "start vtltape@12.service") {
 		t.Errorf("drive 12 not restarted: %v", s.calls)
 	}
