@@ -114,14 +114,14 @@ func TestBarcodeDensity(t *testing.T) {
 	}
 }
 
-// The element windows of fact 11 of the plan: 03584 allows 511 drives and
-// 256 MAP slots; the STK L-series 500 MAP slots between 0x000a and 0x01f4.
+// The element windows of fact 11 of the plan, with the 03584 MAP moved to
+// 0x0301 by markh794/mhvtl#287: 03584 allows 512 drives and 255 MAP slots; the STK L-series 500 MAP slots between 0x000a and 0x01f4.
 func TestLimits(t *testing.T) {
 	for _, tc := range []struct {
 		init string
 		want Limits
 	}{
-		{"init_ibm3584", Limits{Pickers: 0x0100, MAPs: 0x0100, Drives: 0x01ff, Slots: 0xfc00}},
+		{"init_ibm3584", Limits{Pickers: 0x0100, MAPs: 0x00ff, Drives: 0x0200, Slots: 0xfc00}},
 		{"init_stklxx", Limits{Pickers: 0x0009, MAPs: 0x01ea, Drives: 0x01f4, Slots: 0xfc18}},
 		{"init_scalar_smc", Limits{Pickers: 0x000f, MAPs: 0x00f0, Drives: 0x0f00, Slots: 0xf000}},
 	} {

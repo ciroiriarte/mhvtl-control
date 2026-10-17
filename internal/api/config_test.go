@@ -294,7 +294,7 @@ func TestConfigPersonalities(t *testing.T) {
 	for _, l := range got.Libraries {
 		if l.InitFn == "init_ibm3584" {
 			ibm = true
-			if l.Limits.Drives != 511 || l.Limits.MAPs != 256 || !l.VPD83 || len(l.Rules) != 1 || l.Rules[0].ProductPrefix != "03584" {
+			if l.Limits.Drives != 512 || l.Limits.MAPs != 255 || !l.VPD83 || len(l.Rules) != 1 || l.Rules[0].ProductPrefix != "03584" {
 				t.Errorf("init_ibm3584 = %+v", l)
 			}
 		}
