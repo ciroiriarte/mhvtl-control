@@ -167,21 +167,27 @@ func TestChangerErrorMapping(t *testing.T) {
 		err    error
 		status int
 		code   string
+		hint   string // in the message, when set
 	}{
-		{"not found", fmt.Errorf("%w: no medium changer", changer.ErrUnavailable), 503, "changer_unavailable"},
-		{"transport", &scsi.TransportError{HostStatus: 1}, 503, "changer_unavailable"},
-		{"source empty", sense(scsi.KeyIllegalRequest, 0x3b, 0x0e), 409, "conflict"},
-		{"destination full", sense(scsi.KeyIllegalRequest, 0x3b, 0x0d), 409, "conflict"},
-		{"invalid element", sense(scsi.KeyIllegalRequest, 0x21, 0x01), 409, "conflict"},
-		{"MAP open", sense(scsi.KeyNotReady, 0x3a, 0x02), 409, "conflict"},
-		{"library offline", sense(scsi.KeyNotReady, 0x04, 0x12), 409, "conflict"},
-		{"invalid field", sense(scsi.KeyIllegalRequest, 0x24, 0x00), 500, "scsi_error"},
-		{"drive refused cartridge", sense(scsi.KeyHardwareError, 0x04, 0x03), 409, "conflict"},
-		{"other hardware", sense(scsi.KeyHardwareError, 0x44, 0x00), 500, "scsi_error"},
-		{"drive empty", changer.ErrDriveEmpty, 409, "conflict"},
-		{"no empty slot", changer.ErrNoEmptySlot, 409, "conflict"},
-		{"out of range", fmt.Errorf("%w: slot 99", changer.ErrOutOfRange), 400, "bad_request"},
-		{"other", errors.New("boom"), 500, "scsi_error"},
+		{"not found", fmt.Errorf("%w: no medium changer", changer.ErrUnavailable), 503, "changer_unavailable", ""},
+		{"transport", &scsi.TransportError{HostStatus: 1}, 503, "changer_unavailable", ""},
+		{"source empty", sense(scsi.KeyIllegalRequest, 0x3b, 0x0e), 409, "conflict", ""},
+		{"destination full", sense(scsi.KeyIllegalRequest, 0x3b, 0x0d), 409, "conflict", ""},
+		{"invalid element", sense(scsi.KeyIllegalRequest, 0x21, 0x01), 409, "conflict", ""},
+		{"MAP open", sense(scsi.KeyNotReady, 0x3a, 0x02), 409, "conflict", ""},
+		{"library offline", sense(scsi.KeyNotReady, 0x04, 0x12), 409, "conflict", ""},
+		{"invalid field", sense(scsi.KeyIllegalRequest, 0x24, 0x00), 500, "scsi_error", ""},
+		// mhVTL before markh794/mhvtl#285 reports any failed load into a
+		// drive as 04/04/03; from #285 on, 05/30/00 for media the drive
+		// cannot use and 04/53/00 for any other load failure.
+		{"drive refused cartridge", sense(scsi.KeyHardwareError, 0x04, 0x03), 409, "conflict", "media type suits the drive"},
+		{"incompatible medium", sense(scsi.KeyIllegalRequest, 0x30, 0x00), 409, "conflict", "cannot use this cartridge's media type"},
+		{"load failed", sense(scsi.KeyHardwareError, 0x53, 0x00), 409, "conflict", "the drive refused the load"},
+		{"other hardware", sense(scsi.KeyHardwareError, 0x44, 0x00), 500, "scsi_error", ""},
+		{"drive empty", changer.ErrDriveEmpty, 409, "conflict", ""},
+		{"no empty slot", changer.ErrNoEmptySlot, 409, "conflict", ""},
+		{"out of range", fmt.Errorf("%w: slot 99", changer.ErrOutOfRange), 400, "bad_request", ""},
+		{"other", errors.New("boom"), 500, "scsi_error", ""},
 	}
 	for _, c := range cases {
 		fc := &fakeChangers{err: c.err}
@@ -191,8 +197,12 @@ func TestChangerErrorMapping(t *testing.T) {
 			t.Errorf("%s: status = %d, want %d (body %s)", c.name, rec.Code, c.status, rec.Body.String())
 			continue
 		}
+		body := rec.Body.String() // errorCode drains it
 		if code := errorCode(t, rec); code != c.code {
 			t.Errorf("%s: code = %q, want %q", c.name, code, c.code)
+		}
+		if c.hint != "" && !strings.Contains(body, c.hint) {
+			t.Errorf("%s: body %s lacks %q", c.name, body, c.hint)
 		}
 	}
 }
