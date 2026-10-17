@@ -1055,6 +1055,10 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 					unplaced = append(unplaced, unknownCartridge(f.Drive))
 					continue
 				}
+				if _, taken := fu.MAPs[f.SourceMAP]; f.Library == id && f.SourceMAP > 0 && !taken {
+					fu.MAPs[f.SourceMAP] = f.Barcode
+					continue
+				}
 				if f.Library == id {
 					// A cartridge without a free source slot gets a
 					// negative key, which mapBack has no slot for: it

@@ -99,6 +99,16 @@ func TestMergeLibrary(t *testing.T) {
 			src:    pl(map[int]string{1: "A", 3: "C"}, nil),
 			forced: []changer.DriveState{{Number: 1, Full: true, Barcode: "B", SourceSlot: 2}},
 			err:    "no free storage slot for B"},
+		{name: "forced drive back to its source MAP slot",
+			next:   plib([]string{"A", "", "C", ""}, []string{"", ""}),
+			src:    pl(map[int]string{1: "A", 3: "C"}, nil),
+			forced: []changer.DriveState{{Number: 1, Full: true, Barcode: "M", SourceMAP: 2}},
+			want:   "S1=A S3=C M2=M"},
+		{name: "source MAP slot taken, first empty slot",
+			next:   plib([]string{"A", "", "C", ""}, []string{"", "X"}),
+			src:    pl(map[int]string{1: "A", 3: "C"}, map[int]string{2: "X"}),
+			forced: []changer.DriveState{{Number: 1, Full: true, Barcode: "M", SourceMAP: 2}},
+			want:   "S1=A S2=M S3=C M2=X"},
 		{name: "a trusted .persist already has it back in its slot",
 			next:   plib([]string{"A", "B", "C", ""}, []string{"", ""}),
 			src:    pl(map[int]string{1: "A", 2: "B", 3: "C"}, nil),
@@ -151,6 +161,18 @@ func TestMapBack(t *testing.T) {
 	}
 }
 
+// TestMapBackSourceFirst: a cartridge with no source of the original
+// layout fills empty slots only after every cartridge with one has
+// claimed its slot, here slot 1 before it.
+func TestMapBackSourceFirst(t *testing.T) {
+	orig := plib([]string{"", ""}, nil)
+	got, unplaced := mapBack(orig, pl(map[int]string{5: "N"}, nil),
+		[]validate.Placement{pl(map[int]string{1: "A"}, nil)}, noBay)
+	if shortP(got) != "S1=A S2=N" || len(unplaced) != 0 {
+		t.Errorf("got %q, unplaced %v", shortP(got), unplaced)
+	}
+}
+
 // TestMapBackForcedInPersist: a rollback whose source is a trusted
 // .persist, with a forced unload of the same cartridge: save_config already
 // put it back in its slot (vtllibrary.c:1142-1173,
@@ -190,5 +212,9 @@ func TestPersistDiffers(t *testing.T) {
 	}
 	if d := persistDiffers(pl(map[int]string{2: "A"}, map[int]string{1: "M"}), r1); len(d) != 2 {
 		t.Errorf("moved: %v", d)
+	}
+	// B, in a drive by R1, in .persist's slot 1 where R1 shows A: compared.
+	if d := persistDiffers(pl(map[int]string{1: "B"}, map[int]string{1: "M"}), r1); len(d) != 1 || !strings.Contains(d[0], "slot 1") {
+		t.Errorf("drive cartridge over another: %v", d)
 	}
 }

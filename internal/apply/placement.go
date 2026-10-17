@@ -18,10 +18,10 @@ import (
 // dispositions of the cartridges leaving; then the cartridges of the
 // forced drives. bay reports a bay-monitor cartridge, left out of the MAP.
 //
-// A cartridge of a forced drive goes to the slot it came from (SValid and
-// the source address of READ ELEMENT STATUS) when next has that slot and
-// the merge leaves it empty, else to the first empty storage slot, else
-// the merge is refused. It is never written on a Drive line: Drive lines
+// A cartridge of a forced drive goes to the slot or MAP slot it came from
+// (SValid and the source address of READ ELEMENT STATUS) when next has it
+// and the merge leaves it empty, else to the first empty storage slot,
+// else the merge is refused. It is never written on a Drive line: Drive lines
 // of library_contents carry drive serials, and save_config unloads every
 // drive logically (Phase 0 amendment 2). A cartridge the source already
 // places (a trusted .persist lists it in its slot) is left there.
@@ -69,8 +69,17 @@ func mergeLibrary(cur, next config.Library, src validate.Placement, disp []valid
 			return merged, fmt.Errorf("library %d: %s would leave the library without a disposition", next.ID, b)
 		}
 	}
+	maps := map[int]bool{}
+	for _, m := range next.MAPs {
+		maps[m.Number] = true
+	}
 	for _, d := range forced {
 		if !d.Full || d.Barcode == "" || present[d.Barcode] {
+			continue
+		}
+		if n := d.SourceMAP; n > 0 && maps[n] && merged.MAPs[n] == "" {
+			merged.MAPs[n] = d.Barcode
+			present[d.Barcode] = true
 			continue
 		}
 		n := d.SourceSlot
@@ -92,9 +101,11 @@ func mergeLibrary(cur, next config.Library, src validate.Placement, disp []valid
 // layout; extra are cartridges of an earlier source the primary misses
 // (a cartridge shelved by a disposition, say), placed after it. Each
 // cartridge keeps its slot or MAP slot number when orig has it and it is
-// free, else goes to the first empty storage slot of orig; one with no
-// free slot is returned in unplaced, and stays on the shelf: its media is
-// never deleted. Pickers come from orig's file; bay cartridges are left
+// free; only once every such cartridge has claimed its slot do the others
+// (no source, or a source orig lacks or another took) go to the first
+// empty storage slots of orig, so none takes a slot a later cartridge
+// comes from. One with no free slot is returned in unplaced, and stays on
+// the shelf: its media is never deleted. Pickers come from orig's file; bay cartridges are left
 // out of the MAP, as in the merge.
 func mapBack(orig config.Library, primary validate.Placement, extra []validate.Placement, bay func(string) bool) (validate.Placement, []string) {
 	out := newPlacement()
@@ -106,7 +117,7 @@ func mapBack(orig config.Library, primary validate.Placement, extra []validate.P
 	for _, m := range orig.MAPs {
 		maps[m.Number] = true
 	}
-	var unplaced []string
+	var unplaced, rest []string
 	put := func(isMAP bool, n int, b string) {
 		if b == "" || present[b] || isMAP && bay(b) {
 			return
@@ -118,11 +129,7 @@ func mapBack(orig config.Library, primary validate.Placement, extra []validate.P
 		case !isMAP && slots[n] && out.Slots[n] == "":
 			out.Slots[n] = b
 		default:
-			if k := firstEmpty(slots, out.Slots); k != 0 {
-				out.Slots[k] = b
-			} else {
-				unplaced = append(unplaced, b)
-			}
+			rest = append(rest, b)
 		}
 	}
 	for _, p := range append([]validate.Placement{primary}, extra...) {
@@ -131,6 +138,13 @@ func mapBack(orig config.Library, primary validate.Placement, extra []validate.P
 		}
 		for _, n := range sortedInts(p.MAPs) {
 			put(true, n, p.MAPs[n])
+		}
+	}
+	for _, b := range rest {
+		if k := firstEmpty(slots, out.Slots); k != 0 {
+			out.Slots[k] = b
+		} else {
+			unplaced = append(unplaced, b)
 		}
 	}
 	return out, unplaced
@@ -174,8 +188,9 @@ func renderContents(data []byte, p validate.Placement) ([]byte, error) {
 
 // persistDiffers compares a trusted .persist with R1 (plan 3.3 exec step
 // 4, Q7): the storage and MAP slots must hold the same cartridges. A
-// cartridge R1 shows in a drive is not compared: save_config puts it back
-// in its slot logically.
+// cartridge R1 shows in a drive may be in a slot R1 shows empty:
+// save_config puts it back in its slot logically. A slot R1 shows holding
+// another cartridge is still compared.
 func persistDiffers(persist, r1 validate.Placement) []string {
 	inDrive := map[string]bool{}
 	for _, b := range r1.Drives {
@@ -195,7 +210,7 @@ func persistDiffers(persist, r1 validate.Placement) []string {
 		}
 		for _, n := range sortedInts(nums) {
 			a, b := k.pe[n], k.r1e[n]
-			if a != b && !inDrive[a] {
+			if a != b && !(inDrive[a] && b == "") {
 				diff = append(diff, fmt.Sprintf("%s %d: .persist %q, READ ELEMENT STATUS %q", k.kind, n, a, b))
 			}
 		}
