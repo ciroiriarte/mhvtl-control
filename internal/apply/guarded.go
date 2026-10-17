@@ -99,6 +99,9 @@ type LibStop struct {
 	// R1 is R1′, and Map the "list map" reply that came with it.
 	R1  *validate.Placement `json:"r1,omitempty"`
 	Map string              `json:"map,omitempty"`
+	// Drift is set when, in rollback or recover, the MAP still changed
+	// between R1′ and the offline after barrierRetries reads.
+	Drift string `json:"drift,omitempty"`
 	// Offline is set once the library was taken offline.
 	Offline       bool           `json:"offline"`
 	ForcedUnloads []ForcedUnload `json:"forced_unloads,omitempty"`
@@ -167,8 +170,10 @@ type stopper struct {
 //
 //  1. an inactive or failed library skips R1′, offline and TUR; its
 //     source is the file vtllibrary would load;
-//  2. R1′: READ ELEMENT STATUS and "list map";
-//  3. offline, then "list map" again, which must equal R1′'s, else raced;
+//  2. R1′: READ ELEMENT STATUS and "list map"; in rollback and recover
+//     the library is put online first (readOffline);
+//  3. offline, then "list map" again, which must equal R1′'s, else raced
+//     in apply mode, else R1′ is read again;
 //  4. TEST UNIT READY on each drive: a cartridge where R1′ showed none is
 //     raced in apply mode; in rollback and recover any loaded drive is a
 //     forced unload and its vtltape@ is stopped too;
@@ -188,6 +193,10 @@ type stopper struct {
 // panic.
 func (s *stopper) guardedStop(ctx context.Context, libs []StopLib) (out []*LibStop, err error) {
 	defer func() {
+		// A kill point stands for SIGKILL, which runs no deferred online.
+		if errors.Is(err, errKilled) {
+			return
+		}
 		for _, ls := range out {
 			if ls.Offline && len(ls.Stopped) == 0 {
 				if oerr := s.cfg.Queue.Online(int64(ls.ID)); oerr != nil {
@@ -233,16 +242,9 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 	if ls.HCTL, err = devs.Locate(sl.Lib.Serial, scsi.PeripheralMediumChanger); err != nil {
 		return fmt.Errorf("library %d: %w", sl.Lib.ID, err)
 	}
-	inv, err := devs.Inventory(sl.Lib, ls.HCTL)
+	inv, err := s.readOffline(ctx, sl, ls)
 	if err != nil {
-		return fmt.Errorf("library %d: READ ELEMENT STATUS: %w", sl.Lib.ID, err)
-	}
-	r1 := placementOf(inv)
-	ls.R1 = &r1
-	if s.mode == ModeApply && s.expect != nil {
-		if want, ok := s.expect.Libraries[sl.Lib.ID]; ok && !samePlacement(want, r1) {
-			return fmt.Errorf("library %d: %w: READ ELEMENT STATUS changed since the change was validated", sl.Lib.ID, errRaced)
-		}
+		return err
 	}
 	if s.mode == ModeApply {
 		for _, d := range sl.Lib.Drives {
@@ -250,35 +252,6 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 				ls.LoadedDrives = append(ls.LoadedDrives, ForcedUnload{Library: sl.Lib.ID, Drive: d.ID, Barcode: st.Barcode, SourceSlot: st.SourceSlot, SourceMAP: st.SourceMAP})
 			}
 		}
-	}
-	if ls.Map, err = s.cfg.Queue.ListMap(int64(sl.Lib.ID)); err != nil {
-		return fmt.Errorf("library %d: list map: %w", sl.Lib.ID, err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if s.offlining != nil {
-		if err := s.offlining(sl.Lib.ID); err != nil {
-			return err
-		}
-	}
-	if err := s.cfg.Queue.Offline(int64(sl.Lib.ID)); err != nil {
-		return fmt.Errorf("library %d: offline: %w", sl.Lib.ID, err)
-	}
-	ls.Offline = true
-	// The barrier: vtllibrary handles messages in order, so a reply to a
-	// "list map" sent after "offline" means the offline took effect. It is
-	// compared with the "list map" taken right after READ ELEMENT STATUS,
-	// not with R1′'s MAP slots: both replies come from vtllibrary in the
-	// same format, so equal replies mean no import or export happened
-	// between R1′ and the offline, while comparing with the element status
-	// would depend on how the two encode an empty or barcode-less slot.
-	barrier, err := s.cfg.Queue.ListMap(int64(sl.Lib.ID))
-	if err != nil {
-		return fmt.Errorf("library %d: list map after offline: %w", sl.Lib.ID, err)
-	}
-	if barrier != ls.Map {
-		return fmt.Errorf("library %d: %w: the MAP changed between READ ELEMENT STATUS (%q) and offline (%q)", sl.Lib.ID, errRaced, ls.Map, barrier)
 	}
 	ls.DriveHCTL = map[int]string{}
 	for _, d := range sl.Lib.Drives {
@@ -312,6 +285,84 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		ls.ForcedUnloads = append(ls.ForcedUnloads, fu)
 	}
 	return s.snapshot(sl, ls, &ls.Before)
+}
+
+// barrierRetries is how many times rollback and recover read R1′ again
+// when the MAP changed between it and the offline.
+const barrierRetries = 3
+
+// readOffline is steps 2-3 for an active library: R1′, then offline and
+// the barrier. In apply mode a MAP that changed between R1′ and the
+// offline is raced. In rollback and recover the library may already be
+// offline (the apply held it offline, or died with it so), and vtllibrary
+// answers READ ELEMENT STATUS with NOT READY / OFFLINE (02/04/12) while
+// offline
+// ([usr/cmd/vtllibrary.c:213-225](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L213-L225)),
+// so it is put online first; a changed MAP there reads R1′ again, up to
+// barrierRetries times, then goes on with the last R1′ and records the
+// drift, since a rollback or recovery that gave up would leave the
+// library offline.
+func (s *stopper) readOffline(ctx context.Context, sl StopLib, ls *LibStop) (changer.Inventory, error) {
+	id := int64(sl.Lib.ID)
+	for attempt := 0; ; attempt++ {
+		if s.mode != ModeApply {
+			if err := s.cfg.Queue.Online(id); err != nil {
+				return changer.Inventory{}, fmt.Errorf("library %d: online: %w", sl.Lib.ID, err)
+			}
+			ls.Offline = false
+		}
+		inv, err := s.cfg.Devices.Inventory(sl.Lib, ls.HCTL)
+		if err != nil {
+			return inv, fmt.Errorf("library %d: READ ELEMENT STATUS: %w", sl.Lib.ID, err)
+		}
+		r1 := placementOf(inv)
+		ls.R1 = &r1
+		if s.mode == ModeApply && s.expect != nil {
+			if want, ok := s.expect.Libraries[sl.Lib.ID]; ok && !samePlacement(want, r1) {
+				return inv, fmt.Errorf("library %d: %w: READ ELEMENT STATUS changed since the change was validated", sl.Lib.ID, errRaced)
+			}
+		}
+		if ls.Map, err = s.cfg.Queue.ListMap(id); err != nil {
+			return inv, fmt.Errorf("library %d: list map: %w", sl.Lib.ID, err)
+		}
+		if err := ctx.Err(); err != nil {
+			return inv, err
+		}
+		if s.offlining != nil {
+			if err := s.offlining(sl.Lib.ID); err != nil {
+				return inv, err
+			}
+		}
+		if err := s.cfg.Queue.Offline(id); err != nil {
+			return inv, fmt.Errorf("library %d: offline: %w", sl.Lib.ID, err)
+		}
+		ls.Offline = true
+		// The barrier: vtllibrary handles messages in order, so a reply to
+		// a "list map" sent after "offline" means the offline took effect.
+		// It is compared with the "list map" taken right after READ
+		// ELEMENT STATUS, not with R1′'s MAP slots: both replies come from
+		// vtllibrary in the same format, so equal replies mean no import or
+		// export happened between R1′ and the offline, while comparing with
+		// the element status would depend on how the two encode an empty
+		// or barcode-less slot.
+		barrier, err := s.cfg.Queue.ListMap(id)
+		if err != nil {
+			return inv, fmt.Errorf("library %d: list map after offline: %w", sl.Lib.ID, err)
+		}
+		if barrier == ls.Map {
+			ls.Drift = ""
+			return inv, nil
+		}
+		drift := fmt.Sprintf("the MAP changed between READ ELEMENT STATUS (%q) and offline (%q)", ls.Map, barrier)
+		if s.mode == ModeApply {
+			return inv, fmt.Errorf("library %d: %w: %s", sl.Lib.ID, errRaced, drift)
+		}
+		if attempt == barrierRetries {
+			ls.Drift = drift
+			s.cfg.Logf("library %d: %s, %d times; going on with the last READ ELEMENT STATUS", sl.Lib.ID, drift, attempt+1)
+			return inv, nil
+		}
+	}
 }
 
 // idleDrives checks the drives of an inactive library whose vtltape@ still

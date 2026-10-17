@@ -460,12 +460,20 @@ func TestKilledOffline(t *testing.T) {
 	if it.Exec == nil || len(it.Exec.Prepared) != 1 || !it.Exec.Prepared[0].Offline || it.Exec.Prepared[0].R1 == nil || len(it.Libraries) != 1 {
 		t.Fatalf("intent %+v", it.Exec)
 	}
+	// The library is offline: its READ ELEMENT STATUS answers 02/04/12
+	// until recovery puts it online.
+	if !s.offline[10] {
+		t.Fatal("library 10 not offline after the kill")
+	}
 	s.calls = nil
 	e.rebuild()
 	if resp := e.do(Request{Op: OpRecover}); resp.Result != ResultRecovered {
 		t.Fatalf("recover: %+v", resp)
 	}
-	if s.index("online 10", 0) < 0 || s.unitState("vtllibrary@10.service") != "active" {
+	if !s.before("online 10", "RES 10") {
+		t.Errorf("READ ELEMENT STATUS before online: %v", s.calls)
+	}
+	if s.offline[10] || s.unitState("vtllibrary@10.service") != "active" {
 		t.Errorf("library 10 not back online: %v", s.calls)
 	}
 }
