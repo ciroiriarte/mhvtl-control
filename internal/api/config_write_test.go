@@ -27,6 +27,7 @@ type writeEnv struct {
 	dir     string
 	socket  string
 	h       *fakeHelper
+	fc      *fakeChangers
 	srv     *Server
 	handler http.Handler
 	clock   time.Time
@@ -51,6 +52,7 @@ func newWriteEnv(t *testing.T, edit func(*Config)) *writeEnv {
 		inv.MAPs[0].Full, inv.MAPs[0].Barcode = true, "ZZ0001L8"
 	})
 	fc := &fakeChangers{invByLib: map[int]changer.Inventory{10: live}}
+	e.fc = fc
 	cfg := Config{
 		ConfigDir: dir,
 		Changers:  &errByLib{fakeChangers: fc, fail: map[int]error{30: fmt.Errorf("no medium changer")}},
@@ -217,8 +219,8 @@ func TestConfigWriteLibrariesAndDrives(t *testing.T) {
 	dev := e.disk("device.conf")
 
 	// A device.conf edit writes library 10's live view into its
-	// library_contents too; library 30's live view is unknown, so its file
-	// stays as on disk and is not staged.
+	// library_contents too. Library 30's changer cannot be read, so it is
+	// not edited: its file may lag moves made since.
 	st := e.edit(http.MethodPatch, "/api/v1/config/libraries/10", map[string]any{"attrs": map[string]any{"Backoff": "500"}})
 	wantDev := strings.Replace(dev, " PERSIST: False\n Backoff: 400\n", " PERSIST: False\n Backoff: 500\n", 1)
 	if got := file(t, st, "device.conf"); got != wantDev {
@@ -227,12 +229,12 @@ func TestConfigWriteLibrariesAndDrives(t *testing.T) {
 	if got := file(t, st, "library_contents.10"); got != live10(e.disk("library_contents.10")) {
 		t.Errorf("library_contents.10 not the live view:\n%s", got)
 	}
-	st = e.edit(http.MethodPatch, "/api/v1/config/libraries/30", map[string]any{"stage": st.Stage, "attrs": map[string]any{"Backoff": nil}})
-	if _, ok := st.Files["library_contents.30"]; ok {
-		t.Error("library_contents.30 staged, unchanged")
+	rec := e.call(http.MethodPatch, "/api/v1/config/libraries/30", map[string]any{"stage": st.Stage, "attrs": map[string]any{"Backoff": nil}})
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "live_unreadable") || !strings.Contains(rec.Body.String(), "no medium changer") {
+		t.Errorf("edit of library 30: %d %s", rec.Code, rec.Body)
 	}
-	if got := file(t, st, "device.conf"); strings.Contains(got, "L80\n Unit serial number: XYZZY_B\n NAA: 30:22:33:44:ab:00:08:00\n Home directory: testdata/gen/home\n PERSIST: False\n Backoff") {
-		t.Errorf("Backoff of library 30 not deleted:\n%s", got)
+	if got := e.call(http.MethodGet, "/api/v1/config/stages/"+st.Stage, nil); strings.Contains(got.Body.String(), "XYZZY_B\\n NAA: 30:22:33:44:ab:00:08:00\\n Home directory: testdata/gen/home\\n PERSIST: False\\n\\n") {
+		t.Errorf("refused edit staged: %s", got.Body)
 	}
 
 	// A drive: its stanza names the library, and library_contents gets

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -283,7 +284,11 @@ func (st *stage) deviceConf() (*conffile.DeviceConf, error) {
 }
 
 // contents parses library id's library_contents in the stage. The first
-// time, the library's live placement is written in when it is known.
+// time, the library's live placement is written in, from a READ ELEMENT
+// STATUS made now: the views' cache may be up to liveTTL older than a move
+// made outside the daemon, which the stage would then undo (#61 smoke,
+// dispositions). A library whose changer cannot be read is not edited: its
+// file may lag such moves.
 func (s *Server) contents(ctx context.Context, st *stage, id int) (*conffile.LibContents, error) {
 	name := contentsFile(id)
 	if _, edited := st.next[name]; !edited {
@@ -292,14 +297,19 @@ func (s *Server) contents(ctx context.Context, st *stage, id int) (*conffile.Lib
 		}
 		data, ok := st.disk[name]
 		if lib, inCur := findConfigLibrary(st.cur, id); ok && inCur {
-			live, _ := s.readLive(ctx, []config.Library{lib})
-			if p, known := live[id]; known {
-				lc, err := liveContents(data, lib, p)
-				if err != nil {
-					return nil, fmt.Errorf("live placement not written into %s: %w", name, err)
-				}
-				data = lc
+			s.live.forget(id)
+			live, errs := s.readLive(ctx, []config.Library{lib})
+			p, known := live[id]
+			if !known {
+				return nil, &editError{http.StatusServiceUnavailable, "live_unreadable", fmt.Sprintf(
+					"library %d: its changer could not be read (%s); a stage starts from where the cartridges are now, so as not to undo moves made since %s was written",
+					id, errs[id], name)}
 			}
+			lc, err := liveContents(data, lib, p)
+			if err != nil {
+				return nil, fmt.Errorf("live placement not written into %s: %w", name, err)
+			}
+			data = lc
 		}
 		if data == nil {
 			data = []byte{} // nil would delete it
