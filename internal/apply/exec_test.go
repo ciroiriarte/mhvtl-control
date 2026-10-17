@@ -221,8 +221,21 @@ func (s *fakeSystem) Inventory(lib config.Library, hctl string) (changer.Invento
 	return s.fromDisk(lib.ID), nil
 }
 
+// Loaded is TEST UNIT READY: a drive whose vtltape@ is not running does
+// not answer.
 func (s *fakeSystem) Loaded(hctl string) (bool, error) {
-	return s.loaded[strings.TrimPrefix(hctl, "hctl-")], nil
+	serial := strings.TrimPrefix(hctl, "hctl-")
+	inv := s.inventory()
+	drives := inv.Standalone
+	for _, l := range inv.Libraries {
+		drives = append(drives, l.Drives...)
+	}
+	for _, d := range drives {
+		if d.Serial == serial && s.unitState(driveUnit(d.ID)) != "active" {
+			return false, fmt.Errorf("%s: no response", hctl)
+		}
+	}
+	return s.loaded[serial], nil
 }
 
 // steps reduces the call log to the kinds of call, in order, collapsing
@@ -883,5 +896,35 @@ func TestWithForcedStandalone(t *testing.T) {
 		map[int][]changer.DriveState{30: {{Number: 1, Full: true, Barcode: "G03001L8"}}})
 	if fmt.Sprint(p.StopDrives[30], p.StartStandalone) != "[31] [31]" {
 		t.Errorf("stop %v, start standalone %v", p.StopDrives, p.StartStandalone)
+	}
+}
+
+// TestExecRollbackCrashedDrive: drive 11 dies after library 10 started,
+// with a cartridge mounted; the rollback does not ask it, takes its
+// cartridge from READ ELEMENT STATUS and puts it back in its slot.
+func TestExecRollbackCrashedDrive(t *testing.T) {
+	e, s := newExecEnv(t)
+	lc := e.read("library_contents.10")
+	once := false
+	s.onStart = func(u string) {
+		if u != "vtllibrary@10.service" || once {
+			return
+		}
+		once = true
+		s.state["vtltape@11.service"] = "failed"
+		inv := s.fromDisk(10)
+		inv.Slots[0] = changer.SlotState{Number: 1}
+		inv.Drives[0] = changer.DriveState{Number: 1, Full: true, Barcode: "E01001L8", SourceSlot: 1}
+		s.live[10] = inv
+	}
+	resp := e.do(compression(e))
+	if resp.Result != ResultRolledBack || resp.FailedUnit != "vtltape@11.service" {
+		t.Fatalf("apply: %+v", resp)
+	}
+	if len(resp.ForcedUnloads) != 1 || resp.ForcedUnloads[0] != (ForcedUnload{Library: 10, Drive: 11, Barcode: "E01001L8", SourceSlot: 1}) {
+		t.Errorf("forced unloads %+v", resp.ForcedUnloads)
+	}
+	if got := string(e.read("library_contents.10")); got != string(lc) {
+		t.Errorf("library_contents.10:\n%s", diffLines(string(lc), got))
 	}
 }
