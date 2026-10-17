@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+# The config-apply helper's state: its audit log, rollback copies and any
+# intent of an interrupted apply. Kept on remove, so a reinstall can still
+# recover; dropped on purge.
+if [ "$1" = purge ]; then
+	rm -rf /var/lib/mhvtl-control-apply
+fi
+
+exit 0
