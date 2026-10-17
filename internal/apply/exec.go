@@ -82,6 +82,9 @@ type checked struct {
 	// access (tests of the request checks).
 	live *validate.Live
 	inv  map[int]changer.Inventory
+	// down are the drives of running libraries the plan stops whose
+	// vtltape@ is inactive or failed, as loadedDrives found them.
+	down map[int]bool
 }
 
 // execError is a failure of a step, with its response code and the unit
@@ -156,8 +159,10 @@ func (h *Helper) readLive(ctx context.Context, cur config.Inventory) (*validate.
 // mounted in vtltape that the restarted library no longer knows of (Phase
 // 0 amendment 2); of such a library that is not running, each drive whose
 // vtltape@ runs, by TEST UNIT READY, with no barcode; and each standalone
-// drive stopped, by TEST UNIT READY. A drive of a running library it stops
-// whose vtltape@ runs but that cannot be located is a live_state refusal.
+// drive stopped whose vtltape@ runs, by TEST UNIT READY. A drive whose
+// vtltape@ is inactive or failed is not located (#53), and one of a
+// running library is noted in c.down for withForced; a drive in any other
+// state must be located, and one that cannot be is a live_state refusal.
 func (h *Helper) loadedDrives(ctx context.Context, c *checked) (map[int][]changer.DriveState, []int, error) {
 	byLib := map[int][]changer.DriveState{}
 	if c.live == nil {
@@ -192,6 +197,10 @@ func (h *Helper) loadedDrives(ctx context.Context, c *checked) (map[int][]change
 				return nil, nil, err
 			}
 			if state == "inactive" || state == "failed" {
+				if c.down == nil {
+					c.down = map[int]bool{}
+				}
+				c.down[d.ID] = true
 				continue
 			}
 			if _, err := h.cfg.Devices.LocateDrive(d); err != nil {
@@ -1304,7 +1313,9 @@ func (l lifecycle) Start(ctx context.Context, it *Intent) error {
 
 // withForced adds the forced drives to the plan: each is stopped with its
 // library and started again with the library that has it next (Phase 0
-// amendment 2: a forced apply also restarts the drive's vtltape@).
+// amendment 2: a forced apply also restarts the drive's vtltape@). A
+// forced drive whose vtltape@ is down (c.down) is not added; the plan
+// still restarts it if the edit does.
 func withForced(p UnitPlan, c *checked, forced map[int][]changer.DriveState) UnitPlan {
 	p.StopDrives, p.StartDrives = copyDrives(p.StopDrives), copyDrives(p.StartDrives)
 	nextDrives := drivesOf(c.next)
@@ -1313,6 +1324,14 @@ func withForced(p UnitPlan, c *checked, forced map[int][]changer.DriveState) Uni
 		for _, st := range states {
 			for _, d := range lib.Drives {
 				if d.Slot != st.Number {
+					continue
+				}
+				// A drive whose vtltape@ is down holds no mount state
+				// (vtltape starts unloaded, init_lu_ssc,
+				// usr/cmd/vtltape.c:2324 at 852b78a): the unload is the
+				// library's placement alone, and the drive is left as
+				// the edit leaves it.
+				if c.down[d.ID] {
 					continue
 				}
 				p.StopDrives[id] = addInt(p.StopDrives[id], d.ID)

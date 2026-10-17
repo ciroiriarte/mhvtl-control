@@ -843,7 +843,9 @@ func TestExecStandaloneDown(t *testing.T) {
 
 // TestExecDriveDownLoaded: a down drive that READ ELEMENT STATUS shows
 // full cannot be asked, so the cartridge counts as loaded: drive_loaded,
-// and forced, it goes back to its slot and the drive restarts.
+// and forced, it goes back to its slot. vtltape keeps no mount state, so
+// the unload is the library's placement alone: the drive's vtltape@ is
+// left down, outside the units.
 func TestExecDriveDownLoaded(t *testing.T) {
 	e, s := newExecEnv(t)
 	s.state["vtltape@12.service"] = "failed"
@@ -869,6 +871,14 @@ func TestExecDriveDownLoaded(t *testing.T) {
 	}
 	if got := string(e.read("library_contents.10")); !strings.Contains(got, "\nSlot 2: E01002L8\n") {
 		t.Errorf("library_contents.10:\n%s", got)
+	}
+	for _, u := range append(pr.Units, resp.Units...) {
+		if u == "vtltape@12.service" {
+			t.Errorf("units %v, %v name vtltape@12", pr.Units, resp.Units)
+		}
+	}
+	if s.has("stop vtltape@12.service") || s.has("start vtltape@12.service") || s.unitState("vtltape@12.service") != "failed" {
+		t.Errorf("vtltape@12 touched: %v", s.calls)
 	}
 }
 
@@ -1133,6 +1143,19 @@ func TestExecRollbackUnknownUnload(t *testing.T) {
 	}
 	if s.index("stop vtltape@12.service", 0) < 0 {
 		t.Errorf("drive 12 not stopped: %v", s.calls)
+	}
+}
+
+// TestWithForcedDown: a forced drive whose vtltape@ is down is not
+// stopped or started for the unload, unless the edit restarts it anyway.
+func TestWithForcedDown(t *testing.T) {
+	lib := config.Library{ID: 10, Drives: []config.Drive{{ID: 11, LibraryID: 10, Slot: 1}, {ID: 12, LibraryID: 10, Slot: 2}}}
+	inv := config.Inventory{Libraries: []config.Library{lib}}
+	c := &checked{cur: inv, next: inv, down: map[int]bool{11: true, 12: true}}
+	forced := map[int][]changer.DriveState{10: {{Number: 1, Full: true}, {Number: 2, Full: true}}}
+	p := withForced(UnitPlan{Restart: []int{10}, StopDrives: map[int][]int{10: {11}}, StartDrives: map[int][]int{10: {11}}}, c, forced)
+	if fmt.Sprint(p.StopDrives[10], p.StartDrives[10]) != "[11] [11]" {
+		t.Errorf("stop %v, start %v", p.StopDrives, p.StartDrives)
 	}
 }
 
