@@ -171,7 +171,9 @@ type stopper struct {
 // guardedStop takes libs down for mode (plan 3.3, guarded.go):
 //
 //  1. an inactive or failed library skips R1′, offline and TUR; its
-//     source is the file vtllibrary would load;
+//     source is the file vtllibrary would load; in rollback and recover
+//     so does one in any state but active, such as a start still
+//     activating after SIGTERM cut systemctl off;
 //  2. R1′: READ ELEMENT STATUS and "list map"; in rollback and recover
 //     the library is put online first (readOffline);
 //  3. offline, then "list map" again, which must equal R1′'s, else raced
@@ -236,6 +238,13 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		return err
 	}
 	ls.Active = state != "inactive" && state != "failed"
+	if s.mode != ModeApply && state != "active" {
+		// A library still activating has not registered its changer: a
+		// start job SIGTERM cut systemctl off from goes on (the stop then
+		// cancels it). It has placed nothing yet, so it is stopped as one
+		// that is not running and the apply's source stands (unwind).
+		ls.Active = false
+	}
 	devs := s.cfg.Devices
 	if !ls.Active {
 		if err := s.idleDrives(ctx, sl, ls); err != nil {
@@ -244,7 +253,7 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		return s.snapshot(sl, ls, &ls.Before)
 	}
 	if ls.HCTL, err = devs.LocateLibrary(sl.Lib); err != nil {
-		return fmt.Errorf("library %d: %w", sl.Lib.ID, err)
+		return fail(ErrLive, "", fmt.Errorf("library %d: %w", sl.Lib.ID, err))
 	}
 	inv, err := s.readOffline(ctx, sl, ls)
 	if err != nil {
@@ -280,7 +289,7 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		}
 		hctl, err := devs.LocateDrive(d)
 		if err != nil {
-			return fmt.Errorf("library %d drive %d: %w", sl.Lib.ID, d.ID, err)
+			return fail(ErrLive, "", fmt.Errorf("library %d drive %d: %w", sl.Lib.ID, d.ID, err))
 		}
 		ls.DriveHCTL[d.ID] = hctl
 		loaded, err := devs.Loaded(hctl)
@@ -429,7 +438,7 @@ func (s *stopper) idleDrives(ctx context.Context, sl StopLib, ls *LibStop) error
 		}
 		hctl, err := s.cfg.Devices.LocateDrive(d)
 		if err != nil {
-			return fmt.Errorf("library %d drive %d: %w", sl.Lib.ID, d.ID, err)
+			return fail(ErrLive, "", fmt.Errorf("library %d drive %d: %w", sl.Lib.ID, d.ID, err))
 		}
 		ls.DriveHCTL[d.ID] = hctl
 		loaded, err := s.cfg.Devices.Loaded(hctl)

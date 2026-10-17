@@ -33,8 +33,15 @@ type fakeSystem struct {
 	started map[int]changer.Inventory
 	loaded  map[string]bool // TUR by drive serial
 	// lost are the drive serials LocateDrive does not find.
-	lost    map[string]bool
-	enabled map[string]bool
+	lost map[string]bool
+	// killStart makes the next start of the unit return as if SIGTERM
+	// killed systemctl: the start job goes on, the unit stays activating.
+	killStart map[string]bool
+	// deaf are the running libraries that stop answering the queue.
+	deaf map[int]bool
+	// onOffline runs at an offline, with the lock held.
+	onOffline func(lib int)
+	enabled   map[string]bool
 	// failStart makes the next start of the unit fail; onStop runs at a
 	// stop, onMedia at the restart of mhvtl-media.service.
 	failStart map[string]bool
@@ -56,7 +63,7 @@ type fakeSystem struct {
 func newExecEnv(t *testing.T) (*env, *fakeSystem) {
 	e := newEnv(t)
 	s := &fakeSystem{e: e, state: map[string]string{bayMonitor: "inactive"}, live: map[int]changer.Inventory{}, started: map[int]changer.Inventory{},
-		loaded: map[string]bool{}, lost: map[string]bool{}, enabled: map[string]bool{}, offline: map[int]bool{}, pendingOnline: map[int]bool{}, failStart: map[string]bool{}, failStop: map[string]bool{},
+		loaded: map[string]bool{}, lost: map[string]bool{}, killStart: map[string]bool{}, deaf: map[int]bool{}, enabled: map[string]bool{}, offline: map[int]bool{}, pendingOnline: map[int]bool{}, failStart: map[string]bool{}, failStop: map[string]bool{},
 		onStop: func(string) {}, onMedia: func() error { return nil }, onStart: func(string) {}}
 	e.cfg.Systemctl = s.systemctl
 	e.cfg.Queue, e.cfg.Devices = s, s
@@ -148,6 +155,11 @@ func (s *fakeSystem) systemctl(ctx context.Context, args ...string) ([]byte, err
 		return nil, nil
 	case "start":
 		s.log("start %s", args[1])
+		if s.killStart[args[1]] {
+			delete(s.killStart, args[1]) // once
+			s.state[args[1]] = "activating"
+			return nil, errors.New("signal: killed")
+		}
 		if s.failStart[args[1]] {
 			delete(s.failStart, args[1]) // once
 			s.state[args[1]] = "failed"
@@ -190,6 +202,9 @@ func (s *fakeSystem) Offline(lib int64) error {
 	s.log("offline %d", lib)
 	delete(s.pendingOnline, int(lib))
 	s.offline[int(lib)] = true
+	if s.onOffline != nil {
+		s.onOffline(int(lib))
+	}
 	return nil
 }
 
@@ -209,8 +224,9 @@ func (s *fakeSystem) ListMap(lib int64) (string, error) {
 		delete(s.pendingOnline, int(lib))
 		delete(s.offline, int(lib))
 	}
+	deaf := s.deaf[int(lib)]
 	s.mu.Unlock()
-	if s.unitState(libraryUnit(int(lib))) != "active" {
+	if deaf || s.unitState(libraryUnit(int(lib))) != "active" {
 		return "", errors.New("no reply")
 	}
 	if s.onListMap != nil {
@@ -219,7 +235,14 @@ func (s *fakeSystem) ListMap(lib int64) (string, error) {
 	return "", nil
 }
 
+// LocateLibrary finds a changer only while its vtllibrary@ is active: an
+// activating one has not registered it yet.
 func (s *fakeSystem) LocateLibrary(lib config.Library) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.unitState(libraryUnit(lib.ID)); st != "active" {
+		return "", fmt.Errorf("%w: no medium changer with serial %q (vtllibrary@%d is %s)", changer.ErrUnavailable, lib.Serial, lib.ID, st)
+	}
 	return "hctl-" + lib.Serial, nil
 }
 
@@ -684,6 +707,55 @@ func TestExecDriveNotFound(t *testing.T) {
 	}
 }
 
+// TestExecDriveLostInPrepare: a drive the prepare cannot locate after it
+// took the library offline is a live_state refusal, not an internal error,
+// and the library is put back online.
+func TestExecDriveLostInPrepare(t *testing.T) {
+	e, s := newExecEnv(t)
+	s.onOffline = func(int) { s.lost["XYZZY_A2"] = true }
+	resp := e.do(compression(e))
+	if resp.Result != ResultRefused || resp.Error != ErrLive || !strings.Contains(resp.Message, "drive 12") {
+		t.Fatalf("apply: %+v", resp)
+	}
+	if !s.before("offline 10", "online 10") || s.offline[10] && !s.pendingOnline[10] {
+		t.Errorf("library 10 not put back online: %v", s.calls)
+	}
+	for _, c := range s.calls {
+		if strings.HasPrefix(c, "stop ") {
+			t.Errorf("stopped %q", c)
+		}
+	}
+	if e.intentExists() {
+		t.Error("intent left")
+	}
+}
+
+// TestExecRollbackStartKilled: SIGTERM kills the systemctl client of a
+// start, but the start job goes on and the library stays activating, its
+// changer not registered yet (VM run2b). The rollback stops it as a
+// library that is not running and builds on the apply's source.
+func TestExecRollbackStartKilled(t *testing.T) {
+	e, s := newExecEnv(t)
+	dc, lc := e.read("device.conf"), e.read("library_contents.10")
+	s.killStart["vtllibrary@10.service"] = true
+	resp := e.do(compression(e))
+	if resp.Result != ResultRolledBack {
+		t.Fatalf("apply: %+v", resp)
+	}
+	if string(e.read("device.conf")) != string(dc) || e.intentExists() {
+		t.Error("device.conf not restored, or intent left")
+	}
+	if got := string(e.read("library_contents.10")); got != string(lc) {
+		t.Errorf("library_contents.10 not restored:\n%s", diffLines(string(lc), got))
+	}
+	if !s.before("start vtllibrary@10.service", "stop vtllibrary@10.service") {
+		t.Errorf("the activating library was not stopped: %v", s.calls)
+	}
+	if st := s.unitState("vtllibrary@10.service"); st != "active" {
+		t.Errorf("vtllibrary@10 is %s after the rollback", st)
+	}
+}
+
 func TestExecMedia(t *testing.T) {
 	newSlot := func(e *env) Request {
 		return Request{Op: OpApply, Files: []File{e.edit("library_contents.10", "Slot 24:\n", "Slot 24: E01024L8\n")}, ExpectUnits: []string{"vtllibrary@10.service"}}
@@ -1136,7 +1208,7 @@ func TestExecRollbackHeld(t *testing.T) {
 	// As the rollback begins, library 10 stops answering the queue, which
 	// fails the rollback's guardedStop at it.
 	e.cfg.JournalTail = func(context.Context, string) ([]byte, error) {
-		s.state["vtllibrary@10.service"] = "activating"
+		s.deaf[10] = true
 		return nil, nil
 	}
 	e.rebuild()
