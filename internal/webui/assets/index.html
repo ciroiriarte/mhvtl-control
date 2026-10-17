@@ -82,10 +82,11 @@
         <div class="body" id="media-list"><p class="muted">Loading media…</p></div>
       </section>
 
-      <!-- Configuration (device.conf, library_contents): read-only. Editing
-           needs the privileged apply helper; there are no write controls (AC 17). -->
+      <!-- Configuration (device.conf, library_contents). Edits are offered
+           only while capabilities.writes is "ok"; they are staged on the
+           daemon and applied through the privileged apply helper. -->
       <section class="panel col-12" id="config-panel" aria-busy="false">
-        <header>Configuration <span class="count">read-only</span></header>
+        <header>Configuration <span class="count" id="config-mode">read-only</span></header>
         <div class="panel-status" id="config-status" data-panel-status role="alert" aria-live="polite"></div>
         <div class="cfg-notice" id="config-notice" role="note"></div>
         <div class="lib-toolbar" id="config-toolbar">
@@ -99,6 +100,14 @@
           </label>
         </div>
         <div class="body" id="config-view"><p class="muted">Loading configuration…</p></div>
+      </section>
+
+      <!-- Pending changes: the stage's per-file diff, its dry run (units,
+           libraries offline, warnings, findings) and the apply. -->
+      <section class="panel col-12" id="stage-panel" aria-busy="false" hidden>
+        <header>Pending changes <span class="count" id="stage-count"></span></header>
+        <div class="panel-status" id="stage-status" data-panel-status role="alert" aria-live="polite"></div>
+        <div class="body" id="stage-view"></div>
       </section>
 
       <!-- Findings: lines mhVTL would not read as written, and validation of

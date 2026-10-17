@@ -602,3 +602,17 @@ dialog.wide { max-width: 720px; }
 .badge.sev-error { color: var(--err); border-color: var(--err-border); background: var(--err-bg); }
 .badge.sev-warning { color: var(--warn); border-color: var(--warn); }
 .cfg-scroll { overflow-x: auto; }
+
+/* ---- pending configuration changes ------------------------------------ */
+#stage-panel[hidden] { display: none; }
+.diff { margin: 0 0 8px; padding: 6px 8px; max-height: 320px; overflow: auto; font-family: var(--font-mono); font-size: 12px;
+  background: var(--bg-elev); border: 1px solid var(--border-soft); border-radius: var(--radius-sm); white-space: pre; }
+.diff .diff-add { color: var(--ok); }
+.diff .diff-del { color: var(--err); }
+.diff .diff-hunk { color: var(--accent-2); }
+.diff .diff-ctx { color: var(--text-dim); }
+.stage-block ul { margin: 0 0 8px; padding-left: 18px; font-size: 12px; }
+.stage-block.warnings li { color: var(--warn); font-weight: 700; }
+.stage-block.offline li { color: var(--warn); }
+.slot-table td.acts, .slot-table td.acts .btn + .btn { white-space: nowrap; }
+.slot-table td.acts .btn + .btn { margin-left: 4px; }

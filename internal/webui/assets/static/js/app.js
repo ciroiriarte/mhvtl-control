@@ -38,6 +38,10 @@
   var nodeRows = core.nodeRows;
   var capabilityNotice = core.capabilityNotice, findingRows = core.findingRows, problemText = core.problemText;
   var buildValidateBody = core.buildValidateBody;
+  var writesEditable = core.writesEditable, stageFileRows = core.stageFileRows, planSummary = core.planSummary;
+  var forceRemaining = core.forceRemaining, fmtCountdown = core.fmtCountdown, applyErrorAction = core.applyErrorAction;
+  var libraryAttrFields = core.libraryAttrFields, driveAttrFields = core.driveAttrFields, buildAttrPatch = core.buildAttrPatch;
+  var buildSlotPatch = core.buildSlotPatch, buildSlotDelete = core.buildSlotDelete, buildSlotsAdd = core.buildSlotsAdd;
 
   /* ---- library view state (US-F6: search / filter / table / multi-lib) --
    * These persist across refreshes so a running search/filter is not reset by
@@ -57,6 +61,11 @@
    * without a refetch.                                                   */
   var cfgView = { selected: null, app: "" };
   var lastCfg = null;    // { caps, config, personalities }
+
+  /* ---- staged configuration change (plan 4.2): the daemon holds the
+   * stage; the dashboard keeps its id, its last answer, the node generation
+   * it belongs to, and the last dry run.                                 */
+  var cfgStage = null;   // { id, data, gen, plan (planSummary), result }
 
   /* ---- localStorage (errors surfaced, never silently implying success) -- */
   var LS_THEME = "mhvtl-control.theme";
@@ -230,6 +239,7 @@
             var err = new Error(msg);
             err.status = r.status;
             err.code = code;
+            err.body = j || {};
             throw err;
           });
       }
@@ -1691,10 +1701,13 @@
     return mk("table", { class: "cfg-kv", children: [mk("tbody", { children: rows.map(function (r) { return kvRow(r[0], r[1]); }) })] });
   }
 
-  function configDrivesTable(lib) {
+  // configDrivesTable lists drives; actions(d), when given, returns the
+  // edit buttons of a row.
+  function configDrivesTable(lib, actions) {
     var drives = coerceArray(lib.drives);
     if (!drives.length) { return mk("p", { class: "muted", text: "No drives." }); }
-    var head = mk("thead", { children: [mk("tr", { children: ["ID", "Slot", "Address", "Vendor / product", "Rev", "Serial", "NAA", "Compression"].map(function (h) { return mk("th", { text: h }); }) })] });
+    var cols = ["ID", "Slot", "Address", "Vendor / product", "Rev", "Serial", "NAA", "Compression"].concat(actions ? [""] : []);
+    var head = mk("thead", { children: [mk("tr", { children: cols.map(function (h) { return mk("th", { text: h }); }) })] });
     var rows = drives.map(function (d) {
       var comp = d.compression_enabled
         ? String(d.compression_type || "on") + " (factor " + coerceNumber(d.compression_factor) + ")"
@@ -1708,6 +1721,7 @@
         mk("td", { class: "mono", text: String(d.serial || "") }),
         mk("td", { class: "mono", text: String(d.naa || "") }),
         mk("td", { text: comp }),
+        actions ? mk("td", { class: "acts", children: actions(d) }) : null,
       ] });
     });
     return mk("table", { class: "slot-table", children: [head, mk("tbody", { children: rows })] });
@@ -1716,9 +1730,10 @@
   // configSlotsTable lists every storage slot vtllibrary makes and every MAP
   // slot: the cartridge library_contents puts there and, with the changer
   // readable, the one there now.
-  function configSlotsTable(data) {
+  // actions(kind, sl), when given, returns the edit buttons of a row.
+  function configSlotsTable(data, actions) {
     var live = !!(data && data.live);
-    var cols = ["Element", "library_contents"].concat(live ? ["Live"] : []);
+    var cols = ["Element", "library_contents"].concat(live ? ["Live"] : []).concat(actions ? [""] : []);
     var head = mk("thead", { children: [mk("tr", { children: cols.map(function (h) { return mk("th", { text: h }); }) })] });
     var rows = [];
     function add(kind, sl) {
@@ -1729,6 +1744,7 @@
         var differs = sl.live_barcode != null && String(sl.live_barcode) !== String(sl.barcode || "");
         cells.push(mk("td", { class: "mono" + (differs ? " warn" : ""), text: lb }));
       }
+      if (actions) { cells.push(mk("td", { class: "acts", children: actions(kind === "MAP" ? "map" : "slot", sl) })); }
       rows.push(mk("tr", { children: cells }));
     }
     coerceArray(data && data.maps).forEach(function (sl) { if (sl) { add("MAP", sl); } });
@@ -1765,6 +1781,8 @@
     if (!view || !lastCfg) { return; }
     clear(view);
     renderConfigNotice(lastCfg.caps);
+    var mode = $("config-mode");
+    if (mode) { mode.textContent = cfgEditable() ? "editable" : "read-only"; }
     var libs = coerceArray(lastCfg.config && lastCfg.config.libraries);
     var sel = $("config-library");
     if (sel) {
@@ -1793,15 +1811,38 @@
       cfgView.selected = String(coerceNumber(lib.id));
       if (sel) { sel.value = cfgView.selected; }
 
-      view.appendChild(configLibrarySummary(lib));
-      view.appendChild(mk("h4", { class: "cfg-h", text: "Drives (device.conf)" }));
-      view.appendChild(mk("div", { class: "cfg-scroll", children: [configDrivesTable(lib)] }));
-      view.appendChild(mk("h4", { class: "cfg-h", text: "Slots (library_contents." + cfgView.selected + ")" }));
       // GET /config carries every library's slots, from the same changer
       // read as its live_content, so a refresh reads each changer once.
       var allSlots = lastCfg.config && lastCfg.config.slots;
       var slots = allSlots && typeof allSlots === "object" && Object.prototype.hasOwnProperty.call(allSlots, cfgView.selected)
         ? allSlots[cfgView.selected] : null;
+      var editable = cfgEditable();
+      var theLib = lib;
+      view.appendChild(configLibrarySummary(lib));
+      if (editable) {
+        view.appendChild(mk("div", { class: "drive-actions", children: [
+          editButton("Edit library…", "Edit library " + cfgView.selected, function () {
+            attrDialog("Edit library " + coerceNumber(theLib.id), libraryAttrFields(theLib), libCfgPath(theLib.id));
+          }),
+          editButton("Delete library…", "Delete library " + cfgView.selected, function () { deleteLibrary(theLib, slots); }),
+        ] }));
+      }
+      view.appendChild(mk("h4", { class: "cfg-h", text: "Drives (device.conf)" }));
+      view.appendChild(mk("div", { class: "cfg-scroll", children: [configDrivesTable(lib, editable ? function (d) {
+        return [
+          editButton("Edit…", "Edit drive " + coerceNumber(d.id), function () {
+            attrDialog("Edit drive " + coerceNumber(d.id), driveAttrFields(d), libCfgPath(theLib.id, "/drives/" + encodeURIComponent(coerceNumber(d.id))));
+          }),
+          editButton("Delete…", "Delete drive " + coerceNumber(d.id), function () { deleteDrive(theLib, d); }),
+        ];
+      } : null)] }));
+      view.appendChild(mk("h4", { class: "cfg-h", text: "Slots (library_contents." + cfgView.selected + ")" }));
+      if (editable) {
+        view.appendChild(mk("div", { class: "drive-actions", children: [
+          editButton("Add slots…", "Add storage slots", function () { slotsAddDialog(theLib.id, "slot"); }),
+          editButton("Add MAP slots…", "Add MAP slots", function () { slotsAddDialog(theLib.id, "map"); }),
+        ] }));
+      }
       if (!slots) {
         view.appendChild(mk("p", { class: "muted", text: "No slot data." }));
       } else {
@@ -1816,7 +1857,13 @@
             return "drive slot " + coerceNumber(d && d.number) + " (" + String(d && d.barcode) + ")";
           }).join(", ") + "." }));
         }
-        view.appendChild(mk("div", { class: "slot-scroll", children: [configSlotsTable(slots)] }));
+        view.appendChild(mk("div", { class: "slot-scroll", children: [configSlotsTable(slots, editable ? function (kind, sl) {
+          var name = (kind === "map" ? "MAP " : "slot ") + coerceNumber(sl.number);
+          return [
+            editButton("Set…", "Set " + name, function () { slotDialog(theLib.id, kind, sl, slots); }),
+            editButton("Delete…", "Delete " + name, function () { slotDeleteDialog(theLib.id, kind, sl, slots); }),
+          ];
+        } : null)] }));
       }
     }
     var standalone = coerceArray(lastCfg.config && lastCfg.config.standalone_drives);
@@ -1825,6 +1872,461 @@
       view.appendChild(mk("div", { class: "cfg-scroll", children: [configDrivesTable({ drives: standalone })] }));
     }
     view.appendChild(personalitiesBlock(lastCfg.personalities));
+  }
+
+  /* ---- configuration editing (plan 4.2) --------------------------------
+   * Each edit goes to a write route, which stages it on the daemon; the
+   * stage panel shows the files it would write as a diff, a dry run says
+   * what the apply does (units, libraries offline, #43 warnings, findings),
+   * and the apply runs only after that. Editing is offered only while
+   * capabilities.writes is "ok".                                         */
+  function cfgEditable() {
+    return !!lastCfg && writesEditable(lastCfg.caps) && mutationsEnabled;
+  }
+
+  // stageId is the stage edits add to, if it belongs to this node.
+  function stageId() {
+    return cfgStage && cfgStage.gen === NodeState.generation ? cfgStage.id : "";
+  }
+
+  function cfgPath(suffix) { return "/api/v1/config" + suffix; }
+
+  function libCfgPath(libId, suffix) {
+    return cfgPath("/libraries/" + encodeURIComponent(coerceNumber(libId)) + (suffix || ""));
+  }
+
+  // formDialog opens a dialog built for one edit. o is {title, intro,
+  // fields: [{name, label, value, type ("text" | "number" | "select"),
+  // options: [[value, label]], placeholder}], submit, onSubmit(values, done)},
+  // where done(err) closes it on success or shows err. The dialog is removed
+  // when it closes.
+  function formDialog(o) {
+    var dlg = mk("dialog", { attrs: { "aria-label": o.title } });
+    var form = mk("form", { attrs: { method: "dialog" } });
+    form.appendChild(mk("h3", { text: o.title, attrs: { style: "margin:0 0 6px" } }));
+    if (o.intro) { form.appendChild(mk("p", { class: "muted", text: o.intro, attrs: { style: "margin:0 0 12px" } })); }
+    var grid = mk("div", { class: "form-grid" });
+    var inputs = {};
+    coerceArray(o.fields).forEach(function (f) {
+      var input;
+      if (f.type === "select") {
+        input = mk("select");
+        coerceArray(f.options).forEach(function (opt) {
+          input.appendChild(mk("option", { text: opt[1], attrs: { value: opt[0] } }));
+        });
+        input.value = String(f.value == null ? "" : f.value);
+      } else {
+        input = mk("input", { attrs: { type: f.type === "number" ? "number" : "text", autocomplete: "off", spellcheck: "false" } });
+        if (f.placeholder) { input.placeholder = f.placeholder; }
+        input.value = String(f.value == null ? "" : f.value);
+      }
+      inputs[f.name] = input;
+      grid.appendChild(mk("label", { children: [document.createTextNode(f.label), input] }));
+    });
+    var err = mk("p", { class: "dialog-error", attrs: { role: "alert" } });
+    grid.appendChild(err);
+    form.appendChild(grid);
+    var ok = mk("button", { class: "btn primary", text: o.submit || "Stage", attrs: { type: "button" } });
+    var cancel = mk("button", { class: "btn", text: "Cancel", attrs: { value: "cancel" } });
+    form.appendChild(mk("div", { class: "dialog-buttons", children: [cancel, ok] }));
+    dlg.appendChild(form);
+    dlg.addEventListener("close", function () { if (dlg.parentNode) { dlg.parentNode.removeChild(dlg); } });
+    ok.addEventListener("click", function () {
+      var values = {};
+      Object.keys(inputs).forEach(function (k) { values[k] = inputs[k].value; });
+      err.textContent = "";
+      ok.disabled = true;
+      o.onSubmit(values, function (e) {
+        ok.disabled = false;
+        if (e) { err.textContent = e.message || String(e); } else if (dlg.open) { dlg.close(); }
+      });
+    });
+    document.body.appendChild(dlg);
+    if (dlg.showModal) { dlg.showModal(); }
+    return dlg;
+  }
+
+  // cfgFailed handles a failed staging or apply request (applyErrorAction)
+  // and returns the message to show where it was made.
+  function cfgFailed(e) {
+    switch (applyErrorAction(e)) {
+      case "readonly":
+        // The gate closed: the banner, re-read, says why.
+        refreshConfig(NodeState.generation, currentAbort ? currentAbort.signal : undefined);
+        return "Read-only now: " + e.message;
+      case "reload":
+        if (e.code === "stage_not_found") {
+          cfgStage = null;
+          renderStage();
+          return "The pending changes expired or the daemon restarted; make them again.";
+        }
+        return e.message;
+      default:
+        return e.message;
+    }
+  }
+
+  // stageEdit sends one edit. On success the stage is the answer and its
+  // dry run, if any, no longer stands.
+  function stageEdit(method, path, body, done) {
+    var gen = NodeState.generation;
+    if (!cfgEditable()) { done(new Error("Editing is not available now.")); return; }
+    api(path, { method: method, body: body }).then(function (res) {
+      if (isStale(gen, NodeState.generation)) { return; }
+      cfgStage = { id: String(res && res.stage || ""), data: res || {}, gen: gen, plan: null, result: null };
+      done(null);
+      renderStage();
+    }).catch(function (e) {
+      if (isStale(gen, NodeState.generation)) { return; }
+      done(new Error(cfgFailed(e)));
+    });
+  }
+
+  function attrDialog(title, fields, path) {
+    formDialog({
+      title: title,
+      intro: "An emptied field is removed from device.conf.",
+      fields: fields.map(function (f) { return { name: f.key, label: f.key, value: f.value }; }),
+      onSubmit: function (values, done) {
+        var attrs = buildAttrPatch(fields, values);
+        if (!attrs) { done(new Error("Nothing changed.")); return; }
+        var body = { attrs: attrs };
+        if (stageId()) { body.stage = stageId(); }
+        stageEdit("PATCH", path, body, done);
+      },
+    });
+  }
+
+  // cartridgesOf lists the barcodes a library holds in its slots and MAP,
+  // live when the changer was read.
+  function cartridgesOf(slots) {
+    var out = [];
+    [slots && slots.slots, slots && slots.maps].forEach(function (arr) {
+      coerceArray(arr).forEach(function (sl) {
+        var bc = slotBarcode(slots, sl);
+        if (bc) { out.push(bc); }
+      });
+    });
+    coerceArray(slots && slots.drives).forEach(function (d) { if (d && d.barcode) { out.push(String(d.barcode)); } });
+    return out;
+  }
+
+  // slotBarcode is what a slot holds: the live barcode when the changer
+  // was read (what the stage edits), else library_contents'.
+  function slotBarcode(slots, sl) {
+    if (!sl) { return ""; }
+    if (slots && slots.live && sl.live_barcode != null) { return String(sl.live_barcode); }
+    return String(sl.barcode || "");
+  }
+
+  function deleteLibrary(lib, slots) {
+    var carts = cartridgesOf(slots);
+    var msg = "Library " + coerceNumber(lib.id) + ", its " + coerceArray(lib.drives).length + " drives and library_contents." + coerceNumber(lib.id) + " are removed when the change is applied.";
+    if (carts.length) { msg += " Its " + carts.length + " cartridges stay in their home, out of any library (shelf)."; }
+    openConfirm("Delete library " + coerceNumber(lib.id), msg, "Stage delete", function () {
+      var body = { dispositions: carts.map(function (bc) { return { barcode: bc, to: "shelf" }; }) };
+      if (stageId()) { body.stage = stageId(); }
+      stageEdit("DELETE", libCfgPath(lib.id), body, function (e) { if (e) { configStatus.error(e.message); } });
+    });
+  }
+
+  function deleteDrive(lib, d) {
+    openConfirm("Delete drive " + coerceNumber(d.id), "Drive " + coerceNumber(d.id) + " (drive slot " + coerceNumber(d.slot) + ") is removed when the change is applied. A loaded drive needs a forced apply, which puts its cartridge back first.", "Stage delete", function () {
+      var body = stageId() ? { stage: stageId() } : {};
+      stageEdit("DELETE", libCfgPath(lib.id, "/drives/" + encodeURIComponent(coerceNumber(d.id))), body, function (e) { if (e) { configStatus.error(e.message); } });
+    });
+  }
+
+  function slotDialog(libId, kind, sl, slots) {
+    var name = (kind === "map" ? "MAP " : "Slot ") + coerceNumber(sl.number);
+    formDialog({
+      title: "Set " + name,
+      intro: "The cartridge library_contents puts here. Empty it with a blank barcode.",
+      fields: [{ name: "barcode", label: "Barcode", value: slotBarcode(slots, sl) }],
+      onSubmit: function (v, done) {
+        var body;
+        try { body = buildSlotPatch(stageId(), kind, v.barcode); } catch (e) { done(e); return; }
+        stageEdit("PATCH", libCfgPath(libId, "/slots/" + encodeURIComponent(coerceNumber(sl.number))), body, done);
+      },
+    });
+  }
+
+  function slotDeleteDialog(libId, kind, sl, slots) {
+    var name = (kind === "map" ? "MAP " : "Slot ") + coerceNumber(sl.number);
+    var bc = slotBarcode(slots, sl);
+    var fields = [];
+    if (bc) {
+      fields.push({ name: "to", label: "Where " + bc + " goes", type: "select", value: "shelf",
+        options: [["shelf", "Out of the library (stays in its home)"], ["slot", "To another storage slot"], ["export", "To a MAP slot"]] });
+      fields.push({ name: "slot", label: "Storage slot (when moving to one)", type: "number", value: "" });
+    }
+    formDialog({
+      title: "Delete " + name,
+      intro: bc ? name + " holds " + bc + "." : name + " is empty.",
+      fields: fields,
+      submit: "Stage delete",
+      onSubmit: function (v, done) {
+        var body;
+        try { body = buildSlotDelete(stageId(), kind, bc, bc ? { to: v.to, slot: v.slot } : null); } catch (e) { done(e); return; }
+        stageEdit("DELETE", libCfgPath(libId, "/slots/" + encodeURIComponent(coerceNumber(sl.number))), body, done);
+      },
+    });
+  }
+
+  function slotsAddDialog(libId, kind) {
+    formDialog({
+      title: kind === "map" ? "Add MAP slots" : "Add storage slots",
+      intro: "Empty slots, numbered after the last. The personality's window limits apply.",
+      fields: [{ name: "count", label: "How many", type: "number", value: "1" }],
+      onSubmit: function (v, done) {
+        var body;
+        try { body = buildSlotsAdd(stageId(), kind, v.count); } catch (e) { done(e); return; }
+        stageEdit("POST", libCfgPath(libId, "/slots"), body, done);
+      },
+    });
+  }
+
+  function editButton(text, label, onClick) {
+    var b = mk("button", { class: "btn sm", text: text, attrs: { type: "button", "aria-label": label } });
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  /* ---- stage panel ----------------------------------------------------- */
+  var stageStatus = PanelStatus("stage-status");
+  var forceTimer = null;
+
+  function diffBlock(row) {
+    var pre = mk("pre", { class: "diff" });
+    if (!row.hunks.length) { pre.appendChild(mk("span", { class: "diff-ctx", text: "(no line changes)\n" })); }
+    row.hunks.forEach(function (h) {
+      pre.appendChild(mk("span", { class: "diff-hunk", text: "@@ -" + h.oldStart + " +" + h.newStart + " @@\n" }));
+      h.lines.forEach(function (l) {
+        var cls = l.op === "+" ? "diff-add" : (l.op === "-" ? "diff-del" : "diff-ctx");
+        pre.appendChild(mk("span", { class: cls, text: (l.op === "=" ? " " : l.op) + l.text + "\n" }));
+      });
+    });
+    return pre;
+  }
+
+  function listBlock(title, items, cls) {
+    if (!items.length) { return null; }
+    return mk("div", { class: "stage-block " + (cls || ""), children: [
+      mk("h4", { class: "cfg-h", text: title }),
+      mk("ul", { children: items.map(function (t) { return mk("li", { class: cls === "units" ? "mono" : "", text: t }); }) }),
+    ] });
+  }
+
+  function renderPlan(box, plan) {
+    if (!plan) { return; }
+    if (plan.error) { box.appendChild(mk("p", { class: "cfg-notice " + (plan.force ? "warn" : "error"), text: plan.error })); }
+    [
+      listBlock("Read before applying", plan.warnings, "warnings"),
+      listBlock("Offline to hosts", plan.offline, "offline"),
+      listBlock("Units stopped and started", plan.units, "units"),
+      listBlock("Applied without a restart", plan.notes, ""),
+    ].forEach(function (b) { if (b) { box.appendChild(b); } });
+    if (plan.findings.length) {
+      var head = mk("thead", { children: [mk("tr", { children: ["", "Library", "Code", "Finding", "Elements"].map(function (h) { return mk("th", { text: h }); }) })] });
+      box.appendChild(mk("h4", { class: "cfg-h", text: "Findings" }));
+      box.appendChild(mk("div", { class: "media-scroll", children: [mk("table", { class: "slot-table findings-table", children: [head, mk("tbody", { children: plan.findings.map(function (r) {
+        return mk("tr", { class: "finding " + r.severity, children: [
+          mk("td", { children: [mk("span", { class: "badge sev-" + r.severity, text: r.severity === "error" ? "blocking" : "warning" })] }),
+          mk("td", { class: "mono", text: r.library ? String(r.library) : "—" }),
+          mk("td", { class: "mono", text: r.code }),
+          mk("td", { text: r.message }),
+          mk("td", { class: "mono", text: r.where }),
+        ] });
+      }) })] })] }));
+    }
+    if (plan.canApply && !plan.units.length) {
+      box.appendChild(mk("p", { class: "muted", text: "No unit restarts." }));
+    }
+  }
+
+  // renderResult shows what a failed apply reported: the unit that failed
+  // and its journal, and the cartridges a rollback left aside.
+  function renderResult(box, res) {
+    if (!res) { return; }
+    var lines = [];
+    if (res.failed_unit) { lines.push("Failed unit: " + String(res.failed_unit)); }
+    coerceArray(res.orphaned_media).forEach(function (b) { lines.push("Created, kept in its home, in no slot: " + String(b)); });
+    coerceArray(res.unplaced).forEach(function (b) { lines.push("No slot was free, kept on the shelf: " + String(b)); });
+    coerceArray(res.forced_unloads).forEach(function (u) {
+      lines.push("Unloaded from library " + coerceNumber(u.library) + " drive " + coerceNumber(u.drive) + (u.barcode ? ": " + String(u.barcode) : ""));
+    });
+    var b = listBlock("Last apply", lines, "result");
+    if (b) { box.appendChild(b); }
+    if (res.journal_tail) { box.appendChild(mk("pre", { class: "diff", text: String(res.journal_tail) })); }
+  }
+
+  function renderStage() {
+    var panel = $("stage-panel"), box = $("stage-view");
+    if (!panel || !box) { return; }
+    if (cfgStage && cfgStage.gen !== NodeState.generation) { cfgStage = null; }
+    if (!cfgStage) {
+      panel.hidden = true;
+      clear(box);
+      return;
+    }
+    panel.hidden = false;
+    clear(box);
+    var files = stageFileRows(cfgStage.data, lastCfg && lastCfg.config && lastCfg.config.files);
+    $("stage-count").textContent = "(" + files.length + " file" + (files.length === 1 ? "" : "s") + ")";
+    if (!files.length) { box.appendChild(mk("p", { class: "muted", text: "The edits so far change no file." })); }
+    files.forEach(function (row) {
+      box.appendChild(mk("h4", { class: "cfg-h", children: [
+        mk("span", { class: "mono", text: row.name }), document.createTextNode(" "),
+        mk("span", { class: "badge", text: row.kind === "create" ? "new" : (row.kind === "delete" ? "deleted" : "changed") }),
+      ] }));
+      if (row.kind !== "delete") { box.appendChild(diffBlock(row)); }
+    });
+    var disp = coerceArray(cfgStage.data.dispositions).map(function (d) {
+      return String(d.barcode) + " (library " + coerceNumber(d.library) + "): " +
+        (d.to === "slot" ? "to slot " + coerceNumber(d.slot) : d.to === "export" ? "to a MAP slot" : "out of the library");
+    });
+    var db = listBlock("Cartridges leaving their element", disp, "");
+    if (db) { box.appendChild(db); }
+    box.appendChild(mk("p", { class: "muted", text: "library_contents is written with the live placement, so the diff includes cartridges moved since the file was written." }));
+
+    var editable = cfgEditable();
+    var check = editButton("Check", "Check the pending changes with the apply helper", function () { checkStage(); });
+    var plan = cfgStage.plan;
+    var apply = editButton(plan && plan.force ? "Apply with unload…" : "Apply…", "Apply the pending changes", function () { applyStage(); });
+    apply.className = "btn sm primary";
+    apply.disabled = !editable || !plan || !(plan.canApply || plan.force);
+    check.disabled = !editable || !files.length;
+    var discard = editButton("Discard", "Discard the pending changes", function () {
+      cfgStage = null;
+      renderStage();
+    });
+    box.appendChild(mk("div", { class: "drive-actions", children: [check, apply, discard] }));
+    if (!editable) { box.appendChild(mk("p", { class: "muted", text: "Read-only now: see the banner above." })); }
+    renderPlan(box, plan);
+    renderResult(box, cfgStage.result);
+  }
+
+  // checkStage asks the helper for a plan of the stage (a dry run).
+  function checkStage(then) {
+    if (!cfgStage) { return; }
+    var gen = NodeState.generation, st = cfgStage;
+    stageStatus.loading();
+    api(cfgPath("/apply"), { method: "POST", body: { stage: st.id, dry_run: true } }).then(function (res) {
+      if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      st.plan = planSummary(res);
+      st.result = null;
+      stageStatus.ok();
+      renderStage();
+      if (then) { then(); }
+    }).catch(function (e) {
+      if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      st.plan = e.body && e.body.result ? planSummary(e.body) : null;
+      if (applyErrorAction(e) !== "force") {
+        stageFailed(e);
+        renderStage();
+        return;
+      }
+      // A drive_loaded plan is a plan: the force dialog offers its apply.
+      stageStatus.ok();
+      renderStage();
+      if (then) { then(); }
+    });
+  }
+
+  // stageFailed reports a failed check or apply in the stage panel.
+  function stageFailed(e) {
+    var action = applyErrorAction(e);
+    var msg = cfgFailed(e);
+    if (action === "reload" && cfgStage) {
+      stageStatus.error(msg);
+      var region = $("stage-status");
+      var reload = editButton("Reload", "Reload the configuration and drop the pending changes", function () {
+        cfgStage = null;
+        renderStage();
+        refresh();
+      });
+      if (region) { region.appendChild(reload); }
+      return;
+    }
+    stageStatus.error(msg);
+  }
+
+  function applyStage() {
+    var plan = cfgStage && cfgStage.plan;
+    if (!plan) { return; }
+    if (plan.force) { openForceDialog(plan.force); return; }
+    var parts = [];
+    parts.push(plan.units.length ? plan.units.length + (plan.units.length === 1 ? " unit stops and starts." : " units stop and start.") : "No unit restarts.");
+    if (plan.offline.length) { parts.push(plan.offline.join(" ")); }
+    if (plan.warnings.length) { parts.push("Read the " + (plan.warnings.length === 1 ? "warning" : plan.warnings.length + " warnings") + " above first."); }
+    openConfirm("Apply the pending changes", parts.join(" "), "Apply", function () { doApply(""); });
+  }
+
+  // openForceDialog offers the forced apply of a drive_loaded plan: the
+  // drives it unloads and how long its token lasts.
+  function openForceDialog(force) {
+    var dlg = mk("dialog", { class: "wide", attrs: { "aria-label": "Apply with unload" } });
+    var form = mk("form", { attrs: { method: "dialog" } });
+    form.appendChild(mk("h3", { text: "Apply with unload", attrs: { style: "margin:0 0 6px" } }));
+    form.appendChild(mk("p", { text: force.message }));
+    form.appendChild(mk("p", { class: "muted", text: "The apply puts each loaded cartridge back in its slot, then stops and restarts these drives:" }));
+    form.appendChild(mk("ul", { children: force.drives.map(function (u) { return mk("li", { class: "mono", text: u }); }) }));
+    var left = mk("p", { class: "mono" });
+    form.appendChild(left);
+    var ok = mk("button", { class: "btn primary", text: "Unload and apply", attrs: { type: "button" } });
+    form.appendChild(mk("div", { class: "dialog-buttons", children: [mk("button", { class: "btn", text: "Cancel", attrs: { value: "cancel" } }), ok] }));
+    dlg.appendChild(form);
+    function tick() {
+      var sec = forceRemaining(force.expires, Date.now());
+      left.textContent = sec ? "The confirmation expires in " + fmtCountdown(sec) + "." : "The confirmation expired: check again.";
+      ok.disabled = !sec;
+    }
+    tick();
+    if (forceTimer) { clearInterval(forceTimer); }
+    forceTimer = setInterval(tick, 1000);
+    dlg.addEventListener("close", function () {
+      clearInterval(forceTimer);
+      forceTimer = null;
+      if (dlg.parentNode) { dlg.parentNode.removeChild(dlg); }
+    });
+    ok.addEventListener("click", function () {
+      dlg.close();
+      doApply(force.token);
+    });
+    document.body.appendChild(dlg);
+    if (dlg.showModal) { dlg.showModal(); }
+  }
+
+  // doApply applies the stage, expecting the units of its dry run (the
+  // daemon sends them). plan_required means the stage changed since: it is
+  // checked again for the user to confirm afresh.
+  function doApply(token) {
+    if (!cfgStage) { return; }
+    var gen = NodeState.generation, st = cfgStage;
+    var body = { stage: st.id };
+    if (token) { body.force_token = token; }
+    stageStatus.loading();
+    api(cfgPath("/apply"), { method: "POST", body: body }).then(function (res) {
+      if (isStale(gen, NodeState.generation)) { return; }
+      cfgStage = null;
+      renderStage();
+      var n = coerceArray(res && res.plan && res.plan.units).length;
+      toast("Applied" + (n ? ": " + n + (n === 1 ? " unit" : " units") + " restarted" : ""));
+      var warn = coerceArray(res && res.warnings).concat(coerceArray(res && res.placement_drift)).map(String);
+      if (warn.length) { configStatus.warn("Applied, with warnings: " + warn.join("; ")); }
+      refresh();
+    }).catch(function (e) {
+      if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      st.plan = null;
+      st.result = e.body && e.body.result ? e.body : null;
+      if (applyErrorAction(e) === "replan") {
+        var why = e.message;
+        checkStage(function () { stageStatus.error(why.replace(/\.?$/, ".") + " Checked again: review the plan and apply."); });
+        return;
+      }
+      stageFailed(e);
+      renderStage();
+    });
   }
 
   function renderFindings(problems, result) {
@@ -1900,6 +2402,7 @@
       if (isStale(gen, NodeState.generation)) { return; }
       lastCfg = { caps: r[0] || {}, config: r[1] || {}, personalities: r[2] || {} };
       renderConfig();
+      renderStage();
       setPanelGrey("config-view", false);
       configStatus.ok();
       return refreshConfigLibrary(gen, signal);
@@ -2022,6 +2525,12 @@
     setPanelGrey("config-view", true);
     setPanelGrey("config-findings", true);
     ["media-create-dialog", "media-edit-dialog", "import-dialog", "move-dialog", "confirm-dialog", "stats-dialog"].forEach(closeDialog);
+    // The pending changes were staged on the previous node; their dialogs
+    // (built per edit) go with them.
+    stageStatus.grey();
+    cfgStage = null;
+    renderStage();
+    Array.prototype.forEach.call(document.querySelectorAll("dialog[open]"), function (d) { if (d.close) { d.close(); } });
   }
 
   // Probe a candidate node WITHOUT mutating NodeState. Resolves true/false.
