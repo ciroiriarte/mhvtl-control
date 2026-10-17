@@ -342,6 +342,10 @@
   // (plan 3.1: the socket unit, never enabled by packaging).
   var HELPER_ENABLE = "systemctl enable --now mhvtl-control-apply.socket";
 
+  // HELPER_STATE is the apply helper's state directory (plan 3.1:
+  // StateDirectory=mhvtl-control-apply).
+  var HELPER_STATE = "/var/lib/mhvtl-control-apply";
+
   // capabilityNotice turns GET /config/capabilities into the configuration
   // view's banner: why the configuration is read-only here and what enables
   // editing. It never suggests that this dashboard can write: there are no
@@ -360,9 +364,21 @@
         lines.push("Read-only. The apply helper refuses to run while /etc/mhvtl/mhvtl-control.env exists.");
         lines.push("Move it to /etc/mhvtl-control/mhvtl-control.env and restart mhvtl-control.");
         break;
+      case "in_progress":
+        lines.push("An apply is running now; the configuration shown may change when it ends.");
+        break;
       case "incomplete_apply":
         tone = "warn";
         lines.push("Read-only. An earlier apply did not finish; the apply helper recovers it before any new change.");
+        break;
+      case "intent_unreadable":
+        tone = "error";
+        lines.push("An earlier apply died and left " + HELPER_STATE + "/intent.json, which the apply helper cannot read. It refuses every change until it is recovered by hand.");
+        lines.push("Restore the files from the copies under " + HELPER_STATE + "/rollback, then remove " + HELPER_STATE + "/intent.json.");
+        break;
+      case "unreachable":
+        tone = "warn";
+        lines.push("Read-only. The apply helper's socket exists, but the helper did not answer: " + String(caps.helper_error || "no reason given") + ".");
         break;
       default:
         lines.push("Read-only. Editing the configuration needs the privileged apply helper, mhvtl-control-apply, which is not enabled on this host.");

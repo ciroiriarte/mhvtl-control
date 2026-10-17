@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +14,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"mhvtl-control/internal/applyclient"
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/hostids"
@@ -79,15 +83,62 @@ func (p CapabilityPaths) withDefaults() CapabilityPaths {
 	return p
 }
 
-// Values of capabilitiesDTO.Helper. The fourth, incomplete_apply, comes
-// from the helper's hello (plan 3.2 intent.go) once the helper exists: the
-// daemon cannot see the helper's state directory, which its unit masks
-// (plan 2.1).
+// Values of capabilitiesDTO.Helper. With a helper client configured they
+// come from the helper's hello (plan 3.2 intent.go): the daemon cannot see
+// the helper's state directory, which its unit masks (plan 2.1).
 const (
-	helperAbsent  = "absent"
-	helperPresent = "present"
-	helperLegacy  = "legacy_env_blocks"
+	helperAbsent      = "absent"
+	helperPresent     = "present"
+	helperLegacy      = "legacy_env_blocks"
+	helperInProgress  = "in_progress"
+	helperIncomplete  = "incomplete_apply"
+	helperUnreadable  = "intent_unreadable"
+	helperUnreachable = "unreachable"
 )
+
+// helloStates maps the helper's hello states to capabilitiesDTO.Helper.
+var helloStates = map[string]string{
+	applyclient.Absent:           helperAbsent,
+	applyclient.Present:          helperPresent,
+	applyclient.LegacyEnv:        helperLegacy,
+	applyclient.InProgress:       helperInProgress,
+	applyclient.Incomplete:       helperIncomplete,
+	applyclient.IntentUnreadable: helperUnreadable,
+}
+
+// helloTTL is how long a hello answers GET /config/capabilities (plan 4.1):
+// each hello starts a helper instance, as the socket unit runs one per
+// connection.
+const helloTTL = 2 * time.Second
+
+// helloTimeout bounds one hello.
+const helloTimeout = 5 * time.Second
+
+// helloCache holds the last hello. One request asks at a time; the others
+// wait for its answer.
+type helloCache struct {
+	mu    sync.Mutex
+	at    time.Time
+	state string
+	err   error
+}
+
+// helperState returns the helper's hello state, asking it at most every
+// helloTTL.
+func (s *Server) helperState(ctx context.Context) (string, error) {
+	c := &s.hello
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := s.now()
+	if !c.at.IsZero() && now.Sub(c.at) < helloTTL {
+		return c.state, c.err
+	}
+	ctx, cancel := context.WithTimeout(ctx, helloTimeout)
+	defer cancel()
+	c.state, c.err = s.cfg.Helper.Hello(ctx)
+	c.at = now
+	return c.state, c.err
+}
 
 // Values of capabilitiesDTO.Writes.
 const (
@@ -99,9 +150,15 @@ const (
 // capabilitiesDTO says whether configuration writes could be accepted, and
 // what the host offers them.
 type capabilitiesDTO struct {
-	// Helper is the apply helper's state: absent, present, or present but
-	// refusing while the legacy options file exists (legacy_env_blocks).
+	// Helper is the apply helper's state: absent, present, present but
+	// refusing while the legacy options file exists (legacy_env_blocks),
+	// running an apply (in_progress), holding an apply that died and that
+	// it recovers first (incomplete_apply), or one whose intent it cannot
+	// read and that needs recovering by hand (intent_unreadable); with the
+	// socket there but no usable answer, unreachable.
 	Helper string `json:"helper"`
+	// HelperError says why the helper is unreachable.
+	HelperError string `json:"helper_error,omitempty"`
 	// Writes is the daemon's own gate on the write routes (plan 4.1): no
 	// helper socket (helper_absent), else a non-loopback listen without TLS
 	// (tls_required), else ok. The helper may still refuse ("helper").
@@ -115,10 +172,20 @@ type capabilitiesDTO struct {
 	PerLibraryHomeMedia bool `json:"per_library_home_media"`
 }
 
-func (s *Server) capabilities() capabilitiesDTO {
+func (s *Server) capabilities(ctx context.Context) capabilitiesDTO {
 	p := s.cfg.Capabilities.withDefaults()
 	c := capabilitiesDTO{Helper: helperAbsent}
-	if fi, err := os.Lstat(p.HelperSocket); err == nil && fi.Mode()&fs.ModeSocket != 0 {
+	if s.cfg.Helper != nil {
+		state, err := s.helperState(ctx)
+		switch h, ok := helloStates[state]; {
+		case err != nil:
+			c.Helper, c.HelperError = helperUnreachable, err.Error()
+		case ok:
+			c.Helper = h
+		default:
+			c.Helper, c.HelperError = helperUnreachable, fmt.Sprintf("unknown state %q", state)
+		}
+	} else if fi, err := os.Lstat(p.HelperSocket); err == nil && fi.Mode()&fs.ModeSocket != 0 {
 		c.Helper = helperPresent
 		if _, err := os.Lstat(p.LegacyEnv); err == nil {
 			c.Helper = helperLegacy
@@ -142,8 +209,8 @@ func (s *Server) capabilities() capabilitiesDTO {
 	return c
 }
 
-func (s *Server) handleConfigCapabilities(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.capabilities())
+func (s *Server) handleConfigCapabilities(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.capabilities(r.Context()))
 }
 
 // configSnapshot is the configuration in force: the parsed model and the
