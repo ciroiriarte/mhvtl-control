@@ -27,7 +27,7 @@ var editableKeys = []struct {
 	}},
 	{"VERBOSE", regexp.MustCompile(`^[0-3]$`).MatchString},
 	{"VTL_DEBUG", regexp.MustCompile(`^[01]$`).MatchString},
-	{homeKey, func(v string) bool { return validate.HomeProblem(v) == "" }},
+	{homeKey, func(v string) bool { return homeProblem(v) == "" }},
 }
 
 const homeKey = "MHVTL_HOME_PATH"
@@ -123,6 +123,34 @@ func deriveMhvtlConf(cur, next []byte) error {
 	return nil
 }
 
+// homeProblem is validate.HomeProblem on home as written and as it
+// resolves: the longest ancestor of home that exists, with its symbolic
+// links followed, then the rest. A home through a link into /usr, say,
+// is refused like /usr itself. A link planted after the check is not
+// caught; the home's parents are root's to write.
+func homeProblem(home string) string {
+	if p := validate.HomeProblem(home); p != "" {
+		return p
+	}
+	dir, rest := home, ""
+	for {
+		if _, err := os.Lstat(dir); err == nil {
+			break
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = filepath.Dir(dir)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "cannot resolve " + dir + ": " + err.Error()
+	}
+	resolved = filepath.Join(resolved, rest)
+	if p := validate.HomeProblem(resolved); p != "" {
+		return "resolves to " + resolved + ", " + p
+	}
+	return ""
+}
+
 // checkHomes applies the home rules of plan 4.3 (AC 30): a library that
 // stays in device.conf may change its media home, through its own "Home
 // directory" or MHVTL_HOME_PATH, only when the old home holds no cartridge
@@ -146,7 +174,7 @@ func checkHomes(cur, next config.Inventory, curDefault, nextDefault string) erro
 			}
 		}
 		if nl.HomeDir != "" && (cl == nil || cl.HomeDir != nl.HomeDir) {
-			if p := validate.HomeProblem(nl.HomeDir); p != "" {
+			if p := homeProblem(nl.HomeDir); p != "" {
 				return refuse(ErrHomeForbidden, "library %d: Home directory %q cannot be a media home: %s", nl.ID, nl.HomeDir, p)
 			}
 		}
