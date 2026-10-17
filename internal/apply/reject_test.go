@@ -362,6 +362,8 @@ func TestMhvtlConfDerived(t *testing.T) {
 		{"CAPACITY=500", "CAPACITY='500'", ErrMhvtlConfDerived},
 		{"CAPACITY=500", "CAPACITY=500 ", ErrMhvtlConfDerived},
 		{"CAPACITY=500", "CAPACITY=0", ErrMhvtlConfValue},
+		{"CAPACITY=500", "CAPACITY=0600", ErrMhvtlConfValue},
+		{"CAPACITY=500", "CAPACITY=00", ErrMhvtlConfValue},
 		{"CAPACITY=500", "CAPACITY=4294967297", ErrMhvtlConfValue},
 		{"CAPACITY=500", "CAPACITY=99999999999999999999", ErrMhvtlConfValue},
 		{"CAPACITY=500", "CAPACITY=5e2", ErrMhvtlConfValue},

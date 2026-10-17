@@ -23,7 +23,7 @@ var editableKeys = []struct {
 }{
 	{"CAPACITY", func(v string) bool {
 		n, err := strconv.ParseUint(v, 10, 64)
-		return digitsRE.MatchString(v) && err == nil && n >= 1 && n <= maxCapacityMB
+		return capacityRE.MatchString(v) && err == nil && n <= maxCapacityMB
 	}},
 	{"VERBOSE", regexp.MustCompile(`^[0-3]$`).MatchString},
 	{"VTL_DEBUG", regexp.MustCompile(`^[01]$`).MatchString},
@@ -32,7 +32,12 @@ var editableKeys = []struct {
 
 const homeKey = "MHVTL_HOME_PATH"
 
-var digitsRE = regexp.MustCompile(`^[0-9]+$`)
+// capacityRE is a positive decimal without leading zeros: one spelling
+// per value. mktape reads it as decimal (sscanf PRId64, usr/cmd/mktape.c:164
+// at d65d25f,
+// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/mktape.c#L164),
+// but shell arithmetic would read 0600 as octal.
+var capacityRE = regexp.MustCompile(`^[1-9][0-9]*$`)
 
 // maxCapacityMB bounds CAPACITY, in MiB, as maxSizeMB in internal/api
 // bounds a media request: mktape multiplies it by 2^20 in 64 bits.
