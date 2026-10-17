@@ -28,8 +28,10 @@ type stopEnv struct {
 	inv    map[int]changer.Inventory
 	loaded map[string]bool // by drive serial
 	onStop func(unit string)
-	failOn string // systemctl stop of this unit fails
+	failOn string // systemctl stop of this unit fails, after onStop
 	onRES  func()
+	// seq are successive ActiveState replies of a unit, before state.
+	seq map[string][]string
 }
 
 func newStopEnv(t *testing.T) *stopEnv {
@@ -101,15 +103,19 @@ func (e *stopEnv) systemctl(_ context.Context, args ...string) ([]byte, error) {
 	switch args[0] {
 	case "stop":
 		e.calls = append(e.calls, "stop "+args[1])
+		e.onStop(args[1])
 		if args[1] == e.failOn {
 			return nil, errors.New("exit status 1")
 		}
-		e.onStop(args[1])
 		return nil, nil
 	case "show":
 		unit := args[3]
 		switch args[1] {
 		case "--property=ActiveState":
+			if q := e.seq[unit]; len(q) > 0 {
+				e.seq[unit] = q[1:]
+				return []byte(q[0] + "\n"), nil
+			}
 			if s, ok := e.state[unit]; ok {
 				return []byte(s + "\n"), nil
 			}
@@ -574,6 +580,50 @@ func TestGuardedInactiveLibraryLoadedDrive(t *testing.T) {
 			if c == "TUR DRV12" {
 				t.Errorf("%s: TUR of an inactive vtltape", mode)
 			}
+		}
+	}
+}
+
+// TestGuardedStopSettles: after a failed stop only inactive or failed
+// count as stopped. A unit deactivating is polled until it leaves; one
+// still deactivating after the bound counts as stopped, and the library's
+// .persist is not trusted; any other state is a failed stop.
+func TestGuardedStopSettles(t *testing.T) {
+	const lib = "vtllibrary@10.service"
+	run := func(seq []string, state string) (*LibStop, error) {
+		e := newStopEnv(t)
+		e.failOn = lib
+		// The first ActiveState is prepare's; the rest answer settled.
+		e.seq = map[string][]string{lib: append([]string{"active"}, seq...)}
+		if state != "" {
+			e.state[lib] = state
+		}
+		e.onStop = func(u string) {
+			if u == lib {
+				os.WriteFile(filepath.Join(e.dir, "library_contents.10.persist"), []byte("\nSlot 1: P00001L8\n"), 0o644)
+			}
+		}
+		sp := e.stopper(ModeApply)
+		sp.poll, sp.wait = time.Millisecond, 20*time.Millisecond
+		out, err := sp.guardedStop(context.Background(), []StopLib{e.lib(10)})
+		return out[0], err
+	}
+
+	ls, err := run([]string{"deactivating", "deactivating"}, "inactive")
+	if err != nil || len(ls.Stopped) != 1 || len(ls.Deactivating) != 0 || !ls.Trusted {
+		t.Errorf("left deactivating: %v %+v", err, ls)
+	}
+	ls, err = run(nil, "deactivating")
+	if err != nil || len(ls.Stopped) != 1 || fmt.Sprint(ls.Deactivating) != "["+lib+"]" || ls.Trusted || !strings.Contains(ls.PersistReason, "deactivating") {
+		t.Errorf("stuck deactivating: %v %+v", err, ls)
+	}
+	if ls.SourceKind != SourceLive {
+		t.Errorf("stuck deactivating: source %s", ls.SourceKind)
+	}
+	for _, state := range []string{"active", "activating", "reloading"} {
+		ls, err = run(nil, state)
+		if err == nil || len(ls.Stopped) != 0 {
+			t.Errorf("%s: %v %+v", state, err, ls)
 		}
 	}
 }

@@ -475,7 +475,7 @@ func (x *execution) stopper(mode StopMode, aside string, record func(*LibStop)) 
 // rollback or recovery in the same stamp as the apply must not move a
 // .persist onto one already aside (MoveAcross refuses EEXIST).
 func (h *Helper) newStopper(it *Intent, rb string, mode StopMode, aside string, record func(*LibStop)) *stopper {
-	st := &stopper{cfg: &h.cfg, configDir: h.cfg.ConfigDir, mode: mode}
+	st := &stopper{cfg: &h.cfg, configDir: h.cfg.ConfigDir, mode: mode, poll: h.poll}
 	save := func(step string) error {
 		it.Step = step
 		if err := h.saveIntent(it); err != nil {
