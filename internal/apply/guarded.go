@@ -166,6 +166,9 @@ type stopper struct {
 	// journal runs once per library after its verdict and before .persist
 	// is moved aside, so the verdict and the bytes are durable first.
 	journal func(*LibStop) error
+	// allow, when set, refuses a unit the apply did not approve before
+	// it is stopped (execution.allow).
+	allow func(unit string) error
 }
 
 // guardedStop takes libs down for mode (plan 3.3, guarded.go):
@@ -537,6 +540,11 @@ func (s *stopper) stop(ctx context.Context, sl StopLib, ls *LibStop) error {
 		units = append(units, driveUnit(d))
 	}
 	for _, u := range units {
+		if s.allow != nil {
+			if err := s.allow(u); err != nil {
+				return err
+			}
+		}
 		ls.Stopped = append(ls.Stopped, u)
 		if _, err := s.cfg.Systemctl(ctx, "stop", u); err != nil {
 			// The stop may have taken effect anyway (a cancel after the

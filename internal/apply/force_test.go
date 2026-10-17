@@ -1,6 +1,7 @@
 package apply
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -213,5 +214,38 @@ func TestForceTokenNoLoaded(t *testing.T) {
 	req.ForceToken, req.ExpectUnits = pr.ForceToken, pr.Units
 	if resp := e.do(req); resp.Result != ResultRefused || resp.Error != ErrUnit {
 		t.Fatalf("forced units with nothing loaded: %+v", resp)
+	}
+}
+
+// TestExecUnitGuard: a derivation mismatch, here execute given the
+// change's own plan while its forced drive adds vtltape@12 (the VM run3
+// bug), fails closed: the forward path runs no unit outside the approved
+// plan, and the apply is rolled back or fails.
+func TestExecUnitGuard(t *testing.T) {
+	e, s, req := loadedEnv(t)
+	ctx := context.Background()
+	req.V = Version
+	c, err := e.h.check(ctx, &req, newFileSet(e.dir), &AuditRecord{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	forced, _, err := e.h.loadedDrives(ctx, c)
+	if err != nil || len(forced[10]) != 1 {
+		t.Fatalf("forced %v, %v", forced, err)
+	}
+	resp := e.h.execute(ctx, &req, c, forced, &AuditRecord{})
+	if resp.Result != ResultRolledBack || e.intentExists() {
+		t.Fatalf("apply: %+v", resp)
+	}
+	for _, u := range []string{"vtllibrary@10.service", "vtltape@11.service", "vtltape@12.service"} {
+		if st := s.unitState(u); st != "active" {
+			t.Errorf("%s is %s after the rollback", u, st)
+		}
+	}
+	if s.has("stop vtltape@12.service") || s.has("start vtltape@12.service") {
+		t.Errorf("ran vtltape@12: %v", s.calls)
+	}
+	if !strings.Contains(resp.Message, "vtltape@12.service") {
+		t.Errorf("message %q does not name the unit", resp.Message)
 	}
 }
