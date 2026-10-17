@@ -257,7 +257,7 @@ type execution struct {
 
 // execute runs the apply sequence, plan 3.3 exec.go steps 3-12, for a
 // request check passed; the caller holds exclusive.lock and apply.lock,
-// found no move-home journal unsettled (step 1) and ran the plan checks
+// found no move-home journal planned or unsettled (step 1) and ran the plan checks
 // (step 2). forced are the loaded drives a valid force token lets it stop.
 //
 //  3. stop the bay monitor if it runs and an affected library is a bay

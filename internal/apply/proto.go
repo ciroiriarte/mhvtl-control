@@ -208,7 +208,7 @@ const (
 	ErrBudget = "budget"
 	// ErrBusy: the daemon holds apply.lock for a move or media write.
 	ErrBusy = "busy"
-	// ErrMoveHome: a mhvtl-move-home journal is not settled.
+	// ErrMoveHome: a mhvtl-move-home journal is planned or not settled.
 	ErrMoveHome = "move_home_in_progress"
 	// ErrDriveLoaded: a drive the apply stops holds a cartridge; a force
 	// token overrides it.
