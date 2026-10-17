@@ -174,8 +174,8 @@ func (c *IPCController) Offline(lib int64) error {
 
 // ListMap returns the library's answer to "list map": the barcodes in its
 // MAP slots, concatenated in slot order with no separator, "" for an empty
-// MAP (list_map, mhvtl usr/cmd/vtllibrary.c:248-264 at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L248-L264).
+// MAP (list_map, mhvtl usr/cmd/vtllibrary.c:248-264 at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L248-L264).
 func (c *IPCController) ListMap(lib int64) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

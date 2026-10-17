@@ -220,8 +220,8 @@ func persistDiffers(persist, r1 validate.Placement) []string {
 
 // bayIn reports whether <home>/<barcode> is a symlink: a raw-disk
 // cartridge the bay monitor placed (ensure_symlink, mhvtl
-// usr/raw_bay_ops.c:96-130 at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/raw_bay_ops.c#L96-L130).
+// usr/raw_bay_ops.c:96-130 at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/raw_bay_ops.c#L96-L130).
 func bayIn(home string) func(string) bool {
 	return func(barcode string) bool {
 		if home == "" || barcode == "" {
@@ -234,8 +234,8 @@ func bayIn(home string) func(string) bool {
 
 // slotNumbers are the storage slots vtllibrary makes from lib's
 // library_contents: every Slot line and the numbers below the highest it
-// skips (usr/cmd/vtllibrary.c:1054-1064 at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L1054-L1064).
+// skips (usr/cmd/vtllibrary.c:1054-1064 at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L1054-L1064).
 func slotNumbers(lib config.Library) map[int]bool {
 	m := map[int]bool{}
 	for _, s := range lib.Slots {

@@ -44,7 +44,7 @@ func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, problems
 		for _, a := range st.Attrs {
 			// conf_value ignores a field with no value, and so do the sscanf
 			// reads of NAA, Library ID and Home directory. An empty
-			// Compression is not ignored (vtltape.c:2204): conffile flags it,
+			// Compression is not ignored (vtltape.c:2219): conffile flags it,
 			// and there is no value to project.
 			if a.Value == "" {
 				continue
@@ -84,7 +84,7 @@ func applyAttr(lib *Library, drv *Drive, key, val string) error {
 			drv.Serial = val
 		}
 	case "NAA":
-		// sscanf needs all 8 bytes (vtltape.c:2217, vtllibrary.c:1342).
+		// sscanf needs all 8 bytes (vtltape.c:2236, vtllibrary.c:1354).
 		// With fewer, mhVTL drops the NAA for its default; with none it
 		// ignores the line.
 		switch n := conffile.ScanNAA(val); {
@@ -143,7 +143,7 @@ func applyAttr(lib *Library, drv *Drive, key, val string) error {
 		}
 		f := strings.FieldsFunc(val, isCSpace)
 		// "Compression: N" sets the factor alone, 0 when N is out of 1-9
-		// (vtltape.c:2208-2212).
+		// (vtltape.c:2223-2227).
 		if len(f) == 1 {
 			n, err := strconv.Atoi(f[0])
 			if err != nil {

@@ -13,7 +13,7 @@ import (
 // MaxSerialLen is the longest unit serial number mhvtl-control allows. It is
 // mhvtl-control policy, not an mhVTL limit: mhVTL holds serials of up to
 // MaxMhvtlSerialLen characters (include/vtllib.h MAX_DRIVE_SN_LEN :88, the
-// arrays at :620 and :649, upstream master 993b193). But
+// arrays at :620 and :649, upstream master 852b78a). But
 // etc/generate_device_conf.in:52 states a limit of 10, and parts of what
 // mhVTL reports have room for 10 only:
 //   - a drive serial: the changers whose READ ELEMENT STATUS drive identifier
@@ -43,8 +43,8 @@ var cutsLibrarySerial = map[string]bool{"init_hp_eml_smc": true, "init_hp_msl_sm
 
 // MaxID is the highest library or drive ID. vtltape and vtllibrary exit on
 // a -q queue ID outside 0..MAXPRIOR-1 (mhvtl include/utils/q.h:51, MAXPRIOR
-// 1024; usr/cmd/vtltape.c:2451, usr/cmd/vtllibrary.c:1672, upstream master
-// 993b193), and the kernel module refuses a minor of DEF_MAX_MINOR_NO (1024)
+// 1024; usr/cmd/vtltape.c:2470, usr/cmd/vtllibrary.c:1684, upstream master
+// 852b78a), and the kernel module refuses a minor of DEF_MAX_MINOR_NO (1024)
 // or more (kernel/mhvtl.c:186, :1246). ID 0 is out too: the ID is the
 // System V message type the daemon receives on, and msgsnd(2) fails with
 // EINVAL on a type below 1; the daemons' own message says [1..1023].
@@ -52,14 +52,14 @@ const MaxID = 1023
 
 // MaxLUNs is the number of LUNs the mhvtl module answers: a command to LUN
 // DEF_MAX_LUNS (32) or above gets DID_NO_CONNECT (kernel/mhvtl.c:126, :195,
-// :602 in 993b193). It is not a module parameter.
+// :602 in 852b78a). It is not a module parameter.
 const MaxLUNs = 32
 
 // MaxVendorLen and MaxProductLen are the INQUIRY vendor and product
 // identification field widths. mhVTL cuts a longer device.conf value to
 // them, logging only (conf_clamp_string, usr/vtllib.c:1150; called at
-// usr/cmd/vtllibrary.c:1305 and :1316, usr/cmd/vtltape.c:2161 and :2167 in
-// upstream 993b193).
+// usr/cmd/vtllibrary.c:1317 and :1328, usr/cmd/vtltape.c:2176 and :2182 in
+// upstream 852b78a).
 const (
 	MaxVendorLen  = 8
 	MaxProductLen = 16
@@ -101,11 +101,11 @@ func (d device) key() ElementRef {
 // has none: the last 8 bytes of the serial as the daemon holds it, with the
 // NAA field rewritten to 5h (usr/vtllib.c update_vpd_83 :2474-2483; the
 // changers' update_eml_vpd_83 do the same). Line numbers are upstream master
-// 993b193. vtltape holds a drive serial padded with %-10s
-// (usr/cmd/vtltape.c:2157), with an IBM LTO serial shorter than 10 then
+// 852b78a. vtltape holds a drive serial padded with %-10s
+// (usr/cmd/vtltape.c:2172), with an IBM LTO serial shorter than 10 then
 // zero-filled on the left to 10 (usr/vtllib.c ibm_lto_serial_pad :2374-2395,
-// called at usr/cmd/vtltape.c:2256); vtllibrary holds its own serial padded
-// with %-14s, cut to 15 (usr/cmd/vtllibrary.c:1301).
+// called at usr/cmd/vtltape.c:2275); vtllibrary holds its own serial padded
+// with %-14s, cut to 15 (usr/cmd/vtllibrary.c:1313).
 func derivedNAA(d device) []byte {
 	sn := fmt.Sprintf("%-10s", d.serial)
 	if d.kind == "library" {
@@ -258,7 +258,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	checkDriveLines(r, next, serials)
 
 	// vtllibrary takes a drive only when its Library ID names it
-	// (usr/cmd/vtllibrary.c:686, upstream master 993b193); a drive naming
+	// (usr/cmd/vtllibrary.c:686, upstream master 852b78a); a drive naming
 	// no library runs on its own, a typo that loses the drive silently.
 	for _, d := range next.Standalone {
 		if d.LibraryID != 0 {
@@ -270,7 +270,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	// The drive identifier the library reports in READ ELEMENT STATUS can
 	// cut the drive serial short. A personality with no identifier area
 	// reports no serial at all, so nothing is cut (usr/cmd/vtllibrary.c
-	// set_drive_serial :631-632, upstream master 993b193).
+	// set_drive_serial :631-632, upstream master 852b78a).
 	for _, l := range next.Libraries {
 		p := personality.Lookup(l.Vendor, l.Product)
 		for _, d := range l.Drives {
@@ -376,19 +376,19 @@ func driverName(h hostids.Device) string {
 }
 
 // checkDriveLines checks the serials "Drive N: X" lines of library_contents
-// give drive slots. Line numbers are mhvtl upstream master 993b193,
-// https://github.com/markh794/mhvtl/blob/993b193/usr/cmd/vtllibrary.c:
-// vtllibrary's main() calls customise_lu (:1711), whose personality init
+// give drive slots. Line numbers are mhvtl upstream master 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c:
+// vtllibrary's main() calls customise_lu (:1723), whose personality init
 // calls init_slot_info (e.g. usr/pm/default_smc_pm.c:61); __init_slot_info
 // reads each Drive line (:1031-1039) and init_drive_slot (:851-878) passes a
 // non-empty value to set_drive_serial (:621, called at :876), which sets the
 // serial the changer reports in READ ELEMENT STATUS. Then main() calls
-// update_drive_details (:1713; do_rereadconfig does the same at :1581-1583),
+// update_drive_details (:1725; do_rereadconfig does the same at :1593-1595),
 // which reads device.conf and, for this library's drive in that slot, sets
 // the serial again from its "Unit serial number" (:719-721), provided that
 // line comes after the drive's Library ID line (:686); conffile flags one
 // above it, and that Problem blocks (checkProblems). vtltape answers
-// INQUIRY with that device.conf serial (usr/cmd/vtltape.c:2154-2157). So:
+// INQUIRY with that device.conf serial (usr/cmd/vtltape.c:2169-2172). So:
 //   - with a device.conf serial, the Drive line value is overridden: changer
 //     and drive agree, and the value is ignored (a warning);
 //   - without one, the changer reports the Drive line value and the drive

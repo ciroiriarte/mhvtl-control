@@ -100,7 +100,7 @@ func checkRemovals(r *Result, cur, next config.Inventory, live *Live, opts Optio
 		// (live, or next's file when live is unknown) is not free: Merge
 		// leaves it out, but the bay monitor's coldplug places it in the
 		// MAP again, and an export there would make that fail
-		// (usr/cmd/mhvtl-bay-monitor.c:116-131 in upstream 993b193).
+		// (usr/cmd/mhvtl-bay-monitor.c:116-131 in upstream 852b78a).
 		freeMAPs := 0
 		for n, b := range keptMAPs {
 			if haveLive {

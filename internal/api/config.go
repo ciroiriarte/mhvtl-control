@@ -43,7 +43,7 @@ type CapabilityPaths struct {
 	// Generators are where mhVTL installs its systemd generator,
 	// mhvtl-device-conf-generator: SYSTEMD_GENERATOR_DIR, by default
 	// /usr/lib/systemd/system-generators (mhvtl config.mk:29, upstream
-	// master 993b193), or systemd.pc's systemdsystemgeneratordir on Debian
+	// master 852b78a), or systemd.pc's systemdsystemgeneratordir on Debian
 	// (debian/rules:33), under /lib on releases before the /usr merge.
 	Generators []string
 	// MakeVTLMedia is mhVTL's make_vtl_media, a path or a name looked up in
@@ -469,7 +469,7 @@ type configSlotDTO struct {
 	Barcode string `json:"barcode"`
 	// Listed is false for a storage slot below the highest Slot line that no
 	// line names: vtllibrary makes it, empty (usr/cmd/vtllibrary.c
-	// :1054-1064, upstream master 993b193).
+	// :1054-1064, upstream master 852b78a).
 	Listed      bool    `json:"listed"`
 	LiveBarcode *string `json:"live_barcode,omitempty"`
 }
@@ -643,7 +643,7 @@ var contentsName = regexp.MustCompile(`^library_contents\.([0-9]{1,5})$`)
 
 // contentsID returns the library ID of a library_contents.<id> file name.
 // The ID must be written as mhVTL builds the name, "library_contents.%ld"
-// (usr/vtllib.c:322, upstream master d65d25f): library_contents.010 is a
+// (usr/vtllib.c:322, upstream master 852b78a): library_contents.010 is a
 // file vtllibrary never reads, so validating it would prove nothing.
 func contentsID(name string) (int, bool) {
 	m := contentsName.FindStringSubmatch(name)

@@ -800,7 +800,7 @@ func abs(n int) int {
 
 // commentCitations are lines of mhVTL that comments of this module cite
 // (packages personality, ident and validate), with text the cited line
-// holds at upstream master 993b193. TestCommentCitations fails when the text
+// holds at upstream master 852b78a. TestCommentCitations fails when the text
 // moves more than maxCitationDrift lines away, and logs any smaller move.
 var commentCitations = []struct{ cite, text string }{
 	{"usr/vtllib.c:2423", "void update_vpd_83("},
@@ -819,8 +819,8 @@ var commentCitations = []struct{ cite, text string }{
 	{"usr/cmd/vtllibrary.c:1074", "Linked list data needs to be built in slot order"},
 	{"usr/cmd/vtllibrary.c:324", "if (strlen(barcode) > MAX_BARCODE_LEN)"},
 	{"usr/cmd/vtltape.c:1401", "if (!lu_ssc.pm->set_WORM)"},
-	{"usr/cmd/vtltape.c:2451", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
-	{"usr/cmd/vtllibrary.c:1672", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
+	{"usr/cmd/vtltape.c:2470", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
+	{"usr/cmd/vtllibrary.c:1684", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
 	{"kernel/mhvtl.c:126", "#define DEF_MAX_LUNS 32"},
 	{"kernel/mhvtl.c:602", "if (SCpnt->device->lun >= mhvtl_max_luns)"},
 	{"include/utils/q.h:51", "#define MAXPRIOR 1024"},

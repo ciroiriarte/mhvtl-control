@@ -34,8 +34,8 @@ func checkAddresses(r *Result, next config.Inventory) {
 		// device.conf drive on the element of its Slot (:689). A drive whose
 		// Slot no Drive line reaches gets a new element whose address is
 		// never set, so it reports element address 0, and check_overflow is
-		// never asked (:689-704, after customise_lu at :1711-1713). Line
-		// numbers are upstream master 993b193. The writer that saves the
+		// never asked (:689-704, after customise_lu at :1723-1725). Line
+		// numbers are upstream master 852b78a. The writer that saves the
 		// configuration adds the Drive lines; a file edited by hand may lack
 		// them.
 		drives := window{kind: "drive", plural: "drives", start: p.StartDrive}
@@ -52,7 +52,7 @@ func checkAddresses(r *Result, next config.Inventory) {
 		}
 		// A Drive line numbered at or below an earlier one reuses that
 		// drive element (lookup_drive) but counts it again in num_drives
-		// (usr/cmd/vtllibrary.c:859-874, upstream master 993b193), which
+		// (usr/cmd/vtllibrary.c:859-874, upstream master 852b78a), which
 		// mode page 1Dh reports (usr/mode.c:1332) and READ ELEMENT STATUS
 		// takes as the drive address range (usr/smc.c:80-81).
 		prevLine := 0
@@ -103,7 +103,7 @@ func checkAddresses(r *Result, next config.Inventory) {
 		// numbered below an earlier one adds a second element for a number
 		// that already has one, made when the earlier line filled the gap
 		// before it (usr/cmd/vtllibrary.c:1054-1064, upstream master
-		// 993b193); MAP elements go into the element list in file order,
+		// 852b78a); MAP elements go into the element list in file order,
 		// which vtllibrary expects to be address order (:1074).
 		for _, w := range []window{slots, maps} {
 			prev, prevKey := 0, ElementRef{}

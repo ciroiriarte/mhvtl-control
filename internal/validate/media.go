@@ -14,7 +14,7 @@ import (
 // as make_vtl_media decides it when it creates the cartridge (set_density in
 // mhvtl usr/cmd/make_vtl_media.in). make_vtl_media creates cartridges only
 // for the Slot lines of library_contents, in the library's home
-// (make_vtl_media.in:349-364, upstream master 993b193; see homeOf), so a MAP
+// (make_vtl_media.in:349-364, upstream master 852b78a; see homeOf), so a MAP
 // or Picker barcode must name a cartridge that already exists there. A MAP
 // entry the live placement already holds in that MAP slot is no pre-fill:
 // the cartridge is in the library (imported at run time, or placed by the

@@ -103,8 +103,8 @@ func readMoveHomeStep(path string) (string, error) {
 }
 
 // bayMonitor is mhVTL's raw-disk bay monitor (etc/mhvtl-bay-monitor.service.in
-// at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/mhvtl-bay-monitor.service.in).
+// at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/mhvtl-bay-monitor.service.in).
 const (
 	bayMonitor = "mhvtl-bay-monitor.service"
 	baysConf   = "mhvtl_raw_bays.conf"
@@ -113,8 +113,8 @@ const (
 // bayTargets lists the libraries the bay map in configDir binds bays to:
 // the first field of each line that is not blank or a comment, as
 // raw_bay_conf.c parses it ("<library_id> <map_slot> <by-path> [by-id=]",
-// usr/raw_bay_conf.c:62-118 at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/raw_bay_conf.c#L62-L118).
+// usr/raw_bay_conf.c:62-118 at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/raw_bay_conf.c#L62-L118).
 // No bay map means no targets.
 func bayTargets(configDir string) (map[int]bool, error) {
 	b, err := os.ReadFile(filepath.Join(configDir, baysConf))

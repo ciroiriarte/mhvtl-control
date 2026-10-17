@@ -45,30 +45,30 @@ func libraryUnit(id int) string { return fmt.Sprintf("vtllibrary@%d.service", id
 func driveUnit(id int) string   { return fmt.Sprintf("vtltape@%d.service", id) }
 
 // derivePlan derives the affected units (plan 3.3 table, with Phase 0
-// amendment 1). Line numbers are mhVTL's at d65d25f
-// (https://github.com/markh794/mhvtl/tree/d65d25f350f66bbb8e9d572a0cb718f3052ec7da):
+// amendment 1). Line numbers are mhVTL's at 852b78a
+// (https://github.com/markh794/mhvtl/tree/852b78a7ae3add53ffdc418add5f14999762d788):
 //
 //   - a Library stanza or library_contents.N changed: vtllibrary@N;
 //   - a Drive stanza changed: vtltape@D and its library, in the current and
 //     the new configuration (vtllibrary reads its drives at start,
 //     update_drive_details,
-//     [usr/cmd/vtllibrary.c:644-720](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L644-L720));
+//     [usr/cmd/vtllibrary.c:644-720](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L644-L720));
 //   - a library's Home directory changed: the library and every drive of
 //     it. vtltape reads its library's home only at start
-//     ([usr/cmd/vtltape.c:2265-2266](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtltape.c#L2265-L2266));
+//     ([usr/cmd/vtltape.c:2284-2285](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtltape.c#L2284-L2285));
 //     the re-read at the library's Register is commented out
-//     ([:1765](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtltape.c#L1765));
+//     ([:1768](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtltape.c#L1768));
 //   - MHVTL_HOME_PATH changed: every library without a Home directory, in
 //     either configuration, with its drives, and every standalone drive.
 //     Both daemons load mhvtl.conf as EnvironmentFile=
-//     ([etc/vtllibrary@.service.in:16](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtllibrary@.service.in#L16),
-//     [etc/vtltape@.service.in:13](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtltape@.service.in#L13));
+//     ([etc/vtllibrary@.service.in:16](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/vtllibrary@.service.in#L16),
+//     [etc/vtltape@.service.in:13](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/vtltape@.service.in#L13));
 //     a library without a home falls back to it
-//     ([usr/vtllib.c:1733-1737](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/vtllib.c#L1733-L1737)),
+//     ([usr/vtllib.c:1733-1737](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/vtllib.c#L1733-L1737)),
 //     read by vtllibrary's update_home_dir
-//     ([usr/cmd/vtllibrary.c:1234](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L1234)),
+//     ([usr/cmd/vtllibrary.c:1235](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L1235)),
 //     and every vtltape, a standalone one included, chdirs to it
-//     ([usr/cmd/vtltape.c:2540-2545](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtltape.c#L2540-L2545));
+//     ([usr/cmd/vtltape.c:2559-2564](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtltape.c#L2559-L2564));
 //   - a drive added or removed: start or stop vtltape@D, and restart its
 //     library;
 //   - a library added or deleted: start or stop all of its units;
@@ -344,7 +344,7 @@ func checkExpectUnits(expect []string, p UnitPlan) error {
 // these lets RuntimeMaxSec= end the helper, and the next request recovers.
 const (
 	// libraryStop is TimeoutStopSec= of vtllibrary@
-	// ([etc/vtllibrary@.service.in:20](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtllibrary@.service.in#L20)):
+	// ([etc/vtllibrary@.service.in:20](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/vtllibrary@.service.in#L20)):
 	// vtllibrary exits only when idle, and the spike measured 1.9-4.7 s
 	// idle and 9.8 s busy.
 	libraryStop = 10 * time.Second
@@ -373,7 +373,7 @@ const (
 	// the unit attention of amendment 4.
 	readback = 2 * changerTimeout
 	// bayMonitor is stopping the bay monitor (TimeoutStopSec=10,
-	// [etc/mhvtl-bay-monitor.service.in](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/mhvtl-bay-monitor.service.in))
+	// [etc/mhvtl-bay-monitor.service.in](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/mhvtl-bay-monitor.service.in))
 	// and starting it again.
 	bayMonitorTime = 20 * time.Second
 	// daemonReload bounds systemctl daemon-reload.

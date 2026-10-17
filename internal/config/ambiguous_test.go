@@ -10,7 +10,7 @@ import (
 
 // mhVTL still starts with a white-space line inside a record, though not
 // as written: in a Drive record vtltape loads uninitialised compression
-// settings from it (vtltape.c:2204). The read path accepts it (conffile
+// settings from it (vtltape.c:2219). The read path accepts it (conffile
 // flags it for the editor) and keeps the attribute that follows it in the
 // record.
 func TestParseDeviceConfAmbiguousBlank(t *testing.T) {
@@ -29,7 +29,7 @@ func TestParseDeviceConfAmbiguousBlank(t *testing.T) {
 
 // A conf_value field with no value is ignored: it neither clears an earlier
 // value nor fails to parse. An empty Compression is not ignored by vtltape
-// (vtltape.c:2204): it is an ambiguous Problem, and nothing is projected.
+// (vtltape.c:2219): it is an ambiguous Problem, and nothing is projected.
 func TestParseDeviceConfEmptyValue(t *testing.T) {
 	in := "Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00\n Library ID: 10 Slot: 01\n" +
 		" Vendor identification: IBM\n Vendor identification:\n Compression:\n"

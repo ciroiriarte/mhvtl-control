@@ -17,7 +17,7 @@ import (
 // once. Each read can consume the changer's POWER-ON unit attention, which
 // is one flag per vtllibrary, not per initiator (check_reset, mhvtl
 // usr/vtllib.c:620-628, called at usr/cmd/vtllibrary.c:227 and raised at
-// :1702, upstream master d65d25f), and so hide the reset from backup hosts
+// :1714, upstream master 852b78a), and so hide the reset from backup hosts
 // (plan, fact 13). Moves this daemon makes drop the library's read
 // (forget); moves a backup application makes show after the TTL.
 const liveTTL = 5 * time.Second

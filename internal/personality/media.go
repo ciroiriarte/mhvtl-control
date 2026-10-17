@@ -35,7 +35,7 @@ type DriveModel struct {
 	// WORM is whether the personality sets ssc_pm.set_WORM. vtltape refuses
 	// to load a WORM cartridge in a drive whose personality does not
 	// ("drive doesn't support WORM", usr/cmd/vtltape.c:1401-1405, upstream
-	// master 993b193), whatever its media list says.
+	// master 852b78a), whatever its media list says.
 	WORM  bool
 	Media []Media
 }
@@ -282,47 +282,47 @@ var DriveModels = []DriveModel{
 		{"T10KB", RW}, {"T10KB Clean", RO},
 		{"T10KC", RW}, {"T10KC Clean", RO},
 	}},
-	{InitFn: "init_ult3580_td1", Source: "usr/pm/ult3580_pm.c:534", Media: []Media{
+	{InitFn: "init_ult3580_td1", Source: "usr/pm/ult3580_pm.c:539", Media: []Media{
 		{"LTO1", RW}, {"LTO1 Clean", RO},
 	}},
-	{InitFn: "init_ult3580_td2", Source: "usr/pm/ult3580_pm.c:583", Media: []Media{
+	{InitFn: "init_ult3580_td2", Source: "usr/pm/ult3580_pm.c:588", Media: []Media{
 		{"LTO1", RW}, {"LTO1 Clean", RO},
 		{"LTO2", RW}, {"LTO2 Clean", RO},
 	}},
-	{InitFn: "init_ult3580_td3", Source: "usr/pm/ult3580_pm.c:634", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td3", Source: "usr/pm/ult3580_pm.c:639", WORM: true, Media: []Media{
 		{"LTO1", RO}, {"LTO1 Clean", RO},
 		{"LTO2", RW}, {"LTO2 Clean", RO},
 		{"LTO3", RW}, {"LTO3 Clean", RO}, {"LTO3 WORM", RW},
 	}},
-	{InitFn: "init_ult3580_td4", Source: "usr/pm/ult3580_pm.c:694", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td4", Source: "usr/pm/ult3580_pm.c:699", WORM: true, Media: []Media{
 		{"LTO2", RO}, {"LTO2 Clean", RO},
 		{"LTO3", RW}, {"LTO3 Clean", RO}, {"LTO3 WORM", RW},
 		{"LTO4", RW}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW},
 	}},
-	{InitFn: "init_ult3580_td5", Source: "usr/pm/ult3580_pm.c:762", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td5", Source: "usr/pm/ult3580_pm.c:767", WORM: true, Media: []Media{
 		{"LTO3", RO}, {"LTO3 Clean", RO},
 		{"LTO4", RW}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW}, {"LTO4 ENCR", RW},
 		{"LTO5", RW}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_td6", Source: "usr/pm/ult3580_pm.c:838", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td6", Source: "usr/pm/ult3580_pm.c:843", WORM: true, Media: []Media{
 		{"LTO4", RO}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW},
 		{"LTO5", RW}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 		{"LTO6", RW}, {"LTO6 Clean", RO}, {"LTO6 WORM", RW}, {"LTO6 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_td7", Source: "usr/pm/ult3580_pm.c:1019", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td7", Source: "usr/pm/ult3580_pm.c:1024", WORM: true, Media: []Media{
 		{"LTO5", RO}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 		{"LTO6", RW}, {"LTO6 Clean", RO}, {"LTO6 WORM", RW}, {"LTO6 ENCR", RW},
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_td8", Source: "usr/pm/ult3580_pm.c:1029", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td8", Source: "usr/pm/ult3580_pm.c:1034", WORM: true, Media: []Media{
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
 		{"LTO8", RW}, {"LTO8 Clean", RO}, {"LTO8 WORM", RW}, {"LTO8 ENCR", RW}, {"LTO8 M8", RW},
 	}},
-	{InitFn: "init_ult3580_td9", Source: "usr/pm/ult3580_pm.c:1044", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td9", Source: "usr/pm/ult3580_pm.c:1049", WORM: true, Media: []Media{
 		{"LTO8", RW}, {"LTO8 Clean", RO}, {"LTO8 WORM", RW}, {"LTO8 ENCR", RW},
 		{"LTO9", RW}, {"LTO9 Clean", RO}, {"LTO9 WORM", RW}, {"LTO9 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_tda", Source: "usr/pm/ult3580_pm.c:1057", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_tda", Source: "usr/pm/ult3580_pm.c:1062", WORM: true, Media: []Media{
 		{"LTO10", RW}, {"LTO10 Clean", RO}, {"LTO10 WORM", RW}, {"LTO10 ENCR", RW},
 		{"LTO10P", RW},
 	}},
@@ -395,7 +395,7 @@ var DensityMedia = map[string]string{
 }
 
 // barcodeRe is set_density's regex in mhvtl usr/cmd/make_vtl_media.in
-// (:120, upstream master 993b193). Like it, it is not anchored at the start:
+// (:120, upstream master 852b78a). Like it, it is not anchored at the start:
 // a longer barcode takes its media type from its tail, as make_vtl_media
 // creates it. vtllibrary's 16-character barcode limit is checked elsewhere.
 var barcodeRe = regexp.MustCompile(`[A-Z0-9]{6,8}([SLXTJDP])([123456789ABCHKTUVWXYZ])$`)

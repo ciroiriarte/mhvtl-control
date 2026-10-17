@@ -74,7 +74,7 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 	}
 
 	// Adjacent Libraries read as written: each header switches vtllibrary
-	// to the new library (vtllibrary.c:1283).
+	// to the new library (vtllibrary.c:1284).
 	if c := ParseDeviceConf([]byte(lib + " Unit serial number: A\nLibrary: 30 CHANNEL: 00 TARGET: 08 LUN: 00\n")); len(c.Problems) != 0 {
 		t.Errorf("adjacent libraries flagged: %v", c.Problems)
 	}
@@ -105,7 +105,7 @@ func TestConfValue(t *testing.T) {
 	wantAttr(t, st, "Product identification", "ULT3580-TD8")
 	wantAttr(t, st, "Unit serial number", "X#1")
 	// An empty NAA is ignored, not a reset: sscanf returns EOF, and mhVTL
-	// acts only on a positive count (vtltape.c:2217-2236).
+	// acts only on a positive count (vtltape.c:2236-2255).
 	wantAttr(t, st, "NAA", "10:22:33:44:ab:00:01:00")
 	for _, v := range []string{"10:22", "zz"} {
 		if err := c.SetAttr("Drive", 11, "NAA", v); err == nil {

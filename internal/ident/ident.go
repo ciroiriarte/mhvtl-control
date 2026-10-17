@@ -109,7 +109,7 @@ func (g Generator) Serial(taken func(serial string) bool) (string, error) {
 // format, https://www.t10.org/, table and page numbers not confirmed against
 // a copy of the standard). mhVTL forces the NAA field to 5h on the wire
 // whatever device.conf says (mhvtl usr/vtllib.c update_vpd_83, lines
-// 2423-2484 on upstream master 993b193: the placeholder 51:23:45:60:... at
+// 2423-2484 on upstream master 852b78a: the placeholder 51:23:45:60:... at
 // 2449-2461, the rewrite at 2482-2483), so a locally assigned NAA 3h could
 // never reach the host. Generating 5h keeps the wire value identical to what
 // device.conf holds.
@@ -127,11 +127,11 @@ func (g Generator) Serial(taken func(serial string) bool) (string, error) {
 // older device.conf entries may carry another one.
 //
 // Not every changer personality sends the NAA. Paths below are mhvtl
-// usr/pm/ on upstream master 993b193
-// (https://github.com/markh794/mhvtl/tree/993b193/usr/pm):
+// usr/pm/ on upstream master 852b78a
+// (https://github.com/markh794/mhvtl/tree/852b78a7ae3add53ffdc418add5f14999762d788/usr/pm):
 //   - IBM 03584 and TS3100 build their own VPD page 83h holding only a T10
-//     vendor ID designator (ibm_smc_pm.c update_ibm_3584_vpd_83 :189,
-//     update_ibm_3100_vpd_83 :277);
+//     vendor ID designator (ibm_smc_pm.c update_ibm_3584_vpd_83 :194,
+//     update_ibm_3100_vpd_83 :282);
 //   - Quantum Scalar does the same (scalar_pm.c update_scalar_vpd_83 :73);
 //   - STK L-series remove page 83h (stklxx_pm.c update_stk_l_vpd_83 :55), and
 //     the Spectra personalities never build one (spectra_pm.c).

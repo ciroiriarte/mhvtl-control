@@ -176,7 +176,7 @@ func TestMapBackSourceFirst(t *testing.T) {
 // TestMapBackForcedInPersist: a rollback whose source is a trusted
 // .persist, with a forced unload of the same cartridge: save_config already
 // put it back in its slot (vtllibrary.c:1142-1173,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L1142-L1173),
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L1142-L1173),
 // so it is placed once, and not reported unplaced.
 func TestMapBackForcedInPersist(t *testing.T) {
 	orig := plib([]string{"", ""}, nil)

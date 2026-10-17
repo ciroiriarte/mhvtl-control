@@ -13,7 +13,7 @@ import (
 // the changer reports it (init_drive_slot -> set_drive_serial, mhvtl
 // usr/cmd/vtllibrary.c:850-881 and :621). device.conf's "Unit serial number"
 // overrides it, since update_drive_details reads device.conf after
-// init_slot_info (:1581-1583, :1711-1713), so it counts only for a drive
+// init_slot_info (:1593-1595, :1723-1725), so it counts only for a drive
 // without one. The editor keeps serial numbers in device.conf only.
 var ErrDriveBarcode = errors.New("library_contents: a Drive line's value is the drive's serial number; set it in device.conf")
 
