@@ -385,6 +385,10 @@ const (
 	// stopSlack is the helper's own TimeoutStopSec, the time a SIGTERM
 	// leaves to re-online and roll back.
 	stopSlack = 60 * time.Second
+	// sigtermRollback is the part of stopSlack a rollback after SIGTERM
+	// may take: the rest is for removing the intent, the audit record and
+	// the exit before systemd sends SIGKILL.
+	sigtermRollback = stopSlack - 10*time.Second
 	// maxBudget is RuntimeMaxSec less a margin (plan 3.1).
 	maxBudget = 1700 * time.Second
 )
