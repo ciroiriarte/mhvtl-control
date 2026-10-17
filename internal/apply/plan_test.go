@@ -106,6 +106,11 @@ func TestDerivePlan(t *testing.T) {
 		{"a library deleted", strings.Replace(strings.Replace(planConf, stanza("Library: 30 "), "", 1), stanza("Drive: 31 "), "", 1), planMhvtlConf, nil, "L30 T31", "", 0},
 		{"a standalone drive", strings.Replace(planConf, "DRV50", "DRV50X", 1), planMhvtlConf, nil, "T50", "T50", 0},
 		{"VERBOSE restarts every instance", planConf, strings.Replace(planMhvtlConf, "VERBOSE=1", "VERBOSE=2", 1), nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
+		{"a library's home directory takes its drives", strings.Replace(planConf, " Unit serial number: LIB10\n", " Unit serial number: LIB10\n Home directory: /opt/a\n", 1), planMhvtlConf, nil, "L10 T11 T12", "T11 T12 L10", 0},
+		{"MHVTL_HOME_PATH restarts libraries without a home, and standalone drives", planConf, strings.Replace(planMhvtlConf, "/opt/mhvtl", "/opt/other", 1), nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
+		{"MHVTL_HOME_PATH leaves a library with its own home", strings.Replace(planConf, " Unit serial number: LIB30\n", " Unit serial number: LIB30\n Home directory: /opt/b\n", 1), strings.Replace(planMhvtlConf, "/opt/mhvtl", "/opt/other", 1), nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
+		{"a library deleted, its drive's stanza kept", strings.Replace(planConf, stanza("Library: 30 "), "", 1), planMhvtlConf, nil, "L30 T31", "T31", 0},
+		{"a library adopts a standalone drive", planConf + "\nLibrary: 99 CHANNEL: 00 TARGET: 14 LUN: 00\n Vendor identification: STK\n Product identification: L700\n Unit serial number: LIB99\n", planMhvtlConf, nil, "T50", "T50 L99", 0},
 		{"VTL_DEBUG and CAPACITY restart nothing", planConf, strings.Replace(strings.Replace(planMhvtlConf, "VTL_DEBUG=0", "VTL_DEBUG=1", 1), "CAPACITY=500", "CAPACITY=900", 1), nil, "", "", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,6 +127,28 @@ func TestDerivePlan(t *testing.T) {
 			for _, u := range p.Units() {
 				if !unitRE.MatchString(u) {
 					t.Errorf("unit %q", u)
+				}
+			}
+			// A drive in both configurations stops exactly when it starts.
+			stops, starts := map[string]bool{}, map[string]bool{}
+			for _, u := range p.StopOrder() {
+				stops[u] = true
+			}
+			for _, u := range p.StartOrder() {
+				starts[u] = true
+			}
+			curD, nextD := map[string]bool{}, map[string]bool{}
+			for _, d := range []string{"11", "12", "31", "50"} {
+				curD["vtltape@"+d+".service"] = true
+			}
+			for u := range curD {
+				if strings.Contains(tc.dc, "Drive: "+strings.TrimSuffix(strings.TrimPrefix(u, "vtltape@"), ".service")+" ") {
+					nextD[u] = true
+				}
+			}
+			for u := range curD {
+				if nextD[u] && stops[u] != starts[u] {
+					t.Errorf("%s: stopped %v, started %v", u, stops[u], starts[u])
 				}
 			}
 		})
@@ -145,10 +172,12 @@ func short(units []string) string {
 }
 
 func TestPlanBudget(t *testing.T) {
-	// VERBOSE on planConf: 6 units down and up, 2 libraries read back.
+	// VERBOSE on planConf: libraries 10 and 30 with drives 11, 12 and 31,
+	// and standalone drive 50.
 	p := planOf(t, planConf, strings.Replace(planMhvtlConf, "VERBOSE=1", "VERBOSE=2", 1), nil)
-	want := 6*unitStop + daemonReload + 6*unitStart + 2*readback + // forward
-		6*unitStop + daemonReload + 6*unitStart + 2*readback + // rollback
+	units := 2*libraryStop + 4*driveStop + 2*libraryStart + 4*driveStart
+	want := bayMonitorTime + 2*guardLibrary + 3*guardDrive + daemonReload + units + startWait + 2*readback + // forward
+		2*guardLibrary + 3*guardDrive + daemonReload + units + 2*readback + // rollback
 		stopSlack
 	if got := p.Budget(); got != want {
 		t.Errorf("budget %v, want %v", got, want)
@@ -163,18 +192,31 @@ func TestPlanBudget(t *testing.T) {
 		t.Errorf("budget with media %v", got)
 	}
 
-	// 20 libraries of 2 drives each restarting does not fit.
-	big := UnitPlan{StopDrives: map[int][]int{}, StartDrives: map[int][]int{}}
-	for lib := 100; lib < 120; lib++ {
-		big.Restart = append(big.Restart, lib)
-		big.StopDrives[lib] = []int{lib*10 + 1, lib*10 + 2}
-		big.StartDrives[lib] = []int{lib*10 + 1, lib*10 + 2}
+	libraries := func(n int, verbose bool) UnitPlan {
+		p := UnitPlan{StopDrives: map[int][]int{}, StartDrives: map[int][]int{}, Verbose: verbose}
+		for lib := 100; lib < 100+n; lib++ {
+			p.Restart = append(p.Restart, lib)
+			p.StopDrives[lib] = []int{lib*10 + 1, lib*10 + 2}
+			p.StartDrives[lib] = []int{lib*10 + 1, lib*10 + 2}
+			p.GuardDrives += 2
+			p.RollbackGuardDrives += 2
+		}
+		return p
 	}
+	// VERBOSE on 4 libraries of 2 drives each fits.
+	if err := checkBudget(libraries(4, true)); err != nil {
+		t.Errorf("4 libraries: %v", err)
+	}
+	// 20 do not; for VERBOSE the refusal says to set it by hand.
+	big := libraries(20, false)
 	if big.Budget() <= maxBudget {
 		t.Fatalf("budget %v fits", big.Budget())
 	}
-	if err := checkBudget(big); err == nil || err.(*refusal).code != ErrBudget {
+	if err := checkBudget(big); err == nil || err.(*refusal).code != ErrBudget || !strings.Contains(err.Error(), "split the change") {
 		t.Errorf("checkBudget: %v", err)
+	}
+	if err := checkBudget(libraries(20, true)); err == nil || !strings.Contains(err.Error(), "VERBOSE restarts every instance") {
+		t.Errorf("checkBudget VERBOSE: %v", err)
 	}
 	if maxBudget+stopSlack > 1800*time.Second {
 		t.Errorf("maxBudget %v leaves no room under RuntimeMaxSec=1800", maxBudget)
