@@ -183,9 +183,9 @@ type stopper struct {
 //     in apply mode, else R1′ is read again;
 //  4. TEST UNIT READY on each drive: a cartridge where R1′ showed none is
 //     raced in apply mode; in rollback and recover any loaded drive is a
-//     forced unload and its vtltape@ is stopped too, and a drive whose
-//     vtltape@ is not running is not asked: R1′'s drive element names its
-//     cartridge;
+//     forced unload and its vtltape@ is stopped too. A drive whose
+//     vtltape@ is inactive or failed is not asked, in any mode: R1′'s
+//     drive element names its cartridge;
 //  5. snapshot .persist;
 //  6. stop the library's units, library first (amendment 1), and read its
 //     Result=;
@@ -278,21 +278,21 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		// In rollback and recover a drive may have died after its start:
-		// its sg node answers nothing, so its cartridge is the one R1′
-		// shows in its drive element.
-		if s.mode != ModeApply {
-			state, err := s.show(ctx, driveUnit(d.ID), "ActiveState")
-			if err != nil {
-				return err
+		// A drive whose vtltape@ is down has no sg node to ask, so its
+		// cartridge is the one R1′ shows in its drive element: in apply
+		// mode one of LoadedDrives, which the plan forced (#53); in
+		// rollback and recover, where it may have died after its start,
+		// a forced unload.
+		state, err := s.show(ctx, driveUnit(d.ID), "ActiveState")
+		if err != nil {
+			return err
+		}
+		if state == "inactive" || state == "failed" {
+			if st := driveState(inv, d.Slot); s.mode != ModeApply && st != nil && st.Full {
+				ls.ForcedUnloads = append(ls.ForcedUnloads, ForcedUnload{Library: sl.Lib.ID, Drive: d.ID,
+					Barcode: st.Barcode, SourceSlot: st.SourceSlot, SourceMAP: st.SourceMAP, Unknown: st.Barcode == ""})
 			}
-			if state == "inactive" || state == "failed" {
-				if st := driveState(inv, d.Slot); st != nil && st.Full {
-					ls.ForcedUnloads = append(ls.ForcedUnloads, ForcedUnload{Library: sl.Lib.ID, Drive: d.ID,
-						Barcode: st.Barcode, SourceSlot: st.SourceSlot, SourceMAP: st.SourceMAP, Unknown: st.Barcode == ""})
-				}
-				continue
-			}
+			continue
 		}
 		hctl, err := devs.LocateDrive(d)
 		if err != nil {
