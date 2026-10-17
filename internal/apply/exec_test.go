@@ -45,13 +45,16 @@ type fakeSystem struct {
 	// offline are the libraries taken offline: their READ ELEMENT STATUS
 	// is NOT READY / OFFLINE (02/04/12) until online or a restart, as
 	// vtllibrary answers it (usr/cmd/vtllibrary.c:213-225 at d65d25f).
-	offline map[int]bool
+	// An online takes effect only with the next queue message to the
+	// library (pendingOnline): vtllibrary takes one message per pass of
+	// its loop (usr/cmd/vtllibrary.c:1865-1912).
+	offline, pendingOnline map[int]bool
 }
 
 func newExecEnv(t *testing.T) (*env, *fakeSystem) {
 	e := newEnv(t)
 	s := &fakeSystem{e: e, state: map[string]string{bayMonitor: "inactive"}, live: map[int]changer.Inventory{}, started: map[int]changer.Inventory{},
-		loaded: map[string]bool{}, enabled: map[string]bool{}, offline: map[int]bool{}, failStart: map[string]bool{}, failStop: map[string]bool{},
+		loaded: map[string]bool{}, enabled: map[string]bool{}, offline: map[int]bool{}, pendingOnline: map[int]bool{}, failStart: map[string]bool{}, failStop: map[string]bool{},
 		onStop: func(string) {}, onMedia: func() error { return nil }, onStart: func(string) {}}
 	e.cfg.Systemctl = s.systemctl
 	e.cfg.Queue, e.cfg.Devices = s, s
@@ -137,6 +140,7 @@ func (s *fakeSystem) systemctl(ctx context.Context, args ...string) ([]byte, err
 			delete(s.live, id)
 			delete(s.started, id)
 			delete(s.offline, id)
+			delete(s.pendingOnline, id)
 		}
 		s.onStop(args[1])
 		return nil, nil
@@ -152,6 +156,7 @@ func (s *fakeSystem) systemctl(ctx context.Context, args ...string) ([]byte, err
 		if _, err := fmt.Sscanf(args[1], "vtllibrary@%d.service", &id); err == nil {
 			s.started[id] = s.fromDisk(id)
 			delete(s.offline, id)
+			delete(s.pendingOnline, id)
 		}
 		s.onStart(args[1])
 		return nil, nil
@@ -181,6 +186,7 @@ func (s *fakeSystem) Offline(lib int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.log("offline %d", lib)
+	delete(s.pendingOnline, int(lib))
 	s.offline[int(lib)] = true
 	return nil
 }
@@ -189,11 +195,19 @@ func (s *fakeSystem) Online(lib int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.log("online %d", lib)
-	delete(s.offline, int(lib))
+	if s.offline[int(lib)] {
+		s.pendingOnline[int(lib)] = true
+	}
 	return nil
 }
 func (s *fakeSystem) ListMap(lib int64) (string, error) {
 	s.log("list map %d", lib)
+	s.mu.Lock()
+	if s.pendingOnline[int(lib)] {
+		delete(s.pendingOnline, int(lib))
+		delete(s.offline, int(lib))
+	}
+	s.mu.Unlock()
 	if s.unitState(libraryUnit(int(lib))) != "active" {
 		return "", errors.New("no reply")
 	}
@@ -308,7 +322,7 @@ func TestExecOrder(t *testing.T) {
 		t.Error("device.conf not written, or intent left")
 	}
 	got := strings.Join(s.steps(), " > ")
-	order := "RES > list map > offline > list map > stop > daemon-reload > start > list map > offline > online > RES"
+	order := "RES > list map > offline > list map > stop > daemon-reload > start > list map > offline > online > list map > RES"
 	if got != order {
 		t.Errorf("order\n got %s\nwant %s", got, order)
 	}
@@ -420,7 +434,7 @@ func TestExecStartFailure(t *testing.T) {
 	first := s.index("start vtllibrary@10.service", 0)
 	rest := s.calls[first+1:]
 	want := []string{"stop vtllibrary@10.service", "stop vtltape@11.service", "daemon-reload",
-		"start vtltape@11.service", "start vtllibrary@10.service", "list map 10", "offline 10", "online 10"}
+		"start vtltape@11.service", "start vtllibrary@10.service", "list map 10", "offline 10", "online 10", "list map 10"}
 	var got []string
 	for _, c := range rest {
 		for _, w := range want {

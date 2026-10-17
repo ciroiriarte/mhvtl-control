@@ -639,7 +639,8 @@ func TestGuardedOfflineLibrary(t *testing.T) {
 		e := newStopEnv(t)
 		var maps []string
 		for i := 0; i <= barrierRetries; i++ {
-			maps = append(maps, fmt.Sprint("M", i), fmt.Sprint("M", i, "x"))
+			// The online barrier's reply, R1′'s, the offline barrier's.
+			maps = append(maps, "", fmt.Sprint("M", i), fmt.Sprint("M", i, "x"))
 		}
 		e.maps[10] = maps
 		out, err := e.stopper(mode).guardedStop(context.Background(), []StopLib{e.lib(10)})
@@ -656,7 +657,7 @@ func TestGuardedOfflineLibrary(t *testing.T) {
 	}
 	// A MAP that settles on the second read: no drift.
 	e := newStopEnv(t)
-	e.maps[10] = []string{"A", "B", "B", "B"}
+	e.maps[10] = []string{"", "A", "B", "", "B", "B"}
 	out, err := e.stopper(ModeRecover).guardedStop(context.Background(), []StopLib{e.lib(10)})
 	if err != nil || out[0].Drift != "" || out[0].Map != "B" {
 		t.Errorf("settled: %v %+v", err, out[0])
