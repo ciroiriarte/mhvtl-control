@@ -312,10 +312,11 @@ func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validat
 	// SG_IO guard of PR 3b, which then passes R1 here.
 	host, hostErr := hostids.Read(h.cfg.SysRoot)
 	res := validate.Validate(cur, nextInv, nil, host, validate.Options{
-		Dispositions: req.Dispositions,
-		ConfigDir:    h.cfg.ConfigDir,
-		DefaultHome:  nextHome,
-		HostErr:      hostErr,
+		Dispositions:   req.Dispositions,
+		ConfigDir:      h.cfg.ConfigDir,
+		DefaultHome:    nextHome,
+		CurDefaultHome: curHome,
+		HostErr:        hostErr,
 	})
 	if !res.OK() {
 		return &res, refuse(ErrInvalid, "%d blocking finding(s), first: %s", len(res.Errors), res.Errors[0].Message)

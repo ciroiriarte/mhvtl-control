@@ -132,13 +132,21 @@ func TestMediaLiveMAP(t *testing.T) {
 	}
 }
 
-// A library "Home directory" under /home is forbidden (HomeProblem), but
-// MHVTL_HOME_PATH, the default, set there by hand still draws the
-// ProtectHome warning.
-func TestMediaHiddenDefaultHome(t *testing.T) {
+// MHVTL_HOME_PATH goes through HomeProblem too: an error when the change
+// sets it, a pre-existing warning when the configuration in force has it.
+// /home also stands for what ProtectHome=yes hides from the daemon.
+func TestDefaultHomeForbidden(t *testing.T) {
 	cur := shipped(t)
 	next := clone(cur)
 	next.Libraries[0].HomeDir = ""
-	r := Validate(cur, next, nil, nil, Options{DefaultHome: "/home/tapes"})
-	expect(t, "warnings", codes(r.Warnings, CodeMediaHomeHidden), []string{"library 10: media home /home/tapes is under /home, /root or /run/user"})
+	msg := []string{`MHVTL_HOME_PATH "/home/tapes" cannot be a media home: under /home`}
+	r := Validate(cur, next, nil, nil, Options{DefaultHome: "/home/tapes", CurDefaultHome: "/var/lib/mhvtl"})
+	expect(t, "errors", codes(r.Errors, CodeMediaHomeForbidden), msg)
+	r = Validate(cur, next, nil, nil, Options{DefaultHome: "/home/tapes"})
+	expect(t, "errors", codes(r.Errors, CodeMediaHomeForbidden), nil)
+	expect(t, "warnings", codes(r.Warnings, CodeMediaHomeForbidden), msg)
+	r = Validate(cur, next, nil, nil, Options{DefaultHome: "/home/tapes", CurDefaultHome: "/home/tapes"})
+	expect(t, "warnings", codes(r.Warnings, CodeMediaHomeForbidden), msg)
+	r = Validate(cur, next, nil, nil, Options{DefaultHome: "/srv/tapes", CurDefaultHome: "/var/lib/mhvtl"})
+	expect(t, "findings", append(codes(r.Errors, CodeMediaHomeForbidden), codes(r.Warnings, CodeMediaHomeForbidden)...), nil)
 }

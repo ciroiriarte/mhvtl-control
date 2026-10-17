@@ -36,9 +36,6 @@ func checkMedia(r *Result, cur, next config.Inventory, live *Live, opts Options)
 			drives = append(drives, driveKey(d.ID))
 		}
 		home := homeOf(lib, opts)
-		if hiddenHome(home) {
-			r.warnf(CodeMediaHomeHidden, lib.ID, []ElementRef{libKey(lib.ID)}, "library %d: media home %s is under /home, /root or /run/user, which mhvtl-control's unit hides (ProtectHome=yes); cartridges there look missing to these checks", lib.ID, home)
-		}
 		// The live MAP counts only for a library that keeps its home.
 		var lp Placement
 		if old, ok := findLibrary(cur, lib.ID); ok && homeOf(old, opts) == home {
@@ -100,15 +97,4 @@ func checkMedia(r *Result, cur, next config.Inventory, live *Live, opts Options)
 			check(fmt.Sprintf("picker %d", p.Number), pickerKey(lib.ID, p.Number), p.Barcode, false, false)
 		}
 	}
-}
-
-// hiddenHome reports whether home lies where ProtectHome=yes in
-// dist/mhvtl-control.service hides it from mhvtl-control.
-func hiddenHome(home string) bool {
-	for _, p := range []string{"/home", "/root", "/run/user"} {
-		if home == p || strings.HasPrefix(home, p+"/") {
-			return true
-		}
-	}
-	return false
 }

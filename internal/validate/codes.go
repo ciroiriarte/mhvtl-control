@@ -37,7 +37,6 @@ const (
 
 	CodeMediaHomeBlank     = "media.home_blank"
 	CodeMediaHomeForbidden = "media.home_forbidden"
-	CodeMediaHomeHidden    = "media.home_hidden"
 	CodeMediaNoHome        = "media.no_home"
 	CodeMediaNotInHome     = "media.not_in_home"
 	CodeMediaUnknownType   = "media.unknown_type"
