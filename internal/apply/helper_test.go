@@ -149,13 +149,18 @@ func (e *env) do(req Request) Response {
 	resp := e.h.Handle(context.Background(), e.peer, &req)
 	// An apply stops and starts only units its response lists: the set
 	// the plan showed and expect_units approved. A rollback also stops the
-	// vtltape@ of a drive it finds loaded, and reports the forced unload.
+	// vtltape@ of a drive it finds loaded, and reports the forced unload;
+	// the drive's library must be one of the units.
 	units := map[string]bool{}
 	for _, u := range resp.Units {
 		units[u] = true
 	}
 	if resp.Result != ResultApplied {
 		for _, fu := range resp.ForcedUnloads {
+			if !units[libraryUnit(fu.Library)] {
+				e.t.Errorf("forced unload %+v: library %d is not among the units %v", fu, fu.Library, resp.Units)
+				continue
+			}
 			units[driveUnit(fu.Drive)] = true
 		}
 	}

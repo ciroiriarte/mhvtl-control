@@ -286,6 +286,20 @@ type execution struct {
 	// held are the libraries bringUp started and holds offline; a
 	// rollback's guardedStop takes them over.
 	held []int
+	// approved are the units the plan showed and expect_units named.
+	approved map[string]bool
+}
+
+// allow refuses a unit the forward path would stop or start that is not
+// among the approved ones, so a derivation that grows the plan after the
+// approval fails closed and rolls back, rather than restart a unit the
+// operator was not shown (VM run3: a forced apply restarted vtltape@41
+// under units [vtllibrary@40.service]).
+func (x *execution) allow(u string) error {
+	if x.approved[u] {
+		return nil
+	}
+	return fmt.Errorf("%s is not among the units the apply was approved for (%s); refused to run it", u, strings.Join(sortedNames(x.approved), ", "))
 }
 
 // execute runs the apply sequence, plan 3.3 exec.go steps 3-12, for a
@@ -311,7 +325,7 @@ type execution struct {
 //
 // A failure from step 4 on, once a unit was stopped, rolls back (step 12).
 func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced map[int][]changer.DriveState, rec *AuditRecord) Response {
-	x := &execution{h: h, req: req, c: c, plan: withForced(*c.plan, c, forced)}
+	x := &execution{h: h, req: req, c: c, plan: withForced(*c.plan, c, forced), approved: set(c.plan.Units())}
 	boot, err := h.bootID()
 	if err != nil {
 		return responseOf(err)
@@ -368,6 +382,7 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 		libs = append(libs, StopLib{Lib: lib, Persist: persistOn(c.curDC, id), Drives: x.plan.StopDrives[id]})
 	}
 	st := x.stopper(ModeApply, "apply", func(ls *LibStop) { x.it.Exec.Stops = append(x.it.Exec.Stops, ls) })
+	st.allow = x.allow
 	st.expect = c.live
 	stops, err := st.guardedStop(ctx, libs)
 	if err != nil {
@@ -391,6 +406,9 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 		return x.rollback(ctx, err)
 	}
 	for _, id := range x.plan.StopStandalone {
+		if err := x.allow(driveUnit(id)); err != nil {
+			return x.rollback(ctx, err)
+		}
 		if err := x.step("stop "+driveUnit(id), func() {
 			x.it.Exec.StandaloneStopped = append(x.it.Exec.StandaloneStopped, driveUnit(id))
 		}); err != nil {
@@ -459,6 +477,9 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 
 	// 9. Start, then hold offline.
 	offline, err := h.bringUp(ctx, startGroups(x.plan), func(u string) error {
+		if err := x.allow(u); err != nil {
+			return err
+		}
 		return x.step("start "+u, func() { x.it.Exec.Started = append(x.it.Exec.Started, u) })
 	})
 	if err != nil {
