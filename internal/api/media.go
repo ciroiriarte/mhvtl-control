@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/ipc"
 	"mhvtl-control/internal/media"
@@ -29,21 +29,15 @@ const defaultHome = "/var/lib/mhvtl"
 
 // homeFor returns the directory holding lib's media, resolved the way mhVTL
 // does (find_media_home_directory): the library's "Home directory" in
-// device.conf, else MHVTL_HOME_PATH from mhvtl.conf, else the default.
+// device.conf, else MHVTL_HOME_PATH from mhvtl.conf as the shell reads it
+// (conffile, as default_home_effective), else the default.
 func (s *Server) homeFor(lib config.Library) string {
 	if lib.HomeDir != "" {
 		return lib.HomeDir
 	}
-	if f, err := os.Open(filepath.Join(s.cfg.ConfigDir, "mhvtl.conf")); err == nil {
-		defer f.Close()
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			k, v, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
-			if ok && strings.TrimSpace(k) == "MHVTL_HOME_PATH" {
-				if v = strings.Trim(strings.TrimSpace(v), `"'`); v != "" {
-					return v
-				}
-			}
+	if data, err := os.ReadFile(filepath.Join(s.cfg.ConfigDir, mhvtlConf)); err == nil {
+		if v, ok := conffile.ParseMhvtlConf(data).Get("MHVTL_HOME_PATH"); ok && v != "" {
+			return v
 		}
 	}
 	if s.cfg.DefaultHome != "" {
