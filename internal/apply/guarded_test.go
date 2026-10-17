@@ -174,6 +174,7 @@ func TestGuardedInactiveFileRule(t *testing.T) {
 			for _, mode := range []StopMode{ModeApply, ModeRollback, ModeRecover} {
 				e := newStopEnv(t)
 				e.state["vtllibrary@10.service"] = "failed"
+				e.state["vtltape@11.service"], e.state["vtltape@12.service"] = "inactive", "inactive"
 				e.write("library_contents.10", "VERSION: 2\nSlot 1: E01001L8\n", tc.lcTime)
 				if tc.pTime != nil {
 					e.write("library_contents.10.persist", "\nSlot 1: P00001L8   \nSlot 2: \n", *tc.pTime)
@@ -532,6 +533,47 @@ func TestGuardedCancel(t *testing.T) {
 	for _, c := range e.calls {
 		if strings.HasPrefix(c, "offline") || strings.HasPrefix(c, "stop") {
 			t.Errorf("%q after the cancel", c)
+		}
+	}
+}
+
+// TestGuardedInactiveLibraryLoadedDrive: an inactive library whose
+// vtltape@ still runs with a cartridge. Apply mode refuses it unless the
+// plan stops the drive; rollback and recover unload it as unknown and stop
+// its vtltape@.
+func TestGuardedInactiveLibraryLoadedDrive(t *testing.T) {
+	setup := func() *stopEnv {
+		e := newStopEnv(t)
+		e.state["vtllibrary@10.service"] = "inactive"
+		e.state["vtltape@12.service"] = "inactive"
+		e.loaded["DRV11"] = true
+		return e
+	}
+	e := setup()
+	if _, err := e.stopper(ModeApply).guardedStop(context.Background(), []StopLib{e.lib(10)}); !errors.Is(err, errRaced) {
+		t.Errorf("apply, drive not planned: %v", err)
+	}
+	e = setup()
+	sl := e.lib(10)
+	sl.Drives = []int{11}
+	out, err := e.stopper(ModeApply).guardedStop(context.Background(), []StopLib{sl})
+	if err != nil || len(out[0].LoadedDrives) != 1 || strings.Join(out[0].Stopped, " ") != "vtllibrary@10.service vtltape@11.service" {
+		t.Errorf("apply, drive planned: %v %+v", err, out)
+	}
+	for _, mode := range []StopMode{ModeRollback, ModeRecover} {
+		e = setup()
+		out, err := e.stopper(mode).guardedStop(context.Background(), []StopLib{e.lib(10)})
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		if fu := out[0].ForcedUnloads; len(fu) != 1 || fu[0] != (ForcedUnload{Library: 10, Drive: 11, Unknown: true}) ||
+			strings.Join(out[0].Stopped, " ") != "vtllibrary@10.service vtltape@11.service" {
+			t.Errorf("%s: %+v", mode, out[0])
+		}
+		for _, c := range e.calls {
+			if c == "TUR DRV12" {
+				t.Errorf("%s: TUR of an inactive vtltape", mode)
+			}
 		}
 	}
 }

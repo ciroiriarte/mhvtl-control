@@ -439,3 +439,32 @@ func TestSIGTERMMidApply(t *testing.T) {
 		t.Errorf("library 10 not back online: %v", s.calls)
 	}
 }
+
+// TestKilledOffline: an apply killed once its libraries are offline and
+// before any stop has journaled R1′ and the offline set; recovery brings
+// library 10 back online.
+func TestKilledOffline(t *testing.T) {
+	e, s, req := compressionEnv(t)
+	e.h.killPoint = func(st string) bool { return st == "apply: offline" }
+	if resp := e.do(req); resp.Result != ResultError {
+		t.Fatalf("killed apply: %+v", resp)
+	}
+	if s.index("stop vtllibrary@10.service", 0) >= 0 {
+		t.Errorf("stopped before the journal: %v", s.calls)
+	}
+	it, err := e.h.loadIntent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if it.Exec == nil || len(it.Exec.Prepared) != 1 || !it.Exec.Prepared[0].Offline || it.Exec.Prepared[0].R1 == nil || len(it.Libraries) != 1 {
+		t.Fatalf("intent %+v", it.Exec)
+	}
+	s.calls = nil
+	e.rebuild()
+	if resp := e.do(Request{Op: OpRecover}); resp.Result != ResultRecovered {
+		t.Fatalf("recover: %+v", resp)
+	}
+	if s.index("online 10", 0) < 0 || s.unitState("vtllibrary@10.service") != "active" {
+		t.Errorf("library 10 not back online: %v", s.calls)
+	}
+}

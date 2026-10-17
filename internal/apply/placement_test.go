@@ -2,6 +2,7 @@ package apply
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -147,6 +148,35 @@ func TestMapBack(t *testing.T) {
 		[]validate.Placement{pl(map[int]string{1: "X", 3: "A"}, map[int]string{1: "R"})}, bay)
 	if shortP(got) != "S1=A S2=E S3=N M1=M" || strings.Join(unplaced, ",") != "X" {
 		t.Errorf("got %q, unplaced %v", shortP(got), unplaced)
+	}
+}
+
+// TestMapBackForcedInPersist: a rollback whose source is a trusted
+// .persist, with a forced unload of the same cartridge: save_config already
+// put it back in its slot (vtllibrary.c:1142-1173,
+// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L1142-L1173),
+// so it is placed once, and not reported unplaced.
+func TestMapBackForcedInPersist(t *testing.T) {
+	orig := plib([]string{"", ""}, nil)
+	got, unplaced := mapBack(orig, pl(map[int]string{1: "A", 2: "B"}, nil),
+		[]validate.Placement{pl(map[int]string{2: "B"}, nil)}, func(string) bool { return false })
+	if shortP(got) != "S1=A S2=B" || len(unplaced) != 0 {
+		t.Errorf("got %q, unplaced %v", shortP(got), unplaced)
+	}
+}
+
+func TestUniqueDir(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "rb")
+	var dirs []string
+	for i := 0; i < 3; i++ {
+		d, err := uniqueDir(parent, "persist-apply-x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirs = append(dirs, filepath.Base(d))
+	}
+	if strings.Join(dirs, " ") != "persist-apply-x persist-apply-x-2 persist-apply-x-3" {
+		t.Errorf("dirs %v", dirs)
 	}
 }
 

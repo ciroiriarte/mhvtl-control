@@ -792,3 +792,70 @@ func TestExecStopFailure(t *testing.T) {
 		}
 	}
 }
+
+// TestExecInactiveLibraryLoaded: a library that is not running, whose
+// drive's vtltape@ runs with a cartridge, is drive_loaded; forced, the
+// drive's vtltape@ stops and starts with the library, and its cartridge,
+// whose barcode no READ ELEMENT STATUS showed, is reported unknown.
+func TestExecInactiveLibraryLoaded(t *testing.T) {
+	e, s := newExecEnv(t)
+	s.state["vtllibrary@10.service"] = "inactive"
+	s.loaded["XYZZY_A2"] = true
+	req := compression(e)
+	plan := req
+	plan.Op = OpPlan
+	pr := e.do(plan)
+	if pr.Error != ErrDriveLoaded || pr.ForceToken == "" || !strings.Contains(pr.Message, "drive slot 2") {
+		t.Fatalf("plan: %+v", pr)
+	}
+	req.ForceToken = pr.ForceToken
+	resp := e.do(req)
+	if resp.Result != ResultApplied {
+		t.Fatalf("forced apply: %+v", resp)
+	}
+	if len(resp.ForcedUnloads) != 1 || resp.ForcedUnloads[0] != (ForcedUnload{Library: 10, Drive: 12, Unknown: true}) {
+		t.Errorf("forced unloads %+v", resp.ForcedUnloads)
+	}
+	if !s.before("stop vtltape@12.service", "start vtltape@12.service") {
+		t.Errorf("drive 12 not restarted: %v", s.calls)
+	}
+}
+
+// TestExecRollbackUnknownUnload: the rollback finds a drive of the failed
+// library loaded with a cartridge no READ ELEMENT STATUS showed; it is
+// stopped and reported unplaced rather than dropped.
+func TestExecRollbackUnknownUnload(t *testing.T) {
+	e, s := newExecEnv(t)
+	s.failStart["vtllibrary@10.service"] = true
+	s.onStart = func(u string) {
+		if u == "vtltape@11.service" {
+			s.loaded["XYZZY_A2"] = true
+		}
+	}
+	resp := e.do(compression(e))
+	if resp.Result != ResultRolledBack {
+		t.Fatalf("apply: %+v", resp)
+	}
+	found := false
+	for _, u := range resp.Unplaced {
+		found = found || strings.Contains(u, "drive 12")
+	}
+	if !found {
+		t.Errorf("unplaced %v", resp.Unplaced)
+	}
+	if s.index("stop vtltape@12.service", 0) < 0 {
+		t.Errorf("drive 12 not stopped: %v", s.calls)
+	}
+}
+
+// TestWithForcedStandalone: a forced drive whose library the change
+// deletes, its stanza kept, starts again standalone.
+func TestWithForcedStandalone(t *testing.T) {
+	cur := config.Inventory{Libraries: []config.Library{{ID: 30, Drives: []config.Drive{{ID: 31, LibraryID: 30, Slot: 1}}}}}
+	next := config.Inventory{Standalone: []config.Drive{{ID: 31, LibraryID: 30}}}
+	p := withForced(UnitPlan{Stop: []int{30}, StopDrives: map[int][]int{}, StartDrives: map[int][]int{}}, &checked{cur: cur, next: next},
+		map[int][]changer.DriveState{30: {{Number: 1, Full: true, Barcode: "G03001L8"}}})
+	if fmt.Sprint(p.StopDrives[30], p.StartStandalone) != "[31] [31]" {
+		t.Errorf("stop %v, start standalone %v", p.StopDrives, p.StartStandalone)
+	}
+}

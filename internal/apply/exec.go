@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -34,6 +35,9 @@ type ExecJournal struct {
 	Plan UnitPlan `json:"plan"`
 	// BayStopped: the apply stopped the bay monitor.
 	BayStopped bool `json:"bay_stopped,omitempty"`
+	// Prepared is what guardedStop found of each library before its first
+	// stop: R1′, the MAP, the drives, and that it is offline.
+	Prepared []*LibStop `json:"prepared,omitempty"`
 	// Stops are guardedStop's verdicts and placement sources, per library.
 	Stops []*LibStop `json:"stops,omitempty"`
 	// StandaloneStopped are the standalone drives stopped.
@@ -144,8 +148,10 @@ func (h *Helper) readLive(ctx context.Context, cur config.Inventory) (*validate.
 // (plan 3.3, exec step 2, drive_loaded): every drive of a library that
 // restarts or goes, by R1, since a library restart leaves a cartridge
 // mounted in vtltape that the restarted library no longer knows of (Phase
-// 0 amendment 2); and each standalone drive stopped, by TEST UNIT READY.
-func (h *Helper) loadedDrives(c *checked) (map[int][]changer.DriveState, []int, error) {
+// 0 amendment 2); of such a library that is not running, each drive whose
+// vtltape@ runs, by TEST UNIT READY, with no barcode; and each standalone
+// drive stopped, by TEST UNIT READY.
+func (h *Helper) loadedDrives(ctx context.Context, c *checked) (map[int][]changer.DriveState, []int, error) {
 	byLib := map[int][]changer.DriveState{}
 	if c.live == nil {
 		return byLib, nil, nil
@@ -154,6 +160,15 @@ func (h *Helper) loadedDrives(c *checked) (map[int][]changer.DriveState, []int, 
 		lib, _ := findLib(c.cur, id)
 		inv, ok := c.inv[id]
 		if !ok {
+			for _, d := range lib.Drives {
+				loaded, err := h.idleLoaded(ctx, d)
+				if err != nil {
+					return nil, nil, refuse(ErrLive, "library %d drive %d: %v", id, d.ID, err)
+				}
+				if loaded {
+					byLib[id] = append(byLib[id], changer.DriveState{Number: d.Slot, Full: true})
+				}
+			}
 			continue
 		}
 		for _, d := range lib.Drives {
@@ -181,6 +196,20 @@ func (h *Helper) loadedDrives(c *checked) (map[int][]changer.DriveState, []int, 
 		}
 	}
 	return byLib, standalone, nil
+}
+
+// idleLoaded reports whether drive d, of a library that is not running,
+// holds a cartridge: its vtltape@ runs and TEST UNIT READY is GOOD.
+func (h *Helper) idleLoaded(ctx context.Context, d config.Drive) (bool, error) {
+	state, err := showProp(ctx, &h.cfg, driveUnit(d.ID), "ActiveState")
+	if err != nil || state != "active" {
+		return false, err
+	}
+	hctl, err := h.cfg.Devices.Locate(d.Serial, scsi.PeripheralSequential)
+	if err != nil {
+		return false, err
+	}
+	return h.cfg.Devices.Loaded(hctl)
 }
 
 // checkMediaPlan runs the media refusals of plan 3.3 exec step 7 when the
@@ -252,7 +281,7 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 	for _, id := range sortedInts(forced) {
 		lib, _ := findLib(c.cur, id)
 		for _, st := range forced[id] {
-			fu := ForcedUnload{Library: id, Barcode: st.Barcode, SourceSlot: st.SourceSlot, SourceMAP: st.SourceMAP}
+			fu := ForcedUnload{Library: id, Barcode: st.Barcode, SourceSlot: st.SourceSlot, SourceMAP: st.SourceMAP, Unknown: st.Barcode == ""}
 			for _, d := range lib.Drives {
 				if d.Slot == st.Number {
 					fu.Drive = d.ID
@@ -440,22 +469,62 @@ func (x *execution) stopper(mode StopMode, aside string, record func(*LibStop)) 
 	return x.h.newStopper(x.it, x.rb, mode, aside, record)
 }
 
+// newStopper returns guardedStop for mode, journaling the prepared
+// libraries before the first stop and each verdict through record. Each
+// call gets a directory of its own, created at its first verdict: a
+// rollback or recovery in the same stamp as the apply must not move a
+// .persist onto one already aside (MoveAcross refuses EEXIST).
 func (h *Helper) newStopper(it *Intent, rb string, mode StopMode, aside string, record func(*LibStop)) *stopper {
-	dir := filepath.Join(rb, "persist-"+aside+"-"+h.cfg.Now().UTC().Format(rollbackStamp))
-	return &stopper{cfg: &h.cfg, configDir: h.cfg.ConfigDir, aside: dir, mode: mode, journal: func(ls *LibStop) error {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-		record(ls)
-		it.Step = fmt.Sprintf("%s: library %d stopped", mode, ls.ID)
+	st := &stopper{cfg: &h.cfg, configDir: h.cfg.ConfigDir, mode: mode}
+	save := func(step string) error {
+		it.Step = step
 		if err := h.saveIntent(it); err != nil {
 			return err
 		}
-		if h.killPoint(it.Step) {
+		if h.killPoint(step) {
 			return errKilled
 		}
 		return nil
-	}}
+	}
+	st.prepared = func(libs []*LibStop) error {
+		if mode == ModeApply {
+			it.Exec.Prepared = libs
+		}
+		return save(fmt.Sprintf("%s: offline", mode))
+	}
+	st.journal = func(ls *LibStop) error {
+		if st.aside == "" {
+			dir, err := uniqueDir(rb, "persist-"+aside+"-"+h.cfg.Now().UTC().Format(rollbackStamp))
+			if err != nil {
+				return err
+			}
+			st.aside = dir
+		}
+		record(ls)
+		return save(fmt.Sprintf("%s: library %d stopped", mode, ls.ID))
+	}
+	return st
+}
+
+// uniqueDir creates a new directory under parent named name, or name-2,
+// name-3, ... when that exists.
+func uniqueDir(parent, name string) (string, error) {
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", err
+	}
+	for i := 1; ; i++ {
+		dir := filepath.Join(parent, name)
+		if i > 1 {
+			dir += "-" + strconv.Itoa(i)
+		}
+		err := os.Mkdir(dir, 0o700)
+		if err == nil {
+			return dir, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+	}
 }
 
 // abort ends an apply that stopped nothing: guardedStop put every library
@@ -943,7 +1012,11 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 		fu := newPlacement()
 		for _, list := range [][]ForcedUnload{ex.Forced, forcedOf(l)} {
 			for _, f := range list {
-				if f.Library == id && f.Barcode != "" {
+				if f.Library == id && (f.Unknown || f.Barcode == "") {
+					unplaced = append(unplaced, fmt.Sprintf("the cartridge of drive %d (not shown by READ ELEMENT STATUS)", f.Drive))
+					continue
+				}
+				if f.Library == id {
 					// A cartridge without a free source slot gets a
 					// negative key, which mapBack has no slot for: it
 					// goes to the first empty one.
@@ -1107,6 +1180,8 @@ func withForced(p UnitPlan, c *checked, forced map[int][]changer.DriveState) Uni
 				if nl, ok := nextDrives[d.ID]; ok {
 					if _, isLib := findLib(c.next, nl); isLib {
 						p.StartDrives[nl] = addInt(p.StartDrives[nl], d.ID)
+					} else {
+						p.StartStandalone = addInt(p.StartStandalone, d.ID)
 					}
 				}
 			}
