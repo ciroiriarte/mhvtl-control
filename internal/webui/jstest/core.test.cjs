@@ -430,6 +430,9 @@ test("capabilityNotice: the helper's hello states", () => {
   const text = unreadable.lines.join(" ");
   assert.ok(text.includes("/var/lib/mhvtl-control-apply/rollback"), text);
   assert.ok(text.includes("/var/lib/mhvtl-control-apply/intent.json"), text);
+  // tls_required raises an info notice to warn, and lowers no other tone.
+  assert.strictEqual(core.capabilityNotice({ helper: "intent_unreadable", writes: "tls_required" }).tone, "error");
+  assert.strictEqual(core.capabilityNotice({ helper: "in_progress", writes: "tls_required" }).tone, "warn");
   const down = core.capabilityNotice({ helper: "unreachable", writes: "ok", helper_error: "helper response: <b>x</b>" });
   assert.strictEqual(down.tone, "warn");
   assert.ok(down.lines.join(" ").includes("helper response: <b>x</b>"));
