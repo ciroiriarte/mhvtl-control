@@ -35,6 +35,10 @@ type ExecJournal struct {
 	Plan UnitPlan `json:"plan"`
 	// BayStopped: the apply stopped the bay monitor.
 	BayStopped bool `json:"bay_stopped,omitempty"`
+	// Offlining are the libraries any guardedStop may have taken offline,
+	// each recorded just before its offline; recovery takes every one
+	// down and back up, which brings it online.
+	Offlining []int `json:"offlining,omitempty"`
 	// Prepared is what guardedStop found of each library before its first
 	// stop: R1′, the MAP, the drives, and that it is offline.
 	Prepared []*LibStop `json:"prepared,omitempty"`
@@ -485,6 +489,10 @@ func (h *Helper) newStopper(it *Intent, rb string, mode StopMode, aside string, 
 			return errKilled
 		}
 		return nil
+	}
+	st.offlining = func(id int) error {
+		it.Exec.Offlining = addInt(it.Exec.Offlining, id)
+		return save(fmt.Sprintf("%s: offlining %d", mode, id))
 	}
 	st.prepared = func(libs []*LibStop) error {
 		if mode == ModeApply {
@@ -1128,7 +1136,11 @@ func (l lifecycle) Stop(ctx context.Context, it *Intent) error {
 	}
 	p := it.Exec.Plan
 	var libs []StopLib
-	for _, id := range it.Libraries {
+	ids := append([]int{}, it.Libraries...)
+	for _, id := range it.Exec.Offlining {
+		ids = addInt(ids, id)
+	}
+	for _, id := range ids {
 		lib, ok := findLib(inv, id)
 		if !ok {
 			continue
