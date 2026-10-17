@@ -37,8 +37,8 @@ func TestPreExisting(t *testing.T) {
 			i.Libraries[0].Drives[1].Serial = "XYZZY_A2"
 		}, nil, nil, nil},
 		{"a host collision in force still blocks", func(*config.Inventory) {}, func(*config.Inventory) {},
-			[]hostids.Device{{Host: 0, Driver: "ahci", Serial: "XYZZY_A1"}},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 0:0:0:0 (ahci)`}, nil},
+			[]hostids.Device{{Host: 0, Driver: "ahci", Serial: "00XYZZY_A1"}},
+			[]string{`drive 11: serial "XYZZY_A1" (reported as "00XYZZY_A1") is already used by host device 0:0:0:0 (ahci)`}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cur := shipped(t)

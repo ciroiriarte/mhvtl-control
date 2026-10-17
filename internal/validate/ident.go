@@ -336,8 +336,14 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 			if isSelf && d.kind == self.kind && d.id == self.id {
 				continue
 			}
-			if d.serial != "" && d.serial == h.Serial {
-				r.stickyErrorf(CodeIdentHostSerial, d.lib, []ElementRef{d.key()}, "%s: serial %q is already used by host device %s (%s)", d, d.serial, h.HCTL(), driverName(h))
+			// The host reads the serial as the device reports it in VPD
+			// page 80h, which several personalities pad or add to.
+			if u := unitSerial(d); d.serial != "" && u == h.Serial {
+				as := ""
+				if u != d.serial {
+					as = fmt.Sprintf(" (reported as %q)", u)
+				}
+				r.stickyErrorf(CodeIdentHostSerial, d.lib, []ElementRef{d.key()}, "%s: serial %q%s is already used by host device %s (%s)", d, d.serial, as, h.HCTL(), driverName(h))
 			}
 			b := wire[i]
 			if b == nil {
@@ -359,7 +365,8 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 const TCMLoopDriver = "tcm_loopback"
 
 // reexport returns the device of cur that h, a tcm_loop device, is an export
-// of: one whose serial and reported NAA h both reports. A changer that sends
+// of: one whose serial, as it reports it in VPD page 80h (unitSerial), and
+// reported NAA h both reports. A changer that sends
 // no NAA is matched on its serial and INQUIRY vendor and product instead,
 // cut to the INQUIRY field widths as mhVTL reports them.
 //
@@ -374,7 +381,7 @@ const TCMLoopDriver = "tcm_loopback"
 // core/{pscsi,user}_*), so the match rests on the identity alone.
 func reexport(h hostids.Device, cur []device) (device, bool) {
 	for _, c := range cur {
-		if c.serial == "" || c.serial != h.Serial {
+		if c.serial == "" || unitSerial(c) != h.Serial {
 			continue
 		}
 		if !c.sendsNAA {
