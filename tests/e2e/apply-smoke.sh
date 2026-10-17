@@ -717,16 +717,27 @@ s_placement() {
 s_placement_force() {
 	ensure_lib
 	mtx_status "$LIB" "$STEP_DIR/start.mtx"
-	local slot bc req
+	local slot bc req drive units
 	slot=$(mtx_slots "$STEP_DIR/start.mtx" Full | head -1)
 	bc=$(mtx_barcode "$STEP_DIR/start.mtx" "$slot")
+	# Drive element 0 is the drive in drive slot 1. Unloading it under the
+	# force token restarts its vtltape@ (plan 3.4), so the plan and the
+	# apply must list it with the library.
+	drive=$(drive_unit "$LIB" 1)
+	units="vtllibrary@$LIB.service $drive"
 	mtx_do "$LIB" load "$slot" 0
+	unit_pids >"$STEP_DIR/pids.before"
 	req=$(grow force 1)
 	send plan "$req" force.plan
 	check "plan refused: drive_loaded" jqis "$STEP_DIR/force.plan.json" .error drive_loaded
 	check "plan carries a force token" jqis "$STEP_DIR/force.plan.json" '.force_token != null' true
 	send apply "$req" force.apply -units-from "$STEP_DIR/force.plan.json" -force-from "$STEP_DIR/force.plan.json"
+	check "plan units: the library and $drive" jqis "$STEP_DIR/force.plan.json" '.units | sort | join(" ")' "$units"
 	check "forced apply: applied" jqis "$STEP_DIR/force.apply.json" .result applied
+	check "apply units: the library and $drive" jqis "$STEP_DIR/force.apply.json" '.units | sort | join(" ")' "$units"
+	unit_pids >"$STEP_DIR/pids.after"
+	check "$drive PID changed" differs "$(pid_in "$drive" "$STEP_DIR/pids.before")" "$(pid_in "$drive" "$STEP_DIR/pids.after")"
+	check "every PID but the library's and $drive unchanged" pids_kept "$STEP_DIR/pids.before" "$STEP_DIR/pids.after" $units
 	check "forced_unloads lists $bc to slot $slot" jqis "$STEP_DIR/force.apply.json" \
 		"[.forced_unloads[]? | select(.barcode == \"$bc\" and .source_slot == $slot)] | length" 1
 	check "mtx status works" mtx_status "$LIB" "$STEP_DIR/after.mtx"
