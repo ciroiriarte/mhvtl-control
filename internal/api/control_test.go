@@ -180,7 +180,7 @@ func TestChangerErrorMapping(t *testing.T) {
 		// mhVTL before markh794/mhvtl#285 reports any failed load into a
 		// drive as 04/04/03; from #285 on, 05/30/00 for media the drive
 		// cannot use and 04/53/00 for any other load failure.
-		{"drive refused cartridge", sense(scsi.KeyHardwareError, 0x04, 0x03), 409, "conflict", "media type suits the drive"},
+		{"drive refused cartridge", sense(scsi.KeyHardwareError, 0x04, 0x03), 409, "conflict", "failed to load or unload the cartridge"},
 		{"incompatible medium", sense(scsi.KeyIllegalRequest, 0x30, 0x00), 409, "conflict", "cannot use this cartridge's media type"},
 		{"load failed", sense(scsi.KeyHardwareError, 0x53, 0x00), 409, "conflict", "the drive refused the load"},
 		{"other hardware", sense(scsi.KeyHardwareError, 0x44, 0x00), 500, "scsi_error", ""},

@@ -273,8 +273,8 @@ func writeChangerError(w http.ResponseWriter, op string, err error) {
 		writeError(w, http.StatusConflict, "conflict", op+": the drive refused the load "+
 			"(check that the media exists and is not damaged): "+se.Error())
 	case errors.As(err, &se) && se.Key == scsi.KeyHardwareError && se.Code() == scsi.ASCManualIntervention:
-		writeError(w, http.StatusConflict, "conflict", op+": the drive refused the cartridge "+
-			"(check that the media type suits the drive and that the media exists): "+se.Error())
+		writeError(w, http.StatusConflict, "conflict", op+": the drive failed to load or unload the cartridge "+
+			"(check that the media exists and, for a load, that its media type suits the drive): "+se.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "scsi_error", op+": "+err.Error())
 	}
