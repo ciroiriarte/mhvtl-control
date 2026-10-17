@@ -28,6 +28,7 @@ type writeEnv struct {
 	socket  string
 	h       *fakeHelper
 	fc      *fakeChangers
+	fail    map[int]error // changer reads that fail, by library
 	srv     *Server
 	handler http.Handler
 	clock   time.Time
@@ -53,9 +54,10 @@ func newWriteEnv(t *testing.T, edit func(*Config)) *writeEnv {
 	})
 	fc := &fakeChangers{invByLib: map[int]changer.Inventory{10: live}}
 	e.fc = fc
+	e.fail = map[int]error{30: fmt.Errorf("no medium changer")}
 	cfg := Config{
 		ConfigDir: dir,
-		Changers:  &errByLib{fakeChangers: fc, fail: map[int]error{30: fmt.Errorf("no medium changer")}},
+		Changers:  &errByLib{fakeChangers: fc, fail: e.fail},
 		Helper:    &applyclient.Client{Socket: e.socket},
 		Token:     "s3cret",
 	}
@@ -67,6 +69,14 @@ func newWriteEnv(t *testing.T, edit func(*Config)) *writeEnv {
 	e.srv.now = func() time.Time { return e.clock }
 	e.handler = e.srv.Handler()
 	return e
+}
+
+// readable makes library id's changer readable, holding what its
+// library_contents lists. Call it before the first request.
+func (e *writeEnv) readable(id int) {
+	e.t.Helper()
+	delete(e.fail, id)
+	e.fc.invByLib[id] = liveOf(e.t, e.dir, id, nil)
 }
 
 func (e *writeEnv) call(method, path string, body any) *httptest.ResponseRecorder {

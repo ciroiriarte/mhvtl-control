@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -375,5 +376,60 @@ func TestConfigApplyLost(t *testing.T) {
 	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage}); rec.Code != http.StatusConflict ||
 		!strings.Contains(rec.Body.String(), "plan_required") {
 		t.Errorf("apply again: %d %s", rec.Code, rec.Body)
+	}
+}
+
+// A library whose vtllibrary@ is not running loads library_contents from
+// disk at its next start, so the disk file is its placement: the stage
+// starts from it, and says so. A running library must be read; one
+// starting or stopping is read again later (plan, amendment "Phase 4
+// client contract for next": "cur's file otherwise").
+func TestConfigStageDownLibrary(t *testing.T) {
+	for _, state := range []string{"inactive", "failed"} {
+		e := newWriteEnv(t, nil)
+		e.readable(30)
+		e.fc.invByLib[30] = changer.Inventory{} // what a stale read would say
+		e.h.setLib(30, state)
+		st := e.edit(http.MethodPatch, "/api/v1/config/libraries/30", map[string]any{"attrs": map[string]any{"Backoff": "500"}})
+		if _, ok := st.Files["library_contents.30"]; ok {
+			t.Errorf("%s: library_contents.30 staged, not the disk file", state)
+		}
+		if want := []string{"library 30 is not running; its placement comes from library_contents.30"}; !reflect.DeepEqual(st.Notes, want) {
+			t.Errorf("%s: notes %q", state, st.Notes)
+		}
+		for _, c := range e.fc.calls {
+			if c == "Inventory lib=30" {
+				t.Errorf("%s: changer of a stopped library read", state)
+			}
+		}
+	}
+	for _, state := range []string{"activating", "deactivating", "reloading"} {
+		e := newWriteEnv(t, nil)
+		e.readable(30)
+		e.h.setLib(30, state)
+		rec := e.call(http.MethodPatch, "/api/v1/config/libraries/30", map[string]any{"attrs": map[string]any{"Backoff": "500"}})
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "live_unreadable") || !strings.Contains(rec.Body.String(), state) {
+			t.Errorf("%s: %d %s", state, rec.Code, rec.Body)
+		}
+	}
+	// No unit state, no telling a stopped library from an unreadable one.
+	e := newWriteEnv(t, nil)
+	e.readable(30)
+	e.h.mu.Lock()
+	e.h.libStates = nil
+	e.h.mu.Unlock()
+	if rec := e.call(http.MethodPatch, "/api/v1/config/libraries/30", map[string]any{"attrs": map[string]any{"Backoff": "500"}}); rec.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(rec.Body.String(), "live_unreadable") {
+		t.Errorf("units unanswered: %d %s", rec.Code, rec.Body)
+	}
+	// A refused edit drops its note.
+	e = newWriteEnv(t, nil)
+	e.h.setLib(30, "failed")
+	st := e.edit(http.MethodPatch, "/api/v1/config/libraries/10", map[string]any{"attrs": map[string]any{"Backoff": "500"}})
+	if rec := e.call(http.MethodDelete, "/api/v1/config/libraries/30/slots/999", map[string]any{"stage": st.Stage}); rec.Code == http.StatusOK {
+		t.Fatalf("delete of no slot: %d", rec.Code)
+	}
+	if got := decodeBody[stageDTO](t, e.call(http.MethodGet, "/api/v1/config/stages/"+st.Stage, nil)); len(got.Notes) != 0 {
+		t.Errorf("refused edit left notes %q", got.Notes)
 	}
 }

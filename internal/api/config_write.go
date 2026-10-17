@@ -166,7 +166,7 @@ func (s *Server) stageEdit(w http.ResponseWriter, r *http.Request, stageID strin
 		return
 	}
 	defer s.releaseStage(st)
-	next, disp := maps.Clone(st.next), maps.Clone(st.dispositions)
+	next, disp, notes := maps.Clone(st.next), maps.Clone(st.dispositions), maps.Clone(st.notes)
 	err = edit(r.Context(), st)
 	if err == nil {
 		err = st.writable()
@@ -175,7 +175,7 @@ func (s *Server) stageEdit(w http.ResponseWriter, r *http.Request, stageID strin
 		err = s.checkBounds(st)
 	}
 	if err = confErr(err); err != nil {
-		st.next, st.dispositions = next, disp
+		st.next, st.dispositions, st.notes = next, disp, notes
 		if stageID == "" {
 			s.dropStage(st.id)
 		}

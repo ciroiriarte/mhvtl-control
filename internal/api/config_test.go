@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -624,6 +625,8 @@ type fakeHelper struct {
 	conns  int
 	answer func(apply.Request) apply.Response
 	reqs   []apply.Request
+	// libStates answers units; nil sends a response that is not JSON.
+	libStates map[int]string
 }
 
 func newFakeHelper(t *testing.T, socket string) *fakeHelper {
@@ -632,7 +635,7 @@ func newFakeHelper(t *testing.T, socket string) *fakeHelper {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &fakeHelper{ln: ln, state: apply.StateReady}
+	h := &fakeHelper{ln: ln, state: apply.StateReady, libStates: map[int]string{10: "active", 30: "active"}}
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -648,12 +651,16 @@ func newFakeHelper(t *testing.T, socket string) *fakeHelper {
 				json.NewDecoder(c).Decode(&req)
 				h.mu.Lock()
 				h.conns++
-				state, answer := h.state, h.answer
-				if req.Op != apply.OpHello {
+				state, answer, libStates := h.state, h.answer, maps.Clone(h.libStates)
+				if req.Op != apply.OpHello && req.Op != apply.OpUnits {
 					h.reqs = append(h.reqs, req)
 				}
 				h.mu.Unlock()
 				switch {
+				case req.Op == apply.OpUnits && libStates == nil:
+					c.Write([]byte("not json"))
+				case req.Op == apply.OpUnits:
+					json.NewEncoder(c).Encode(apply.Response{Result: apply.ResultOK, LibraryStates: libStates})
 				case req.Op != apply.OpHello && answer != nil:
 					if resp := answer(req); resp.Result == notJSON {
 						c.Write([]byte("not json"))
@@ -675,6 +682,13 @@ func newFakeHelper(t *testing.T, socket string) *fakeHelper {
 func (h *fakeHelper) set(state string) {
 	h.mu.Lock()
 	h.state = state
+	h.mu.Unlock()
+}
+
+// setLib sets the ActiveState units reports for vtllibrary@id.
+func (h *fakeHelper) setLib(id int, state string) {
+	h.mu.Lock()
+	h.libStates[id] = state
 	h.mu.Unlock()
 }
 
