@@ -42,6 +42,11 @@
   var forceRemaining = core.forceRemaining, fmtCountdown = core.fmtCountdown, applyErrorAction = core.applyErrorAction;
   var stageEditable = core.stageEditable;
   var stageOutcome = core.stageOutcome, outcomeUnread = core.outcomeUnread;
+  var resolvePersonality = core.resolvePersonality, modelPresets = core.modelPresets, createLimits = core.createLimits;
+  var freeTargets = core.freeTargets, usedIDs = core.usedIDs, usedAddresses = core.usedAddresses, usedSerials = core.usedSerials;
+  var wizardDefaults = core.wizardDefaults, librarySerial = core.librarySerial, driveVendorFor = core.driveVendorFor;
+  var wizardErrors = core.wizardErrors, wizardRequests = core.wizardRequests;
+  var systemFields = core.systemFields, buildSystemPatch = core.buildSystemPatch, intField = core.intField;
   var libraryAttrFields = core.libraryAttrFields, driveAttrFields = core.driveAttrFields, buildAttrPatch = core.buildAttrPatch;
   var buildSlotPatch = core.buildSlotPatch, buildSlotDelete = core.buildSlotDelete, buildSlotsAdd = core.buildSlotsAdd;
 
@@ -1804,6 +1809,12 @@
       appSel.value = cfgView.app;
       if (appSel.value !== cfgView.app) { cfgView.app = ""; appSel.value = ""; }
     }
+    if (cfgEditable()) {
+      view.appendChild(mk("div", { class: "drive-actions", children: [
+        editButton("New library…", "Create a library", function () { wizardDialog(); }),
+        editButton("System settings…", "Edit mhvtl.conf settings", function () { systemDialog(); }),
+      ] }));
+    }
     if (!libs.length) {
       view.appendChild(mk("p", { class: "muted", text: "No libraries configured (" + String(lastCfg.config && lastCfg.config.config_dir || "") + "/device.conf)." }));
     } else {
@@ -2114,6 +2125,213 @@
     return b;
   }
 
+  /* ---- create wizard and system settings (plan 4.2) -------------------- */
+
+  // stageSequence sends reqs ({method, path, body}) one after another into
+  // one stage, each with the stage the previous answer gave. done(err,
+  // sent) gets how many were staged; a failure leaves the earlier ones in
+  // the stage, which the pending changes panel shows.
+  function stageSequence(reqs, done) {
+    var i = 0;
+    function next() {
+      if (i >= reqs.length) { done(null, i); return; }
+      var r = reqs[i];
+      var body = Object.assign({}, r.body);
+      if (stageId()) { body.stage = stageId(); }
+      stageEdit(r.method, r.path, body, function (e) {
+        if (e) { done(e, i); return; }
+        i++;
+        next();
+      });
+    }
+    next();
+  }
+
+  // checkForApp validates the stage for the backup application a new
+  // library is meant for (POST /config/validate with its target_apps) and
+  // keeps that application's findings on the stage.
+  function checkForApp(libID, app) {
+    var st = cfgStage, gen = NodeState.generation;
+    if (!st || !app) { return; }
+    var apps = coerceArray(lastCfg && lastCfg.personalities && lastCfg.personalities.target_apps);
+    var name = app;
+    apps.forEach(function (a) { if (a && a.id === app) { name = String(a.name || a.id); } });
+    api(cfgPath("/validate"), { method: "POST", body: {
+      files: st.data.files, dispositions: coerceArray(st.data.dispositions), target_apps: buildValidateBody(libID, app).target_apps,
+    } }).then(function (res) {
+      if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      st.appCheck = { name: name, library: libID, rows: findingRows(res).filter(function (r) { return r.code.indexOf("preset.") === 0 && r.library === libID; }) };
+      renderStage();
+    }).catch(function (e) {
+      if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      st.appCheck = { name: name, library: libID, error: e.message, rows: [] };
+      renderStage();
+    });
+  }
+
+  // wizardDialog builds a new library: its model (vendor and product, which
+  // select the personality and so the element limits), ID and serial,
+  // storage and MAP slots, drives, home and the backup application it is
+  // for. It stages the library and its drives; the pending changes panel
+  // checks and applies them.
+  function wizardDialog() {
+    var pers = (lastCfg && lastCfg.personalities) || {};
+    var config = (lastCfg && lastCfg.config) || {};
+    var dlg = mk("dialog", { class: "wide", attrs: { "aria-label": "New library" } });
+    var form = mk("form", { attrs: { method: "dialog" } });
+    form.appendChild(mk("h3", { text: "New library", attrs: { style: "margin:0 0 6px" } }));
+    form.appendChild(mk("p", { class: "muted", text: "The library and its drives are staged; check and apply them under Pending changes.", attrs: { style: "margin:0 0 12px" } }));
+    var grid = mk("div", { class: "form-grid" });
+    function field(label, input, hint) {
+      var kids = [document.createTextNode(label), input];
+      if (hint) { kids.push(hint); }
+      grid.appendChild(mk("label", { children: kids }));
+      return input;
+    }
+    function input(type, value) {
+      var el = mk("input", { attrs: { type: type, autocomplete: "off", spellcheck: "false" } });
+      el.value = String(value == null ? "" : value);
+      return el;
+    }
+    function hint() { return mk("small", { class: "muted" }); }
+
+    var presets = modelPresets(pers);
+    var model = mk("select");
+    model.appendChild(mk("option", { text: "Type a vendor and product", attrs: { value: "" } }));
+    presets.forEach(function (p, i) {
+      model.appendChild(mk("option", { text: p.vendor + " " + p.product + " (" + p.name + ")", attrs: { value: String(i) } }));
+    });
+    field("Model", model);
+    // IBM 03584 reports VPD page 83h, which Proxmox Backup Server needs.
+    var first = presets.filter(function (p) { return p.vendor === "IBM" && p.product === "03584"; })[0] || presets[0] || { vendor: "", product: "" };
+    model.value = String(presets.indexOf(first));
+    var vendor = field("Vendor identification", input("text", first.vendor));
+    var product = field("Product identification", input("text", first.product));
+    var persLine = mk("p", { class: "muted", attrs: { style: "grid-column:1/-1;margin:0" } });
+    grid.appendChild(persLine);
+
+    var defaults = wizardDefaults(config, resolvePersonality(pers, first.vendor, first.product));
+    var idHint = hint();
+    var libID = field("Library ID", input("number", defaults.id == null ? "" : defaults.id), idHint);
+    var serial = field("Unit serial number", input("text", librarySerial(defaults.id)));
+    var serialEdited = false;
+    var slotsHint = hint(), mapsHint = hint(), drivesHint = hint();
+    var slots = field("Storage slots", input("number", defaults.slots), slotsHint);
+    var maps = field("MAP slots", input("number", defaults.maps), mapsHint);
+    var drives = field("Drives", input("number", defaults.drives), drivesHint);
+    var driveModel = mk("select");
+    driveModel.appendChild(mk("option", { text: "Choose…", attrs: { value: "" } }));
+    coerceArray(pers.drives).forEach(function (d) {
+      driveModel.appendChild(mk("option", { text: String(d.product), attrs: { value: String(d.product) } }));
+    });
+    driveModel.value = "ULT3580-TD8";
+    field("Drive model", driveModel);
+    var driveVendor = field("Drive vendor", input("text", driveVendorFor(driveModel.value)));
+    var home = field("Home directory", input("text", ""), mk("small", { class: "muted",
+      text: "Blank: the default home, " + String(config.default_home || "") + ". Another must be a new, empty directory." }));
+    home.placeholder = String(config.default_home || "");
+    var app = mk("select");
+    app.appendChild(mk("option", { text: "Any application", attrs: { value: "" } }));
+    coerceArray(pers.target_apps).forEach(function (a) {
+      app.appendChild(mk("option", { text: String(a.name || a.id), attrs: { value: String(a.id || "") } }));
+    });
+    app.value = cfgView.app || "";
+    field("For", app);
+    var errs = mk("ul", { class: "dialog-error", attrs: { role: "alert", style: "grid-column:1/-1" } });
+    grid.appendChild(errs);
+    form.appendChild(grid);
+    var ok = mk("button", { class: "btn primary", text: "Stage library", attrs: { type: "button" } });
+    form.appendChild(mk("div", { class: "dialog-buttons", children: [mk("button", { class: "btn", text: "Cancel", attrs: { value: "cancel" } }), ok] }));
+    dlg.appendChild(form);
+
+    // values reads the form; limits and personality follow the vendor,
+    // product and ID typed.
+    function values() {
+      var p = resolvePersonality(pers, vendor.value, product.value);
+      var n = intField(drives.value);
+      return {
+        p: p,
+        lim: createLimits(p, intField(libID.value)),
+        w: {
+          id: intField(libID.value), vendor: vendor.value, product: product.value, serial: serial.value, home: home.value,
+          slots: intField(slots.value), maps: intField(maps.value), drives: n,
+          driveProduct: driveModel.value, driveVendor: driveVendor.value.trim(),
+          targets: freeTargets(usedAddresses(config), 1 + (n > 0 ? n : 0), 0),
+        },
+      };
+    }
+    function update() {
+      var v = values();
+      persLine.textContent = v.p
+        ? "Personality: " + String(v.p.name) + " (" + String(v.p.init_fn) + "). Up to " + v.lim.slots + " storage slots, " + v.lim.maps +
+          " MAP slots and " + v.lim.drives + " drives here; " + (v.p.vpd83 ? "reports" : "has no") + " VPD page 83h."
+        : "No personality matches.";
+      slots.max = String(v.lim.slots); maps.max = String(v.lim.maps); drives.max = String(v.lim.drives);
+      slotsHint.textContent = "max " + v.lim.slots;
+      mapsHint.textContent = "max " + v.lim.maps;
+      drivesHint.textContent = "max " + v.lim.drives + (v.w.drives > 0 ? "; IDs " + (v.w.id + 1) + "–" + (v.w.id + v.w.drives) : "");
+      idHint.textContent = "drives take the IDs after it";
+      if (!serialEdited) { serial.value = librarySerial(v.w.id); }
+      clear(errs);
+      return v;
+    }
+    model.addEventListener("change", function () {
+      var p = presets[intField(model.value)];
+      if (model.value !== "" && p) { vendor.value = p.vendor; product.value = p.product; }
+      update();
+    });
+    serial.addEventListener("input", function () { serialEdited = true; });
+    driveModel.addEventListener("change", function () { driveVendor.value = driveVendorFor(driveModel.value); update(); });
+    form.addEventListener("input", update);
+    ok.addEventListener("click", function () {
+      var v = update();
+      var problems = wizardErrors(v.w, v.lim, { ids: usedIDs(config), serials: usedSerials(config) });
+      problems.forEach(function (m) { errs.appendChild(mk("li", { text: m })); });
+      if (problems.length) { return; }
+      ok.disabled = true;
+      var reqs = wizardRequests(v.w);
+      stageSequence(reqs, function (e, sent) {
+        ok.disabled = false;
+        if (e) {
+          errs.appendChild(mk("li", { text: (sent ? "Staged " + sent + " of " + reqs.length + " parts, then: " : "") + (e.message || String(e)) }));
+          return;
+        }
+        if (dlg.open) { dlg.close(); }
+        if (app.value) {
+          cfgView.app = app.value;
+          var appSel = $("config-target-app");
+          if (appSel) { appSel.value = app.value; }
+          checkForApp(v.w.id, app.value);
+        }
+      });
+    });
+    dlg.addEventListener("close", function () { if (dlg.parentNode) { dlg.parentNode.removeChild(dlg); } });
+    update();
+    document.body.appendChild(dlg);
+    if (dlg.showModal) { dlg.showModal(); }
+  }
+
+  // systemDialog edits mhvtl.conf's CAPACITY, VERBOSE and VTL_DEBUG (PATCH
+  // /config/system); its other keys are edited by hand, and the media home
+  // moves with mhvtl-move-home.
+  function systemDialog() {
+    var fields = systemFields(lastCfg && lastCfg.config && lastCfg.config.system);
+    var labels = { CAPACITY: "CAPACITY (MiB of new media)", VERBOSE: "VERBOSE (0-3)", VTL_DEBUG: "VTL_DEBUG (0 or 1)" };
+    formDialog({
+      title: "System settings (mhvtl.conf)",
+      intro: "A VERBOSE change restarts every library and drive. A blank field is not in mhvtl.conf; mhVTL ships the value shown.",
+      fields: fields.map(function (f) { return { name: f.key, label: labels[f.key], value: f.value, placeholder: f.shipped }; }),
+      onSubmit: function (form, done) {
+        var values;
+        try { values = buildSystemPatch(fields, form); } catch (e) { done(e); return; }
+        if (!values) { done(new Error("Nothing changed.")); return; }
+        var body = { values: values };
+        if (stageId()) { body.stage = stageId(); }
+        stageEdit("PATCH", cfgPath("/system"), body, done);
+      },
+    });
+  }
+
   /* ---- stage panel ----------------------------------------------------- */
   var stageStatus = PanelStatus("stage-status");
   var forceTimer = null;
@@ -2166,6 +2384,21 @@
     }
   }
 
+  // renderAppCheck shows what the backup application a new library is for
+  // needs of it, as POST /config/validate found.
+  function renderAppCheck(box, chk) {
+    if (!chk) { return; }
+    var title = "Library " + chk.library + " for " + chk.name;
+    if (chk.error) {
+      box.appendChild(mk("p", { class: "cfg-notice error", text: title + ": not checked: " + chk.error }));
+    } else if (!chk.rows.length) {
+      box.appendChild(mk("p", { class: "cfg-notice", text: title + ": meets its requirements." }));
+    } else {
+      var b = listBlock(title, chk.rows.map(function (r) { return r.message; }), "warnings");
+      if (b) { box.appendChild(b); }
+    }
+  }
+
   // renderResult shows what a failed apply reported: the unit that failed
   // and its journal, and the cartridges a rollback left aside.
   function renderResult(box, res) {
@@ -2193,7 +2426,10 @@
     }
     panel.hidden = false;
     clear(box);
-    var files = stageFileRows(cfgStage.data, lastCfg && lastCfg.config && lastCfg.config.files);
+    // The files on disk the stage is diffed against: device.conf and
+    // library_contents, and mhvtl.conf from the system settings.
+    var cfg = (lastCfg && lastCfg.config) || {};
+    var files = stageFileRows(cfgStage.data, coerceArray(cfg.files).concat(cfg.system && cfg.system.file ? [cfg.system.file] : []));
     $("stage-count").textContent = "(" + files.length + " file" + (files.length === 1 ? "" : "s") + ")";
     if (!files.length) { box.appendChild(mk("p", { class: "muted", text: "The edits so far change no file." })); }
     files.forEach(function (row) {
@@ -2225,6 +2461,7 @@
     discard.disabled = !editable;
     box.appendChild(mk("div", { class: "drive-actions", children: [check, apply, discard] }));
     if (!editable) { box.appendChild(mk("p", { class: "muted", text: "Read-only now: see the banner above." })); }
+    renderAppCheck(box, cfgStage.appCheck);
     renderPlan(box, plan);
     renderResult(box, cfgStage.result);
   }
