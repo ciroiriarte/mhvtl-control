@@ -93,20 +93,54 @@ func (h *Helper) audit(rec AuditRecord) {
 	})
 }
 
+// maxAudit is the size at which audit.jsonl is rotated to audit.jsonl.1,
+// the one older file kept. A variable for the tests.
+var maxAudit int64 = 16 << 20
+
+// appendSync appends b to path and fsyncs it, first rotating path to
+// path.1 when b would take it past maxAudit. An flock on the file
+// serializes helpers appending at once (peer refusals are audited outside
+// exclusive.lock); one that finds the path renamed under it reopens.
 func appendSync(path string, b []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return err
+	for {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+		if err != nil {
+			return err
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+			f.Close()
+			return err
+		}
+		fi, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return err
+		}
+		if pi, err := os.Lstat(path); err != nil || !os.SameFile(fi, pi) {
+			f.Close()
+			continue
+		}
+		if fi.Size() > 0 && fi.Size()+int64(len(b)) > maxAudit {
+			err := os.Rename(path, path+".1")
+			if err == nil {
+				err = syncDir(filepath.Dir(path))
+			}
+			f.Close()
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := f.Write(b); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Sync(); err != nil {
+			f.Close()
+			return err
+		}
+		return f.Close()
 	}
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 // Journal MESSAGE_IDs, for journalctl MESSAGE_ID=... and catalog entries.
