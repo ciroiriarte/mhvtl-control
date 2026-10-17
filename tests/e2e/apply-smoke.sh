@@ -14,7 +14,8 @@
 #
 # Scenarios (default: all but the reboot pair, in this order):
 #   enable           enable the helper socket and boot-recovery unit, hello
-#   create           create library 40 (IBM 03584, 2x ULT3580-TD8, 20 slots,
+#   create           create library 40 (IBM 03584 unless LIB_VENDOR and
+#                    LIB_PRODUCT say otherwise, 2x ULT3580-TD8, 20 slots,
 #                    4 MAP slots, 16 pre-filled, global home)
 #   change           add a drive and 10 slots to library 40
 #   persist          the change with PERSIST: True, then toggled off
@@ -49,6 +50,10 @@ SMOKE_STATE=/var/tmp/apply-smoke/state
 APPLYSMOKE=${APPLYSMOKE:-/usr/local/libexec/applysmoke}
 OUT=/var/tmp/apply-smoke/run-$(date +%Y%m%d-%H%M%S)
 LIB=40
+# Library 40's changer; LIB_VENDOR=STK LIB_PRODUCT=L700 selects another
+# personality.
+LIB_VENDOR=${LIB_VENDOR:-IBM}
+LIB_PRODUCT=${LIB_PRODUCT:-03584L32}
 MARKER="# apply-smoke: library $LIB"
 
 ALL=(enable create change persist conflict rollback rollback-persist crash concurrency placement placement-force delete)
@@ -272,8 +277,8 @@ lib_stanza() {
 $MARKER, removed by the delete scenario
 
 Library: $LIB CHANNEL: 00 TARGET: 16 LUN: 00
- Vendor identification: IBM
- Product identification: 03584L32
+ Vendor identification: $LIB_VENDOR
+ Product identification: $LIB_PRODUCT
  Unit serial number: XYZZY_$LIB
  NAA: 40:22:33:44:ab:00:16:00
  PERSIST: False
