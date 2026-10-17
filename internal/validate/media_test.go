@@ -1,24 +1,54 @@
 package validate
 
 import (
+	"io/fs"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"mhvtl-control/internal/config"
 )
 
-// The fixture homes, absolute, as a media home must be (HomeProblem).
-var homeA, homeB = absHome("a"), absHome("b")
-
-func absHome(name string) string {
-	p, err := filepath.Abs(filepath.Join("testdata/homes", name))
+// fixtureHomes copies testdata/homes into a temporary directory and
+// returns its homes a and b. A media home must be absolute and outside
+// /home (HomeProblem), and a checkout may well be under /home, as on CI
+// runners; symbolic links are copied as links.
+func fixtureHomes(t *testing.T) (a, b string) {
+	t.Helper()
+	dst := t.TempDir()
+	err := filepath.WalkDir("testdata/homes", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel("testdata/homes", path)
+		if err != nil {
+			return err
+		}
+		to := filepath.Join(dst, rel)
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(to, 0o755)
+		case d.Type()&fs.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(target, to)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(to, data, 0o644)
+	})
 	if err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
-	return p
+	return filepath.Join(dst, "a"), filepath.Join(dst, "b")
 }
 
 func TestMedia(t *testing.T) {
+	homeA, _ := fixtureHomes(t)
 	// Library 10 of the shipped configuration: two ULT3580-TD8, two
 	// ULT3580-TD6, LTO-8 and LTO-6 cartridges.
 	for _, tc := range []struct {
@@ -101,6 +131,7 @@ func TestMedia(t *testing.T) {
 // another MAP slot, with the live placement unknown, or in a library whose
 // media home the change moves, still must be.
 func TestMediaLiveMAP(t *testing.T) {
+	homeA, homeB := fixtureHomes(t)
 	cur := shipped(t)
 	cur.Libraries[0].HomeDir = homeA
 	next := clone(cur)
