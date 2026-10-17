@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
@@ -90,8 +91,8 @@ func (h *Helper) checkConfigPath(cur, next *conffile.MhvtlConf) error {
 }
 
 // DeriveMhvtlConf refuses a new mhvtl.conf unless it is the current one
-// with only the values of the editable keys changed, each through
-// conffile's round-trip setter and each matching its pattern.
+// with only the values of the editable keys changed: what BuildMhvtlConf
+// makes of the current one and the new values.
 // make_vtl_media sources mhvtl.conf as bash, as root, from
 // mhvtl-media.service (markh794/mhvtl usr/cmd/make_vtl_media.in:307 at
 // 852b78a,
@@ -100,7 +101,7 @@ func (h *Helper) checkConfigPath(cur, next *conffile.MhvtlConf) error {
 // bytes are never trusted, only compared with the helper's derivation.
 func DeriveMhvtlConf(cur, next []byte) error {
 	c, n := conffile.ParseMhvtlConf(cur), conffile.ParseMhvtlConf(next)
-	derived := conffile.ParseMhvtlConf(cur)
+	values := map[string]string{}
 	for _, k := range editableKeys {
 		cv, cok := c.Get(k.key)
 		nv, nok := n.Get(k.key)
@@ -110,17 +111,47 @@ func DeriveMhvtlConf(cur, next []byte) error {
 		if !nok {
 			return refuse(ErrMhvtlConfKey, "mhvtl.conf: %s cannot be removed here", k.key)
 		}
-		if !k.valid(nv) {
-			return refuse(ErrMhvtlConfValue, "mhvtl.conf: %s=%q is not a valid value", k.key, nv)
-		}
-		if err := derived.Set(k.key, nv); err != nil {
-			return refuse(ErrMhvtlConfValue, "%v", err)
-		}
+		values[k.key] = nv
 	}
-	if !bytes.Equal(derived.Render(), next) {
-		return refuse(ErrMhvtlConfDerived, "the new mhvtl.conf may differ from the current one only in the values of CAPACITY, VERBOSE, VTL_DEBUG and MHVTL_HOME_PATH; edit anything else by hand")
+	derived, err := BuildMhvtlConf(cur, values)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(derived, next) {
+		return refuse(ErrMhvtlConfDerived, "the new mhvtl.conf may differ from the current one only in the values of CAPACITY, VERBOSE and VTL_DEBUG, and of MHVTL_HOME_PATH through mhvtl-move-home; change other lines by hand")
 	}
 	return nil
+}
+
+// BuildMhvtlConf is cur with the editable keys of values set, each through
+// conffile's round-trip setter and each matching its pattern. The keys are
+// set in editableKeys order, so the result does not depend on how an edit
+// was split into requests: a key cur lacks is appended. A value cur
+// already has changes nothing.
+func BuildMhvtlConf(cur []byte, values map[string]string) ([]byte, error) {
+	for k := range values {
+		known := false
+		for _, e := range editableKeys {
+			known = known || e.key == k
+		}
+		if !known {
+			return nil, refuse(ErrMhvtlConfKey, "mhvtl.conf: %s cannot be set here", k)
+		}
+	}
+	c := conffile.ParseMhvtlConf(cur)
+	for _, k := range editableKeys {
+		v, ok := values[k.key]
+		if cv, cok := c.Get(k.key); !ok || cok && cv == v {
+			continue
+		}
+		if !k.valid(v) {
+			return nil, refuse(ErrMhvtlConfValue, "mhvtl.conf: %s=%q is not a valid value", k.key, v)
+		}
+		if err := c.Set(k.key, v); err != nil {
+			return nil, refuse(ErrMhvtlConfValue, "%v", err)
+		}
+	}
+	return c.Render(), nil
 }
 
 // homeProblem is validate.HomeProblem on home as written and as it
@@ -206,8 +237,16 @@ func CheckHomes(cur, next config.Inventory, curDefault, nextDefault string) erro
 // link (a raw-disk cartridge, ensure_symlink in markh794/mhvtl
 // usr/raw_bay_ops.c:96-132 at 852b78a,
 // https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/raw_bay_ops.c#L96-L132),
-// or cannot be listed. A missing dir is empty.
+// or cannot be listed. A missing dir is empty. A dir under /tmp or
+// /var/tmp is never judged empty: both services run with PrivateTmp=yes
+// (dist/mhvtl-control.service, dist/mhvtl-control-apply@.service), so they
+// see an empty /tmp whatever the real one holds.
 func homeEmpty(dir string) error {
+	for _, t := range SandboxedTmp {
+		if c := filepath.Clean(dir); c == t || strings.HasPrefix(c, t+"/") {
+			return errors.New("the service sandbox hides " + t + ", so the old home " + dir + " cannot be seen empty")
+		}
+	}
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -222,6 +261,12 @@ func homeEmpty(dir string) error {
 	}
 	return nil
 }
+
+// SandboxedTmp are the directories PrivateTmp=yes replaces with the
+// service's own (systemd.exec(5),
+// https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#PrivateTmp=).
+// Tests whose homes are under t.TempDir() clear it.
+var SandboxedTmp = []string{"/tmp", "/var/tmp"}
 
 // defaultHome is the home of a library without a "Home directory":
 // MHVTL_HOME_PATH from mhvtl.conf, else the compiled-in default.
