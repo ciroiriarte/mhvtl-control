@@ -13,6 +13,7 @@ import (
 
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/scsi"
 )
 
 // fakeSystem is mhVTL as the exec sequence sees it, over an env's
@@ -40,12 +41,16 @@ type fakeSystem struct {
 	onStart   func(unit string)
 	// onListMap answers "list map"; nil answers "".
 	onListMap func(lib int) string
+	// offline are the libraries taken offline: their READ ELEMENT STATUS
+	// is NOT READY / OFFLINE (02/04/12) until online or a restart, as
+	// vtllibrary answers it (usr/cmd/vtllibrary.c:213-225 at d65d25f).
+	offline map[int]bool
 }
 
 func newExecEnv(t *testing.T) (*env, *fakeSystem) {
 	e := newEnv(t)
 	s := &fakeSystem{e: e, state: map[string]string{bayMonitor: "inactive"}, live: map[int]changer.Inventory{}, started: map[int]changer.Inventory{},
-		loaded: map[string]bool{}, enabled: map[string]bool{}, failStart: map[string]bool{}, failStop: map[string]bool{},
+		loaded: map[string]bool{}, enabled: map[string]bool{}, offline: map[int]bool{}, failStart: map[string]bool{}, failStop: map[string]bool{},
 		onStop: func(string) {}, onMedia: func() error { return nil }, onStart: func(string) {}}
 	e.cfg.Systemctl = s.systemctl
 	e.cfg.Queue, e.cfg.Devices = s, s
@@ -130,6 +135,7 @@ func (s *fakeSystem) systemctl(ctx context.Context, args ...string) ([]byte, err
 		if _, err := fmt.Sscanf(args[1], "vtllibrary@%d.service", &id); err == nil {
 			delete(s.live, id)
 			delete(s.started, id)
+			delete(s.offline, id)
 		}
 		s.onStop(args[1])
 		return nil, nil
@@ -144,6 +150,7 @@ func (s *fakeSystem) systemctl(ctx context.Context, args ...string) ([]byte, err
 		var id int
 		if _, err := fmt.Sscanf(args[1], "vtllibrary@%d.service", &id); err == nil {
 			s.started[id] = s.fromDisk(id)
+			delete(s.offline, id)
 		}
 		s.onStart(args[1])
 		return nil, nil
@@ -169,8 +176,21 @@ func (s *fakeSystem) systemctl(ctx context.Context, args ...string) ([]byte, err
 	return nil, nil
 }
 
-func (s *fakeSystem) Offline(lib int64) error { s.log("offline %d", lib); return nil }
-func (s *fakeSystem) Online(lib int64) error  { s.log("online %d", lib); return nil }
+func (s *fakeSystem) Offline(lib int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.log("offline %d", lib)
+	s.offline[int(lib)] = true
+	return nil
+}
+
+func (s *fakeSystem) Online(lib int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.log("online %d", lib)
+	delete(s.offline, int(lib))
+	return nil
+}
 func (s *fakeSystem) ListMap(lib int64) (string, error) {
 	s.log("list map %d", lib)
 	if s.unitState(libraryUnit(int(lib))) != "active" {
@@ -186,6 +206,12 @@ func (s *fakeSystem) Locate(serial string, typ uint8) (string, error) { return "
 
 func (s *fakeSystem) Inventory(lib config.Library, hctl string) (changer.Inventory, error) {
 	s.log("RES %d", lib.ID)
+	s.mu.Lock()
+	off := s.offline[lib.ID]
+	s.mu.Unlock()
+	if off {
+		return changer.Inventory{}, &scsi.SenseError{Key: 0x02, ASC: 0x04, ASCQ: 0x12}
+	}
 	if inv, ok := s.live[lib.ID]; ok {
 		return inv, nil
 	}

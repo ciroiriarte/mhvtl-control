@@ -377,7 +377,9 @@ func TestGuardedReonline(t *testing.T) {
 	if _, err := e.stopper(ModeRollback).guardedStop(ctx, []StopLib{e.lib(10), e.lib(30)}); err == nil {
 		t.Error("stop failure: no error")
 	}
-	if e.onlines() != "30" {
+	// Rollback puts each library online before its R1′ (10, 30), then
+	// 30 again after the failure.
+	if e.onlines() != "10,30,30" {
 		t.Errorf("stop failure: online %q", e.onlines())
 	}
 
@@ -394,7 +396,7 @@ func TestGuardedReonline(t *testing.T) {
 		}()
 		sp.guardedStop(ctx, []StopLib{e.lib(30), e.lib(10)})
 	}()
-	if e.onlines() != "10" {
+	if e.onlines() != "30,10,10" {
 		t.Errorf("panic: online %q", e.onlines())
 	}
 
@@ -625,5 +627,38 @@ func TestGuardedStopSettles(t *testing.T) {
 		if err == nil || len(ls.Stopped) != 0 {
 			t.Errorf("%s: %v %+v", state, err, ls)
 		}
+	}
+}
+
+// TestGuardedOfflineLibrary: in rollback and recover an active library
+// that the apply left offline answers READ ELEMENT STATUS only after it is
+// put online; a MAP that keeps changing is read again barrierRetries times
+// and recorded as drift, not raced.
+func TestGuardedOfflineLibrary(t *testing.T) {
+	for _, mode := range []StopMode{ModeRollback, ModeRecover} {
+		e := newStopEnv(t)
+		var maps []string
+		for i := 0; i <= barrierRetries; i++ {
+			maps = append(maps, fmt.Sprint("M", i), fmt.Sprint("M", i, "x"))
+		}
+		e.maps[10] = maps
+		out, err := e.stopper(mode).guardedStop(context.Background(), []StopLib{e.lib(10)})
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		ls := out[0]
+		if !strings.HasPrefix(e.calls[0], "online 10") || !strings.Contains(ls.Drift, "M3x") || len(ls.Stopped) == 0 {
+			t.Errorf("%s: calls %v, %+v", mode, e.calls, ls)
+		}
+		if n := strings.Count(strings.Join(e.calls, ","), "RES 10"); n != barrierRetries+1 {
+			t.Errorf("%s: %d reads", mode, n)
+		}
+	}
+	// A MAP that settles on the second read: no drift.
+	e := newStopEnv(t)
+	e.maps[10] = []string{"A", "B", "B", "B"}
+	out, err := e.stopper(ModeRecover).guardedStop(context.Background(), []StopLib{e.lib(10)})
+	if err != nil || out[0].Drift != "" || out[0].Map != "B" {
+		t.Errorf("settled: %v %+v", err, out[0])
 	}
 }
