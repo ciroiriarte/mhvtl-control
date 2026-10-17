@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"mhvtl-control/internal/apply"
 	"mhvtl-control/internal/applyclient"
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
@@ -77,6 +78,8 @@ type Config struct {
 type HelperService interface {
 	// Hello returns the helper's state, one of the applyclient constants.
 	Hello(ctx context.Context) (string, error)
+	// Do sends a request; applyclient.ErrAbsent means no helper listens.
+	Do(ctx context.Context, req apply.Request) (apply.Response, error)
 }
 
 var _ HelperService = (*applyclient.Client)(nil)
@@ -132,8 +135,11 @@ type Server struct {
 	// live shares each library's live placement among the configuration
 	// routes.
 	live liveCache
-	// hello caches the helper's state for GET /config/capabilities.
+	// hello caches the helper's state for GET /config/capabilities and the
+	// write routes.
 	hello helloCache
+	// stages are the change sets the write routes build.
+	stages stages
 	// now is the clock; time.Now unless a test sets it.
 	now func() time.Time
 }
@@ -213,6 +219,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/config/libraries/{id}/drives", s.handleConfigDrives)
 	mux.HandleFunc("GET /api/v1/config/libraries/{id}/slots", s.handleConfigSlots)
 	mux.HandleFunc("POST /api/v1/config/validate", s.handleConfigValidate)
+	mux.HandleFunc("POST /api/v1/config/libraries", s.handleConfigLibraryCreate)
+	mux.HandleFunc("PATCH /api/v1/config/libraries/{id}", s.handleConfigLibraryPatch)
+	mux.HandleFunc("DELETE /api/v1/config/libraries/{id}", s.handleConfigLibraryDelete)
+	mux.HandleFunc("POST /api/v1/config/libraries/{id}/drives", s.handleConfigDriveCreate)
+	mux.HandleFunc("PATCH /api/v1/config/libraries/{id}/drives/{drive}", s.handleConfigDrivePatch)
+	mux.HandleFunc("DELETE /api/v1/config/libraries/{id}/drives/{drive}", s.handleConfigDriveDelete)
+	mux.HandleFunc("POST /api/v1/config/libraries/{id}/slots", s.handleConfigSlotsAdd)
+	mux.HandleFunc("PATCH /api/v1/config/libraries/{id}/slots/{n}", s.handleConfigSlotPatch)
+	mux.HandleFunc("DELETE /api/v1/config/libraries/{id}/slots/{n}", s.handleConfigSlotDelete)
+	mux.HandleFunc("POST /api/v1/config/apply", s.handleConfigApply)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)

@@ -493,14 +493,26 @@ func TestConfigRoutesNeedToken(t *testing.T) {
 	}
 }
 
-// No write route exists yet (AC 17): every other method on the config paths
-// is refused.
-func TestConfigHasNoWriteRoutes(t *testing.T) {
+// The config paths take only the write routes of plan 4.1 (AC 17); every
+// other method is refused. Without a helper client those are refused too.
+func TestConfigWriteRoutesOnly(t *testing.T) {
 	cfg := Config{ConfigDir: genDir(t)}
+	routes := map[string]bool{
+		"POST /api/v1/config/libraries":           true,
+		"PATCH /api/v1/config/libraries/10":       true,
+		"DELETE /api/v1/config/libraries/10":      true,
+		"POST /api/v1/config/libraries/10/drives": true,
+		"POST /api/v1/config/libraries/10/slots":  true,
+		"POST /api/v1/config/apply":               true,
+	}
 	for _, m := range []string{http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete} {
 		for _, p := range []string{"/api/v1/config", "/api/v1/config/libraries", "/api/v1/config/libraries/10",
 			"/api/v1/config/libraries/10/drives", "/api/v1/config/libraries/10/slots", "/api/v1/config/apply"} {
-			if rec := do(t, cfg, m, p, "{}"); rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusNotFound {
+			rec := do(t, cfg, m, p, "{}")
+			switch {
+			case routes[m+" "+p] && (rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "helper_absent")):
+				t.Errorf("%s %s: %d %s, want 409 helper_absent", m, p, rec.Code, rec.Body)
+			case !routes[m+" "+p] && rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusNotFound:
 				t.Errorf("%s %s: %d", m, p, rec.Code)
 			}
 		}
@@ -583,12 +595,15 @@ func TestConfigCapabilities(t *testing.T) {
 }
 
 // fakeHelper answers each connection on a unix socket the way
-// mhvtl-control-apply answers hello: one JSON request, one response.
+// mhvtl-control-apply does: one JSON request, one response. Hello answers
+// state; another op gets answer's response, and is kept in reqs.
 type fakeHelper struct {
-	ln    net.Listener
-	mu    sync.Mutex
-	state string // the hello state; "" sends a response that is not JSON
-	conns int
+	ln     net.Listener
+	mu     sync.Mutex
+	state  string // the hello state; "" sends a response that is not JSON
+	conns  int
+	answer func(apply.Request) apply.Response
+	reqs   []apply.Request
 }
 
 func newFakeHelper(t *testing.T, socket string) *fakeHelper {
@@ -604,15 +619,21 @@ func newFakeHelper(t *testing.T, socket string) *fakeHelper {
 			if err != nil {
 				return
 			}
-			h.mu.Lock()
-			h.conns++
-			state := h.state
-			h.mu.Unlock()
 			var req apply.Request
 			json.NewDecoder(c).Decode(&req)
-			if state == "" || req.Op != apply.OpHello {
+			h.mu.Lock()
+			h.conns++
+			state, answer := h.state, h.answer
+			if req.Op != apply.OpHello {
+				h.reqs = append(h.reqs, req)
+			}
+			h.mu.Unlock()
+			switch {
+			case req.Op != apply.OpHello && answer != nil:
+				json.NewEncoder(c).Encode(answer(req))
+			case state == "" || req.Op != apply.OpHello:
 				c.Write([]byte("not json"))
-			} else {
+			default:
 				json.NewEncoder(c).Encode(apply.Response{Result: apply.ResultOK, State: state})
 			}
 			c.Close()
@@ -729,6 +750,10 @@ func (h *slowHelper) Hello(ctx context.Context) (string, error) {
 	}
 	h.clock.add(h.took)
 	return applyclient.Present, nil
+}
+
+func (h *slowHelper) Do(context.Context, apply.Request) (apply.Response, error) {
+	return apply.Response{}, errors.New("slowHelper only answers hello")
 }
 
 type syncClock struct {
