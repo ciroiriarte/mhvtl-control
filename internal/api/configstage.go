@@ -428,20 +428,18 @@ func (st *stage) writable() error {
 const mhvtlConf = "mhvtl.conf"
 
 // defaultHomes are the media home of a library without a "Home directory"
-// on disk and in the stage: MHVTL_HOME_PATH, else the compiled-in default.
+// on disk and in the stage: MHVTL_HOME_PATH, else the helper's compiled-in
+// default (apply.DefaultHome), as the helper judges the stage. --home-dir
+// (s.cfg.DefaultHome) tells only the dashboard where to look for media.
 func (s *Server) defaultHomes(st *stage) (cur, next string, err error) {
 	if err := s.adopt(st, mhvtlConf); err != nil {
 		return "", "", err
-	}
-	def := s.cfg.DefaultHome
-	if def == "" {
-		def = defaultHome
 	}
 	home := func(data []byte) string {
 		if v, ok := conffile.ParseMhvtlConf(data).Get("MHVTL_HOME_PATH"); ok && v != "" {
 			return v
 		}
-		return def
+		return apply.DefaultHome
 	}
 	nextData, _ := st.file(mhvtlConf)
 	return home(st.disk[mhvtlConf]), home(nextData), nil
