@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"mhvtl-control/internal/changer"
 )
 
 // killedWrite leaves e as an apply killed after its device.conf write:
@@ -198,17 +200,11 @@ func (f *fakeLifecycle) Start(_ context.Context, it *Intent) error {
 }
 
 // TestRecoverLibraries: runtime recovery of an apply that had stopped
-// libraries goes through the unit lifecycle around the file restore, and
-// waits for PR 3b's when there is none; a recovery killed after the stop
-// resumes without stopping again.
+// libraries goes through the unit lifecycle around the file restore; a
+// recovery killed after the stop resumes without stopping again.
 func TestRecoverLibraries(t *testing.T) {
 	e := newEnv(t)
 	orig := killedWrite(t, e, &Intent{Libraries: []int{10}})
-	resp := e.do(Request{Op: OpRecover})
-	if resp.Result != ResultError || resp.Error != ErrNotImplemented || !e.intentExists() {
-		t.Errorf("no lifecycle: %+v", resp)
-	}
-
 	lc := &fakeLifecycle{}
 	e.cfg.Lifecycle = lc
 	e.rebuild()
@@ -323,5 +319,123 @@ func TestRecoverNothing(t *testing.T) {
 	e := newEnv(t)
 	if resp := e.do(Request{Op: OpRecover}); resp.Result != ResultOK {
 		t.Errorf("recover without an intent: %+v", resp)
+	}
+}
+
+// killPoints lists the steps of an apply of req at which the helper can
+// die, by running it once.
+func killPoints(t *testing.T, setup func(*testing.T) (*env, *fakeSystem, Request)) []string {
+	e, _, req := setup(t)
+	var steps []string
+	e.h.killPoint = func(step string) bool { steps = append(steps, step); return false }
+	if resp := e.do(req); resp.Result != ResultApplied {
+		t.Fatalf("apply: %+v", resp)
+	}
+	return steps
+}
+
+func compressionEnv(t *testing.T) (*env, *fakeSystem, Request) {
+	e, s := newExecEnv(t)
+	return e, s, compression(e)
+}
+
+// TestRecoverAfterEveryStep: an apply killed after any step is recovered
+// by the next request through the real lifecycle: guardedStop in recover
+// mode (stopping whatever the apply had started), the files restored, the
+// library's units started again, held offline, then online.
+func TestRecoverAfterEveryStep(t *testing.T) {
+	for _, step := range killPoints(t, compressionEnv) {
+		t.Run(step, func(t *testing.T) {
+			e, s, req := compressionEnv(t)
+			dc, lc := e.read("device.conf"), e.read("library_contents.10")
+			e.h.killPoint = func(st string) bool { return st == step }
+			if resp := e.do(req); resp.Result != ResultError || !e.intentExists() {
+				t.Fatalf("killed apply: %+v", resp)
+			}
+			s.calls = nil
+			e.rebuild()
+			resp := e.do(Request{Op: OpRecover})
+			if resp.Result != ResultRecovered || e.intentExists() {
+				t.Fatalf("recover: %+v", resp)
+			}
+			if string(e.read("device.conf")) != string(dc) || string(e.read("library_contents.10")) != string(lc) {
+				t.Errorf("files not restored:\n%s", diffLines(string(lc), string(e.read("library_contents.10"))))
+			}
+			for _, u := range []string{"vtllibrary@10.service", "vtltape@11.service"} {
+				if s.unitState(u) != "active" {
+					t.Errorf("%s is %s", u, s.unitState(u))
+				}
+			}
+			if !s.before("daemon-reload", "start vtllibrary@10.service") || !s.before("start vtllibrary@10.service", "online 10") {
+				t.Errorf("recovery calls %v", s.calls)
+			}
+			if step == "started" && !s.before("offline 10", "stop vtllibrary@10.service") {
+				t.Errorf("a running library was not stopped through guardedStop: %v", s.calls)
+			}
+		})
+	}
+}
+
+// TestRecoverPersistJournaled: killed between journaling the .persist
+// verdict and moving it aside (and so before any write), recovery writes
+// the journaled .persist placements into library_contents and moves the
+// .persist aside, so a host move made before the stop is kept.
+func TestRecoverPersistJournaled(t *testing.T) {
+	e, s := newExecEnv(t)
+	e.replaceFile("device.conf", " PERSIST: False", " PERSIST: True")
+	lc := string(e.read("library_contents.10"))
+	moved := strings.Replace(strings.Replace(lc, "Slot 1: E01001L8", "Slot 1: ", 1), "Slot 21: \n", "Slot 21: E01001L8        \n", 1)
+	s.liveWith(10, func(inv *changer.Inventory) {
+		inv.Slots[0] = changer.SlotState{Number: 1}
+		inv.Slots[20] = changer.SlotState{Number: 21, Full: true, Barcode: "E01001L8"}
+	})
+	s.onStop = func(u string) {
+		if u == "vtllibrary@10.service" {
+			os.WriteFile(filepath.Join(e.dir, "library_contents.10.persist"), []byte(moved), 0o644)
+		}
+	}
+	e.h.killPoint = func(st string) bool { return st == "apply: library 10 stopped" }
+	req := compression(e)
+	req.Files = append(req.Files, File{Name: "library_contents.10", BaseSHA256: e.sha("library_contents.10"),
+		Content: []byte(strings.Replace(strings.Replace(lc, "Slot 1: E01001L8", "Slot 1:", 1), "Slot 21: \n", "Slot 21: E01001L8\n", 1))})
+	if resp := e.do(req); resp.Result != ResultError {
+		t.Fatalf("killed apply: %+v", resp)
+	}
+	if _, err := os.Stat(filepath.Join(e.dir, "library_contents.10.persist")); err != nil {
+		t.Fatalf(".persist not left by the kill: %v", err)
+	}
+	e.rebuild()
+	if resp := e.do(Request{Op: OpRecover}); resp.Result != ResultRecovered {
+		t.Fatalf("recover: %+v", resp)
+	}
+	got := string(e.read("library_contents.10"))
+	if !strings.Contains(got, "\nSlot 1:\n") || !strings.Contains(got, "\nSlot 21: E01001L8\n") {
+		t.Errorf("journaled placements not written:\n%s", diffLines(lc, got))
+	}
+	if _, err := os.Stat(filepath.Join(e.dir, "library_contents.10.persist")); !os.IsNotExist(err) {
+		t.Errorf(".persist left in place: %v", err)
+	}
+}
+
+// TestSIGTERMMidApply: the context cancelled while units start (SIGTERM)
+// rolls back in the stop slack: the libraries come back online and the
+// intent is gone.
+func TestSIGTERMMidApply(t *testing.T) {
+	e, s := newExecEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.onStart = func(u string) {
+		if u == "vtltape@11.service" {
+			cancel()
+		}
+	}
+	req := compression(e)
+	req.V = Version
+	resp := e.h.Handle(ctx, e.peer, &req)
+	if resp.Result != ResultRolledBack || e.intentExists() {
+		t.Fatalf("apply: %+v", resp)
+	}
+	if s.unitState("vtllibrary@10.service") != "active" || !strings.HasPrefix(s.calls[len(s.calls)-1], "online 10") {
+		t.Errorf("library 10 not back online: %v", s.calls)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"mhvtl-control/internal/changer"
 )
 
 func (e *env) advance(d time.Duration) {
@@ -65,5 +67,67 @@ func TestForceToken(t *testing.T) {
 	}
 	if ents, _ := os.ReadDir(filepath.Join(e.run, nonceDir)); len(ents) != 1 {
 		t.Errorf("nonces not pruned: %d left", len(ents))
+	}
+}
+
+// loadedEnv is library 10 with drive 12 loaded from slot 2, and the
+// request that restarts it, built from the live view.
+func loadedEnv(t *testing.T) (*env, *fakeSystem, Request) {
+	e, s := newExecEnv(t)
+	s.liveWith(10, func(inv *changer.Inventory) {
+		inv.Slots[1] = changer.SlotState{Number: 2}
+		inv.Drives[1] = changer.DriveState{Number: 2, Full: true, Barcode: "E01002L8", SourceSlot: 2}
+	})
+	s.loaded["XYZZY_A2"] = true
+	req := compression(e)
+	req.Files = append(req.Files, e.edit("library_contents.10", "Slot 2: E01002L8\n", "Slot 2:\n"))
+	return e, s, req
+}
+
+func (e *env) forceToken(req Request) string {
+	e.t.Helper()
+	req.Op = OpPlan
+	resp := e.do(req)
+	if resp.Error != ErrDriveLoaded || resp.ForceToken == "" {
+		e.t.Fatalf("plan: %+v", resp)
+	}
+	return resp.ForceToken
+}
+
+// TestForceApply covers plan 3.4 through the helper: a token voids when
+// the live placement or the change differs at apply time, and does not
+// override a validation error; the valid case is TestExecLoaded.
+func TestForceApply(t *testing.T) {
+	e, s, req := loadedEnv(t)
+	req.ForceToken = e.forceToken(req)
+	s.liveWith(10, func(inv *changer.Inventory) {
+		inv.Slots[1] = changer.SlotState{Number: 2}
+		inv.Slots[2] = changer.SlotState{Number: 3}
+		inv.Drives[1] = changer.DriveState{Number: 2, Full: true, Barcode: "E01002L8", SourceSlot: 2}
+		inv.MAPs[0] = changer.SlotState{Number: 1, Full: true, Barcode: "E01003L8"}
+	})
+	if resp := e.do(req); resp.Result != ResultRefused || resp.Error != ErrForce {
+		t.Errorf("live state changed: %+v", resp)
+	}
+
+	e, _, req = loadedEnv(t)
+	tok := e.forceToken(req)
+	other := req
+	other.Files = append([]File{}, req.Files...)
+	other.Files[0] = e.edit("device.conf", " Compression type: lzo", " Compression type: zlib ")
+	other.ForceToken = tok
+	if resp := e.do(other); resp.Error != ErrForce {
+		t.Errorf("diff changed: %+v", resp)
+	}
+
+	e, _, req = loadedEnv(t)
+	tok = e.forceToken(req)
+	bad := req
+	bad.Files = append([]File{}, req.Files...)
+	bad.Files[0] = e.edit("device.conf", "Unit serial number: XYZZY_A2", "Unit serial number: XYZZY_A1")
+	bad.ExpectUnits = []string{"vtllibrary@10.service", "vtltape@12.service"}
+	bad.ForceToken = tok
+	if resp := e.do(bad); resp.Error != ErrInvalid {
+		t.Errorf("validation error: %+v", resp)
 	}
 }

@@ -540,7 +540,7 @@ func TestRejectInvalid(t *testing.T) {
 
 func TestRejectForceToken(t *testing.T) {
 	e := newEnv(t)
-	e.refused("force", Request{Op: OpPlan, ForceToken: "x"}, ErrNotImplemented)
+	e.refused("force on a plan", Request{Op: OpPlan, ForceToken: "x"}, ErrBadRequest)
 }
 
 // TestPeerPIDFDErrors: CheckPeer falls back to the start-time recheck only

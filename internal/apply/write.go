@@ -62,24 +62,24 @@ var errKilled = errors.New("killed at a test kill point")
 // writeFiles makes the changes durable, one file at a time, behind the
 // intent (plan 3.2, write.go; AC 4):
 //
-//  1. a rollback directory StateDir/rollback/<time>/ gets a copy of every
-//     file replaced (pruned to the newest 50);
+//  1. the apply's rollback directory StateDir/rollback/<time>/ (made here
+//     unless the caller made it; pruned to the newest 50) gets a copy of
+//     every file replaced;
 //  2. intent.json records each file's original bytes and both hashes;
 //  3. each file is written with conffile.ReplaceIfHash, which re-hashes it
 //     immediately before the rename, or deleted with removeIfHash, which
 //     moves it into the rollback directory; the intent's step follows.
 //
 // A conflict or an error at step 3, or ctx ending, restores the files done
-// so far by the restore rule and removes the intent. The intent is left in
-// place on success: the caller ends the apply (PR 3b restarts units first).
+// so far by the restore rule and removes the intent, unless the exec
+// sequence owns it: that rolls the units back and ends it then. The
+// intent is left in place on success: the caller restarts the units and
+// ends the apply.
 func (h *Helper) writeFiles(ctx context.Context, it *Intent, changes []change, files *fileSet) error {
-	now := h.cfg.Now().UTC()
-	rb := filepath.Join(h.cfg.StateDir, rollbackDir, now.Format(rollbackStamp))
-	if err := os.MkdirAll(rb, 0o700); err != nil {
+	rb, err := h.rollbackDir(it)
+	if err != nil {
 		return err
 	}
-	h.pruneRollback()
-	it.RollbackDir = filepath.Base(rb)
 	for _, c := range changes {
 		cur, err := files.current(c.name)
 		if err != nil {
@@ -123,10 +123,11 @@ func (h *Helper) writeFiles(ctx context.Context, it *Intent, changes []change, f
 		}
 		if err != nil {
 			// The intent stays when a file could not be restored, so
-			// that recovery retries it.
+			// that recovery retries it, and in the exec sequence, whose
+			// rollback ends it.
 			conflicts, rerr := h.restore(it)
-			if rerr != nil {
-				return errors.Join(err, rerr)
+			if rerr != nil || it.Exec != nil {
+				return errors.Join(err, rerr, conflictsError(conflicts))
 			}
 			return errors.Join(err, conflictsError(conflicts), h.removeIntent())
 		}
@@ -139,6 +140,21 @@ func (h *Helper) writeFiles(ctx context.Context, it *Intent, changes []change, f
 		}
 	}
 	return nil
+}
+
+// rollbackDir returns the apply's directory under StateDir/rollback,
+// creating it (and pruning the old ones) the first time.
+func (h *Helper) rollbackDir(it *Intent) (string, error) {
+	if it.RollbackDir != "" {
+		return filepath.Join(h.cfg.StateDir, rollbackDir, it.RollbackDir), nil
+	}
+	rb := filepath.Join(h.cfg.StateDir, rollbackDir, h.cfg.Now().UTC().Format(rollbackStamp))
+	if err := os.MkdirAll(rb, 0o700); err != nil {
+		return "", err
+	}
+	h.pruneRollback()
+	it.RollbackDir = filepath.Base(rb)
+	return rb, nil
 }
 
 // pruneRollback keeps the newest keepRollback rollback directories.

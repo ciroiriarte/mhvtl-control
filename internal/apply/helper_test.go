@@ -47,7 +47,7 @@ func newEnv(t *testing.T) *env {
 		peer:  Peer{PID: 4242, UID: 0, Cgroup: "/system.slice/mhvtl-control.service"},
 	}
 	e.legacy = filepath.Join(e.dir, "mhvtl-control.env")
-	for _, d := range []string{e.dir, e.state, e.run, e.home, filepath.Join(root, "sys")} {
+	for _, d := range []string{e.dir, e.state, e.run, e.home, filepath.Join(root, "sys"), filepath.Join(root, "daemon-run")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -95,8 +95,10 @@ func newEnv(t *testing.T) *env {
 			defer e.mu.Unlock()
 			e.journal = append(e.journal, f)
 		},
-		Logf:        t.Logf,
-		ReadTimeout: 5 * time.Second,
+		Logf:         t.Logf,
+		ReadTimeout:  5 * time.Second,
+		ApplyLockDir: filepath.Join(root, "daemon-run"),
+		MoveHomeDir:  filepath.Join(root, "move-home"),
 	}
 	e.h = New(*e.cfg)
 	return e
@@ -183,19 +185,25 @@ func TestPlanValidates(t *testing.T) {
 	}
 }
 
-// TestApplyNotImplemented: until PR 3b an apply that passes every check is
-// refused, and audited, without touching a file.
-func TestApplyNotImplemented(t *testing.T) {
+// TestApplyNoUnits: an apply whose change restarts nothing (a comment in
+// device.conf) writes the file, touches no unit, ends its intent and is
+// audited.
+func TestApplyNoUnits(t *testing.T) {
 	e := newEnv(t)
-	before := e.sha("device.conf")
-	resp := e.do(Request{Op: OpApply, Actor: "admin", Files: []File{e.edit("device.conf", "# Each 'record'", "# Every 'record'")}})
-	if resp.Result != ResultRefused || resp.Error != ErrNotImplemented {
+	f := e.edit("device.conf", "# Each 'record'", "# Every 'record'")
+	resp := e.do(Request{Op: OpApply, Actor: "admin", Files: []File{f}})
+	if resp.Result != ResultApplied || len(resp.Units) != 0 {
 		t.Fatalf("apply: %+v", resp)
 	}
-	if e.sha("device.conf") != before {
-		t.Error("apply changed device.conf")
+	if string(e.read("device.conf")) != string(f.Content) || e.intentExists() {
+		t.Error("device.conf not written, or intent left")
 	}
-	if l := e.auditLines(); len(l) != 1 || !strings.Contains(l[0], `"error":"not_implemented"`) {
+	for _, c := range e.systemctl {
+		if c[0] != "show" {
+			t.Errorf("systemctl %v", c)
+		}
+	}
+	if l := e.auditLines(); len(l) != 1 || !strings.Contains(l[0], `"result":"applied"`) {
 		t.Errorf("audit: %v", l)
 	}
 }

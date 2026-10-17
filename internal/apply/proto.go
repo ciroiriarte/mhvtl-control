@@ -233,7 +233,6 @@ const (
 	ErrPlacement        = "placement"
 	ErrNotWritable      = "not_writable"
 	ErrInvalid          = "invalid"
-	ErrNotImplemented   = "not_implemented"
 	ErrInternal         = "internal"
 	ErrIntentUnreadable = "intent_unreadable"
 )

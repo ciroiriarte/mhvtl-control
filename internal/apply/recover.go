@@ -9,11 +9,12 @@ import (
 )
 
 // recover brings back the files of the apply that left it, which is dead:
-// the caller holds exclusive.lock. When the intent names libraries, their
-// units go through Lifecycle around the file restore, except at boot,
-// when nothing runs yet. The recovery step is journaled in the intent
-// apart from the apply's, so a recovery that dies is resumed by the next
-// one; each file restore is idempotent by the restore rule. The intent is
+// the caller holds exclusive.lock. When the intent names libraries, or is
+// the exec sequence's, its units go through Lifecycle around the file
+// restore, except at boot, when nothing runs yet. The recovery step is
+// journaled in the intent apart from the apply's, so a recovery that dies
+// is resumed by the next one; each file restore is idempotent by the
+// restore rule. The intent is
 // removed once every file is restored or reported as a conflict.
 // actor and peer are who asked for the request that recovers.
 func (h *Helper) recover(ctx context.Context, it *Intent, boot bool, actor string, peer Peer) Response {
@@ -31,11 +32,9 @@ func (h *Helper) recover(ctx context.Context, it *Intent, boot bool, actor strin
 }
 
 func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Response {
-	units := len(it.Libraries) > 0 && !boot
-	if units && h.cfg.Lifecycle == nil {
-		return Response{Result: ResultError, Error: ErrNotImplemented,
-			Message: fmt.Sprintf("the interrupted apply had stopped libraries %v; recovering them needs the unit lifecycle (PR 3b)", it.Libraries)}
-	}
+	// An intent of the exec sequence may have stopped standalone drives
+	// too, which Libraries does not name.
+	units := (len(it.Libraries) > 0 || it.Exec != nil) && !boot
 	if it.Recovery == nil {
 		it.Recovery = &Recovery{}
 	}

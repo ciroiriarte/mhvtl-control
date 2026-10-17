@@ -38,9 +38,12 @@ type AuditRecord struct {
 	Error         string   `json:"error,omitempty"`
 	Message       string   `json:"message,omitempty"`
 	// OrphanedMedia are cartridges an apply left out of every library;
-	// their media is kept. PR 3b's merge fills it.
-	OrphanedMedia []string   `json:"orphaned_media"`
-	Conflicts     []Conflict `json:"conflicts,omitempty"`
+	// their media is kept.
+	OrphanedMedia []string `json:"orphaned_media"`
+	// ForcedUnloads and Unplaced are Response's.
+	ForcedUnloads []ForcedUnload `json:"forced_unloads,omitempty"`
+	Unplaced      []string       `json:"unplaced,omitempty"`
+	Conflicts     []Conflict     `json:"conflicts,omitempty"`
 	// RollbackDir is, for a recovery, the interrupted apply's copies of
 	// the files as they were (Response.RollbackDir).
 	RollbackDir string `json:"rollback_dir,omitempty"`
@@ -160,7 +163,7 @@ func messageID(op, result string) string {
 		return msgRefused
 	case result == ResultRecovered || op == OpRecover && result == ResultOK:
 		return msgRecovered
-	case result == ResultError:
+	case result == ResultError || result == ResultRolledBack:
 		return msgFailed
 	}
 	return msgApplied
@@ -171,7 +174,7 @@ func priority(result string) string {
 	switch result {
 	case ResultError:
 		return "3"
-	case ResultRefused, ResultConflict, ResultRecovered:
+	case ResultRefused, ResultConflict, ResultRecovered, ResultRolledBack:
 		return "4"
 	}
 	return "6"
