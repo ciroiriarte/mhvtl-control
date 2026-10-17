@@ -202,6 +202,9 @@ func (h *Helper) serve(ctx context.Context, conn *net.UnixConn) Response {
 
 // Handle carries out a decoded request from an authenticated peer.
 func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
+	// Hello is not audited: it changes nothing, and the daemon asks it for
+	// every GET /config/capabilities and write request (at most every 2 s),
+	// which would bury the changes in the audit log.
 	if req.Op == OpHello {
 		st, err := h.state()
 		if err != nil {

@@ -386,7 +386,7 @@
         command = HELPER_ENABLE;
     }
     if (caps.writes === "tls_required") {
-      tone = "warn";
+      if (tone === "info") tone = "warn";
       lines.push("This daemon listens on a non-loopback address without TLS, so it would refuse changes: start it with --tls-cert and --tls-key, or listen on loopback.");
     }
     var facts = [
