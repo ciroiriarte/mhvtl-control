@@ -54,6 +54,10 @@ LIB=40
 # personality.
 LIB_VENDOR=${LIB_VENDOR:-IBM}
 LIB_PRODUCT=${LIB_PRODUCT:-03584L32}
+# DRIVE_SERIAL_PAD=1 gives library 40's drives 10-character serials
+# (XYZZY_0041) instead of the short ones (XYZZY_41) mhVTL zero-pads; see
+# drive_stanza.
+DRIVE_SERIAL_PAD=${DRIVE_SERIAL_PAD:-}
 MARKER="# apply-smoke: library $LIB"
 
 ALL=(enable create change persist conflict rollback rollback-persist crash concurrency placement placement-force delete)
@@ -253,6 +257,19 @@ helper_instance() {
 
 # --- library 40 --------------------------------------------------------------
 
+# A drive serial is short by default, which mhVTL zero-pads to 10
+# characters in an IBM LTO drive's VPD 80h (ibm_lto_serial_pad,
+# usr/vtllib.c:2374-2395 at 852b78a,
+# https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/vtllib.c#L2374-L2395);
+# the helper must still find the drive by the serial device.conf gives.
+# DRIVE_SERIAL_PAD=1 writes the 10-character form, which mhVTL keeps.
+drive_serial() { # ID
+	if [ -n "$DRIVE_SERIAL_PAD" ]; then
+		printf 'XYZZY_%04d' "$1"
+	else
+		echo "XYZZY_$1"
+	fi
+}
 drive_stanza() { # ID SLOT
 	local t=$((16 + $1 - LIB))
 	cat <<EOF
@@ -262,7 +279,7 @@ Drive: $1 CHANNEL: 00 TARGET: $t LUN: 00
  Vendor identification: IBM
  Product identification: ULT3580-TD8
  Product revision level: HB81
- Unit serial number: XYZZY_$1
+ Unit serial number: $(drive_serial "$1")
  NAA: 40:22:33:44:ab:00:$t:00
  Compression: factor 1 enabled 1
  Compression type: lzo
@@ -629,6 +646,10 @@ s_concurrency() {
 	undropin sleep
 	jq -r '.result + " " + (.error // "")' "$STEP_DIR/term.apply.json" >"$STEP_DIR/term.result" 2>&1 || true
 	log "  (SIGTERM apply answered: $(cat "$STEP_DIR/term.result"))"
+	# The plan's SIGTERM path rolls back when the budget allows, which it
+	# does here; recovery below only lets the run go on when it did not.
+	check "SIGTERM apply answered rolled_back" jqis "$STEP_DIR/term.apply.json" .result rolled_back
+	check "no intent.json left by the SIGTERM apply" test ! -e "$STATE_DIR/intent.json"
 	local l
 	for l in $(awk '/^Library: / { print $2 }' "$CONF/device.conf"); do
 		check "library $l online after SIGTERM" online "$l"
