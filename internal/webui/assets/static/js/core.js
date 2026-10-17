@@ -466,6 +466,13 @@
     return !!caps && caps.writes === "ok";
   }
 
+  // stageEditable is whether the configuration takes edits: editable (the
+  // gate is open) and no apply of the stage st in flight, whose outcome is
+  // not known yet.
+  function stageEditable(editable, st) {
+    return !!editable && !(st && st.applying);
+  }
+
   // splitLines splits a file into lines. A final newline ends the last line
   // rather than starting an empty one; a file without one keeps its last
   // line distinct ("a" and "a\n" differ, as they do to mhVTL's readline).
@@ -741,6 +748,7 @@
     forceRemaining: forceRemaining,
     fmtCountdown: fmtCountdown,
     applyErrorAction: applyErrorAction,
+    stageEditable: stageEditable,
     stageOutcome: stageOutcome,
     libraryAttrFields: libraryAttrFields,
     driveAttrFields: driveAttrFields,

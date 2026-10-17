@@ -40,6 +40,7 @@
   var buildValidateBody = core.buildValidateBody;
   var writesEditable = core.writesEditable, stageFileRows = core.stageFileRows, planSummary = core.planSummary;
   var forceRemaining = core.forceRemaining, fmtCountdown = core.fmtCountdown, applyErrorAction = core.applyErrorAction;
+  var stageEditable = core.stageEditable;
   var stageOutcome = core.stageOutcome;
   var libraryAttrFields = core.libraryAttrFields, driveAttrFields = core.driveAttrFields, buildAttrPatch = core.buildAttrPatch;
   var buildSlotPatch = core.buildSlotPatch, buildSlotDelete = core.buildSlotDelete, buildSlotsAdd = core.buildSlotsAdd;
@@ -1783,7 +1784,7 @@
     clear(view);
     renderConfigNotice(lastCfg.caps);
     var mode = $("config-mode");
-    if (mode) { mode.textContent = cfgEditable() ? "editable" : "read-only"; }
+    if (mode) { mode.textContent = cfgStage && cfgStage.applying ? "applying" : (cfgEditable() ? "editable" : "read-only"); }
     var libs = coerceArray(lastCfg.config && lastCfg.config.libraries);
     var sel = $("config-library");
     if (sel) {
@@ -1882,7 +1883,21 @@
    * and the apply runs only after that. Editing is offered only while
    * capabilities.writes is "ok".                                         */
   function cfgEditable() {
-    return !!lastCfg && writesEditable(lastCfg.caps) && mutationsEnabled;
+    return stageEditable(!!lastCfg && writesEditable(lastCfg.caps) && mutationsEnabled, cfgStage);
+  }
+
+  // setApplying marks st's apply in flight, or done: while it is, nothing
+  // edits, checks, applies or discards the stage.
+  function setApplying(st, on) {
+    st.applying = on;
+    renderStage();
+    renderConfig();
+  }
+
+  // dropServerStage drops st on the daemon too; a failure leaves it to
+  // expire there.
+  function dropServerStage(st) {
+    api(cfgPath("/stages/" + encodeURIComponent(st.id)), { method: "DELETE" }).catch(function () {});
   }
 
   // stageId is the stage edits add to, if it belongs to this node.
@@ -1976,6 +1991,7 @@
   // dry run, if any, no longer stands.
   function stageEdit(method, path, body, done) {
     var gen = NodeState.generation;
+    if (cfgStage && cfgStage.applying) { done(new Error("An apply is running; wait for its outcome.")); return; }
     if (!cfgEditable()) { done(new Error("Editing is not available now.")); return; }
     api(path, { method: method, body: body }).then(function (res) {
       if (isStale(gen, NodeState.generation)) { return; }
@@ -2206,6 +2222,7 @@
     apply.disabled = !editable || !plan || !(plan.canApply || plan.force);
     check.disabled = !editable || !files.length;
     var discard = editButton("Discard", "Discard the pending changes", function () { discardStage(); });
+    discard.disabled = !editable;
     box.appendChild(mk("div", { class: "drive-actions", children: [check, apply, discard] }));
     if (!editable) { box.appendChild(mk("p", { class: "muted", text: "Read-only now: see the banner above." })); }
     renderPlan(box, plan);
@@ -2246,7 +2263,9 @@
     if (action === "reload" && cfgStage) {
       stageStatus.error(msg);
       var region = $("stage-status");
+      var st = cfgStage;
       var reload = editButton("Reload", "Reload the configuration and drop the pending changes", function () {
+        dropServerStage(st);
         cfgStage = null;
         renderStage();
         refresh();
@@ -2353,7 +2372,10 @@
       }
       st.plan = null;
       st.result = dto && dto.last_apply ? dto.last_apply : null;
+      // Still running: edits wait for the next answer.
+      st.applying = out.state === "busy";
       renderStage();
+      renderConfig();
       if (out.state === "busy") {
         stageStatus.error("The apply is still running.");
         var region = $("stage-status");
@@ -2367,6 +2389,7 @@
       }
     }).catch(function (e) {
       if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      setApplying(st, false);
       stageFailed(e);
     });
   }
@@ -2381,8 +2404,9 @@
     var body = { stage: st.id };
     if (token) { body.force_token = token; }
     stageStatus.loading();
+    setApplying(st, true);
     api(cfgPath("/apply"), { method: "POST", body: body }).then(function (res) {
-      if (isStale(gen, NodeState.generation)) { return; }
+      if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
       applied(res);
     }).catch(function (e) {
       if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
@@ -2391,6 +2415,7 @@
         learnOutcome(st, gen);
         return;
       }
+      setApplying(st, false);
       st.plan = null;
       st.result = e.body && e.body.result ? e.body : null;
       if (action === "replan") {
