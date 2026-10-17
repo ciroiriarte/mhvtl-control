@@ -187,3 +187,10 @@ test("slot edit bodies", () => {
   assert.deepStrictEqual(core.buildSlotsAdd("", "map", "3"), { kind: "map", count: 3 });
   assert.throws(() => core.buildSlotsAdd("", "slot", "0"), RangeError);
 });
+
+test("stageEditable holds every edit while the stage's apply is in flight", () => {
+  assert.strictEqual(core.stageEditable(true, null), true);
+  assert.strictEqual(core.stageEditable(true, { id: "s" }), true);
+  assert.strictEqual(core.stageEditable(true, { id: "s", applying: true }), false);
+  assert.strictEqual(core.stageEditable(false, { id: "s" }), false);
+});
