@@ -217,6 +217,11 @@ type Options struct {
 	// DefaultHome is the media home of libraries without a "Home directory"
 	// (MHVTL_HOME_PATH); empty skips the home checks for them.
 	DefaultHome string
+	// CurDefaultHome is the default home of the configuration in force,
+	// when the change may set another; empty means it equals DefaultHome.
+	// A DefaultHome HomeProblem rejects is an error when it differs, a
+	// pre-existing warning when not.
+	CurDefaultHome string
 	// HostErr is the error hostids.Read returned with the host's devices:
 	// the serials and NAAs of the host were then not all compared.
 	HostErr error
@@ -249,7 +254,26 @@ func Validate(cur, next config.Inventory, live *Live, host []hostids.Device, opt
 	r.Errors = errs
 	checkProblems(&r, cur, next)
 	checkHomes(&r, cur, next)
+	checkDefaultHome(&r, opts)
 	return r
+}
+
+// checkDefaultHome applies HomeProblem to MHVTL_HOME_PATH, as the apply
+// helper does when it derives mhvtl.conf: make_vtl_media creates the home
+// of every library without its own there, as root.
+func checkDefaultHome(r *Result, opts Options) {
+	p := HomeProblem(opts.DefaultHome)
+	if opts.DefaultHome == "" || p == "" {
+		return
+	}
+	f := newFinding(CodeMediaHomeForbidden, 0, nil,
+		"MHVTL_HOME_PATH %q cannot be a media home: %s", []any{opts.DefaultHome, p})
+	if opts.CurDefaultHome == "" || opts.CurDefaultHome == opts.DefaultHome {
+		f.Tag = TagPreExisting
+		r.Warnings = append(r.Warnings, f)
+		return
+	}
+	r.Errors = append(r.Errors, f)
 }
 
 // checkProblems reports the lines of the files read that mhVTL does not read
@@ -300,7 +324,8 @@ func check(cur, next config.Inventory, live *Live, host []hostids.Device, opts O
 // mhvtl-control's own state. mktape and make_vtl_media create directories
 // and files in the home as root, so a home there would let a configuration
 // change write into them. /home and /root are also hidden from
-// mhvtl-control by its unit's ProtectHome=yes.
+// mhvtl-control by its unit's ProtectHome=yes, as /run/user is (under
+// /run), so cartridges there would look missing to the daemon.
 var forbiddenHomes = []string{
 	"/etc", "/proc", "/sys", "/dev", "/run", "/boot", "/usr",
 	"/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32",

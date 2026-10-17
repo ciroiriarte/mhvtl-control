@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"mhvtl-control/internal/conffile"
+	"mhvtl-control/internal/validate"
 )
 
 // The refusals of AC 26 and plan 3.2: every request below is refused, and
@@ -465,6 +466,28 @@ func TestRejectHomeForbidden(t *testing.T) {
 		if resp := e.do(Request{Op: OpPlan, Files: []File{{Name: "device.conf", BaseSHA256: conffile.Hash([]byte(b)), Content: []byte(next)}}}); resp.Error == ErrHomeForbidden {
 			t.Errorf("new library 31 at %s: %+v", h, resp)
 		}
+	}
+}
+
+// A forbidden MHVTL_HOME_PATH already in force does not block an
+// unrelated change: validate reports it as a pre-existing warning, as the
+// daemon's validation does.
+func TestPreExistingDefaultHome(t *testing.T) {
+	e := newEnv(t)
+	b := strings.Replace(string(e.read("mhvtl.conf")), "MHVTL_HOME_PATH="+e.home, "MHVTL_HOME_PATH=/home/tapes", 1)
+	if err := os.WriteFile(filepath.Join(e.dir, "mhvtl.conf"), []byte(b), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resp := e.do(Request{Op: OpPlan, Files: []File{e.edit("device.conf", "# Each 'record'", "# Every 'record'")}})
+	if resp.Result != ResultValidated || resp.Findings == nil {
+		t.Fatalf("plan: %+v", resp)
+	}
+	found := false
+	for _, f := range resp.Findings.Warnings {
+		found = found || f.Code == validate.CodeMediaHomeForbidden && f.Tag == validate.TagPreExisting
+	}
+	if !found {
+		t.Errorf("no pre-existing media.home_forbidden warning: %+v", resp.Findings.Warnings)
 	}
 }
 
