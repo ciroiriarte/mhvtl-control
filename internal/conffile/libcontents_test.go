@@ -79,3 +79,44 @@ func TestLibContentsEditRefusals(t *testing.T) {
 		t.Errorf("Drive value: err = %v", err)
 	}
 }
+
+// AppendEntries writes what AddEntry of each next number would, in one
+// pass.
+func TestAppendEntries(t *testing.T) {
+	for _, in := range []string{
+		"VERSION: 2\n\nDrive 1:\n\nPicker 1:\n\nMAP 1:\n\nSlot 1: A00001L8\nSlot 2:\n# end\n",
+		"Slot 5:\nSlot 2:\n\nMAP 3:\n",
+		"VERSION: 2\r\nDrive 1:\r\n",
+		"Drive 1:",
+		"",
+	} {
+		for _, kind := range []string{"Slot", "MAP"} {
+			want := ParseLibContents([]byte(in))
+			highest := 0
+			for _, e := range want.Entries() {
+				if e.Kind == kind {
+					highest = max(highest, e.Number)
+				}
+			}
+			for n := highest + 1; n <= highest+3; n++ {
+				if err := want.AddEntry(kind, n, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := ParseLibContents([]byte(in))
+			if err := got.AppendEntries(kind, 3); err != nil {
+				t.Fatalf("%q %s: %v", in, kind, err)
+			}
+			if string(got.Render()) != string(want.Render()) || len(got.Entries()) != len(want.Entries()) {
+				t.Errorf("%q %s:\n%q\nwant\n%q", in, kind, got.Render(), want.Render())
+			}
+		}
+	}
+	c := ParseLibContents([]byte("Slot 1:\n"))
+	if err := c.AppendEntries("Drive", 1); err == nil {
+		t.Error("Drive lines appended")
+	}
+	if err := c.AppendEntries("Slot", 0); err == nil {
+		t.Error("count 0 accepted")
+	}
+}
