@@ -701,6 +701,157 @@ func TestConfigCapabilitiesHello(t *testing.T) {
 	}
 }
 
+// slowHelper is a HelperService whose hello takes as long as the test
+// says: it reports each start on started, then waits for release or the end
+// of its context, and moves the clock on by took, as a slow hello would.
+type slowHelper struct {
+	started chan struct{}
+	release chan struct{}
+	clock   *syncClock
+	took    time.Duration
+	mu      sync.Mutex
+	calls   int
+	ctxErr  error // the hello's context error when it ended, if any
+}
+
+func (h *slowHelper) Hello(ctx context.Context) (string, error) {
+	h.mu.Lock()
+	h.calls++
+	h.mu.Unlock()
+	h.started <- struct{}{}
+	select {
+	case <-h.release:
+	case <-ctx.Done():
+		h.mu.Lock()
+		h.ctxErr = ctx.Err()
+		h.mu.Unlock()
+		return "", ctx.Err()
+	}
+	h.clock.add(h.took)
+	return applyclient.Present, nil
+}
+
+type syncClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *syncClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *syncClock) add(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+func newSlowHelper() (*Server, *slowHelper) {
+	clock := &syncClock{t: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
+	h := &slowHelper{started: make(chan struct{}, 8), release: make(chan struct{}), clock: clock, took: 3 * time.Second}
+	srv := NewServer(Config{Helper: h})
+	srv.now = clock.now
+	return srv, h
+}
+
+// Callers that ask while a hello runs share it, and its answer is cached
+// from when it ended: a hello slower than helloTTL is still shared.
+func TestHelloShared(t *testing.T) {
+	srv, h := newSlowHelper()
+	type answer struct {
+		state string
+		err   error
+	}
+	answers := make(chan answer, 3)
+	ask := func() {
+		st, err := srv.helperState(context.Background())
+		answers <- answer{st, err}
+	}
+	go ask()
+	<-h.started
+	go ask()
+	go ask()
+	time.Sleep(20 * time.Millisecond) // let them join the hello in flight
+	close(h.release)
+	for i := 0; i < 3; i++ {
+		if a := <-answers; a.state != applyclient.Present || a.err != nil {
+			t.Errorf("caller %d: %q %v", i, a.state, a.err)
+		}
+	}
+	// Answered 3 s after it started: fresh from when it ended.
+	if st, err := srv.helperState(context.Background()); st != applyclient.Present || err != nil {
+		t.Errorf("after: %q %v", st, err)
+	}
+	if h.calls != 1 {
+		t.Errorf("%d hellos, want 1", h.calls)
+	}
+}
+
+// A caller whose request ends stops waiting, and the hello it started goes
+// on for the others: its cancellation is not their answer.
+func TestHelloCancelledCaller(t *testing.T) {
+	srv, h := newSlowHelper()
+	ctx, cancel := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() {
+		_, err := srv.helperState(ctx)
+		first <- err
+	}()
+	<-h.started
+	second := make(chan string, 1)
+	go func() {
+		st, _ := srv.helperState(context.Background())
+		second <- st
+	}()
+	cancel()
+	select {
+	case err := <-first:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("cancelled caller: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled caller still waiting")
+	}
+	close(h.release)
+	if st := <-second; st != applyclient.Present {
+		t.Errorf("other caller: %q", st)
+	}
+	if st, err := srv.helperState(context.Background()); st != applyclient.Present || err != nil {
+		t.Errorf("cached: %q %v", st, err)
+	}
+	if h.calls != 1 || h.ctxErr != nil {
+		t.Errorf("%d hellos, hello context %v", h.calls, h.ctxErr)
+	}
+}
+
+// A helper enabled while the daemon runs: absent until the cached hello
+// expires, then present.
+func TestHelloAbsentToPresent(t *testing.T) {
+	dir, err := os.MkdirTemp("", "caps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "apply.sock")
+	srv := NewServer(Config{Helper: &applyclient.Client{Socket: socket}})
+	clock := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	srv.now = func() time.Time { return clock }
+	if st, err := srv.helperState(context.Background()); st != applyclient.Absent || err != nil {
+		t.Fatalf("no socket: %q %v", st, err)
+	}
+	newFakeHelper(t, socket)
+	clock = clock.Add(1999 * time.Millisecond)
+	if st, _ := srv.helperState(context.Background()); st != applyclient.Absent {
+		t.Errorf("within 2 s: %q", st)
+	}
+	clock = clock.Add(time.Millisecond)
+	if st, err := srv.helperState(context.Background()); st != applyclient.Present || err != nil {
+		t.Errorf("at 2 s: %q %v", st, err)
+	}
+}
+
 func TestLiveContents(t *testing.T) {
 	data := []byte("VERSION: 2\n\nDrive 1:\n\nPicker 1: P00001L8\n\nMAP 1:\nMAP 2: M00001L8\n\nSlot 1: A00001L8\nSlot 3: A00003L8\n")
 	inv, err := config.ReadInventory("", func(name string) ([]byte, error) {

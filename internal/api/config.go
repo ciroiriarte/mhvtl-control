@@ -114,30 +114,60 @@ const helloTTL = 2 * time.Second
 // helloTimeout bounds one hello.
 const helloTimeout = 5 * time.Second
 
-// helloCache holds the last hello. One request asks at a time; the others
-// wait for its answer.
+// helloCache holds the last hello, from when it ended, and the hello in
+// flight, which every caller that asks meanwhile shares.
 type helloCache struct {
-	mu    sync.Mutex
-	at    time.Time
+	mu     sync.Mutex
+	at     time.Time
+	state  string
+	err    error
+	flight *helloFlight
+}
+
+// helloFlight is a hello in progress; state and err are set before done is
+// closed.
+type helloFlight struct {
+	done  chan struct{}
 	state string
 	err   error
 }
 
 // helperState returns the helper's hello state, asking it at most every
-// helloTTL.
+// helloTTL. The hello runs apart from the request that started it, so a
+// client that goes away neither cancels it for the others nor gets its
+// cancellation cached; a caller whose own request ends stops waiting.
 func (s *Server) helperState(ctx context.Context) (string, error) {
 	c := &s.hello
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	now := s.now()
-	if !c.at.IsZero() && now.Sub(c.at) < helloTTL {
+	if !c.at.IsZero() && s.now().Sub(c.at) < helloTTL {
+		defer c.mu.Unlock()
 		return c.state, c.err
 	}
+	f := c.flight
+	if f == nil {
+		f = &helloFlight{done: make(chan struct{})}
+		c.flight = f
+		go s.hello1(context.WithoutCancel(ctx), f)
+	}
+	c.mu.Unlock()
+	select {
+	case <-f.done:
+		return f.state, f.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// hello1 asks the helper once and caches the answer.
+func (s *Server) hello1(ctx context.Context, f *helloFlight) {
 	ctx, cancel := context.WithTimeout(ctx, helloTimeout)
 	defer cancel()
-	c.state, c.err = s.cfg.Helper.Hello(ctx)
-	c.at = now
-	return c.state, c.err
+	f.state, f.err = s.cfg.Helper.Hello(ctx)
+	c := &s.hello
+	c.mu.Lock()
+	c.state, c.err, c.at, c.flight = f.state, f.err, s.now(), nil
+	c.mu.Unlock()
+	close(f.done)
 }
 
 // Values of capabilitiesDTO.Writes.
