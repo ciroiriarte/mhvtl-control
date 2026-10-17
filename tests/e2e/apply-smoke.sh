@@ -138,6 +138,16 @@ differs() { [ "$1" != "$2" ] || { echo "both '$1'"; return 1; }; }
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 
+# one WHAT: passes stdin through when it is exactly one non-empty line, and
+# fails naming WHAT otherwise, so a lookup never acts on several matches.
+one() {
+	local v n
+	v=$(cat)
+	n=$(grep -c . <<<"$v" || true)
+	[ "$n" = 1 ] || { echo "$1: $n matches${v:+: $(echo $v)}" >&2; return 1; }
+	echo "$v"
+}
+
 # wait_for SECONDS CMD...: polls CMD every 0.2 s.
 wait_for() {
 	local deadline=$((SECONDS + $1))
@@ -156,11 +166,11 @@ wait_for() {
 # VM's disk and CD-ROM on their own hosts.
 lib_sg() {
 	local h
-	h=$(grep -E "^Library: $1 " "$CONF/device.conf") || return 1
+	h=$(grep -E "^Library: $1 " "$CONF/device.conf" | one "library $1 in device.conf") || return 1
 	set -- $h
-	lsscsi -g | awk -v a=":$((10#$4)):$((10#$6)):$((10#$8))]" '$2 == "mediumx" && index($1, a) { print $NF }'
+	lsscsi -g | awk -v a=":$((10#$4)):$((10#$6)):$((10#$8))]" '$2 == "mediumx" && index($1, a) { print $NF }' |
+		one "changer of library $1 in lsscsi"
 }
-lib_present() { [ -n "$(lib_sg "$1" 2>/dev/null)" ]; }
 
 # mtx_status N FILE: mtx status of library N, retried for the unit
 # attention after a restart and for a library still coming online.
@@ -196,7 +206,10 @@ mtx_counts() { # FILE -> "<drives> <slots> <maps>"
 	echo "$(grep -c '^Data Transfer Element' "$1") $(grep -Ec '^ *Storage Element [0-9]+:' "$1") $(grep -c 'IMPORT/EXPORT' "$1")"
 }
 # barcode of mtx storage element E.
-mtx_barcode() { awk -v e="$2" '$1 == "Storage" && $3 ~ "^" e "[: ]" { sub(/.*VolumeTag=/, ""); print $1 }' "$1"; }
+# A MAP slot is a storage element too.
+mtx_barcode() {
+	awk -v e="$2" '$1 == "Storage" && ($3 == e || index($3, e ":") == 1) && /VolumeTag=/ { sub(/.*VolumeTag=/, ""); print $1 }' "$1" | one "storage element $2 in $1"
+}
 
 placement() { "$APPLYSMOKE" placement "$@"; }
 
@@ -219,7 +232,7 @@ unit_pids() {
 		echo "$u $(systemctl show -p MainPID --value "$u")"
 	done
 }
-pid_in() { awk -v u="$1" '$1 == u { print $2 }' "$2"; }
+pid_in() { awk -v u="$1" '$1 == u { print $2 }' "$2" | one "$1 in $2"; }
 # pids_kept BEFORE AFTER UNIT...: every unit of BEFORE but the ones named
 # has the same PID in AFTER.
 pids_kept() {
@@ -239,7 +252,10 @@ pids_kept() {
 # drives) still have the PIDs the enable scenario recorded.
 others_kept() {
 	local f=$SMOKE_STATE/pids.enable
-	[ -s "$f" ] || { log "  (no PIDs from the enable scenario; skipping)"; return 0; }
+	if [ ! -s "$f" ]; then
+		check "PIDs recorded by the enable scenario ($f)" test -s "$f"
+		return 0
+	fi
 	unit_pids >"$STEP_DIR/pids.now"
 	check "PIDs of units outside library $LIB unchanged since enable" pids_kept \
 		<(grep -Ev "@$((LIB / 10))[0-9]\.service " "$f") "$STEP_DIR/pids.now"
@@ -250,9 +266,16 @@ lib_units() { # N -> vtllibrary@N.service and its drives' units
 	awk -v lib="$1" '/^Drive: / { d = $2 } /^ Library ID: / && $3 == lib { print "vtltape@" d ".service" }' "$CONF/device.conf"
 }
 lib_drives() { lib_units "$1" | grep -c vtltape; }
+# drive_unit N SLOT: the unit of library N's drive in drive slot SLOT
+# (mtx Data Transfer Element SLOT-1).
+drive_unit() {
+	awk -v lib="$1" -v slot="$2" '/^Drive: / { d = $2 } /^ Library ID: / && $3 == lib && $5 + 0 == slot { print "vtltape@" d ".service" }' "$CONF/device.conf" |
+		one "library $1 drive slot $2"
+}
 
 helper_instance() {
-	systemctl list-units --no-legend --plain --state=active 'mhvtl-control-apply@*' | awk '{ print $1 }'
+	systemctl list-units --no-legend --plain --state=active 'mhvtl-control-apply@*' | awk '{ print $1 }' |
+		one "active helper instance"
 }
 
 # --- library 40 --------------------------------------------------------------
@@ -442,7 +465,8 @@ s_change() {
 	unit_pids >"$STEP_DIR/pids.after"
 	check "vtllibrary@$LIB PID changed" differs "$(pid_in "vtllibrary@$LIB.service" "$STEP_DIR/pids.before")" \
 		"$(pid_in "vtllibrary@$LIB.service" "$STEP_DIR/pids.after")"
-	check "$new active" active "$new"
+	check "$new is new" bash -c "! grep -q '^$new ' '$STEP_DIR/pids.before'"
+	check "$new active with a PID" test "$(pid_in "$new" "$STEP_DIR/pids.after")" -gt 0
 	check "every other PID unchanged" pids_kept "$STEP_DIR/pids.before" "$STEP_DIR/pids.after" "vtllibrary@$LIB.service"
 	check "mtx status works" mtx_status "$LIB" "$STEP_DIR/after.mtx"
 	check "mtx: one more drive, 10 more slots" eq "$(mtx_counts "$STEP_DIR/after.mtx")" "$((n + 1)) $((slots0 + 10)) 4"
@@ -585,9 +609,9 @@ kill_mid_apply() {
 	send apply "$req" "$name.apply" -units-from "$STEP_DIR/$name.plan.json" &
 	bg=$!
 	check "$name: apply reached the start of vtllibrary@$LIB" wait_for 300 lib_activating
+	check "$name: one helper instance" helper_instance
 	unit=$(helper_instance)
 	echo "$unit" >"$STEP_DIR/$name.instance"
-	check "$name: one helper instance" eq "$(echo "$unit" | wc -w)" 1
 	systemctl kill -s KILL "$unit"
 	wait "$bg" || true
 	check "$name: intent.json left" test -e "$STATE_DIR/intent.json"
@@ -673,13 +697,18 @@ s_placement() {
 	mapfile -t maps < <(mtx_maps "$STEP_DIR/start.mtx" Empty | head -1)
 	mtx_do "$LIB" transfer "${full[0]}" "${empty[0]}"
 	mtx_do "$LIB" transfer "${full[1]}" "${empty[1]}"
+	local bc req
+	bc=$(mtx_barcode "$STEP_DIR/start.mtx" "${full[2]}")
 	mtx_do "$LIB" transfer "${full[2]}" "${maps[0]}"
-	local req
 	req=$(grow placement 2)
-	check "a cartridge is in the MAP" grep -q 'IMPORT/EXPORT:Full' "$STEP_DIR/placement/live.mtx"
+	check "$bc is in MAP element ${maps[0]}" eq "$(mtx_barcode "$STEP_DIR/placement/live.mtx" "${maps[0]}")" "$bc"
 	plan_apply placement "$req"
 	check "apply: applied" jqis "$STEP_DIR/placement.apply.json" .result applied
 	check "mtx status works" mtx_status "$LIB" "$STEP_DIR/after.mtx"
+	# Added slots renumber mtx's MAP elements, so compare MAP slot numbers.
+	local mapline
+	mapline=$(placement -mtx "$STEP_DIR/placement/live.mtx" | grep " $bc\$" | one "$bc in the live placement")
+	check "$bc still in its MAP slot ($mapline)" bash -c "'$APPLYSMOKE' placement -mtx '$STEP_DIR/after.mtx' | grep -qx '$mapline'"
 	check "slots and MAP as before the apply (AC 13)" same <(placement -mtx "$STEP_DIR/placement/live.mtx") <(placement -mtx "$STEP_DIR/after.mtx")
 	check "library_contents holds the moves" same <(mtx_placement "$STEP_DIR/placement/live.mtx") <(file_placement "$CONF/library_contents.$LIB")
 	others_kept
