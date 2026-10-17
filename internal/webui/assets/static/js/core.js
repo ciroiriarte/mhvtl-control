@@ -388,6 +388,9 @@
     if (caps.writes === "tls_required") {
       if (tone === "info") tone = "warn";
       lines.push("This daemon listens on a non-loopback address without TLS, so it would refuse changes: start it with --tls-cert and --tls-key, or listen on loopback.");
+    } else if (caps.writes === "token_required") {
+      if (tone === "info") tone = "warn";
+      lines.push("Changes need an API token, which this daemon does not have: set MHVTL_CONTROL_API_TOKEN in /etc/mhvtl-control/mhvtl-control.env and restart mhvtl-control.");
     }
     var facts = [
       ["mhVTL systemd generator", caps.generator === true ? "installed" : "not installed"],

@@ -23,6 +23,10 @@ import (
 // helperEnable is the command that enables the apply helper.
 const helperEnable = "systemctl enable --now mhvtl-control-apply.socket"
 
+// envFile is the daemon's options file, which sets MHVTL_CONTROL_API_TOKEN
+// (cmd/mhvtl-control).
+const envFile = "/etc/mhvtl-control/mhvtl-control.env"
+
 // applyTimeout bounds an apply: the helper's RuntimeMaxSec=1800
 // (dist/mhvtl-control-apply@.service) and a margin for its answer.
 const applyTimeout = 31 * time.Minute
@@ -31,12 +35,16 @@ const applyTimeout = 31 * time.Minute
 const maxNewElements = 4096
 
 // writeAllowed is the gate of every configuration write (plan 4.1): not on
-// a non-loopback listen without TLS, and only with the helper there, as
-// its hello says (cached for helloTTL). The bearer token is the auth
-// middleware's, as for every /api/v1 route.
+// a non-loopback listen without TLS, only with an API token configured,
+// which the auth middleware has checked, and only with the helper there,
+// as its hello says (cached for helloTTL).
 func (s *Server) writeAllowed(w http.ResponseWriter, r *http.Request) bool {
 	if s.cfg.InsecureListen {
 		writeError(w, http.StatusForbidden, writesTLSRequired, "configuration writes are refused on a non-loopback listen address without TLS")
+		return false
+	}
+	if s.cfg.Token == "" {
+		writeError(w, http.StatusForbidden, writesNoToken, "configuration writes need an API token: set MHVTL_CONTROL_API_TOKEN in "+envFile+" and restart mhvtl-control")
 		return false
 	}
 	if s.cfg.Helper == nil {
@@ -727,25 +735,42 @@ type applyPlanDTO struct {
 // applyResultDTO is POST /config/apply's answer: the helper's, and on a
 // status other than 200 the error envelope's code and message too.
 type applyResultDTO struct {
-	Error          *errorDetail           `json:"error,omitempty"`
-	Stage          string                 `json:"stage"`
-	Result         string                 `json:"result"`
-	Plan           applyPlanDTO           `json:"plan"`
-	Findings       *validate.Result       `json:"findings,omitempty"`
-	Warnings       []string               `json:"warnings,omitempty"`
-	ForceToken     string                 `json:"force_token,omitempty"`
-	ForceExpires   *time.Time             `json:"force_expires,omitempty"`
-	ForcedUnloads  []apply.ForcedUnload   `json:"forced_unloads,omitempty"`
-	PlacementDrift []string               `json:"placement_drift,omitempty"`
-	File           string                 `json:"file,omitempty"`
-	CurrentSHA256  *string                `json:"current_sha256,omitempty"`
-	FailedUnit     string                 `json:"failed_unit,omitempty"`
-	JournalTail    string                 `json:"journal_tail,omitempty"`
-	OrphanedMedia  []string               `json:"orphaned_media,omitempty"`
-	Unplaced       []string               `json:"unplaced,omitempty"`
-	Conflicts      []apply.Conflict       `json:"conflicts,omitempty"`
-	RollbackDir    string                 `json:"rollback_dir,omitempty"`
-	Dispositions   []validate.Disposition `json:"dispositions,omitempty"`
+	Error  *errorDetail `json:"error,omitempty"`
+	Stage  string       `json:"stage"`
+	Result string       `json:"result"`
+	Plan   applyPlanDTO `json:"plan"`
+	// Findings are the validation of the change, the placement merge's
+	// included (validate.Merge of the staged library_contents with the
+	// live placement): the removal.* findings say which cartridges a
+	// change moves back, or makes leave a library and where to.
+	Findings *validate.Result `json:"findings,omitempty"`
+	// Warnings are what the apply would do that may not be meant: a Slot
+	// cartridge missing from its home, created blank at the library's
+	// start (mhvtl-control#43).
+	Warnings []string `json:"warnings,omitempty"`
+	// ForceToken and ForceExpires answer a plan refused for drive_loaded,
+	// whose error message names the loaded drives.
+	ForceToken   string     `json:"force_token,omitempty"`
+	ForceExpires *time.Time `json:"force_expires,omitempty"`
+	// ForcedUnloads are the unloads done: each cartridge a forced apply,
+	// or a rollback, took out of a drive, and the slot it went to.
+	ForcedUnloads []apply.ForcedUnload `json:"forced_unloads,omitempty"`
+	// PlacementDrift is where the changer, read after the restart, differs
+	// from the merged placement written.
+	PlacementDrift []string `json:"placement_drift,omitempty"`
+	// File and CurrentSHA256 describe a conflict.
+	File          string  `json:"file,omitempty"`
+	CurrentSHA256 *string `json:"current_sha256,omitempty"`
+	// FailedUnit, JournalTail, OrphanedMedia, Unplaced, Conflicts and
+	// RollbackDir describe a rollback (apply.Response).
+	FailedUnit    string           `json:"failed_unit,omitempty"`
+	JournalTail   string           `json:"journal_tail,omitempty"`
+	OrphanedMedia []string         `json:"orphaned_media,omitempty"`
+	Unplaced      []string         `json:"unplaced,omitempty"`
+	Conflicts     []apply.Conflict `json:"conflicts,omitempty"`
+	RollbackDir   string           `json:"rollback_dir,omitempty"`
+	// Dispositions are the stage's, as sent.
+	Dispositions []validate.Disposition `json:"dispositions,omitempty"`
 }
 
 // applyStatus maps a helper result to a status and an error code ("" for

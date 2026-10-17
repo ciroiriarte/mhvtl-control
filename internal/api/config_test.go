@@ -50,11 +50,20 @@ func noSys(t *testing.T) string { return filepath.Join(t.TempDir(), "sys") }
 
 func do(t *testing.T, cfg Config, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return doBearer(t, cfg, method, path, body, "")
+}
+
+// doBearer is do with the bearer token, when it is not empty.
+func doBearer(t *testing.T, cfg Config, method, path, body, token string) *httptest.ResponseRecorder {
+	t.Helper()
 	var r *http.Request
 	if body == "" {
 		r = httptest.NewRequest(method, path, nil)
 	} else {
 		r = httptest.NewRequest(method, path, strings.NewReader(body))
+	}
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
 	}
 	rec := httptest.NewRecorder()
 	NewServer(cfg).Handler().ServeHTTP(rec, r)
@@ -496,7 +505,7 @@ func TestConfigRoutesNeedToken(t *testing.T) {
 // The config paths take only the write routes of plan 4.1 (AC 17); every
 // other method is refused. Without a helper client those are refused too.
 func TestConfigWriteRoutesOnly(t *testing.T) {
-	cfg := Config{ConfigDir: genDir(t)}
+	cfg := Config{ConfigDir: genDir(t), Token: "t"}
 	routes := map[string]bool{
 		"POST /api/v1/config/libraries":           true,
 		"PATCH /api/v1/config/libraries/10":       true,
@@ -508,7 +517,7 @@ func TestConfigWriteRoutesOnly(t *testing.T) {
 	for _, m := range []string{http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete} {
 		for _, p := range []string{"/api/v1/config", "/api/v1/config/libraries", "/api/v1/config/libraries/10",
 			"/api/v1/config/libraries/10/drives", "/api/v1/config/libraries/10/slots", "/api/v1/config/apply"} {
-			rec := do(t, cfg, m, p, "{}")
+			rec := doBearer(t, cfg, m, p, "{}", cfg.Token)
 			switch {
 			case routes[m+" "+p] && (rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "helper_absent")):
 				t.Errorf("%s %s: %d %s, want 409 helper_absent", m, p, rec.Code, rec.Body)
@@ -534,7 +543,7 @@ func TestConfigCapabilities(t *testing.T) {
 	get := func(cfg Config) capabilitiesDTO {
 		t.Helper()
 		cfg.Capabilities = paths
-		return decodeBody[capabilitiesDTO](t, do(t, cfg, http.MethodGet, "/api/v1/config/capabilities", ""))
+		return decodeBody[capabilitiesDTO](t, doBearer(t, cfg, http.MethodGet, "/api/v1/config/capabilities", "", cfg.Token))
 	}
 	write := func(name, content string, mode os.FileMode) {
 		t.Helper()
@@ -558,15 +567,22 @@ func TestConfigCapabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	if got := get(Config{}); got.Helper != "present" || got.Writes != "ok" {
+	if got := get(Config{Token: "t"}); got.Helper != "present" || got.Writes != "ok" {
 		t.Errorf("socket listening: %+v", got)
 	}
 	if got := get(Config{InsecureListen: true}); got.Writes != "tls_required" {
 		t.Errorf("non-loopback without TLS: writes %q", got.Writes)
 	}
+	// Config writes need a configured API token, on loopback too.
+	if got := get(Config{}); got.Writes != "token_required" {
+		t.Errorf("no token: writes %q", got.Writes)
+	}
 	write("mhvtl-control.env", "", 0o600)
-	if got := get(Config{}); got.Helper != "legacy_env_blocks" || got.Writes != "helper_blocked" {
+	if got := get(Config{Token: "t"}); got.Helper != "legacy_env_blocks" || got.Writes != "helper_blocked" {
 		t.Errorf("legacy env file: %+v", got)
+	}
+	if got := get(Config{}); got.Writes != "token_required" {
+		t.Errorf("legacy env file, no token: writes %q", got.Writes)
 	}
 
 	write("gen", "#!/bin/sh\n", 0o644)
@@ -669,6 +685,7 @@ func TestConfigCapabilitiesHello(t *testing.T) {
 	srv := NewServer(Config{
 		Capabilities: CapabilityPaths{HelperSocket: socket, LegacyEnv: filepath.Join(dir, "env"), Generators: []string{}, MakeVTLMedia: filepath.Join(dir, "none")},
 		Helper:       &applyclient.Client{Socket: socket},
+		Token:        "t",
 	})
 	clock := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
 	srv.now = func() time.Time { return clock }
@@ -676,7 +693,9 @@ func TestConfigCapabilitiesHello(t *testing.T) {
 	get := func() capabilitiesDTO {
 		t.Helper()
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/config/capabilities", nil))
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/config/capabilities", nil)
+		r.Header.Set("Authorization", "Bearer t")
+		handler.ServeHTTP(rec, r)
 		return decodeBody[capabilitiesDTO](t, rec)
 	}
 

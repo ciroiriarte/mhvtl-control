@@ -174,8 +174,12 @@ func (s *Server) hello1(ctx context.Context, f *helloFlight) {
 const (
 	writesOK          = "ok"
 	writesTLSRequired = "tls_required"
-	writesNoHelper    = "helper_absent"
-	writesBlocked     = "helper_blocked"
+	// writesNoToken: no API token is configured. Config writes make root
+	// rewrite /etc/mhvtl and restart services, so they are not open to
+	// every local user, on loopback either.
+	writesNoToken  = "token_required"
+	writesNoHelper = "helper_absent"
+	writesBlocked  = "helper_blocked"
 )
 
 // capabilitiesDTO says whether configuration writes could be accepted, and
@@ -192,7 +196,8 @@ type capabilitiesDTO struct {
 	HelperError string `json:"helper_error,omitempty"`
 	// Writes says whether the UI should offer edits (plan 4.1): no helper
 	// socket (helper_absent), else a non-loopback listen without TLS, which
-	// the write routes refuse (tls_required), else a helper that refuses
+	// the write routes refuse (tls_required), else no API token configured
+	// (token_required), else a helper that refuses
 	// every change until the operator acts, intent_unreadable or
 	// legacy_env_blocks (helper_blocked), else ok. An apply running or one
 	// the helper recovers first is not a lasting refusal.
@@ -230,6 +235,8 @@ func (s *Server) capabilities(ctx context.Context) capabilitiesDTO {
 		c.Writes = writesNoHelper
 	case s.cfg.InsecureListen:
 		c.Writes = writesTLSRequired
+	case s.cfg.Token == "":
+		c.Writes = writesNoToken
 	case c.Helper == helperUnreadable || c.Helper == helperLegacy:
 		c.Writes = writesBlocked
 	default:
