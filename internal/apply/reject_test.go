@@ -431,10 +431,23 @@ func TestRejectHomeChange(t *testing.T) {
 // clean path outside system trees and the helper's state (S1).
 func TestRejectHomeForbidden(t *testing.T) {
 	e := newEnv(t)
-	bad := []string{"relative/dir", "/proc/sys/kernel", "/var/lib/mhvtl-control-apply", "/var/lib/mhvtl-control-apply/rollback", "/etc/mhvtl", "/x/../etc/cron.d", "/"}
+	links := t.TempDir()
+	for name, target := range map[string]string{"usr": "/usr", "root": "/", "dangling": filepath.Join(links, "missing")} {
+		if err := os.Symlink(target, filepath.Join(links, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bad := []string{"relative/dir", "/proc/sys/kernel", "/var/lib/mhvtl-control-apply", "/var/lib/mhvtl-control-apply/rollback", "/etc/mhvtl", "/x/../etc/cron.d", "/",
+		"/lib/systemd/system", "/home/tapes",
+		filepath.Join(links, "usr"), filepath.Join(links, "usr/tapes/new"), filepath.Join(links, "root/etc"), filepath.Join(links, "dangling/tapes")}
 	for _, h := range bad {
 		e.refused("library 10 at "+h, Request{Op: OpPlan, Files: []File{e.edit("device.conf", " Home directory: "+e.home, " Home directory: "+h)}}, ErrHomeForbidden)
 		e.refused("MHVTL_HOME_PATH="+h, Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", "MHVTL_HOME_PATH="+e.home, "MHVTL_HOME_PATH="+h)}}, ErrMhvtlConfValue)
+	}
+	for _, h := range []string{"usr", "usr/tapes/new", "root/etc"} {
+		if p := homeProblem(filepath.Join(links, h)); !strings.HasPrefix(p, "resolves to /") {
+			t.Errorf("%s: %q", h, p)
+		}
 	}
 	// Library 30 renumbered 31: a new library.
 	b := string(e.read("device.conf"))
@@ -444,7 +457,7 @@ func TestRejectHomeForbidden(t *testing.T) {
 		next := renum[:i] + strings.Replace(renum[i:], " Home directory: "+e.home, " Home directory: "+h, 1)
 		e.refused("new library 31 at "+h, Request{Op: OpPlan, Files: []File{{Name: "device.conf", BaseSHA256: conffile.Hash([]byte(b)), Content: []byte(next)}}}, ErrHomeForbidden)
 	}
-	for _, h := range []string{"/opt/mhvtl", "/srv/tapes"} {
+	for _, h := range []string{"/opt/mhvtl", "/srv/tapes", filepath.Join(links, "root/srv/tapes")} {
 		if resp := e.do(Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", "MHVTL_HOME_PATH="+e.home, "MHVTL_HOME_PATH="+h)}}); resp.Result != ResultValidated {
 			t.Errorf("MHVTL_HOME_PATH=%s: %+v", h, resp)
 		}
