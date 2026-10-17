@@ -135,6 +135,11 @@ type Response struct {
 	CurrentSHA256 *string `json:"current_sha256,omitempty"`
 	// Findings are the validation results of a plan or a refused apply.
 	Findings *validate.Result `json:"findings,omitempty"`
+	// Units are the instances the apply stops or starts, as the helper
+	// derives them (expect_units must equal this set); Notes say what
+	// applies without a restart.
+	Units []string `json:"units,omitempty"`
+	Notes []string `json:"notes,omitempty"`
 	// Conflicts are the files a recovery left alone because they changed
 	// after the apply died.
 	Conflicts []Conflict `json:"conflicts,omitempty"`
@@ -165,6 +170,9 @@ const (
 	ErrMhvtlConfDerived = "mhvtl_conf_not_derived"
 	ErrHomeForbidden    = "home_forbidden"
 	ErrHomeInUse        = "home_in_use"
+	// ErrBudget: the apply and its rollback would not fit in the helper's
+	// RuntimeMaxSec= (plan 3.1).
+	ErrBudget           = "budget"
 	ErrNotWritable      = "not_writable"
 	ErrInvalid          = "invalid"
 	ErrNotImplemented   = "not_implemented"
