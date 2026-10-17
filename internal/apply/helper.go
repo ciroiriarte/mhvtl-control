@@ -167,7 +167,7 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 		return Response{Result: ResultOK, State: st, Version: h.cfg.Version}
 	}
 	rec := AuditRecord{TS: h.cfg.Now(), Actor: req.Actor, Peer: peer, Op: req.Op, Units: req.ExpectUnits}
-	l, held, err := h.tryLock()
+	l, held, err := h.waitLock()
 	if err != nil {
 		return responseOf(err)
 	}

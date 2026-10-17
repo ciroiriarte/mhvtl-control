@@ -283,3 +283,24 @@ func socketPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
 	}
 	return conn(fds[0]), conn(fds[1])
 }
+
+// TestLockWait: a plan waits up to lockWait for a lock held briefly, as a
+// hello holds it, and reports apply_in_progress only past that.
+func TestLockWait(t *testing.T) {
+	e := newEnv(t)
+	release := e.holdLock()
+	time.AfterFunc(20*time.Millisecond, release)
+	if resp := e.do(Request{Op: OpPlan}); resp.Result == ResultInProgress {
+		t.Errorf("lock held 20 ms: %+v", resp)
+	}
+
+	e.holdLock()
+	start := time.Now()
+	resp := e.do(Request{Op: OpPlan})
+	if resp.Result != ResultInProgress {
+		t.Errorf("lock held: %+v", resp)
+	}
+	if d := time.Since(start); d < lockWait {
+		t.Errorf("gave up after %v, before %v", d, lockWait)
+	}
+}
