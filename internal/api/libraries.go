@@ -241,8 +241,8 @@ func hasDrive(lib config.Library, id int) bool {
 // writeChangerError maps a changer failure to an HTTP response: an
 // unreachable changer is 503, a request the changer's state refuses (sense
 // NOT READY, or ILLEGAL REQUEST for an empty source, a full destination or an
-// invalid element) is 409, a drive that refused the cartridge is 409 too,
-// anything else is 500.
+// invalid element) is 409, a drive that refused the cartridge or cannot use
+// its media type is 409 too, anything else is 500.
 func writeChangerError(w http.ResponseWriter, op string, err error) {
 	var se *scsi.SenseError
 	var te *scsi.TransportError
@@ -259,10 +259,20 @@ func writeChangerError(w http.ResponseWriter, op string, err error) {
 		writeError(w, http.StatusConflict, "conflict", op+": "+err.Error())
 	case errors.As(err, &se) && conflictSense(se):
 		writeError(w, http.StatusConflict, "conflict", op+": "+se.Error())
+	// mhVTL's changer reports a MOVE MEDIUM whose load into a drive failed
+	// as 05/30/00 when the drive cannot use the media type and 04/53/00
+	// otherwise, from markh794/mhvtl#285 on (load_failed_sense,
+	// usr/smc.c:1182-1192 at 852b78a,
+	// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/smc.c#L1182-L1192,
+	// after GC27-2211-00 Table 68, p.58). Before #285 it reported every
+	// failed load as 04/04/03, which it still reports for a failed unload
+	// (usr/smc.c:1475-1481 at 852b78a).
+	case errors.As(err, &se) && se.Key == scsi.KeyIllegalRequest && se.Code() == scsi.ASCIncompatibleMedium:
+		writeError(w, http.StatusConflict, "conflict", op+": the drive cannot use this cartridge's media type: "+se.Error())
+	case errors.As(err, &se) && se.Key == scsi.KeyHardwareError && se.Code() == scsi.ASCMediaLoadFailed:
+		writeError(w, http.StatusConflict, "conflict", op+": the drive refused the load "+
+			"(check that the media exists and is not damaged): "+se.Error())
 	case errors.As(err, &se) && se.Key == scsi.KeyHardwareError && se.Code() == scsi.ASCManualIntervention:
-		// mhVTL's changer reports a drive that failed to load or unload the
-		// cartridge (wrong media type for the drive, missing or damaged
-		// media) as HARDWARE ERROR, manual intervention required.
 		writeError(w, http.StatusConflict, "conflict", op+": the drive refused the cartridge "+
 			"(check that the media type suits the drive and that the media exists): "+se.Error())
 	default:

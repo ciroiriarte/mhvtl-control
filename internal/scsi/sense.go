@@ -18,10 +18,12 @@ const (
 	ASCOffline             = 0x0412 // logical unit offline
 	ASCManualIntervention  = 0x0403 // manual intervention required
 	ASCInvalidElement      = 0x2101 // invalid element address
+	ASCIncompatibleMedium  = 0x3000 // incompatible medium installed
 	ASCMediumNotPresent    = 0x3a00
 	ASCMAPOpen             = 0x3a02 // medium not present - tray open (mhVTL: MAP open)
 	ASCMediumDestFull      = 0x3b0d // medium destination element full
 	ASCMediumSrcEmpty      = 0x3b0e // medium source element empty
+	ASCMediaLoadFailed     = 0x5300 // media load or eject failed
 	ASCMediumRemovalPrevnt = 0x5302 // medium removal prevented
 )
 
@@ -41,10 +43,12 @@ var ascNames = map[uint16]string{
 	ASCOffline:             "logical unit offline",
 	ASCManualIntervention:  "manual intervention required",
 	ASCInvalidElement:      "invalid element address",
+	ASCIncompatibleMedium:  "incompatible medium installed",
 	ASCMediumNotPresent:    "medium not present",
 	ASCMAPOpen:             "import/export element (MAP) open",
 	ASCMediumDestFull:      "destination element full",
 	ASCMediumSrcEmpty:      "source element empty",
+	ASCMediaLoadFailed:     "media load or eject failed",
 	ASCMediumRemovalPrevnt: "medium removal prevented",
 	0x2900:                 "power on or reset occurred",
 	0x2a01:                 "mode parameters changed",
