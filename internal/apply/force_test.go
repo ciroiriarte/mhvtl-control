@@ -217,10 +217,10 @@ func TestForceTokenNoLoaded(t *testing.T) {
 	}
 }
 
-// TestExecUnitGuard: a derivation mismatch, here execute given the
-// change's own plan while its forced drive adds vtltape@12 (the VM run3
-// bug), fails closed: the forward path runs no unit outside the approved
-// plan, and the apply is rolled back or fails.
+// TestExecUnitGuard: a derivation mismatch, here a plan that grew by the
+// forced drive's vtltape@12 after expect_units approved the change's own
+// units (the VM run3 bug), fails closed: the forward path runs no unit
+// outside the approved ones, and the apply is rolled back.
 func TestExecUnitGuard(t *testing.T) {
 	e, s, req := loadedEnv(t)
 	ctx := context.Background()
@@ -233,6 +233,8 @@ func TestExecUnitGuard(t *testing.T) {
 	if err != nil || len(forced[10]) != 1 {
 		t.Fatalf("forced %v, %v", forced, err)
 	}
+	fp := withForced(*c.plan, c, forced)
+	c.plan = &fp
 	resp := e.h.execute(ctx, &req, c, forced, &AuditRecord{})
 	if resp.Result != ResultRolledBack || e.intentExists() {
 		t.Fatalf("apply: %+v", resp)
@@ -247,5 +249,60 @@ func TestExecUnitGuard(t *testing.T) {
 	}
 	if !strings.Contains(resp.Message, "vtltape@12.service") {
 		t.Errorf("message %q does not name the unit", resp.Message)
+	}
+}
+
+// TestForceDriveStateChanges: the forced plan is derived once, at the plan
+// checks, from the drive states read there; a drive that comes up or goes
+// down after them is not refused spuriously by the unit guard. Across
+// requests, a change that alters the forced units voids the token.
+func TestForceDriveStateChanges(t *testing.T) {
+	// Drive 12 is down and R1 shows it full: forced, it is left alone;
+	// it comes up as the apply takes its library offline.
+	e, s, req := loadedEnv(t)
+	delete(s.loaded, "XYZZY_A2")
+	s.state["vtltape@12.service"] = "failed"
+	plan := req
+	plan.Op = OpPlan
+	pr := e.do(plan)
+	req.ForceToken, req.ExpectUnits = pr.ForceToken, pr.Units
+	s.onOffline = func(int) { s.state["vtltape@12.service"], s.onOffline = "active", nil }
+	if resp := e.do(req); resp.Result != ResultApplied || len(resp.ForcedUnloads) != 1 {
+		t.Fatalf("drive 12 up after the checks: %+v", resp)
+	}
+	if s.has("stop vtltape@12.service") || s.has("start vtltape@12.service") {
+		t.Errorf("vtltape@12 run: %v", s.calls)
+	}
+
+	// Drive 12 runs, loaded: forced, it restarts; it dies as the apply
+	// takes its library offline.
+	e, s, req = loadedEnv(t)
+	plan = req
+	plan.Op = OpPlan
+	pr = e.do(plan)
+	req.ForceToken, req.ExpectUnits = pr.ForceToken, pr.Units
+	s.onOffline = func(int) { s.state["vtltape@12.service"], s.onOffline = "failed", nil }
+	if resp := e.do(req); resp.Result != ResultApplied || len(resp.ForcedUnloads) != 1 {
+		t.Fatalf("drive 12 down after the checks: %+v", resp)
+	}
+	if !s.before("stop vtltape@12.service", "start vtltape@12.service") {
+		t.Errorf("vtltape@12 not restarted: %v", s.calls)
+	}
+
+	// Drive 12 down at the plan, up at the apply: the forced units differ,
+	// and the token, which binds them, says to plan again.
+	e, s, req = loadedEnv(t)
+	delete(s.loaded, "XYZZY_A2")
+	s.state["vtltape@12.service"] = "failed"
+	plan = req
+	plan.Op = OpPlan
+	pr = e.do(plan)
+	req.ForceToken, req.ExpectUnits = pr.ForceToken, pr.Units
+	s.state["vtltape@12.service"] = "active"
+	if resp := e.do(req); resp.Result != ResultRefused || resp.Error != ErrForce || !strings.Contains(resp.Message, "plan again") {
+		t.Fatalf("drive 12 up since the plan: %+v", resp)
+	}
+	if s.has("stop vtllibrary@10.service") {
+		t.Errorf("stopped: %v", s.calls)
 	}
 }
