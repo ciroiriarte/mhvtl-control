@@ -146,17 +146,15 @@ wait_for() {
 
 # --- mhVTL -------------------------------------------------------------------
 
-# lib_sg N: the sg node of library N, by its H:C:T:L in device.conf (the
-# node changes on every restart, so it is never cached).
-addr_sg() {
-	local c=$((10#$1)) t=$((10#$2)) l=$((10#$3))
-	lsscsi -g | awk -v a=":$c:$t:$l]" 'index($1, a) { print $NF }'
-}
+# lib_sg N: the sg node of library N, the medium changer at the C:T:L
+# device.conf gives (the node changes on every restart, so it is never
+# cached). The type matters: library 10's 0:0:0 is also the address of the
+# VM's disk and CD-ROM on their own hosts.
 lib_sg() {
 	local h
 	h=$(grep -E "^Library: $1 " "$CONF/device.conf") || return 1
 	set -- $h
-	addr_sg "$4" "$6" "$8"
+	lsscsi -g | awk -v a=":$((10#$4)):$((10#$6)):$((10#$8))]" '$2 == "mediumx" && index($1, a) { print $NF }'
 }
 lib_present() { [ -n "$(lib_sg "$1" 2>/dev/null)" ]; }
 
