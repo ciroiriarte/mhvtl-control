@@ -1040,3 +1040,27 @@ func TestExecRollbackNeverCameUp(t *testing.T) {
 		t.Errorf("library_contents.10:\n%s", diffLines(string(lc), got))
 	}
 }
+
+// TestForceLoadedSince: a drive loaded after the plan voids its force
+// token, though the change and the live placement are the same: here a
+// drive of a library that is not running, found only by TEST UNIT READY.
+func TestForceLoadedSince(t *testing.T) {
+	e, s := newExecEnv(t)
+	s.state["vtllibrary@10.service"] = "inactive"
+	s.loaded["XYZZY_A2"] = true
+	req := compression(e)
+	plan := req
+	plan.Op = OpPlan
+	pr := e.do(plan)
+	if pr.Error != ErrDriveLoaded || pr.ForceToken == "" {
+		t.Fatalf("plan: %+v", pr)
+	}
+	s.loaded["XYZZY_A1"] = true
+	req.ForceToken = pr.ForceToken
+	if resp := e.do(req); resp.Result != ResultRefused || resp.Error != ErrForce {
+		t.Errorf("apply: %+v", resp)
+	}
+	if s.has("stop vtllibrary@10.service") || s.has("stop vtltape@11.service") {
+		t.Errorf("stopped: %v", s.calls)
+	}
+}

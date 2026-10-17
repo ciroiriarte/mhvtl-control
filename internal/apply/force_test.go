@@ -53,6 +53,10 @@ func TestForceToken(t *testing.T) {
 	bases := b
 	bases.Bases = []string{"a", "x"}
 	refusedWith("base changed", e.h.checkForce(tok, bases))
+	tok, _, _ = e.h.mintForce(b)
+	loaded := b
+	loaded.Loaded = []string{"drive 50"}
+	refusedWith("loaded drives changed", e.h.checkForce(tok, loaded))
 	refusedWith("malformed", e.h.checkForce("x", b))
 
 	// The key is 0600 and kept; expired nonces are pruned.
