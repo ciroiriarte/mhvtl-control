@@ -172,6 +172,16 @@ func (c *IPCController) Offline(lib int64) error {
 	return err
 }
 
+// ListMap returns the library's answer to "list map": the barcodes in its
+// MAP slots, concatenated in slot order with no separator, "" for an empty
+// MAP (list_map, mhvtl usr/cmd/vtllibrary.c:248-264 at d65d25f,
+// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L248-L264).
+func (c *IPCController) ListMap(lib int64) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.command(lib, "list map", true)
+}
+
 // ImportMap places a cartridge into an empty MAP slot, as an operator would:
 // "open map", "load map <barcode>", "close map", each answered by the library.
 // vtllibrary refuses a load into a closed MAP, and the changer only reaches
@@ -249,6 +259,8 @@ type FakeController struct {
 	mu    sync.Mutex
 	Calls []Call
 	Err   error
+	// Map is what ListMap returns.
+	Map string
 }
 
 var _ Controller = (*FakeController)(nil)
@@ -269,6 +281,12 @@ func (f *FakeController) Online(lib int64) error {
 func (f *FakeController) Offline(lib int64) error {
 	f.record("Offline", lib, "")
 	return f.Err
+}
+
+// ListMap records a ListMap call and returns Map.
+func (f *FakeController) ListMap(lib int64) (string, error) {
+	f.record("ListMap", lib, "")
+	return f.Map, f.Err
 }
 
 // ImportMap records an ImportMap call.

@@ -480,3 +480,24 @@ func TestReplyType(t *testing.T) {
 		t.Error("controller does not reply on its own mtype")
 	}
 }
+
+func TestControllerListMap(t *testing.T) {
+	key := uniqueKey()
+	q := createQueue(t, key)
+	stop := make(chan struct{})
+	cmds := library(t, q.qid, 10, func(cmd string) string {
+		if cmd == "list map" {
+			return "A00001L8B00002L8"
+		}
+		return "?"
+	}, stop)
+	c := newTestController(key)
+	got, err := c.ListMap(10)
+	if err != nil || got != "A00001L8B00002L8" {
+		t.Fatalf("ListMap: %q, %v", got, err)
+	}
+	close(stop)
+	if got := <-cmds; strings.Join(got, "|") != "list map" {
+		t.Errorf("library received %q", got)
+	}
+}
