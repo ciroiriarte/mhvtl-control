@@ -435,14 +435,18 @@ func (s *Server) defaultHomes(st *stage) (cur, next string, err error) {
 	if err := s.adopt(st, mhvtlConf); err != nil {
 		return "", "", err
 	}
-	home := func(data []byte) string {
-		if v, ok := conffile.ParseMhvtlConf(data).Get("MHVTL_HOME_PATH"); ok && v != "" {
-			return v
-		}
-		return apply.DefaultHome
-	}
 	nextData, _ := st.file(mhvtlConf)
-	return home(st.disk[mhvtlConf]), home(nextData), nil
+	return effectiveDefaultHome(st.disk[mhvtlConf]), effectiveDefaultHome(nextData), nil
+}
+
+// effectiveDefaultHome is the media home of a library without a "Home
+// directory" under the mhvtl.conf data: MHVTL_HOME_PATH, else the helper's
+// compiled-in default.
+func effectiveDefaultHome(data []byte) string {
+	if v, ok := conffile.ParseMhvtlConf(data).Get("MHVTL_HOME_PATH"); ok && v != "" {
+		return v
+	}
+	return apply.DefaultHome
 }
 
 // checkHomes applies the home rules of plan 4.3 to the stage, as the
@@ -542,6 +546,10 @@ type stageDTO struct {
 	// Notes say where the stage took a library's placement from when its
 	// changer was not read: a library that is not running.
 	Notes []string `json:"notes,omitempty"`
+	// DefaultHomeEffective is, when the stage has mhvtl.conf, the media
+	// home of a library without its own as the staged file sets it (GET
+	// /config's default_home_effective).
+	DefaultHomeEffective string `json:"default_home_effective,omitempty"`
 }
 
 func (st *stage) dto(expires time.Time) stageDTO {
@@ -551,6 +559,9 @@ func (st *stage) dto(expires time.Time) stageDTO {
 		d.Notes = append(d.Notes, n)
 	}
 	sort.Strings(d.Notes)
+	if data, ok := st.next[mhvtlConf]; ok {
+		d.DefaultHomeEffective = effectiveDefaultHome(data)
+	}
 	files, del := st.changes()
 	for _, f := range files {
 		c := string(f.Content)
