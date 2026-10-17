@@ -342,7 +342,7 @@ func TestConfigView(t *testing.T) {
 		"writesEditable(lastCfg.caps)", `if (!cfgEditable()) { done(new Error("Editing is not available now.")); return; }`, `cfgPath("/apply")`, "dry_run: true",
 		`api(cfgPath("/stages/" + encodeURIComponent(st.id)), { method: "DELETE" })`, "cfgStage.data.notes",
 		"setApplying(st, true)", "discard.disabled = !editable",
-		`editButton("New library…"`, `stageEdit("PATCH", cfgPath("/system"), body, done)`, "wizardRequests(v.w)"} {
+		`editButton("New library…"`, `stageEdit("PATCH", cfgPath("/system"), body, done)`, "wizardRequests(v.w)", "usedNAAs(config, staged)", "if (fresh && i > 0 && cfgStage) {"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js missing marker %q", want)
 		}

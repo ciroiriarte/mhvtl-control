@@ -45,6 +45,7 @@
   var stageOutcome = core.stageOutcome, outcomeUnread = core.outcomeUnread;
   var resolvePersonality = core.resolvePersonality, modelPresets = core.modelPresets, createLimits = core.createLimits;
   var freeTargets = core.freeTargets, usedIDs = core.usedIDs, usedAddresses = core.usedAddresses, usedSerials = core.usedSerials;
+  var usedNAAs = core.usedNAAs;
   var wizardDefaults = core.wizardDefaults, librarySerial = core.librarySerial, driveVendorFor = core.driveVendorFor;
   var wizardErrors = core.wizardErrors, wizardRequests = core.wizardRequests;
   var systemFields = core.systemFields, buildSystemPatch = core.buildSystemPatch, intField = core.intField;
@@ -2130,17 +2131,29 @@
 
   // stageSequence sends reqs ({method, path, body}) one after another into
   // one stage, each with the stage the previous answer gave. done(err,
-  // sent) gets how many were staged; a failure leaves the earlier ones in
-  // the stage, which the pending changes panel shows.
+  // sent) gets how many were staged. A failure part way through a stage
+  // the sequence made itself deletes that stage, on the daemon too, so no
+  // half library is left pending; in a stage that held other edits, the
+  // parts staged stay, which the pending changes panel shows.
   function stageSequence(reqs, done) {
-    var i = 0;
+    var i = 0, fresh = !stageId();
     function next() {
       if (i >= reqs.length) { done(null, i); return; }
       var r = reqs[i];
       var body = Object.assign({}, r.body);
       if (stageId()) { body.stage = stageId(); }
       stageEdit(r.method, r.path, body, function (e) {
-        if (e) { done(e, i); return; }
+        if (e) {
+          if (fresh && i > 0 && cfgStage) {
+            dropServerStage(cfgStage);
+            cfgStage = null;
+            renderStage();
+            done(e, 0);
+            return;
+          }
+          done(e, i);
+          return;
+        }
         i++;
         next();
       });
@@ -2211,7 +2224,9 @@
     var persLine = mk("p", { class: "muted", attrs: { style: "grid-column:1/-1;margin:0" } });
     grid.appendChild(persLine);
 
-    var defaults = wizardDefaults(config, resolvePersonality(pers, first.vendor, first.product));
+    // What the stage already adds is taken too: a second run in one stage.
+    var staged = cfgStage && cfgStage.data;
+    var defaults = wizardDefaults(config, resolvePersonality(pers, first.vendor, first.product), staged);
     var idHint = hint();
     var libID = field("Library ID", input("number", defaults.id == null ? "" : defaults.id), idHint);
     var serial = field("Unit serial number", input("text", librarySerial(defaults.id)));
@@ -2263,7 +2278,7 @@
           id: intField(libID.value), vendor: vendor.value, product: product.value, serial: serial.value, home: home.value,
           slots: intField(slots.value), maps: intField(maps.value), drives: n,
           driveProduct: driveModel.value, driveVendor: driveVendor.value.trim(),
-          targets: freeTargets(usedAddresses(config), 1 + (n > 0 ? n : 0), 0),
+          targets: freeTargets(usedAddresses(config, staged), 1 + (n > 0 ? n : 0), 0),
         },
       };
     }
@@ -2295,7 +2310,7 @@
     form.addEventListener("input", update);
     ok.addEventListener("click", function () {
       var v = update();
-      var problems = wizardErrors(v.w, v.lim, { ids: usedIDs(config), serials: usedSerials(config) });
+      var problems = wizardErrors(v.w, v.lim, { ids: usedIDs(config, staged), serials: usedSerials(config, staged), naas: usedNAAs(config, staged) });
       problems.forEach(function (m) { errs.appendChild(mk("li", { text: m })); });
       if (problems.length) { return; }
       ok.disabled = true;
