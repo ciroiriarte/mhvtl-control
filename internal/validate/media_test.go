@@ -1,10 +1,22 @@
 package validate
 
 import (
+	"path/filepath"
 	"testing"
 
 	"mhvtl-control/internal/config"
 )
+
+// The fixture homes, absolute, as a media home must be (HomeProblem).
+var homeA, homeB = absHome("a"), absHome("b")
+
+func absHome(name string) string {
+	p, err := filepath.Abs(filepath.Join("testdata/homes", name))
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
 
 func TestMedia(t *testing.T) {
 	// Library 10 of the shipped configuration: two ULT3580-TD8, two
@@ -24,19 +36,19 @@ func TestMedia(t *testing.T) {
 		}, nil},
 		{"MAP slot naming a cartridge that does not exist", func(l *config.Library) {
 			l.MAPs[0].Barcode = "E09001L8"
-			l.HomeDir = "testdata/homes/a"
-		}, []string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in testdata/homes/a"}, nil},
+			l.HomeDir = homeA
+		}, []string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in " + homeA}, nil},
 		{"picker naming a cartridge with no home known", func(l *config.Library) {
 			l.PickerMedia = []config.Slot{{Number: 1, Barcode: "E09001L8"}}
 			l.HomeDir = ""
 		}, nil, []string{"library 10 picker 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and no media home is known to check that it exists"}},
 		{"MAP slot with an existing cartridge", func(l *config.Library) {
 			l.MAPs[0].Barcode = "E01001L8"
-			l.HomeDir = "testdata/homes/a"
+			l.HomeDir = homeA
 		}, nil, nil},
 		{"picker with an existing cartridge no drive loads", func(l *config.Library) {
 			l.PickerMedia = []config.Slot{{Number: 1, Barcode: "E01001L8"}}
-			l.HomeDir = "testdata/homes/a"
+			l.HomeDir = homeA
 			l.Drives = l.Drives[2:]
 			l.Slots = nil
 		}, []string{"library 10 picker 1: E01001L8 is LTO8 media (from its barcode), which none of the library's drives (ULT3580-TD6, ULT3580-TD6) loads"}, nil},
@@ -53,7 +65,7 @@ func TestMedia(t *testing.T) {
 		}, []string{"library 10 slot 1: make_vtl_media cannot create ABC: its barcode gives density UNKNOWN, which mktape does not accept"}, nil},
 		{"an existing cartridge with an odd barcode", func(l *config.Library) {
 			l.Slots[0].Barcode = "ABC"
-			l.HomeDir = "testdata/homes/a"
+			l.HomeDir = homeA
 		}, nil, []string{"library 10 slot 1: the media type of ABC cannot be told from its barcode"}},
 		{"a density make_vtl_media derives but mktape rejects", func(l *config.Library) {
 			l.Slots[0].Barcode = "E09001TK"
@@ -93,10 +105,10 @@ func TestMedia(t *testing.T) {
 // media home the change moves, still must be.
 func TestMediaLiveMAP(t *testing.T) {
 	cur := shipped(t)
-	cur.Libraries[0].HomeDir = "testdata/homes/a"
+	cur.Libraries[0].HomeDir = homeA
 	next := clone(cur)
 	next.Libraries[0].MAPs[0].Barcode = "E09001L8"
-	notInHome := []string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in testdata/homes/a"}
+	notInHome := []string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in " + homeA}
 	inMAP1 := &Live{Libraries: map[int]Placement{10: {MAPs: map[int]string{1: "E09001L8"}}}}
 	for _, tc := range []struct {
 		name   string
@@ -107,17 +119,17 @@ func TestMediaLiveMAP(t *testing.T) {
 		{"in that MAP slot live", inMAP1, nil, nil},
 		{"in another MAP slot live", &Live{Libraries: map[int]Placement{10: {MAPs: map[int]string{2: "E09001L8"}}}}, nil, notInHome},
 		{"live unknown", nil, nil, notInHome},
-		{"in that MAP slot live, home changed", inMAP1, func(l *config.Library) { l.HomeDir = "testdata/homes/b" },
-			[]string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in testdata/homes/b"}},
+		{"in that MAP slot live, home changed", inMAP1, func(l *config.Library) { l.HomeDir = homeB },
+			[]string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in " + homeB}},
 		{"in that MAP slot live, home now the default", inMAP1, func(l *config.Library) { l.HomeDir = "" },
-			[]string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in testdata/homes/b"}},
+			[]string{"library 10 MAP slot 1: E09001L8: MAP and Picker entries are not created by make_vtl_media, and it is not in " + homeB}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			next := clone(next)
 			if tc.edit != nil {
 				tc.edit(&next.Libraries[0])
 			}
-			r := Validate(cur, next, tc.live, nil, Options{DefaultHome: "testdata/homes/b"})
+			r := Validate(cur, next, tc.live, nil, Options{DefaultHome: homeB})
 			expect(t, "errors", family(r.Errors, FamilyMedia), tc.errors)
 		})
 	}

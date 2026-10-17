@@ -22,6 +22,8 @@ package validate
 
 import (
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -293,7 +295,41 @@ func check(cur, next config.Inventory, live *Live, host []hostids.Device, opts O
 	return r
 }
 
-// checkHomes refuses a "Home directory" with a blank in it.
+// forbiddenHomes are the directories a media home may not be, nor lie
+// under: system trees, pseudo-filesystems, and the state of mhvtl-control
+// and its apply helper. mktape and make_vtl_media create directories and
+// files in the home as root, so a home there would let a configuration
+// change write into them.
+var forbiddenHomes = []string{
+	"/etc", "/proc", "/sys", "/dev", "/run", "/boot", "/usr",
+	"/var/lib/mhvtl-control-apply", "/var/lib/mhvtl-control",
+}
+
+var homeChars = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
+
+// HomeProblem says why path cannot be a media home, or returns "". A home
+// is an absolute, clean path of letters, digits, '.', '_', '-' and '/'
+// (so the shell that sources mhvtl.conf and splits $LIBHOME reads it as
+// one word), and is not "/", nor one of forbiddenHomes or under one.
+func HomeProblem(path string) string {
+	switch {
+	case !homeChars.MatchString(path):
+		return "not an absolute path of letters, digits, '.', '_', '-' and '/'"
+	case filepath.Clean(path) != path:
+		return "not a clean path (no '..', '.', '//' or trailing '/')"
+	case path == "/":
+		return "the root directory"
+	}
+	for _, f := range forbiddenHomes {
+		if path == f || strings.HasPrefix(path, f+"/") {
+			return "under " + f
+		}
+	}
+	return ""
+}
+
+// checkHomes refuses a "Home directory" with a blank in it, and one
+// HomeProblem rejects.
 // find_media_home_directory reads it with sscanf "%s" and stops at the blank
 // (usr/vtllib.c:1723, upstream master 993b193), and make_vtl_media uses
 // $LIBHOME unquoted (usr/cmd/make_vtl_media.in:355-377), so neither finds the
@@ -301,11 +337,19 @@ func check(cur, next config.Inventory, live *Live, host []hostids.Device, opts O
 // pre-existing warning, whatever else the change touches in the library.
 func checkHomes(r *Result, cur, next config.Inventory) {
 	for _, lib := range next.Libraries {
-		if !strings.ContainsAny(lib.HomeDir, " \t\v\f\r") {
+		var f Finding
+		switch {
+		case lib.HomeDir == "":
+			continue
+		case strings.ContainsAny(lib.HomeDir, " \t\v\f\r"):
+			f = newFinding(CodeMediaHomeBlank, lib.ID, []ElementRef{libKey(lib.ID)},
+				"library %d: Home directory %q has a blank in it; vtltape reads the home up to the first blank and make_vtl_media splits it into words", []any{lib.ID, lib.HomeDir})
+		case HomeProblem(lib.HomeDir) != "":
+			f = newFinding(CodeMediaHomeForbidden, lib.ID, []ElementRef{libKey(lib.ID)},
+				"library %d: Home directory %q cannot be a media home: %s", []any{lib.ID, lib.HomeDir, HomeProblem(lib.HomeDir)})
+		default:
 			continue
 		}
-		f := newFinding(CodeMediaHomeBlank, lib.ID, []ElementRef{libKey(lib.ID)},
-			"library %d: Home directory %q has a blank in it; vtltape reads the home up to the first blank and make_vtl_media splits it into words", []any{lib.ID, lib.HomeDir})
 		if c, ok := findLibrary(cur, lib.ID); ok && c.HomeDir == lib.HomeDir {
 			f.Tag = TagPreExisting
 			r.Warnings = append(r.Warnings, f)
