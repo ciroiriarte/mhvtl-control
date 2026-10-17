@@ -299,11 +299,23 @@ func TestRecoverRefusesBadIntent(t *testing.T) {
 	if err := os.WriteFile(e.h.intentPath(), []byte(`{"v":1,"files":[{"name":"../shadow","existed":true,"original_sha256":"","new_sha256":""}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if resp := e.do(Request{Op: OpRecover}); resp.Result != ResultError || !e.intentExists() {
-		t.Errorf("bad intent: %+v", resp)
+	for _, op := range []string{OpRecover, OpPlan, OpApply} {
+		resp := e.do(Request{Op: op})
+		if resp.Result != ResultRefused || resp.Error != ErrIntentUnreadable || !strings.Contains(resp.Message, "../shadow") || !e.intentExists() {
+			t.Errorf("%s with a bad intent: %+v", op, resp)
+		}
 	}
-	if resp := e.do(Request{Op: OpRecover}); !strings.Contains(resp.Message, "../shadow") {
-		t.Errorf("message %q", resp.Message)
+	if resp := e.do(Request{Op: OpHello}); resp.State != StateIntentUnreadable {
+		t.Errorf("hello: %+v", resp)
+	}
+	if err := os.WriteFile(e.h.intentPath(), []byte(`{"v":1,`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if resp := e.do(Request{Op: OpHello}); resp.State != StateIntentUnreadable {
+		t.Errorf("hello, truncated intent: %+v", resp)
+	}
+	if _, err := e.h.RecoverBoot(context.Background()); err == nil || !e.intentExists() {
+		t.Errorf("boot recovery of a truncated intent: %v", err)
 	}
 }
 
