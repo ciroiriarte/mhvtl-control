@@ -234,15 +234,22 @@ func (h *Helper) checkMediaPlan(c *checked) error {
 	}
 	// make_vtl_media skips only an existing directory
 	// ([usr/cmd/make_vtl_media.in:365](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L365)),
-	// so it would run mktape on a bay cartridge's symlink in a Slot line,
-	// fail, and exit before the cartridges after it
-	// ([:380](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L380)).
+	// so it runs mktape on a bay cartridge's symlink in a Slot line.
+	// mktape takes the raw backend for it
+	// ([usr/vtlcart.c:168-179](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/vtlcart.c#L168-L179))
+	// and, when the exclusive open succeeds, finds the cartridge existing
+	// and writes nothing
+	// ([usr/vtlcart_raw.c:575-585](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/vtlcart_raw.c#L575-L585)).
+	// The open fails when the device is busy or has no valid superblock
+	// ([:238](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/vtlcart_raw.c#L238)); mktape then fails,
+	// and make_vtl_media exits before creating the cartridges after it
+	// ([usr/cmd/make_vtl_media.in:380](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L380)).
 	for _, lib := range c.next.Libraries {
 		home := homeOf(lib, c.nextHome)
 		bay := bayIn(home)
 		for _, s := range lib.Slots {
 			if bay(s.Barcode) {
-				return refuse(ErrMedia, "library %d slot %d: %s is a bay cartridge (a symlink in %s), and make_vtl_media, which the apply runs for the new barcodes, would run mktape on it; move it back to the MAP first, or add the new barcodes in an apply of their own once it is there", lib.ID, s.Number, s.Barcode, home)
+				return refuse(ErrMedia, "library %d slot %d: %s is a bay cartridge (a symlink in %s); make_vtl_media, which the apply runs for the new barcodes, runs mktape on it, which writes nothing to it but fails when its device is busy or has no valid superblock, and make_vtl_media then stops before creating the cartridges after it; move it back to the MAP first, or add the new barcodes in an apply of their own once it is there", lib.ID, s.Number, s.Barcode, home)
 			}
 		}
 	}
