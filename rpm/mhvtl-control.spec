@@ -69,7 +69,9 @@ install -Dpm 0644 dist/mhvtl-control.preset %{buildroot}%{_presetdir}/50-mhvtl-c
 # copy of the token is left in /etc/mhvtl. Where the systemd macros restart
 # in %%postun rather than deferring it to systemd-update-helper, that restart
 # ran on the default file, so a running daemon is restarted again once its
-# options are in place.
+# options are in place. systemd still holds 0.2.0's unit at that point, which
+# reads the old path, until something reloads it, so reload first; otherwise
+# the restart starts 0.3.x with no options and no token.
 %pre
 if [ -f %{_sysconfdir}/mhvtl/mhvtl-control.env ] && [ ! -e %{_sysconfdir}/mhvtl-control/mhvtl-control.env ]; then
     mkdir -p -m 0750 %{_sysconfdir}/mhvtl-control
@@ -88,6 +90,7 @@ if [ -f $f.rpm-migrate ]; then
         mv -f $f $f.rpmnew
         mv -f $f.rpm-migrate $f
         if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || :
             systemctl try-restart mhvtl-control.service >/dev/null 2>&1 || :
         fi
     fi
