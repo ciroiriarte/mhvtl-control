@@ -20,6 +20,7 @@
 #   persist          the change with PERSIST: True, then toggled off
 #   conflict         a hand edit between plan and apply
 #   rollback         a start failure rolls back
+#   rollback-persist the rollback with PERSIST: True and run-time moves
 #   crash            the helper killed mid-apply, then runtime recovery
 #   concurrency      hello during an apply; SIGTERM mid-apply
 #   placement        mtx moves and a MAP export survive an apply
@@ -50,7 +51,7 @@ OUT=/var/tmp/apply-smoke/run-$(date +%Y%m%d-%H%M%S)
 LIB=40
 MARKER="# apply-smoke: library $LIB"
 
-ALL=(enable create change persist conflict rollback crash concurrency placement placement-force delete)
+ALL=(enable create change persist conflict rollback rollback-persist crash concurrency placement placement-force delete)
 
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 2; }
 
@@ -432,19 +433,31 @@ s_change() {
 # persist_round NAME VALUE: sets PERSIST to VALUE on library 40, moves two
 # cartridges, adds 5 slots, and checks that both the moves and the new slot
 # count are live and in library_contents.
-persist_round() {
-	local name=$1 value=$2 req f slots0
+# set_persist NAME VALUE: applies PERSIST: VALUE to library 40.
+set_persist() {
+	local name=$1 value=$2 req
 	mkdir -p "$STEP_DIR/$name.set"
 	sed "/^Library: $LIB /,/^\$/ s/^ PERSIST: .*/ PERSIST: $value/" "$CONF/device.conf" >"$STEP_DIR/$name.set/device.conf"
 	req=$(mkreq "$name.set" "$STEP_DIR/$name.set/device.conf")
 	plan_apply "$name.set" "$req"
 	check "$name: PERSIST: $value applied" jqis "$STEP_DIR/$name.set.apply.json" .result applied
-	mtx_status "$LIB" "$STEP_DIR/$name.pre-move.mtx"
+}
+
+# move_two NAME: moves the first two full slots of library 40 to the first
+# two empty ones.
+move_two() {
 	local full empty
-	mapfile -t full < <(mtx_slots "$STEP_DIR/$name.pre-move.mtx" Full | head -2)
-	mapfile -t empty < <(mtx_slots "$STEP_DIR/$name.pre-move.mtx" Empty | head -2)
+	mtx_status "$LIB" "$STEP_DIR/$1.pre-move.mtx"
+	mapfile -t full < <(mtx_slots "$STEP_DIR/$1.pre-move.mtx" Full | head -2)
+	mapfile -t empty < <(mtx_slots "$STEP_DIR/$1.pre-move.mtx" Empty | head -2)
 	mtx_do "$LIB" transfer "${full[0]}" "${empty[0]}"
 	mtx_do "$LIB" transfer "${full[1]}" "${empty[1]}"
+}
+
+persist_round() {
+	local name=$1 value=$2 req f slots0
+	set_persist "$name" "$value"
+	move_two "$name"
 	req=$(grow "$name" 5)
 	read -r _ slots0 _ <<<"$(mtx_counts "$STEP_DIR/$name/live.mtx")"
 	plan_apply "$name" "$req"
@@ -506,21 +519,40 @@ restored() {
 	check "$what: live placement unchanged" same <(mtx_placement "$snap.mtx") <(mtx_placement "$snap.after.mtx")
 }
 
-s_rollback() {
-	ensure_lib
-	snapshot "$STEP_DIR/pre"
+# rollback_round NAME: an apply of 2 more slots whose first start of
+# vtllibrary@40 fails rolls back to the snapshot taken just before.
+rollback_round() {
+	local name=$1 req
+	snapshot "$STEP_DIR/$name.pre"
 	# Fails the first start only: the rollback's own start of the library
 	# must succeed for the rollback to be checked.
 	rm -f /run/apply-smoke-fail-once
 	dropin fail "/bin/sh -c 'test -e /run/apply-smoke-fail-once || { touch /run/apply-smoke-fail-once; exit 1; }'"
-	local req
-	req=$(grow rollback 2)
-	plan_apply rollback "$req"
+	req=$(grow "$name" 2)
+	plan_apply "$name" "$req"
 	undropin fail
-	check "apply: rolled_back" jqis "$STEP_DIR/rollback.apply.json" .result rolled_back
-	check "failed unit is vtllibrary@$LIB" jqis "$STEP_DIR/rollback.apply.json" .failed_unit "vtllibrary@$LIB.service"
-	restored rollback "$STEP_DIR/pre"
-	check "no intent left" test ! -e "$STATE_DIR/intent.json"
+	check "$name: apply rolled_back" jqis "$STEP_DIR/$name.apply.json" .result rolled_back
+	check "$name: failed unit is vtllibrary@$LIB" jqis "$STEP_DIR/$name.apply.json" .failed_unit "vtllibrary@$LIB.service"
+	restored "$name" "$STEP_DIR/$name.pre"
+	check "$name: no intent left" test ! -e "$STATE_DIR/intent.json"
+}
+
+s_rollback() {
+	ensure_lib
+	rollback_round rollback
+	others_kept
+}
+
+# The rollback with PERSIST: True and cartridges moved at run time: the
+# stops write .persist files, so the restored library_contents.40 must be
+# what the library loads, with no .persist left to win at its start.
+s_rollback_persist() {
+	ensure_lib
+	set_persist persist-on True
+	move_two moved
+	rollback_round rollback
+	check "no .persist left after the rollback" test ! -e "$CONF/library_contents.$LIB.persist"
+	set_persist persist-off False
 	others_kept
 }
 
