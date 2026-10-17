@@ -23,9 +23,12 @@
 #   rollback         a start failure rolls back
 #   rollback-persist the rollback with PERSIST: True and run-time moves
 #   crash            the helper killed mid-apply, then runtime recovery
-#   concurrency      hello during an apply; SIGTERM mid-apply
+#   concurrency      hello and an operator's drive start during an apply;
+#                    SIGTERM mid-apply
 #   placement        mtx moves and a MAP export survive an apply
 #   placement-force  a loaded drive under a force token
+#   dispositions     slots holding cartridges removed: refused, then applied
+#                    with a disposition to a slot, to export and to shelf
 #   delete           delete library 40
 #   reboot-prep      the helper killed mid-apply, then a reboot
 #   reboot-check     after reboot-prep's reboot: boot recovery ran
@@ -60,7 +63,7 @@ LIB_PRODUCT=${LIB_PRODUCT:-03584L32}
 DRIVE_SERIAL_PAD=${DRIVE_SERIAL_PAD:-}
 MARKER="# apply-smoke: library $LIB"
 
-ALL=(enable create change persist conflict rollback rollback-persist crash concurrency placement placement-force delete)
+ALL=(enable create change persist conflict rollback rollback-persist crash concurrency placement placement-force dispositions delete)
 
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 2; }
 
@@ -653,9 +656,16 @@ s_concurrency() {
 	check "apply reached the start of vtllibrary@$LIB" wait_for 300 lib_activating
 	send hello - hello
 	check "hello during the apply: apply_in_progress" jqis "$STEP_DIR/hello.json" .state apply_in_progress
+	# An operator starts a drive while the intent journal exists, so the
+	# boot oneshot's ConditionPathExists would hold if the start pulled it
+	# in. --no-block: the instances are ordered after the library's start.
+	local drive
+	drive=$(drive_unit "$LIB" 1)
+	check "intent.json exists during the apply" test -e "$STATE_DIR/intent.json"
+	check "operator: systemctl start $drive" systemctl start --no-block "$drive"
 	wait "$bg" || true
 	check "the apply completes" jqis "$STEP_DIR/live.apply.json" .result applied
-	check "boot recovery did not run on the apply's starts" \
+	check "boot recovery did not run on the apply's starts or the operator's" \
 		eq "$(systemctl show -p InactiveExitTimestampMonotonic --value mhvtl-control-apply-recover.service)" "$recover0"
 
 	req=$(grow term 1)
@@ -746,6 +756,69 @@ s_placement_force() {
 	check "every other cartridge where it was" same \
 		<(placement -mtx "$STEP_DIR/force/live.mtx" | sed "s/^Drive 1 $bc from Slot $slot\$/Slot $slot $bc/" | sort -k1,1 -k2,2n) \
 		<(placement -mtx "$STEP_DIR/after.mtx" | sort -k1,1 -k2,2n)
+	others_kept
+}
+
+# s_dispositions: AC 5. Removes library 40's last three slots, each holding
+# a cartridge. Without dispositions the plan is refused for all three; with
+# one to a free slot, one to export and one to shelf, the apply puts them
+# there and leaves every other cartridge in place.
+s_dispositions() {
+	ensure_lib
+	mtx_status "$LIB" "$STEP_DIR/start.mtx"
+	local slots keep n src b1 b2 b3 target req
+	read -r _ slots _ <<<"$(mtx_counts "$STEP_DIR/start.mtx")"
+	keep=$((slots - 3))
+	# Fill the last three slots from the kept ones (mtx numbers storage
+	# slots 1..N before the MAP).
+	for n in $(seq $((keep + 1)) "$slots"); do
+		if mtx_slots "$STEP_DIR/start.mtx" Empty | grep -qx "$n"; then
+			src=$(mtx_slots "$STEP_DIR/start.mtx" Full | awk -v k="$keep" '$1 <= k' | head -1)
+			mtx_do "$LIB" transfer "$src" "$n"
+			mtx_status "$LIB" "$STEP_DIR/start.mtx"
+		fi
+	done
+	mkdir -p "$STEP_DIR/shrink"
+	mtx_status "$LIB" "$STEP_DIR/shrink/live.mtx"
+	b1=$(mtx_barcode "$STEP_DIR/shrink/live.mtx" $((keep + 1)))
+	b2=$(mtx_barcode "$STEP_DIR/shrink/live.mtx" $((keep + 2)))
+	b3=$(mtx_barcode "$STEP_DIR/shrink/live.mtx" "$slots")
+	target=$(mtx_slots "$STEP_DIR/shrink/live.mtx" Empty | awk -v k="$keep" '$1 <= k' | head -1 | one "a free kept slot")
+	cp "$CONF/device.conf" "$STEP_DIR/shrink/device.conf"
+	"$APPLYSMOKE" contents -from "$CONF/library_contents.$LIB" -mtx "$STEP_DIR/shrink/live.mtx" |
+		awk -v k="$keep" '/^Slot [0-9]+:/ { split($2, a, ":"); if (a[1] + 0 > k) next } { print }' \
+			>"$STEP_DIR/shrink/library_contents.$LIB"
+
+	req=$(mkreq shrink "$STEP_DIR/shrink/device.conf" "$STEP_DIR/shrink/library_contents.$LIB")
+	send plan "$req" shrink.plan
+	check "no dispositions: plan refused, invalid" jqis "$STEP_DIR/shrink.plan.json" '.result + " " + .error' "refused invalid"
+	check "removal.leaves names $b1 $b2 $b3" jqis "$STEP_DIR/shrink.plan.json" \
+		'[.findings.errors[]? | select(.code == "removal.leaves") | .message | capture("(?<b>[A-Z0-9]+) \\(") | .b] | sort | join(" ")' \
+		"$(printf '%s\n' "$b1" "$b2" "$b3" | sort | xargs)"
+
+	jq -n --argjson lib "$LIB" --arg b1 "$b1" --arg b2 "$b2" --arg b3 "$b3" --argjson t "$target" \
+		'[{library: $lib, barcode: $b1, to: "slot", slot: $t},
+		  {library: $lib, barcode: $b2, to: "export"},
+		  {library: $lib, barcode: $b3, to: "shelf"}]' >"$STEP_DIR/shrink/dispositions.json"
+	unit_pids >"$STEP_DIR/pids.before"
+	req=$(mkreq disp -dispositions "$STEP_DIR/shrink/dispositions.json" \
+		"$STEP_DIR/shrink/device.conf" "$STEP_DIR/shrink/library_contents.$LIB")
+	plan_apply disp "$req"
+	check "plan units: the library only" jqis "$STEP_DIR/disp.plan.json" '.units | join(" ")' "vtllibrary@$LIB.service"
+	check "apply: applied" jqis "$STEP_DIR/disp.apply.json" .result applied
+	unit_pids >"$STEP_DIR/pids.after"
+	check "every PID but the library's unchanged" pids_kept "$STEP_DIR/pids.before" "$STEP_DIR/pids.after" "vtllibrary@$LIB.service"
+	check "mtx status works" mtx_status "$LIB" "$STEP_DIR/after.mtx"
+	check "mtx: $keep slots" eq "$(mtx_counts "$STEP_DIR/after.mtx" | cut -d' ' -f2)" "$keep"
+	check "$b1 in slot $target" eq "$(mtx_barcode "$STEP_DIR/after.mtx" "$target")" "$b1"
+	check "$b2 exported to a MAP" bash -c "'$APPLYSMOKE' placement -mtx '$STEP_DIR/after.mtx' | grep -Eqx 'MAP [0-9]+ $b2'"
+	check "$b3 shelved: not in the library" bash -c "! grep -q 'VolumeTag=$b3' '$STEP_DIR/after.mtx'"
+	check "$b3 shelved: still in $HOME_PATH" test -e "$HOME_PATH/$b3"
+	check "library_contents.$LIB is the live placement" \
+		same <(mtx_placement "$STEP_DIR/after.mtx") <(file_placement "$CONF/library_contents.$LIB")
+	check "every other cartridge where it was" same \
+		<(placement -mtx "$STEP_DIR/shrink/live.mtx" | grep -Ev " ($b1|$b2|$b3)\$") \
+		<(placement -mtx "$STEP_DIR/after.mtx" | grep -Ev " ($b1|$b2)\$")
 	others_kept
 }
 
