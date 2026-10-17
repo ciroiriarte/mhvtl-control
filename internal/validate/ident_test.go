@@ -131,8 +131,10 @@ func TestIdentities(t *testing.T) {
 
 func TestHostCollisions(t *testing.T) {
 	cur := shipped(t)
-	// The NAA field is 5h on the wire for the drives mhVTL runs.
-	mhvtlDrive11 := hostids.Device{Host: 3, Target: 1, Driver: "mhvtl", Serial: "XYZZY_A1", NAAs: []string{"50:22:33:44:ab:00:01:00"}}
+	// The NAA field is 5h on the wire for the drives mhVTL runs. Drive 11,
+	// an IBM ULT3580-TD8 with serial XYZZY_A1, reports 00XYZZY_A1 in VPD
+	// page 80h (personality.DriveUnitSerial).
+	mhvtlDrive11 := hostids.Device{Host: 3, Target: 1, Driver: "mhvtl", Serial: "00XYZZY_A1", NAAs: []string{"50:22:33:44:ab:00:01:00"}}
 	for _, tc := range []struct {
 		name   string
 		cur    config.Inventory
@@ -142,47 +144,49 @@ func TestHostCollisions(t *testing.T) {
 		{"mhVTL's own devices are not collisions", cur, []hostids.Device{mhvtlDrive11}, nil},
 		{"a real disk with another serial", cur, []hostids.Device{{Host: 0, Driver: "ahci", Serial: "WD-123",
 			NAAs: []string{"50:01:4e:e2:00:00:00:01"}}}, nil},
-		{"a real device with the same serial", cur, []hostids.Device{{Host: 0, Driver: "ahci", Serial: "XYZZY_A1"}},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 0:0:0:0 (ahci)`}},
+		// Drive 11's device.conf serial is not what it reports.
+		{"a real device with drive 11's device.conf serial", cur, []hostids.Device{{Host: 0, Driver: "ahci", Serial: "XYZZY_A1"}}, nil},
+		{"a real device with the same serial", cur, []hostids.Device{{Host: 0, Driver: "ahci", Serial: "00XYZZY_A1"}},
+			[]string{`drive 11: serial "XYZZY_A1" (reported as "00XYZZY_A1") is already used by host device 0:0:0:0 (ahci)`}},
 		{"a real device with the same NAA", cur, []hostids.Device{{Host: 5, Target: 2, Driver: "qla2xxx",
 			NAAs: []string{"50:22:33:44:ab:00:02:00"}}},
 			[]string{"drive 12: NAA 10:22:33:44:ab:00:02:00 is already used by host device 5:0:2:0 (qla2xxx), which reports 50:22:33:44:ab:00:02:00"}},
 		// An mhVTL device the current device.conf no longer has (not yet
 		// restarted) still holds its identity.
 		{"a stale mhVTL device", config.Inventory{}, []hostids.Device{mhvtlDrive11},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 3:0:1:0 (mhvtl)`,
+			[]string{`drive 11: serial "XYZZY_A1" (reported as "00XYZZY_A1") is already used by host device 3:0:1:0 (mhvtl)`,
 				"drive 11: NAA 10:22:33:44:ab:00:01:00 is already used by host device 3:0:1:0 (mhvtl)"}},
 		// Library 10 is an STK L700, which sends no NAA.
 		{"a real device with the STK library's device.conf NAA", cur, []hostids.Device{{Host: 5, Target: 3, Driver: "qla2xxx",
 			NAAs: []string{"50:22:33:44:ab:00:00:00"}}}, nil},
 		// Drive 11 exported again through tcm_loop: both its serial and its
 		// NAA, so it is drive 11 itself.
-		{"drive 11 re-exported through tcm_loopback", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "XYZZY_A1",
+		{"drive 11 re-exported through tcm_loopback", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "00XYZZY_A1",
 			NAAs: []string{"50:22:33:44:ab:00:01:00"}}}, nil},
 		// "tcm_loop" is the fabric's bus name; no SCSI host has it as its
 		// proc_name, so it gets no exemption.
-		{"drive 11 on a host named after the tcm_loop bus", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "XYZZY_A1",
+		{"drive 11 on a host named after the tcm_loop bus", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loop", Serial: "00XYZZY_A1",
 			NAAs: []string{"50:22:33:44:ab:00:01:00"}}},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loop)`,
+			[]string{`drive 11: serial "XYZZY_A1" (reported as "00XYZZY_A1") is already used by host device 7:0:11:0 (tcm_loop)`,
 				"drive 11: NAA 10:22:33:44:ab:00:01:00 is already used by host device 7:0:11:0 (tcm_loop)"}},
-		{"the serial of drive 11 with another NAA", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "XYZZY_A1",
+		{"the serial of drive 11 with another NAA", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "00XYZZY_A1",
 			NAAs: []string{"50:99:88:77:66:55:44:33"}}},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loopback)`}},
-		{"drive 11's serial and drive 12's NAA", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "XYZZY_A1",
+			[]string{`drive 11: serial "XYZZY_A1" (reported as "00XYZZY_A1") is already used by host device 7:0:11:0 (tcm_loopback)`}},
+		{"drive 11's serial and drive 12's NAA", cur, []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "00XYZZY_A1",
 			NAAs: []string{"50:22:33:44:ab:00:02:00"}}},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loopback)`,
+			[]string{`drive 11: serial "XYZZY_A1" (reported as "00XYZZY_A1") is already used by host device 7:0:11:0 (tcm_loopback)`,
 				"drive 12: NAA 10:22:33:44:ab:00:02:00 is already used by host device 7:0:11:0 (tcm_loopback)"}},
 		// The same identity on another HBA (e.g. a target re-exporting it)
 		// is a collision.
 		// A second, default-configured mhVTL node's drive seen over iSCSI
 		// (probe from the PR 2a re-review): the same serial and NAA, but not
 		// a local re-export.
-		{"another node's drive with the same identity over iSCSI", cur, []hostids.Device{{Host: 9, Target: 1, Driver: "iscsi_tcp", Serial: "XYZZY_A1",
+		{"another node's drive with the same identity over iSCSI", cur, []hostids.Device{{Host: 9, Target: 1, Driver: "iscsi_tcp", Serial: "00XYZZY_A1",
 			NAAs: []string{"50:22:33:44:ab:00:01:00"}}},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 9:0:1:0 (iscsi_tcp)`,
+			[]string{`drive 11: serial "XYZZY_A1" (reported as "00XYZZY_A1") is already used by host device 9:0:1:0 (iscsi_tcp)`,
 				"drive 11: NAA 10:22:33:44:ab:00:01:00 is already used by host device 9:0:1:0 (iscsi_tcp)"}},
-		{"same serial on another HBA", cur, []hostids.Device{{Host: 7, Target: 1, Driver: "iscsi_tcp", Serial: "XYZZY_A1"}},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 7:0:1:0 (iscsi_tcp)`}},
+		{"same serial on another HBA", cur, []hostids.Device{{Host: 7, Target: 1, Driver: "iscsi_tcp", Serial: "00XYZZY_A1"}},
+			[]string{`drive 11: serial "XYZZY_A1" (reported as "00XYZZY_A1") is already used by host device 7:0:1:0 (iscsi_tcp)`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Validate(tc.cur, clone(cur), nil, tc.host, Options{})
@@ -195,9 +199,11 @@ func TestHostCollisions(t *testing.T) {
 // still collides with any other device of next that takes its identity.
 func TestHostReexport(t *testing.T) {
 	cur := shipped(t)
-	host := []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "XYZZY_A1",
+	host := []hostids.Device{{Host: 7, Target: 11, Driver: "tcm_loopback", Serial: "00XYZZY_A1",
 		NAAs: []string{"50:22:33:44:ab:00:01:00"}}}
-	// Drive 11 is deleted and drive 31 takes its serial and NAA.
+	// Drive 11 is deleted and drive 31 takes its serial and NAA. Drive 31,
+	// an STK T10000B, reports XYZZY_A1 as is, not the 00XYZZY_A1 of the
+	// re-export: only the NAA collides.
 	next := clone(cur)
 	d11 := next.Libraries[0].Drives[0]
 	next.Libraries[0].Drives = next.Libraries[0].Drives[1:]
@@ -205,7 +211,6 @@ func TestHostReexport(t *testing.T) {
 	next.Libraries[1].Drives[0].Serial, next.Libraries[1].Drives[0].NAA = d11.Serial, d11.NAA
 	r := Validate(cur, next, nil, host, Options{})
 	expect(t, "errors", family(r.Errors, FamilyIdentity), []string{
-		`drive 31: serial "XYZZY_A1" is already used by host device 7:0:11:0 (tcm_loopback)`,
 		"drive 31: NAA 10:22:33:44:ab:00:01:00 is already used by host device 7:0:11:0 (tcm_loopback)",
 	})
 }
@@ -241,10 +246,10 @@ func TestHostCollisionsFromSysfs(t *testing.T) {
 	}
 	cur := shipped(t)
 	r := Validate(cur, clone(cur), nil, devs, Options{})
-	// 3:0:1:0 is mhVTL's drive 11; 0:0:0:0 is a disk that reuses drive 12's
-	// serial.
+	// 3:0:1:0 is mhVTL's drive 11; 0:0:0:0 is a disk that reports what
+	// drive 12 reports.
 	expect(t, "errors", family(r.Errors, FamilyIdentity),
-		[]string{`drive 12: serial "XYZZY_A2" is already used by host device 0:0:0:0 (ahci)`})
+		[]string{`drive 12: serial "XYZZY_A2" (reported as "00XYZZY_A2") is already used by host device 0:0:0:0 (ahci)`})
 }
 
 // A "Drive N: X" line of library_contents gives the changer serial X for drive
@@ -313,8 +318,13 @@ func TestDriveLineSerials(t *testing.T) {
 }
 
 // An IBM 03584 changer sends no NAA, so its tcm_loop re-export is matched on
-// serial, vendor and product (probe from the PR 2a re-review).
+// serial, vendor and product (probe from the PR 2a re-review). Its VPD page
+// 80h is the serial as "%-10.10s", two NULs and the first storage element
+// address as "%04x" (update_ibm_3584_vpd_80, usr/pm/ibm_smc_pm.c:168-192 at
+// 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/pm/ibm_smc_pm.c#L168-L192).
 func TestChangerReexport(t *testing.T) {
+	const vm03584 = "XYZZY_A   \x00\x000400"
 	cur := gen(t)
 	cur.Libraries[0].Vendor, cur.Libraries[0].Product = "IBM", "03584L32"
 	for _, tc := range []struct {
@@ -322,9 +332,10 @@ func TestChangerReexport(t *testing.T) {
 		h      hostids.Device
 		errors []string
 	}{
-		{"the changer itself", hostids.Device{Host: 7, Target: 0, Driver: "tcm_loopback", Serial: "XYZZY_A", Vendor: "IBM", Model: "03584L32"}, nil},
-		{"another product with its serial", hostids.Device{Host: 7, Target: 0, Driver: "tcm_loopback", Serial: "XYZZY_A", Vendor: "IBM", Model: "3573-TL"},
-			[]string{`library 10: serial "XYZZY_A" is already used by host device 7:0:0:0 (tcm_loopback)`}},
+		{"the changer itself", hostids.Device{Host: 7, Target: 0, Driver: "tcm_loopback", Serial: vm03584, Vendor: "IBM", Model: "03584L32"}, nil},
+		{"another product with its serial", hostids.Device{Host: 7, Target: 0, Driver: "tcm_loopback", Serial: vm03584, Vendor: "IBM", Model: "3573-TL"},
+			[]string{`library 10: serial "XYZZY_A" (reported as "XYZZY_A   \x00\x000400") is already used by host device 7:0:0:0 (tcm_loopback)`}},
+		{"a real device with its device.conf serial", hostids.Device{Host: 0, Driver: "ahci", Serial: "XYZZY_A"}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Validate(cur, clone(cur), nil, []hostids.Device{tc.h}, Options{})
@@ -336,7 +347,7 @@ func TestChangerReexport(t *testing.T) {
 	// widths; the over-long values themselves are a pre-existing error.
 	long := clone(cur)
 	long.Libraries[0].Vendor, long.Libraries[0].Product = "IBMXXXXXXX", "03584L32XXXXXXXXXX"
-	h := hostids.Device{Host: 7, Target: 0, Driver: "tcm_loopback", Serial: "XYZZY_A", Vendor: "IBMXXXXX", Model: "03584L32XXXXXXXX"}
+	h := hostids.Device{Host: 7, Target: 0, Driver: "tcm_loopback", Serial: vm03584, Vendor: "IBMXXXXX", Model: "03584L32XXXXXXXX"}
 	r := Validate(long, clone(long), nil, []hostids.Device{h}, Options{})
 	expect(t, "errors with an over-long vendor and product", family(r.Errors, FamilyIdentity), nil)
 }
@@ -365,19 +376,19 @@ func TestHostNotRunning(t *testing.T) {
 		errors, warns []string
 	}{
 		{"a deleted device with drive 11's serial", cur,
-			hostids.Device{Host: 0, Driver: "ahci", Serial: "XYZZY_A1", State: "deleted"},
+			hostids.Device{Host: 0, Driver: "ahci", Serial: "00XYZZY_A1", State: "deleted"},
 			nil, []string{`host device 0:0:0:0 (ahci) is in state "deleted", not running`}},
 		// Drive 11 was removed from the configuration and is re-added; its
 		// old mhVTL device is still going away.
 		{"a lingering mhVTL device the configuration no longer has", config.Inventory{},
-			hostids.Device{Host: 3, Target: 1, Driver: "mhvtl", Serial: "XYZZY_A1", NAAs: []string{"50:22:33:44:ab:00:01:00"}, State: "cancel"},
+			hostids.Device{Host: 3, Target: 1, Driver: "mhvtl", Serial: "00XYZZY_A1", NAAs: []string{"50:22:33:44:ab:00:01:00"}, State: "cancel"},
 			nil, []string{`host device 3:0:1:0 (mhvtl) is in state "cancel", not running`}},
 		{"a running device collides", cur,
-			hostids.Device{Host: 0, Driver: "ahci", Serial: "XYZZY_A1", State: "running"},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 0:0:0:0 (ahci)`}, nil},
+			hostids.Device{Host: 0, Driver: "ahci", Serial: "00XYZZY_A1", State: "running"},
+			[]string{`drive 11: serial "XYZZY_A1" (reported as "00XYZZY_A1") is already used by host device 0:0:0:0 (ahci)`}, nil},
 		{"an unknown state counts as running", cur,
-			hostids.Device{Host: 0, Driver: "ahci", Serial: "XYZZY_A1"},
-			[]string{`drive 11: serial "XYZZY_A1" is already used by host device 0:0:0:0 (ahci)`}, nil},
+			hostids.Device{Host: 0, Driver: "ahci", Serial: "00XYZZY_A1"},
+			[]string{`drive 11: serial "XYZZY_A1" (reported as "00XYZZY_A1") is already used by host device 0:0:0:0 (ahci)`}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Validate(tc.cur, clone(cur), nil, []hostids.Device{tc.h}, Options{})
