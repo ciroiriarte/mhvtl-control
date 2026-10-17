@@ -301,3 +301,27 @@ func commented(t *testing.T, path string, keys []string) {
 		}
 	}
 }
+
+// TestPreset: the RPM preset keeps the helper's socket and its boot
+// recovery disabled, and names nothing else.
+func TestPreset(t *testing.T) {
+	b, err := os.ReadFile("mhvtl-control.preset")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if l != "" && !strings.HasPrefix(l, "#") {
+			lines = append(lines, l)
+		}
+	}
+	want := []string{"disable mhvtl-control-apply.socket", "disable mhvtl-control-apply-recover.service"}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Errorf("preset lines %q, want %q", lines, want)
+	}
+	for _, u := range []string{"mhvtl-control-apply.socket", "mhvtl-control-apply-recover.service"} {
+		if _, err := os.Stat(u); err != nil {
+			t.Errorf("preset names %s: %v", u, err)
+		}
+	}
+}

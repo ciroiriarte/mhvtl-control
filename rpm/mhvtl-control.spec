@@ -55,6 +55,8 @@ go test ./...
 make install DESTDIR=%{buildroot} BINDIR=%{_bindir} UNITDIR=%{_unitdir} \
     TMPFILESDIR=%{_tmpfilesdir} SYSCONFDIR=%{_sysconfdir} \
     LOCALSTATEDIR=%{_localstatedir} MANDIR=%{_mandir} LIBEXECDIR=%{_prefix}/libexec
+# Keep the config-apply helper disabled whatever the vendor presets say.
+install -Dpm 0644 dist/mhvtl-control.preset %{buildroot}%{_presetdir}/50-mhvtl-control.preset
 
 # The options file moved from /etc/mhvtl to /etc/mhvtl-control after 0.2.0.
 # rpm decides each file's fate before %%pre runs, so a copy %%pre put at the
@@ -96,11 +98,13 @@ fi
 
 %post
 # The unit masks /run/mhvtl-control-apply, so create it before any restart.
-# None of the units is enabled on install (the distributions' default
-# presets disable them): enabling mhvtl-control-apply.socket and
+# None of the units is enabled on install (50-mhvtl-control.preset
+# disables the helper's, the distributions' default presets the daemon):
+# enabling mhvtl-control-apply.socket and
 # mhvtl-control-apply-recover.service is what turns configuration writes on.
 # The helper's template is started by its socket alone.
 %tmpfiles_create %{_tmpfilesdir}/mhvtl-control.conf
+%{_presetdir}/50-mhvtl-control.preset
 %if 0%{?suse_version}
 %service_add_post mhvtl-control.service mhvtl-control-apply.socket mhvtl-control-apply-recover.service
 %else
@@ -138,6 +142,7 @@ fi
 %dir %{_unitdir}/vtltape@.service.d
 %{_unitdir}/vtltape@.service.d/50-mhvtl-control-apply-recover.conf
 %{_tmpfilesdir}/mhvtl-control.conf
+%{_presetdir}/50-mhvtl-control.preset
 %{_mandir}/man8/mhvtl-control.8*
 %dir %attr(0750,root,root) %{_sysconfdir}/mhvtl-control
 # The options file may hold the API token.

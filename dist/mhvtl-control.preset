@@ -1,0 +1,7 @@
+# The config-apply helper is shipped disabled: enabling its socket lets
+# mhvtl-control change mhVTL's configuration as root, which the operator
+# decides. This preset keeps it disabled whatever the distribution's default
+# presets say; the boot-recovery unit goes with it. See systemd.preset(5):
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.preset.html
+disable mhvtl-control-apply.socket
+disable mhvtl-control-apply-recover.service
