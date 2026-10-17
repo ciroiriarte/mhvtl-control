@@ -110,14 +110,16 @@ type Lifecycle interface {
 type Helper struct {
 	cfg Config
 	// Test seams: killPoint simulates the helper dying after a step;
-	// beforeWrite runs before each file is written.
-	killPoint   func(step string) bool
-	beforeWrite func(name string)
+	// beforeWrite runs before each file is written; beforeBootLock runs
+	// between RecoverBoot's first read of the intent and its lock.
+	killPoint      func(step string) bool
+	beforeWrite    func(name string)
+	beforeBootLock func()
 }
 
 // New returns a helper.
 func New(cfg Config) *Helper {
-	return &Helper{cfg: cfg, killPoint: func(string) bool { return false }, beforeWrite: func(string) {}}
+	return &Helper{cfg: cfg, killPoint: func(string) bool { return false }, beforeWrite: func(string) {}, beforeBootLock: func() {}}
 }
 
 // Serve answers the one request on conn, the socket systemd passed as

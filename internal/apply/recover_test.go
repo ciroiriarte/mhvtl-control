@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // killedWrite leaves e as an apply killed after its device.conf write:
@@ -120,6 +121,35 @@ func TestRecoverBootGuards(t *testing.T) {
 		t.Errorf("lock held: %q, %v", msg, err)
 	}
 	release()
+
+	// The intent replaced, or removed, between the first read and the
+	// lock: left alone.
+	e.h.beforeBootLock = func() {
+		it, err := e.h.loadIntent()
+		if err != nil || it == nil {
+			t.Fatalf("intent %v, %v", it, err)
+		}
+		it.Started = it.Started.Add(time.Second)
+		if err := e.h.saveIntent(it); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if msg, err := e.h.RecoverBoot(context.Background()); err != nil || msg != intentChanged || !e.intentExists() {
+		t.Errorf("replaced: %q, %v, intent %v", msg, err, e.intentExists())
+	}
+	saved, err := os.ReadFile(e.h.intentPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.h.beforeBootLock = func() { os.Remove(e.h.intentPath()) }
+	if msg, err := e.h.RecoverBoot(context.Background()); err != nil || msg != "no interrupted apply" {
+		t.Errorf("removed: %q, %v", msg, err)
+	}
+	e.h.beforeBootLock = func() {}
+	if err := os.WriteFile(e.h.intentPath(), saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	for _, out := range []string{
 		"vtllibrary@10.service loaded active running Robot Library Daemon\n",
 		"● vtltape@11.service loaded activating start Tape Daemon\n",
