@@ -46,6 +46,11 @@ type Model struct {
 	DvcidSerialOnly    bool
 	DvcidNulTerminated bool
 	StkDteLayout       bool
+
+	// UnitSerialCall is the call by which the init function replaces
+	// vtllibrary's VPD page 80h (Unit Serial Number), "" when it keeps it.
+	// UnitSerialPage builds the page from it.
+	UnitSerialCall string
 }
 
 // Personality is the result of a lookup: the model a library gets and the
@@ -98,7 +103,8 @@ var Models = map[string]Model{
 		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
 		WindowSource: "usr/pm/hp_smc_pm.c:128",
 		VPD83:        true, SendsNAA: true,
-		DvcidLen: 34,
+		DvcidLen:       34,
+		UnitSerialCall: "update_eml_vpd_80(lu)",
 	},
 	// init_hp_msl_smc sets a 34-byte identifier for the models HPE documents
 	// (MSL6480, MSL3040, MSL2024 G4, 1/8 G3; usr/pm/hp_smc_pm.c
@@ -114,13 +120,15 @@ var Models = map[string]Model{
 		WindowSource: "usr/pm/hp_smc_pm.c:169",
 		VPD83:        true, SendsNAA: true,
 		DvcidLen: 20, DvcidSerialOnly: true,
+		UnitSerialCall: "update_eml_vpd_80(lu)",
 	},
 	"init_ibmts3100": {
 		InitFn: "init_ibmts3100", Name: "IBM TS3100",
 		StartPicker: 0x0001, StartMAP: 0x0010, StartDrive: 0x0100, StartStorage: 0x1000,
-		WindowSource: "usr/pm/ibm_smc_pm.c:343",
-		VPD83:        true,
-		DvcidLen:     34,
+		WindowSource:   "usr/pm/ibm_smc_pm.c:343",
+		VPD83:          true,
+		DvcidLen:       34,
+		UnitSerialCall: "update_ibm_3100_vpd_80(lu)",
 	},
 	// markh794/mhvtl#287 moved the 03584 MAP from 0x0300 to 0x0301, so the
 	// window allows 512 drives. With an mhVTL before #287, drive 512 sits
@@ -128,23 +136,26 @@ var Models = map[string]Model{
 	"init_ibm3584": {
 		InitFn: "init_ibm3584", Name: "IBM 03584",
 		StartPicker: 0x0001, StartMAP: 0x0301, StartDrive: 0x0101, StartStorage: 0x0400,
-		WindowSource: "usr/pm/ibm_smc_pm.c:438",
-		VPD83:        true,
-		DvcidLen:     34,
+		WindowSource:   "usr/pm/ibm_smc_pm.c:438",
+		VPD83:          true,
+		DvcidLen:       34,
+		UnitSerialCall: "update_ibm_3584_vpd_80(lu)",
 	},
 	"init_overland_smc": {
 		InitFn: "init_overland_smc", Name: "Overland",
 		StartPicker: 0x0001, StartMAP: 0x0000, StartDrive: 0x00ff, StartStorage: 0x0002,
 		WindowSource: "usr/pm/overland_pm.c:106",
 		VPD83:        true, SendsNAA: true,
-		DvcidLen: 34,
+		DvcidLen:       34,
+		UnitSerialCall: "update_eml_vpd_80(lu)",
 	},
 	"init_scalar_smc": {
 		InitFn: "init_scalar_smc", Name: "Quantum Scalar",
 		StartPicker: 0x0001, StartMAP: 0x0010, StartDrive: 0x0100, StartStorage: 0x1000,
-		WindowSource: "usr/pm/scalar_pm.c:113",
-		VPD83:        true,
-		DvcidLen:     64,
+		WindowSource:   "usr/pm/scalar_pm.c:113",
+		VPD83:          true,
+		DvcidLen:       64,
+		UnitSerialCall: "update_scalar_vpd_80(lu)",
 	},
 	"init_spectra_215_smc": {
 		InitFn: "init_spectra_215_smc", Name: "Spectra Treefrog (215)",
@@ -169,18 +180,21 @@ var Models = map[string]Model{
 		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
 		WindowSource: "usr/pm/stklxx_pm.c:79",
 		DvcidLen:     32, StkDteLayout: true,
+		UnitSerialCall: "update_stk_l_vpd_80(lu, 11)",
 	},
 	"init_stklxx": {
 		InitFn: "init_stklxx", Name: "STK L-series (L180/L700)",
 		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
 		WindowSource: "usr/pm/stklxx_pm.c:109",
 		DvcidLen:     32, StkDteLayout: true,
+		UnitSerialCall: "update_stk_l_vpd_80(lu, 11)",
 	},
 	"init_stkslxx": {
 		InitFn: "init_stkslxx", Name: "STK SL500",
 		StartPicker: 0x0001, StartMAP: 0x000a, StartDrive: 0x01f4, StartStorage: 0x03e8,
 		WindowSource: "usr/pm/stklxx_pm.c:135",
 		DvcidLen:     32, StkDteLayout: true,
+		UnitSerialCall: "update_stk_l_vpd_80(lu, 12)",
 	},
 }
 

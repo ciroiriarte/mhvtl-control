@@ -852,3 +852,82 @@ func TestCommentCitations(t *testing.T) {
 		}
 	}
 }
+
+var vpd80CallRe = regexp.MustCompile(`\b(update_\w+_vpd_80\([^)]*\))`)
+
+// unitSerialFacts are the statements of each page 80h builder that
+// UnitSerialPage mirrors; "" is vtllibrary's own page.
+var unitSerialFacts = map[string][]string{
+	"":                            {`alloc_vpd(strlen(lu->lu_serial_no))`},
+	"update_ibm_3584_vpd_80(lu)":  {`alloc_vpd(0x16)`, `snprintf((char *)&d[0], 11, "%-10.10s", lu->lu_serial_no)`, `snprintf((char *)&d[12], 5, "%04x", smc_p->pm->start_storage)`},
+	"update_ibm_3100_vpd_80(lu)":  {`alloc_vpd(0x10)`, `snprintf((char *)&d[0], 13, "%-12.12s", lu->lu_serial_no)`, `memcpy(&d[12], "_LL0", 4)`},
+	"update_eml_vpd_80(lu)":       {`alloc_vpd(0x12)`, `snprintf((char *)&d[0], 11, "%-10.10s", lu->lu_serial_no)`},
+	"update_scalar_vpd_80(lu)":    {`alloc_vpd(VPD_80_LEN)`, `"%-8.8s%-16.16s"`, `memcpy((*lu_vpd)->data, serial, VPD_80_LEN)`},
+	"update_stk_l_vpd_80(lu, 11)": {`alloc_vpd(sn_len)`, `memset((*lu_vpd)->data, ' ', sn_len)`, `strnlen(lu->lu_serial_no, sn_len)`},
+	"update_stk_l_vpd_80(lu, 12)": {`alloc_vpd(sn_len)`, `memset((*lu_vpd)->data, ' ', sn_len)`, `strnlen(lu->lu_serial_no, sn_len)`},
+}
+
+// TestCrossCheckUnitSerial checks Models[].UnitSerialCall against the
+// page 80h builder each init function calls, and that the builder still
+// holds the statements UnitSerialPage mirrors.
+func TestCrossCheckUnitSerial(t *testing.T) {
+	root := mhvtlRepo(t)
+	files := pmFiles(t, root)
+	lib := readC(t, root, "usr/cmd/vtllibrary.c")
+	funcBody := func(f cfile, fn string) string {
+		def := regexp.MustCompile(`^(static )?void ` + regexp.QuoteMeta(fn) + `\(`)
+		for i, l := range f.lines {
+			if def.MatchString(l) {
+				for j := i + 1; j < len(f.lines); j++ {
+					if strings.HasPrefix(f.lines[j], "}") {
+						return strings.Join(f.lines[i:j], "\n")
+					}
+				}
+			}
+		}
+		return ""
+	}
+	text := strings.Join(lib.lines, "\n")
+	for _, s := range []string{`snprintf(lu->lu_serial_no, SCSI_SN_LEN, "%-14s", v)`, `snprintf(lu->vendor_id, VENDOR_ID_LEN + 1, "%-8s", v)`} {
+		if !strings.Contains(text, s) {
+			t.Errorf("usr/cmd/vtllibrary.c no longer has %s", s)
+		}
+	}
+	if mk := readC(t, root, "include/vtllib.h"); !strings.Contains(strings.Join(mk.lines, "\n"), fmt.Sprintf("#define SCSI_SN_LEN %d", scsiSNLen)) {
+		t.Errorf("include/vtllib.h: SCSI_SN_LEN is not %d", scsiSNLen)
+	}
+	for fn, m := range Models {
+		f, first, last := findInit(t, files, fn)
+		var calls []string
+		for n := first; n <= last; n++ {
+			for _, c := range vpd80CallRe.FindAllStringSubmatch(f.lines[n-1], -1) {
+				calls = append(calls, c[1])
+			}
+		}
+		got := ""
+		if len(calls) > 0 {
+			got = calls[len(calls)-1]
+		}
+		if got != m.UnitSerialCall {
+			t.Errorf("%s: %s calls %q; Models[%q].UnitSerialCall = %q", f.at(first-1), fn, calls, fn, m.UnitSerialCall)
+			continue
+		}
+		facts, ok := unitSerialFacts[got]
+		if !ok {
+			t.Errorf("%s: no facts for %q", fn, got)
+			continue
+		}
+		body := text
+		if got != "" {
+			body = funcBody(f, got[:strings.Index(got, "(")])
+		}
+		for _, s := range facts {
+			if !strings.Contains(body, s) {
+				t.Errorf("%s: %s no longer has %s", f.rel, got, s)
+			}
+		}
+		if got == "update_scalar_vpd_80(lu)" && !strings.Contains(strings.Join(f.lines, "\n"), "#define VPD_80_LEN 24") {
+			t.Errorf("%s: VPD_80_LEN is not 24", f.rel)
+		}
+	}
+}
