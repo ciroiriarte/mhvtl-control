@@ -35,12 +35,12 @@ func TestAddresses(t *testing.T) {
 		lib  config.Library
 		want []string
 	}{
-		// IBM 03584: drives 0x0101, MAP 0x0300, storage 0x0400.
-		{"03584 at every limit", withCounts(ibm, 511, 0x10000-0x400, 256, 1), nil},
-		{"03584 drive 512", withCounts(ibm, 512, 1, 1, 1),
-			[]string{"drive 512 would sit at element address 0x0300, which overlaps the MAP slot addresses from 0x0300; the limit is 511 drives (drive addresses from 0x0101, usr/pm/ibm_smc_pm.c:432)"}},
-		{"03584 MAP 257", withCounts(ibm, 1, 1, 257, 1),
-			[]string{"MAP slot 257 would sit at element address 0x0400, which overlaps the storage slot addresses from 0x0400; the limit is 256 MAP slots"}},
+		// IBM 03584: drives 0x0101, MAP 0x0301, storage 0x0400.
+		{"03584 at every limit", withCounts(ibm, 512, 0x10000-0x400, 255, 1), nil},
+		{"03584 drive 513", withCounts(ibm, 513, 1, 1, 1),
+			[]string{"drive 513 would sit at element address 0x0301, which overlaps the MAP slot addresses from 0x0301; the limit is 512 drives (drive addresses from 0x0101, usr/pm/ibm_smc_pm.c:438)"}},
+		{"03584 MAP 256", withCounts(ibm, 1, 1, 256, 1),
+			[]string{"MAP slot 256 would sit at element address 0x0400, which overlaps the storage slot addresses from 0x0400; the limit is 255 MAP slots"}},
 		{"03584 storage past 0xffff", withCounts(ibm, 1, 0x10000-0x400+1, 1, 1),
 			[]string{"storage slot 64513 would sit at element address 0x10000, beyond the 16-bit element address space; the limit is 64512 storage slots"}},
 		{"03584 picker 257 runs into the drives", withCounts(ibm, 1, 1, 1, 257),
@@ -71,11 +71,11 @@ func TestAddresses(t *testing.T) {
 		}(), nil},
 		{"03584 repeated Drive lines, then one past the drives", func() config.Library {
 			l := withCounts(ibm, 0, 1, 1, 1)
-			l.DriveLines = []config.DriveLine{{Number: 1}, {Number: 1}, {Number: 512, Serial: "GHOST"}}
+			l.DriveLines = []config.DriveLine{{Number: 1}, {Number: 1}, {Number: 513, Serial: "GHOST"}}
 			return l
 		}(), []string{
 			`library 10: library_contents.10 lists "Drive 1:" twice; vtllibrary counts the drive twice in num_drives`,
-			"drive 512 would sit at element address 0x0300, which overlaps the MAP slot addresses from 0x0300",
+			"drive 513 would sit at element address 0x0301, which overlaps the MAP slot addresses from 0x0301",
 		}},
 		{"slots and MAP slots out of order", func() config.Library {
 			l := withCounts(stk, 1, 3, 3, 1)

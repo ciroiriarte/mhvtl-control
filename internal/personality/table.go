@@ -118,14 +118,14 @@ var Models = map[string]Model{
 	"init_ibmts3100": {
 		InitFn: "init_ibmts3100", Name: "IBM TS3100",
 		StartPicker: 0x0001, StartMAP: 0x0010, StartDrive: 0x0100, StartStorage: 0x1000,
-		WindowSource: "usr/pm/ibm_smc_pm.c:338",
+		WindowSource: "usr/pm/ibm_smc_pm.c:343",
 		VPD83:        true,
 		DvcidLen:     34,
 	},
 	"init_ibm3584": {
 		InitFn: "init_ibm3584", Name: "IBM 03584",
-		StartPicker: 0x0001, StartMAP: 0x0300, StartDrive: 0x0101, StartStorage: 0x0400,
-		WindowSource: "usr/pm/ibm_smc_pm.c:432",
+		StartPicker: 0x0001, StartMAP: 0x0301, StartDrive: 0x0101, StartStorage: 0x0400,
+		WindowSource: "usr/pm/ibm_smc_pm.c:438",
 		VPD83:        true,
 		DvcidLen:     34,
 	},
