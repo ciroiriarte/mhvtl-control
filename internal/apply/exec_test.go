@@ -32,6 +32,8 @@ type fakeSystem struct {
 	// started is the inventory of a library read from disk at its start.
 	started map[int]changer.Inventory
 	loaded  map[string]bool // TUR by drive serial
+	// lost are the drive serials LocateDrive does not find.
+	lost    map[string]bool
 	enabled map[string]bool
 	// failStart makes the next start of the unit fail; onStop runs at a
 	// stop, onMedia at the restart of mhvtl-media.service.
@@ -54,7 +56,7 @@ type fakeSystem struct {
 func newExecEnv(t *testing.T) (*env, *fakeSystem) {
 	e := newEnv(t)
 	s := &fakeSystem{e: e, state: map[string]string{bayMonitor: "inactive"}, live: map[int]changer.Inventory{}, started: map[int]changer.Inventory{},
-		loaded: map[string]bool{}, enabled: map[string]bool{}, offline: map[int]bool{}, pendingOnline: map[int]bool{}, failStart: map[string]bool{}, failStop: map[string]bool{},
+		loaded: map[string]bool{}, lost: map[string]bool{}, enabled: map[string]bool{}, offline: map[int]bool{}, pendingOnline: map[int]bool{}, failStart: map[string]bool{}, failStop: map[string]bool{},
 		onStop: func(string) {}, onMedia: func() error { return nil }, onStart: func(string) {}}
 	e.cfg.Systemctl = s.systemctl
 	e.cfg.Queue, e.cfg.Devices = s, s
@@ -221,7 +223,12 @@ func (s *fakeSystem) LocateLibrary(lib config.Library) (string, error) {
 	return "hctl-" + lib.Serial, nil
 }
 
-func (s *fakeSystem) LocateDrive(d config.Drive) (string, error) { return "hctl-" + d.Serial, nil }
+func (s *fakeSystem) LocateDrive(d config.Drive) (string, error) {
+	if s.lost[d.Serial] {
+		return "", fmt.Errorf("%w: no tape drive with serial %q", changer.ErrUnavailable, d.Serial)
+	}
+	return "hctl-" + d.Serial, nil
+}
 
 func (s *fakeSystem) Inventory(lib config.Library, hctl string) (changer.Inventory, error) {
 	s.log("RES %d", lib.ID)
@@ -654,6 +661,29 @@ func TestExecLoaded(t *testing.T) {
 // TestExecMedia: new pre-filled barcodes restart mhvtl-media.service, and
 // the stat of each decides: a missing one rolls back even with exit 0,
 // exit 1 with every one present does not.
+// TestExecDriveNotFound: the apply's prepare locates every drive of a
+// library it stops, to read it with TEST UNIT READY, so the plan does too:
+// a drive it cannot find is a live_state refusal at plan time, not an
+// internal error after the plan passed, and nothing is stopped.
+func TestExecDriveNotFound(t *testing.T) {
+	e, s := newExecEnv(t)
+	s.lost["XYZZY_A2"] = true
+	req := compression(e)
+	plan := req
+	plan.Op = OpPlan
+	if pr := e.do(plan); pr.Result != ResultRefused || pr.Error != ErrLive || !strings.Contains(pr.Message, "drive 12") {
+		t.Fatalf("plan: %+v", pr)
+	}
+	if resp := e.do(req); resp.Result != ResultRefused || resp.Error != ErrLive {
+		t.Fatalf("apply: %+v", resp)
+	}
+	for _, c := range s.calls {
+		if strings.HasPrefix(c, "stop ") {
+			t.Errorf("stopped %q", c)
+		}
+	}
+}
+
 func TestExecMedia(t *testing.T) {
 	newSlot := func(e *env) Request {
 		return Request{Op: OpApply, Files: []File{e.edit("library_contents.10", "Slot 24:\n", "Slot 24: E01024L8\n")}, ExpectUnits: []string{"vtllibrary@10.service"}}
