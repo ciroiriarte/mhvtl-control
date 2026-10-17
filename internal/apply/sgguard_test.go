@@ -49,6 +49,7 @@ type sgTree struct {
 	closed   bool
 	inqType  map[string]uint8 // INQUIRY type per node, when it differs
 	tur      []error
+	onOpen   func(path string)
 }
 
 func newSGTree(t *testing.T) *sgTree {
@@ -82,6 +83,9 @@ func (s *sgTree) add(t *testing.T, hctl, name, typ, serial string) {
 func (s *sgTree) access() SCSIAccess {
 	return SCSIAccess{SysRoot: s.sys, DevRoot: s.dev, Open: func(path string) (changer.Device, error) {
 		s.opened = append(s.opened, path)
+		if s.onOpen != nil {
+			s.onOpen(path)
+		}
 		typ := uint8(scsi.PeripheralMediumChanger)
 		if b, err := os.ReadFile(filepath.Join(s.sys, "class", "scsi_generic", filepath.Base(path), "device", "type")); err == nil && string(b) == "1\n" {
 			typ = scsi.PeripheralSequential
@@ -98,6 +102,7 @@ func TestGuardOpcodes(t *testing.T) {
 	var closed bool
 	g := guardedDevice{&fakeSG{cdbs: &cdbs, closed: &closed}}
 	for _, op := range []byte{0x2a, 0x0a, 0xa5, 0x1b, 0x01, 0x15, 0x55, 0x3b, 0x04} {
+		// Refused whatever the length.
 		if _, _, err := g.Do([]byte{op, 0, 0, 0, 0, 0}, nil, time.Second); !errors.Is(err, errOpcode) {
 			t.Errorf("%02xh: %v", op, err)
 		}
@@ -108,8 +113,15 @@ func TestGuardOpcodes(t *testing.T) {
 	if len(cdbs) != 0 {
 		t.Errorf("refused CDBs reached the device: % x", cdbs)
 	}
-	for op := range allowedOpcodes {
-		if _, _, err := g.Do([]byte{op, 0, 0, 0, 0, 0}, make([]byte, 8), time.Second); err != nil {
+	for op, a := range allowedOpcodes {
+		cdb := make([]byte, a.len+2)
+		cdb[0] = op
+		if _, _, err := g.Do(cdb, nil, time.Second); !errors.Is(err, errOpcode) {
+			t.Errorf("%s of %d bytes: %v", a.name, len(cdb), err)
+		}
+		cdb = make([]byte, a.len)
+		cdb[0] = op
+		if _, _, err := g.Do(cdb, make([]byte, 8), time.Second); err != nil {
 			t.Errorf("%02xh: %v", op, err)
 		}
 	}
@@ -229,5 +241,24 @@ func TestInventoryThroughGuard(t *testing.T) {
 		if _, ok := allowedOpcodes[op]; !ok {
 			t.Errorf("sent %02xh", op)
 		}
+	}
+}
+
+// TestGuardRenumberedAtOpen: a node renumbered to another device between
+// the resolve and the open is closed and refused.
+func TestGuardRenumberedAtOpen(t *testing.T) {
+	s := newSGTree(t)
+	s.add(t, "3:0:0:0", "sg1", "8", "LIB10")
+	s.add(t, "3:0:5:0", "sg5", "8", "LIB30")
+	s.onOpen = func(string) {
+		link := filepath.Join(s.sys, "class", "scsi_generic", "sg1", "device")
+		os.Remove(link)
+		os.Symlink(filepath.Join(s.sys, "bus", "scsi", "devices", "3:0:5:0"), link)
+	}
+	if _, err := s.access().open("3:0:0:0", scsi.PeripheralMediumChanger); err == nil {
+		t.Fatal("opened a renumbered node")
+	}
+	if !s.closed || len(s.cdbs) != 0 {
+		t.Errorf("closed %v, CDBs sent % x", s.closed, s.cdbs)
 	}
 }

@@ -22,14 +22,20 @@ const changerTimeout = 30 * time.Second
 const turTimeout = 10 * time.Second
 
 // allowedOpcodes are the only CDBs the helper sends (plan 3.3, sgguard.go,
-// item 7): TEST UNIT READY, INQUIRY, MODE SENSE(6) and (10) and READ
-// ELEMENT STATUS. Nothing that moves media or writes.
-var allowedOpcodes = map[byte]string{
-	0x00: "TEST UNIT READY",
-	0x12: "INQUIRY",
-	0x1a: "MODE SENSE(6)",
-	0x5a: "MODE SENSE(10)",
-	0xb8: "READ ELEMENT STATUS",
+// item 7), with the length each must have: TEST UNIT READY, INQUIRY,
+// MODE SENSE(6) and (10) and READ ELEMENT STATUS. The length is the one
+// the opcode's group code fixes (6 bytes for 00h-1Fh, 10 for 20h-5Fh, 12
+// for A0h-BFh) and the one internal/scsi's builders produce. Nothing that
+// moves media or writes.
+var allowedOpcodes = map[byte]struct {
+	name string
+	len  int
+}{
+	0x00: {"TEST UNIT READY", 6},
+	0x12: {"INQUIRY", 6},
+	0x1a: {"MODE SENSE(6)", 6},
+	0x5a: {"MODE SENSE(10)", 10},
+	0xb8: {"READ ELEMENT STATUS", 12},
 }
 
 // errOpcode is a CDB the guard refuses to send.
@@ -45,8 +51,12 @@ func (g guardedDevice) Do(cdb, dataIn []byte, timeout time.Duration) (int, []byt
 	if len(cdb) == 0 {
 		return 0, nil, fmt.Errorf("%w: empty CDB", errOpcode)
 	}
-	if _, ok := allowedOpcodes[cdb[0]]; !ok {
+	op, ok := allowedOpcodes[cdb[0]]
+	if !ok {
 		return 0, nil, fmt.Errorf("%w: %02xh", errOpcode, cdb[0])
+	}
+	if len(cdb) != op.len {
+		return 0, nil, fmt.Errorf("%w: %s CDB of %d bytes, not %d", errOpcode, op.name, len(cdb), op.len)
 	}
 	return g.Device.Do(cdb, dataIn, timeout)
 }
@@ -132,6 +142,12 @@ func (a SCSIAccess) open(hctl string, typ uint8) (changer.Device, error) {
 	dev, err := a.Open(node)
 	if err != nil {
 		return nil, err
+	}
+	// The node may have been renumbered to another device between the
+	// resolve and the open: it must still name hctl.
+	if again, err := a.hctlOf(filepath.Base(node)); err != nil || again != hctl {
+		dev.Close()
+		return nil, fmt.Errorf("sgguard: %s no longer names %s (now %q): %v", node, hctl, again, err)
 	}
 	g := guardedDevice{dev}
 	buf := make([]byte, 36)
