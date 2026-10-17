@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -168,7 +170,8 @@ func (s *Server) hello1(ctx context.Context, f *helloFlight) {
 	c := &s.hello
 	defer func() {
 		if r := recover(); r != nil {
-			f.state, f.err = "", fmt.Errorf("hello panicked: %v", r)
+			log.Printf("apply helper hello panicked: %v\n%s", r, debug.Stack())
+			f.state, f.err = "", errors.New("the apply helper check failed; the daemon log has the cause")
 			c.mu.Lock()
 			c.flight = nil
 			c.mu.Unlock()
