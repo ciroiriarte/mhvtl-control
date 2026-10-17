@@ -212,6 +212,47 @@ func TestGuardedInactiveFileRule(t *testing.T) {
 	}
 }
 
+// FileSource is the rule guardedStop and the daemon's staging share: the
+// file a stopped library loads at its next start.
+func TestFileSource(t *testing.T) {
+	old, newer := time.Unix(1_700_000_000, 0), time.Unix(1_700_000_100, 0)
+	lib := config.Library{ID: 10, Slots: []config.Slot{{Number: 1, Barcode: "E01001L8"}}}
+	for _, tc := range []struct {
+		name          string
+		persist       bool
+		lcTime        time.Time
+		pTime         *time.Time
+		want, file    string
+		persistExists bool
+	}{
+		{"PERSIST off", false, old, &newer, "E01001L8", "library_contents.10", false},
+		{"PERSIST on, no .persist", true, old, nil, "E01001L8", "library_contents.10", false},
+		{"PERSIST on, .persist newer", true, old, &newer, "P00001L8", "library_contents.10.persist", true},
+		{"PERSIST on, same second", true, old, &old, "P00001L8", "library_contents.10.persist", true},
+		{"PERSIST on, library_contents newer", true, newer, &old, "E01001L8", "library_contents.10", true},
+	} {
+		e := newStopEnv(t)
+		e.write("library_contents.10", "VERSION: 2\nSlot 1: E01001L8\n", tc.lcTime)
+		if tc.pTime != nil {
+			e.write("library_contents.10.persist", "\nSlot 1: P00001L8   \nSlot 2: \n", *tc.pTime)
+		}
+		got, err := FileSource(e.dir, lib, tc.persist)
+		if err != nil || got.Name != tc.file || got.Placement.Slots[1] != tc.want || got.PersistExists != tc.persistExists ||
+			(tc.file == "library_contents.10.persist") != (len(got.Data) > 0) {
+			t.Errorf("%s: %+v %v", tc.name, got, err)
+		}
+	}
+	// A .persist that is not a regular file is not read through.
+	e := newStopEnv(t)
+	e.write("library_contents.10", "VERSION: 2\nSlot 1: E01001L8\n", old)
+	if err := os.Symlink("/etc/passwd", filepath.Join(e.dir, "library_contents.10.persist")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FileSource(e.dir, lib, true); err == nil {
+		t.Error("a symlinked .persist was read")
+	}
+}
+
 func TestGuardedVerdict(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

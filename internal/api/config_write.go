@@ -459,6 +459,7 @@ func (s *Server) handleConfigLibraryDelete(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		st.next["device.conf"] = dc.Render()
+		delete(st.notes, id)
 		name := contentsFile(id)
 		if _, inCur := findConfigLibrary(st.cur, id); inCur {
 			st.next[name] = nil

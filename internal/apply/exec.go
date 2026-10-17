@@ -1446,7 +1446,10 @@ func forcedOf(ls *LibStop) []ForcedUnload {
 // whose value begins with yes or true, in any case, as vtllibrary reads it
 // (usr/cmd/vtllibrary.c:1335-1339 at 852b78a,
 // https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L1335-L1339).
-func persistOn(dc *conffile.DeviceConf, id int) bool {
+func persistOn(dc *conffile.DeviceConf, id int) bool { return PersistOn(dc, id) }
+
+// PersistOn is persistOn, for the daemon's staging.
+func PersistOn(dc *conffile.DeviceConf, id int) bool {
 	st, ok := dc.Stanza("Library", id)
 	if !ok {
 		return false

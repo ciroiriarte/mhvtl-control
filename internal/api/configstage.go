@@ -292,8 +292,10 @@ func (st *stage) deviceConf() (*conffile.DeviceConf, error) {
 // a move made outside the daemon, which the stage would then undo (#61
 // smoke, dispositions). A running library whose changer cannot be read is
 // not edited: its file may lag such moves. A library whose vtllibrary@ is
-// inactive or failed loads the file at its next start, so the file is its
-// placement; one activating or deactivating is neither, and waits.
+// inactive or failed takes the placement of the file it loads at its next
+// start (apply.FileSource: library_contents.N.persist under PERSIST), as
+// the helper's merge does; one activating or deactivating is neither, and
+// waits.
 func (s *Server) contents(ctx context.Context, st *stage, id int) (*conffile.LibContents, error) {
 	name := contentsFile(id)
 	if _, edited := st.next[name]; !edited {
@@ -309,10 +311,22 @@ func (s *Server) contents(ctx context.Context, st *stage, id int) (*conffile.Lib
 			}
 			switch state {
 			case "inactive", "failed":
+				persist := apply.PersistOn(conffile.ParseDeviceConf(st.disk["device.conf"]), id)
+				src, err := apply.FileSource(s.cfg.ConfigDir, lib, persist)
+				if err != nil {
+					return nil, err
+				}
+				if src.Name != name {
+					lc, err := liveContents(data, lib, src.Placement)
+					if err != nil {
+						return nil, fmt.Errorf("the placement of %s not written into %s: %w", src.Name, name, err)
+					}
+					data = lc
+				}
 				if st.notes == nil {
 					st.notes = map[int]string{}
 				}
-				st.notes[id] = fmt.Sprintf("library %d is not running; its placement comes from %s", id, name)
+				st.notes[id] = fmt.Sprintf("library %d is not running; its placement comes from %s", id, src.Name)
 			case "active":
 				s.live.forget(id)
 				live, errs := s.readLive(ctx, []config.Library{lib})

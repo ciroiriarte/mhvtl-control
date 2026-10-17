@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mhvtl-control/internal/validate"
 	"net"
 	"os"
 	"path/filepath"
@@ -308,6 +309,18 @@ func TestUnits(t *testing.T) {
 	}
 	if resp := serveOnce(t, e.h, `{"v":1,"op":"units"}`); resp.Result != ResultOK || resp.LibraryStates[30] != "failed" {
 		t.Errorf("units over the socket: %+v", resp)
+	}
+	// units takes no input but its name.
+	for name, req := range map[string]Request{
+		"files":        {Op: OpUnits, Files: []File{{Name: "device.conf"}}},
+		"delete":       {Op: OpUnits, Delete: []Delete{{Name: "library_contents.40"}}},
+		"dispositions": {Op: OpUnits, Dispositions: []validate.Disposition{{Library: 10, Barcode: "E01001L8", To: "shelf"}}},
+		"expect_units": {Op: OpUnits, ExpectUnits: []string{"vtllibrary@10.service"}},
+		"force_token":  {Op: OpUnits, ForceToken: "x"},
+	} {
+		if resp := e.do(req); resp.Result != ResultRefused || resp.Error != ErrBadRequest || resp.LibraryStates != nil {
+			t.Errorf("units with %s: %+v", name, resp)
+		}
 	}
 	// A manager that does not answer is given up on after unitsTimeout.
 	defer func(d time.Duration) { unitsTimeout = d }(unitsTimeout)
