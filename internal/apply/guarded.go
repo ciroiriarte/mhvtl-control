@@ -172,8 +172,8 @@ type stopper struct {
 //
 //  1. an inactive or failed library skips R1′, offline and TUR; its
 //     source is the file vtllibrary would load; in rollback and recover
-//     so does one in any state but active, such as a start still
-//     activating after SIGTERM cut systemctl off;
+//     so does an activating one, such as a start still going on after
+//     SIGTERM cut systemctl off;
 //  2. R1′: READ ELEMENT STATUS and "list map"; in rollback and recover
 //     the library is put online first (readOffline);
 //  3. offline, then "list map" again, which must equal R1′'s, else raced
@@ -238,11 +238,15 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		return err
 	}
 	ls.Active = state != "inactive" && state != "failed"
-	if s.mode != ModeApply && state != "active" {
+	if s.mode != ModeApply && state == "activating" {
 		// A library still activating has not registered its changer: a
 		// start job SIGTERM cut systemctl off from goes on (the stop then
-		// cancels it). It has placed nothing yet, so it is stopped as one
-		// that is not running and the apply's source stands (unwind).
+		// cancels it). vtllibrary@ is Type=simple with no ExecStartPre or
+		// ExecStartPost (TestCrossCheckLibraryUnit), so its daemon is not
+		// running yet and has placed nothing: it is stopped as a library
+		// that is not running and the apply's source stands (unwind). Any
+		// other state, deactivating among them, may still hold moves and
+		// fails closed.
 		ls.Active = false
 	}
 	devs := s.cfg.Devices
