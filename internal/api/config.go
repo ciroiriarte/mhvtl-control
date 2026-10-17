@@ -175,6 +175,7 @@ const (
 	writesOK          = "ok"
 	writesTLSRequired = "tls_required"
 	writesNoHelper    = "helper_absent"
+	writesBlocked     = "helper_blocked"
 )
 
 // capabilitiesDTO says whether configuration writes could be accepted, and
@@ -189,9 +190,12 @@ type capabilitiesDTO struct {
 	Helper string `json:"helper"`
 	// HelperError says why the helper is unreachable.
 	HelperError string `json:"helper_error,omitempty"`
-	// Writes is the daemon's own gate on the write routes (plan 4.1): no
-	// helper socket (helper_absent), else a non-loopback listen without TLS
-	// (tls_required), else ok. The helper may still refuse ("helper").
+	// Writes says whether the UI should offer edits (plan 4.1): no helper
+	// socket (helper_absent), else a non-loopback listen without TLS, which
+	// the write routes refuse (tls_required), else a helper that refuses
+	// every change until the operator acts, intent_unreadable or
+	// legacy_env_blocks (helper_blocked), else ok. An apply running or one
+	// the helper recovers first is not a lasting refusal.
 	Writes string `json:"writes"`
 	// Generator is whether mhVTL's systemd generator is installed, so an
 	// apply needs only daemon-reload to add or remove instances (AC 11).
@@ -226,6 +230,8 @@ func (s *Server) capabilities(ctx context.Context) capabilitiesDTO {
 		c.Writes = writesNoHelper
 	case s.cfg.InsecureListen:
 		c.Writes = writesTLSRequired
+	case c.Helper == helperUnreadable || c.Helper == helperLegacy:
+		c.Writes = writesBlocked
 	default:
 		c.Writes = writesOK
 	}

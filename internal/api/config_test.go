@@ -565,8 +565,8 @@ func TestConfigCapabilities(t *testing.T) {
 		t.Errorf("non-loopback without TLS: writes %q", got.Writes)
 	}
 	write("mhvtl-control.env", "", 0o600)
-	if got := get(Config{}); got.Helper != "legacy_env_blocks" {
-		t.Errorf("legacy env file: helper %q", got.Helper)
+	if got := get(Config{}); got.Helper != "legacy_env_blocks" || got.Writes != "helper_blocked" {
+		t.Errorf("legacy env file: %+v", got)
 	}
 
 	write("gen", "#!/bin/sh\n", 0o644)
@@ -689,16 +689,18 @@ func TestConfigCapabilitiesHello(t *testing.T) {
 	if got := get(); got.Helper != "present" || h.calls() != 1 {
 		t.Errorf("within 2 s: %+v after %d hellos", got, h.calls())
 	}
-	for _, tc := range []struct{ state, helper string }{
-		{apply.StateInProgress, "in_progress"},
-		{apply.StateIncomplete, "incomplete_apply"},
-		{apply.StateIntentUnreadable, "intent_unreadable"},
-		{apply.StateLegacyEnv, "legacy_env_blocks"},
-		{apply.StateReady, "present"},
+	// The helper's lasting refusals block writes; an apply running or one
+	// it recovers first does not.
+	for _, tc := range []struct{ state, helper, writes string }{
+		{apply.StateInProgress, "in_progress", "ok"},
+		{apply.StateIncomplete, "incomplete_apply", "ok"},
+		{apply.StateIntentUnreadable, "intent_unreadable", "helper_blocked"},
+		{apply.StateLegacyEnv, "legacy_env_blocks", "helper_blocked"},
+		{apply.StateReady, "present", "ok"},
 	} {
 		h.set(tc.state)
 		clock = clock.Add(2 * time.Second)
-		if got := get(); got.Helper != tc.helper || got.Writes != "ok" {
+		if got := get(); got.Helper != tc.helper || got.Writes != tc.writes {
 			t.Errorf("hello %s: %+v", tc.state, got)
 		}
 	}
