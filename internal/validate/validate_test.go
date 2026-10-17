@@ -290,6 +290,16 @@ func TestHomeProblem(t *testing.T) {
 		"/srv/a b":                       false,
 		"/run/mhvtl":                     false,
 		"/dev/shm/tapes":                 false,
+		"/lib/systemd/system":            false,
+		"/lib64":                         false,
+		"/sbin/x":                        false,
+		"/home/tapes":                    false,
+		"/root/tapes":                    false,
+		"/var/log/mhvtl":                 false,
+		"/var/spool/cron":                false,
+		"/var/lib/systemd/x":             false,
+		"/library":                       true,
+		"/homes/tapes":                   true,
 	} {
 		if got := HomeProblem(path) == ""; got != ok {
 			t.Errorf("HomeProblem(%q) = %q, want ok %v", path, HomeProblem(path), ok)

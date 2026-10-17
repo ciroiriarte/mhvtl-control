@@ -79,9 +79,6 @@ func TestMedia(t *testing.T) {
 		{"WORM media in a drive with WORM support", func(l *config.Library) {
 			l.Slots[0].Barcode = "W00001L6"
 		}, nil, nil},
-		{"a home ProtectHome hides", func(l *config.Library) {
-			l.HomeDir = "/home/tapes"
-		}, nil, []string{"library 10: media home /home/tapes is under /home, /root or /run/user"}},
 		{"no drives", func(l *config.Library) {
 			l.Drives = nil
 			l.Slots = l.Slots[:1]
@@ -133,4 +130,15 @@ func TestMediaLiveMAP(t *testing.T) {
 			expect(t, "errors", family(r.Errors, FamilyMedia), tc.errors)
 		})
 	}
+}
+
+// A library "Home directory" under /home is forbidden (HomeProblem), but
+// MHVTL_HOME_PATH, the default, set there by hand still draws the
+// ProtectHome warning.
+func TestMediaHiddenDefaultHome(t *testing.T) {
+	cur := shipped(t)
+	next := clone(cur)
+	next.Libraries[0].HomeDir = ""
+	r := Validate(cur, next, nil, nil, Options{DefaultHome: "/home/tapes"})
+	expect(t, "warnings", codes(r.Warnings, CodeMediaHomeHidden), []string{"library 10: media home /home/tapes is under /home, /root or /run/user"})
 }
