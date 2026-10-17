@@ -25,8 +25,12 @@ type Peer struct {
 }
 
 // Linux constants the syscall package lacks. SO_PEERPIDFD is in
-// include/uapi/asm-generic/socket.h since Linux 6.5; pidfd_send_signal is
-// 424 on every architecture since Linux 5.1 (the unified syscall table).
+// include/uapi/asm-generic/socket.h since Linux 6.5 (torvalds/linux
+// 7b26952a91cf, "net: core: add getsockopt SO_PEERPIDFD",
+// https://github.com/torvalds/linux/commit/7b26952a91cf65ff1cc867a2382a8964d8c0ee7d);
+// pidfd_send_signal is 424 on every architecture since Linux 5.1, the
+// unified syscall table (pidfd_send_signal(2),
+// https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html).
 const (
 	soPeerPIDFD          = 77
 	sysPidfdSendSignal   = 424
@@ -49,18 +53,21 @@ func CheckPeer(conn *net.UnixConn) (Peer, error) {
 		return Peer{}, err
 	}
 	var cred *syscall.Ucred
-	var credErr error
+	var credErr, pidfdErr error
 	pidfd := -1
 	if err := raw.Control(func(fd uintptr) {
 		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
 		if credErr == nil {
-			pidfd = peerPIDFD(int(fd))
+			pidfd, pidfdErr = peerPIDFD(int(fd))
 		}
 	}); err != nil {
 		return Peer{}, err
 	}
 	if credErr != nil {
 		return Peer{}, fmt.Errorf("SO_PEERCRED: %w", credErr)
+	}
+	if pidfdErr != nil {
+		return Peer{PID: cred.Pid, UID: cred.Uid}, pidfdErr
 	}
 	if pidfd >= 0 {
 		defer syscall.Close(pidfd)
@@ -75,17 +82,32 @@ func CheckPeer(conn *net.UnixConn) (Peer, error) {
 
 var errNoPIDFD = errors.New("no pidfd")
 
-// peerPIDFD returns a pidfd of the socket's peer, or -1 when the kernel
-// has no SO_PEERPIDFD.
-func peerPIDFD(fd int) int {
+// getsockoptPIDFD is getsockopt(fd, SOL_SOCKET, SO_PEERPIDFD); a variable
+// for the tests.
+var getsockoptPIDFD = func(fd int) (int, syscall.Errno) {
 	var pidfd int32
 	l := uint32(unsafe.Sizeof(pidfd))
 	_, _, e := syscall.Syscall6(syscall.SYS_GETSOCKOPT, uintptr(fd), syscall.SOL_SOCKET, soPeerPIDFD,
 		uintptr(unsafe.Pointer(&pidfd)), uintptr(unsafe.Pointer(&l)), 0)
-	if e != 0 {
-		return -1
+	return int(pidfd), e
+}
+
+// peerPIDFD returns a pidfd of the socket's peer, or -1 when the kernel
+// has no SO_PEERPIDFD: before Linux 6.5 sk_getsockopt answers an unknown
+// option with ENOPROTOOPT (net/core/sock.c). Any other error is refused
+// rather than taken for an old kernel: on 6.5 and later the option exists,
+// and an error means the peer cannot be pinned (EINVAL once it exited,
+// ENODATA for no peer, per torvalds/linux b6f79e826fbd,
+// https://github.com/torvalds/linux/commit/b6f79e826fbd26e91e2fb28070484634cacdeb26).
+func peerPIDFD(fd int) (int, error) {
+	pidfd, e := getsockoptPIDFD(fd)
+	switch e {
+	case 0:
+		return pidfd, nil
+	case syscall.ENOPROTOOPT:
+		return -1, nil
 	}
-	return int(pidfd)
+	return -1, fmt.Errorf("SO_PEERPIDFD: %w", e)
 }
 
 // pidfdAlive sends signal 0 through pidfd: ESRCH once the process has
