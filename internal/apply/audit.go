@@ -41,6 +41,9 @@ type AuditRecord struct {
 	// their media is kept. PR 3b's merge fills it.
 	OrphanedMedia []string   `json:"orphaned_media"`
 	Conflicts     []Conflict `json:"conflicts,omitempty"`
+	// RollbackDir is, for a recovery, the interrupted apply's copies of
+	// the files as they were (Response.RollbackDir).
+	RollbackDir string `json:"rollback_dir,omitempty"`
 }
 
 // AuditFile is a file's hash before and after ("" when absent).

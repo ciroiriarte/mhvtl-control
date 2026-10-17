@@ -134,6 +134,9 @@ type Response struct {
 	// Conflicts are the files a recovery left alone because they changed
 	// after the apply died.
 	Conflicts []Conflict `json:"conflicts,omitempty"`
+	// RollbackDir is, for a recovery, the directory holding copies of the
+	// files as they were before the interrupted apply.
+	RollbackDir string `json:"rollback_dir,omitempty"`
 }
 
 // Conflict is a file a recovery did not restore.

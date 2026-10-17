@@ -247,7 +247,8 @@ func TestRecoverLibraries(t *testing.T) {
 // others are restored.
 func TestRecoverConflict(t *testing.T) {
 	e := newEnv(t)
-	orig := killedWrite(t, e, &Intent{})
+	it := &Intent{}
+	orig := killedWrite(t, e, it)
 	hand := []byte("# fixed by hand\n")
 	if err := os.WriteFile(filepath.Join(e.dir, "device.conf"), hand, 0o644); err != nil {
 		t.Fatal(err)
@@ -261,7 +262,12 @@ func TestRecoverConflict(t *testing.T) {
 	}
 	delete(orig, "device.conf")
 	e.assertFiles("recover with a conflict", orig)
-	if l := e.auditLines(); len(l) != 1 || !strings.Contains(l[0], `"conflicts":[{"file":"device.conf"`) {
+	rb := filepath.Join(e.state, rollbackDir, it.RollbackDir)
+	if it.RollbackDir == "" || resp.RollbackDir != rb {
+		t.Errorf("rollback_dir %q, want %q", resp.RollbackDir, rb)
+	}
+	if l := e.auditLines(); len(l) != 1 || !strings.Contains(l[0], `"conflicts":[{"file":"device.conf"`) ||
+		!strings.Contains(l[0], `"rollback_dir":"`+rb+`"`) {
 		t.Errorf("audit %v", l)
 	}
 }
