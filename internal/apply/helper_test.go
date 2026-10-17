@@ -32,6 +32,8 @@ type env struct {
 	clock           time.Time
 	peer            Peer
 	peerErr         error
+	// calls returns the fake system's calls so far, when there is one.
+	calls func() []string
 }
 
 func newEnv(t *testing.T) *env {
@@ -140,7 +142,30 @@ func (e *env) do(req Request) Response {
 	if req.V == 0 {
 		req.V = Version
 	}
-	return e.h.Handle(context.Background(), e.peer, &req)
+	if e.calls == nil || req.Op != OpApply || e.intentExists() {
+		return e.h.Handle(context.Background(), e.peer, &req)
+	}
+	n := len(e.calls())
+	resp := e.h.Handle(context.Background(), e.peer, &req)
+	// An apply stops and starts only units its response lists: the set
+	// the plan showed and expect_units approved. A rollback also stops the
+	// vtltape@ of a drive it finds loaded, and reports the forced unload.
+	units := map[string]bool{}
+	for _, u := range resp.Units {
+		units[u] = true
+	}
+	if resp.Result != ResultApplied {
+		for _, fu := range resp.ForcedUnloads {
+			units[driveUnit(fu.Drive)] = true
+		}
+	}
+	for _, c := range e.calls()[n:] {
+		verb, u, _ := strings.Cut(c, " ")
+		if (verb == "stop" || verb == "start") && (strings.HasPrefix(u, "vtllibrary@") || strings.HasPrefix(u, "vtltape@")) && !units[u] {
+			e.t.Errorf("the apply ran %q, but its units are %v", c, resp.Units)
+		}
+	}
+	return resp
 }
 
 // auditLines returns the audit records written so far.

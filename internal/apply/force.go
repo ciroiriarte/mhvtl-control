@@ -167,22 +167,37 @@ func (h *Helper) mintForce(b forceBinding) (string, time.Time, error) {
 // with O_EXCL under RuntimeDir/nonces, named by its expiry so that expired
 // ones are pruned here.
 func (h *Helper) checkForce(token string, b forceBinding) error {
+	nonce, expiry, err := h.verifyForce(token, b)
+	if err != nil {
+		return err
+	}
+	return h.useForce(nonce, expiry)
+}
+
+// verifyForce is checkForce short of recording the nonce: the token
+// decodes, carries b's MAC and is unexpired.
+func (h *Helper) verifyForce(token string, b forceBinding) (nonce []byte, expiry uint64, err error) {
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil || len(raw) != tokenLen {
-		return refuse(ErrForce, "malformed force token")
+		return nil, 0, refuse(ErrForce, "malformed force token")
 	}
 	nonce, expiry, mac := raw[:nonceLen], binary.BigEndian.Uint64(raw[nonceLen:nonceLen+8]), raw[nonceLen+8:]
 	key, err := h.forceKey()
 	if err != nil {
-		return err
+		return nil, 0, err
 	}
 	if !hmac.Equal(mac, b.mac(key, nonce, expiry)) {
-		return refuse(ErrForce, "the force token does not match this change, its files, units or live placement; plan again")
+		return nil, 0, refuse(ErrForce, "the force token does not match this change, its files, units or live placement; plan again")
 	}
+	if int64(expiry) <= h.cfg.Now().Unix() {
+		return nil, 0, refuse(ErrForce, "the force token expired; plan again")
+	}
+	return nonce, expiry, nil
+}
+
+// useForce records a verified token's nonce, once.
+func (h *Helper) useForce(nonce []byte, expiry uint64) error {
 	now := h.cfg.Now().Unix()
-	if int64(expiry) <= now {
-		return refuse(ErrForce, "the force token expired; plan again")
-	}
 	dir := filepath.Join(h.cfg.RuntimeDir, nonceDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

@@ -325,19 +325,37 @@ func (h *Helper) planChecks(ctx context.Context, req *Request, c *checked) (map[
 		loaded = append(loaded, fmt.Sprintf("drive %d", id))
 	}
 	if len(loaded) == 0 {
+		// A force token finds nothing to force: the change's own units.
+		if req.Op == OpApply && req.ForceToken != "" {
+			return nil, Response{}, checkExpectUnits(req.ExpectUnits, *c.plan)
+		}
 		return nil, Response{}, nil
 	}
-	binding := bindingOf(req, c.plan.Units(), c.live, loaded)
+	// Forced, the apply also stops and starts the vtltape@ of each drive it
+	// unloads (plan amendment 2): those units are what the plan shows, the
+	// token binds and expect_units must name.
+	fp := withForced(*c.plan, c, forced)
+	binding := bindingOf(req, fp.Units(), c.live, loaded)
 	if req.Op == OpApply && req.ForceToken != "" {
-		if err := h.checkForce(req.ForceToken, binding); err != nil {
+		// The response lists the forced units. The token, which binds
+		// them, is used up only once expect_units names them.
+		c.plan = &fp
+		nonce, expiry, err := h.verifyForce(req.ForceToken, binding)
+		if err != nil {
 			return nil, Response{}, err
 		}
-		if err := checkBudget(withForced(*c.plan, c, forced)); err != nil {
+		if err := checkExpectUnits(req.ExpectUnits, fp); err != nil {
+			return nil, Response{}, err
+		}
+		if err := checkBudget(fp); err != nil {
+			return nil, Response{}, err
+		}
+		if err := h.useForce(nonce, expiry); err != nil {
 			return nil, Response{}, err
 		}
 		return forced, Response{}, nil
 	}
-	resp := Response{Result: ResultRefused, Error: ErrDriveLoaded,
+	resp := Response{Result: ResultRefused, Error: ErrDriveLoaded, Units: fp.Units(), Notes: fp.Notes,
 		Message: "loaded drives the apply would stop: " + strings.Join(loaded, ", ") + "; unload them, or apply with the force token to put each cartridge back in its slot"}
 	if req.Op == OpPlan {
 		tok, exp, err := h.mintForce(binding)
@@ -496,8 +514,9 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 	plan := derivePlan(c.curDC, c.nextDC, cur, nextInv, contents, curConf, nextConf, nextHome)
 	c.plan = &plan
 	// A plan reports the units; the daemon echoes them in expect_units on
-	// the apply, which alone must name them exactly.
-	if req.Op == OpApply {
+	// the apply, which alone must name them exactly. A forced apply's
+	// units include the drives it unloads, which planChecks finds.
+	if req.Op == OpApply && req.ForceToken == "" {
 		if err := checkExpectUnits(req.ExpectUnits, plan); err != nil {
 			return c, err
 		}

@@ -145,7 +145,9 @@ type Response struct {
 	Findings *validate.Result `json:"findings,omitempty"`
 	// Units are the instances the apply stops or starts, as the helper
 	// derives them (expect_units must equal this set); Notes say what
-	// applies without a restart.
+	// applies without a restart. A plan refused with drive_loaded lists
+	// the units of the forced apply: with the vtltape@ of each drive it
+	// would unload, which the force token binds.
 	Units []string `json:"units,omitempty"`
 	Notes []string `json:"notes,omitempty"`
 	// Conflicts are the files a recovery left alone because they changed
