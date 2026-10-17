@@ -252,8 +252,13 @@ func (s *fakeSystem) LocateLibrary(lib config.Library) (string, error) {
 	return "hctl-" + lib.Serial, nil
 }
 
+// LocateDrive finds a drive only while its vtltape@ is active: a stopped
+// vtltape has removed its device.
 func (s *fakeSystem) LocateDrive(d config.Drive) (string, error) {
-	if s.lost[d.Serial] {
+	s.mu.Lock()
+	st := s.unitState(driveUnit(d.ID))
+	s.mu.Unlock()
+	if s.lost[d.Serial] || st == "inactive" || st == "failed" {
 		return "", fmt.Errorf("%w: no tape drive with serial %q", changer.ErrUnavailable, d.Serial)
 	}
 	return "hctl-" + d.Serial, nil
@@ -771,6 +776,73 @@ func TestExecRollbackDeactivating(t *testing.T) {
 	resp := e.do(compression(e))
 	if resp.Result != ResultError || !strings.Contains(resp.Message, "and so did its rollback") || !e.intentExists() {
 		t.Fatalf("apply: %+v", resp)
+	}
+}
+
+// TestExecDriveDown: a running library's drive whose vtltape@ is down
+// has no device to locate; the apply that would fix it is not refused
+// (#53). Its cartridge, if any, is the one READ ELEMENT STATUS shows.
+func TestExecDriveDown(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		drive string // the drive down
+	}{
+		// Drive 11 is the one the change edits, so the apply restarts it.
+		{"in the plan", "vtltape@11.service"},
+		// Drive 12 is not: it stays down.
+		{"not in the plan", "vtltape@12.service"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, s := newExecEnv(t)
+			s.state[tc.drive] = "failed"
+			req := compression(e)
+			plan := req
+			plan.Op = OpPlan
+			if pr := e.do(plan); pr.Result != ResultValidated {
+				t.Fatalf("plan: %+v", pr)
+			}
+			if resp := e.do(req); resp.Result != ResultApplied {
+				t.Fatalf("apply: %+v", resp)
+			}
+			if tc.drive == "vtltape@11.service" {
+				if !s.before("stop vtltape@11.service", "start vtltape@11.service") || s.unitState(tc.drive) != "active" {
+					t.Errorf("drive 11 not restarted: %v", s.calls)
+				}
+			} else if s.has("stop vtltape@12.service") || s.has("start vtltape@12.service") || s.unitState(tc.drive) != "failed" {
+				t.Errorf("drive 12 touched: %v", s.calls)
+			}
+		})
+	}
+}
+
+// TestExecDriveDownLoaded: a down drive that READ ELEMENT STATUS shows
+// full cannot be asked, so the cartridge counts as loaded: drive_loaded,
+// and forced, it goes back to its slot and the drive restarts.
+func TestExecDriveDownLoaded(t *testing.T) {
+	e, s := newExecEnv(t)
+	s.state["vtltape@12.service"] = "failed"
+	s.liveWith(10, func(inv *changer.Inventory) {
+		inv.Slots[1] = changer.SlotState{Number: 2}
+		inv.Drives[1] = changer.DriveState{Number: 2, Full: true, Barcode: "E01002L8", SourceSlot: 2}
+	})
+	req := compression(e)
+	req.Files = append(req.Files, e.edit("library_contents.10", "Slot 2: E01002L8\n", "Slot 2:\n"))
+	plan := req
+	plan.Op = OpPlan
+	pr := e.do(plan)
+	if pr.Error != ErrDriveLoaded || pr.ForceToken == "" || !strings.Contains(pr.Message, "drive slot 2 (E01002L8)") {
+		t.Fatalf("plan: %+v", pr)
+	}
+	req.ForceToken, req.ExpectUnits = pr.ForceToken, pr.Units
+	resp := e.do(req)
+	if resp.Result != ResultApplied {
+		t.Fatalf("forced apply: %+v", resp)
+	}
+	if len(resp.ForcedUnloads) != 1 || resp.ForcedUnloads[0] != (ForcedUnload{Library: 10, Drive: 12, Barcode: "E01002L8", SourceSlot: 2}) {
+		t.Errorf("forced unloads %+v", resp.ForcedUnloads)
+	}
+	if got := string(e.read("library_contents.10")); !strings.Contains(got, "\nSlot 2: E01002L8\n") {
+		t.Errorf("library_contents.10:\n%s", got)
 	}
 }
 

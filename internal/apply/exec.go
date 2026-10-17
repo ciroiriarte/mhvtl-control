@@ -157,7 +157,7 @@ func (h *Helper) readLive(ctx context.Context, cur config.Inventory) (*validate.
 // 0 amendment 2); of such a library that is not running, each drive whose
 // vtltape@ runs, by TEST UNIT READY, with no barcode; and each standalone
 // drive stopped, by TEST UNIT READY. A drive of a running library it stops
-// that cannot be located is a live_state refusal.
+// whose vtltape@ runs but that cannot be located is a live_state refusal.
 func (h *Helper) loadedDrives(ctx context.Context, c *checked) (map[int][]changer.DriveState, []int, error) {
 	byLib := map[int][]changer.DriveState{}
 	if c.live == nil {
@@ -183,8 +183,17 @@ func (h *Helper) loadedDrives(ctx context.Context, c *checked) (map[int][]change
 				byLib[id] = append(byLib[id], *st)
 			}
 			// The apply's prepare locates every drive of a running library
-			// it stops, to read it with TEST UNIT READY (guardedStop), so
-			// one it cannot find is refused here, before anything stops.
+			// it stops whose vtltape@ runs, to read it with TEST UNIT READY
+			// (guardedStop), so one it cannot find is refused here, before
+			// anything stops. A drive whose vtltape@ is down has no device:
+			// its cartridge is the one R1 shows, counted above (#53).
+			state, err := showProp(ctx, &h.cfg, driveUnit(d.ID), "ActiveState")
+			if err != nil {
+				return nil, nil, err
+			}
+			if state == "inactive" || state == "failed" {
+				continue
+			}
 			if _, err := h.cfg.Devices.LocateDrive(d); err != nil {
 				return nil, nil, refuse(ErrLive, "library %d drive %d: %v", id, d.ID, err)
 			}
