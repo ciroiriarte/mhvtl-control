@@ -667,3 +667,33 @@ func TestGuardedOfflineLibrary(t *testing.T) {
 		t.Errorf("settled: %v %+v", err, out[0])
 	}
 }
+
+// TestCrossCheckLibraryUnit: prepare takes an activating vtllibrary@ in
+// rollback and recover for one whose daemon is not running. That holds
+// because the unit is Type=simple with no ExecStartPre or ExecStartPost:
+// it is activating only before its daemon runs (systemd.service(5), Type=
+// and ExecStartPre=). Upstream master 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/vtllibrary@.service.in#L12-L17.
+func TestCrossCheckLibraryUnit(t *testing.T) {
+	src := os.Getenv("MHVTL_SRC")
+	if src == "" {
+		src = filepath.Join("..", "..", "..", "mhvtl")
+	}
+	data, err := os.ReadFile(filepath.Join(src, "etc", "vtllibrary@.service.in"))
+	if err != nil {
+		t.Skipf("mhVTL source not found: %v", err)
+	}
+	simple := false
+	for _, l := range strings.Split(string(data), "\n") {
+		l = strings.TrimSpace(l)
+		switch {
+		case l == "Type=simple":
+			simple = true
+		case strings.HasPrefix(l, "Type="), strings.HasPrefix(l, "ExecStartPre="), strings.HasPrefix(l, "ExecStartPost="):
+			t.Errorf("vtllibrary@.service.in has %s: an activating library may run its daemon", l)
+		}
+	}
+	if !simple {
+		t.Error("vtllibrary@.service.in is not Type=simple")
+	}
+}

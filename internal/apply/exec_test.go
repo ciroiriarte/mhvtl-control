@@ -35,8 +35,9 @@ type fakeSystem struct {
 	// lost are the drive serials LocateDrive does not find.
 	lost map[string]bool
 	// killStart makes the next start of the unit return as if SIGTERM
-	// killed systemctl: the start job goes on, the unit stays activating.
-	killStart map[string]bool
+	// killed systemctl: the start job goes on, the unit is left in the
+	// state given (activating).
+	killStart map[string]string
 	// deaf are the running libraries that stop answering the queue.
 	deaf map[int]bool
 	// onOffline runs at an offline, with the lock held.
@@ -63,7 +64,7 @@ type fakeSystem struct {
 func newExecEnv(t *testing.T) (*env, *fakeSystem) {
 	e := newEnv(t)
 	s := &fakeSystem{e: e, state: map[string]string{bayMonitor: "inactive"}, live: map[int]changer.Inventory{}, started: map[int]changer.Inventory{},
-		loaded: map[string]bool{}, lost: map[string]bool{}, killStart: map[string]bool{}, deaf: map[int]bool{}, enabled: map[string]bool{}, offline: map[int]bool{}, pendingOnline: map[int]bool{}, failStart: map[string]bool{}, failStop: map[string]bool{},
+		loaded: map[string]bool{}, lost: map[string]bool{}, killStart: map[string]string{}, deaf: map[int]bool{}, enabled: map[string]bool{}, offline: map[int]bool{}, pendingOnline: map[int]bool{}, failStart: map[string]bool{}, failStop: map[string]bool{},
 		onStop: func(string) {}, onMedia: func() error { return nil }, onStart: func(string) {}}
 	e.cfg.Systemctl = s.systemctl
 	e.cfg.Queue, e.cfg.Devices = s, s
@@ -155,9 +156,9 @@ func (s *fakeSystem) systemctl(ctx context.Context, args ...string) ([]byte, err
 		return nil, nil
 	case "start":
 		s.log("start %s", args[1])
-		if s.killStart[args[1]] {
+		if st, ok := s.killStart[args[1]]; ok {
 			delete(s.killStart, args[1]) // once
-			s.state[args[1]] = "activating"
+			s.state[args[1]] = st
 			return nil, errors.New("signal: killed")
 		}
 		if s.failStart[args[1]] {
@@ -737,7 +738,7 @@ func TestExecDriveLostInPrepare(t *testing.T) {
 func TestExecRollbackStartKilled(t *testing.T) {
 	e, s := newExecEnv(t)
 	dc, lc := e.read("device.conf"), e.read("library_contents.10")
-	s.killStart["vtllibrary@10.service"] = true
+	s.killStart["vtllibrary@10.service"] = "activating"
 	resp := e.do(compression(e))
 	if resp.Result != ResultRolledBack {
 		t.Fatalf("apply: %+v", resp)
@@ -753,6 +754,18 @@ func TestExecRollbackStartKilled(t *testing.T) {
 	}
 	if st := s.unitState("vtllibrary@10.service"); st != "active" {
 		t.Errorf("vtllibrary@10 is %s after the rollback", st)
+	}
+}
+
+// TestExecRollbackDeactivating: a library deactivating as the rollback
+// begins may still run, and in recover hold moves made since R1; it is not
+// taken for one that is not running, and the rollback fails closed.
+func TestExecRollbackDeactivating(t *testing.T) {
+	e, s := newExecEnv(t)
+	s.killStart["vtllibrary@10.service"] = "deactivating"
+	resp := e.do(compression(e))
+	if resp.Result != ResultError || !strings.Contains(resp.Message, "and so did its rollback") || !e.intentExists() {
+		t.Fatalf("apply: %+v", resp)
 	}
 }
 
