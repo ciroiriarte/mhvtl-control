@@ -150,6 +150,24 @@ func (h *Helper) tryLock() (l *lock, held bool, err error) {
 	return &lock{f}, false, nil
 }
 
+// lockWait is how long a plan, apply or recover waits for exclusive.lock
+// before it reports apply_in_progress: a hello holds the lock for a moment
+// (state), and the daemon's polling must not make an apply fail.
+const lockWait = 100 * time.Millisecond
+
+// waitLock is tryLock retried for up to lockWait while another process
+// holds the lock.
+func (h *Helper) waitLock() (l *lock, held bool, err error) {
+	deadline := time.Now().Add(lockWait)
+	for {
+		l, held, err = h.tryLock()
+		if !held || time.Now().After(deadline) {
+			return l, held, err
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (l *lock) release() { l.f.Close() }
 
 // state reports what a hello says. It takes the lock only for a moment to
