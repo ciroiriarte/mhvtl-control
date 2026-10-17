@@ -265,3 +265,52 @@ func TestHomeWithBlank(t *testing.T) {
 		t.Errorf("warnings = %+v", r.Warnings)
 	}
 }
+
+// TestHomeProblem: a media home is an absolute, clean path of plain
+// characters, outside system trees and mhvtl-control's own state.
+func TestHomeProblem(t *testing.T) {
+	for path, ok := range map[string]bool{
+		"/opt/mhvtl":                     true,
+		"/srv/tapes":                     true,
+		"/var/lib/mhvtl":                 true,
+		"/var/lib/mhvtl-controlled":      true,
+		"tapes":                          false,
+		"./tapes":                        false,
+		"/proc/sys/kernel":               false,
+		"/var/lib/mhvtl-control-apply":   false,
+		"/var/lib/mhvtl-control-apply/x": false,
+		"/var/lib/mhvtl-control":         false,
+		"/etc/mhvtl":                     false,
+		"/x/../etc/cron.d":               false,
+		"/srv/tapes/":                    false,
+		"/srv//tapes":                    false,
+		"/":                              false,
+		"/usr/local/tapes":               false,
+		"/srv/$(id)":                     false,
+		"/srv/a b":                       false,
+		"/run/mhvtl":                     false,
+		"/dev/shm/tapes":                 false,
+	} {
+		if got := HomeProblem(path) == ""; got != ok {
+			t.Errorf("HomeProblem(%q) = %q, want ok %v", path, HomeProblem(path), ok)
+		}
+	}
+	cur := shipped(t)
+	next := clone(cur)
+	next.Libraries[0].HomeDir = "/etc/mhvtl"
+	r := Validate(cur, next, nil, nil, Options{})
+	expect(t, "errors", codes(r.Errors, CodeMediaHomeForbidden), []string{`library 10: Home directory "/etc/mhvtl" cannot be a media home: under /etc`})
+	// One the configuration in force already has is a pre-existing warning.
+	r = Validate(next, clone(next), nil, nil, Options{})
+	expect(t, "warnings", codes(r.Warnings, CodeMediaHomeForbidden), []string{"/etc/mhvtl"})
+}
+
+func codes(fs []Finding, code string) []string {
+	var out []string
+	for _, f := range fs {
+		if f.Code == code {
+			out = append(out, f.Message)
+		}
+	}
+	return out
+}
