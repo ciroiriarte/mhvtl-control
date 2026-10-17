@@ -3,3 +3,7 @@
 # which fails the start when the path is missing. See tmpfiles.d(5):
 # https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html
 d /run/mhvtl-control-apply 0700 root root -
+# apply.lock, the cooperative lock that orders the daemon's own moves and
+# media writes against applies. The helper's unit names this directory in
+# ReadWritePaths=, which fails its start when the path is missing.
+d /run/mhvtl-control 0755 root root -

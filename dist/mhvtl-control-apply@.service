@@ -1,0 +1,81 @@
+[Unit]
+Description=mhvtl-control configuration apply helper
+Documentation=https://github.com/ciroiriarte/mhvtl-control
+# Started per connection by mhvtl-control-apply.socket; never on its own.
+RefuseManualStart=yes
+
+[Service]
+ExecStart=/usr/libexec/mhvtl-control/mhvtl-control-apply --config-dir=/etc/mhvtl
+# The connection is stdin, and the reply goes back on it. stdout is not used
+# for the reply: Go dies of SIGPIPE on a broken stdout, and the helper
+# ignores SIGPIPE besides.
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+# An apply stops and starts mhVTL units, each stop allowed its
+# TimeoutStopSec=10, and must have time to roll back too. The helper refuses
+# a plan whose forward and rollback budget exceeds 1700 s, and traps SIGTERM
+# to put libraries back online. TimeoutStartSec= does not bound a
+# Type=simple service, so RuntimeMaxSec= is the bound. See systemd.service(5):
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#RuntimeMaxSec=
+RuntimeMaxSec=1800
+# Time after SIGTERM to re-online libraries and roll back; counted in the
+# budget.
+TimeoutStopSec=60
+
+# The helper runs as root: it writes root-owned /etc/mhvtl, runs systemctl
+# and vtlcmd (the mhVTL message queue is root's), and opens the changers'
+# sg nodes. CAP_CHOWN is the one capability kept: a file is replaced by
+# writing a root-owned temp file, fchown()ing it to the original's owner and
+# renaming it over the target, and fchown needs CAP_CHOWN. An empty set
+# blocks it; systemctl needs no capability, as systemd authorizes uid 0 on
+# its private socket (Phase 0 spike, S7). Files are never written in place,
+# so CAP_DAC_OVERRIDE is not needed. See capabilities(7):
+# https://man7.org/linux/man-pages/man7/capabilities.7.html
+CapabilityBoundingSet=CAP_CHOWN
+NoNewPrivileges=yes
+ProtectSystem=strict
+# What the helper writes: mhVTL's configuration, and /run/mhvtl-control,
+# which holds the lock it shares with the daemon's own moves.
+ReadWritePaths=/etc/mhvtl /run/mhvtl-control
+# Rollback copies, audit.jsonl and intent.json. mhvtl-control.service masks
+# it.
+StateDirectory=mhvtl-control-apply
+StateDirectoryMode=0700
+# exclusive.lock and the force-token key. mhvtl-control.service masks it.
+RuntimeDirectory=mhvtl-control-apply
+RuntimeDirectoryMode=0700
+# Kept between instances: several connections share it, and the next
+# instance must find the lock and the key. systemd.exec(5):
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#RuntimeDirectoryPreserve=
+RuntimeDirectoryPreserve=yes
+# The daemon's options file holds the API token: the helper never reads it,
+# at its old path in the directory it writes or at its new one. '-' because
+# either may be absent.
+InaccessiblePaths=-/etc/mhvtl/mhvtl-control.env -/etc/mhvtl-control
+# PrivateDevices must stay off: the helper re-reads each changer's element
+# status over SG_IO before it restarts the library, so it needs the sg
+# nodes. The device policy allows only those; the helper itself sends only
+# INQUIRY, TEST UNIT READY, MODE SENSE and READ ELEMENT STATUS, and only to
+# tape drives and changers. See systemd.resource-control(5):
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html#DeviceAllow=
+PrivateDevices=no
+DevicePolicy=closed
+DeviceAllow=char-sg rw
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077

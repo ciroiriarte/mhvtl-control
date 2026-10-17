@@ -26,7 +26,11 @@ sudo zypper install ./mhvtl-control-0.3.1-1.x86_64.rpm
 ```
 
 The package installs `/usr/bin/mhvtl-control`, `mhvtl-control.service` and
-`/etc/mhvtl-control/mhvtl-control.env`. The service is not enabled on install:
+`/etc/mhvtl-control/mhvtl-control.env`. It also installs the configuration
+helper `/usr/libexec/mhvtl-control/mhvtl-control-apply` with
+`mhvtl-control-apply.socket` and its units, all disabled; the configuration
+editor cannot write yet, so leave them disabled. The service is not enabled on
+install:
 
 ```sh
 sudo systemctl enable --now mhvtl-control
@@ -137,7 +141,7 @@ version.
 ## Build
 
 ```sh
-make build        # bin/mhvtl-control, version from git describe
+make build        # bin/mhvtl-control and bin/mhvtl-control-apply, version from git describe
 make test         # Go tests and the dashboard's JavaScript tests (Node 18+)
 make install DESTDIR=/tmp/stage
 ```

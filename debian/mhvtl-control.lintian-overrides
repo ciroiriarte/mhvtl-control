@@ -8,3 +8,4 @@ mhvtl-control: initial-upload-closes-no-bugs [usr/share/doc/mhvtl-control/change
 # A Go PIE built with CGO_ENABLED=0 links no libraries, so it has no
 # DT_NEEDED on libc; it only needs the dynamic loader.
 mhvtl-control: shared-library-lacks-prerequisites [usr/bin/mhvtl-control]
+mhvtl-control: shared-library-lacks-prerequisites [usr/libexec/mhvtl-control/mhvtl-control-apply]

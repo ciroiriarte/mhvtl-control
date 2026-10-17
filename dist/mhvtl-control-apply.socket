@@ -1,0 +1,21 @@
+[Unit]
+Description=mhvtl-control configuration apply helper socket
+Documentation=https://github.com/ciroiriarte/mhvtl-control
+
+[Socket]
+# A top-level path, outside /run/mhvtl-control-apply: mhvtl-control.service
+# masks that directory, and must still reach the socket.
+ListenStream=/run/mhvtl-control-apply.sock
+# root only. The helper also checks that the caller is uid 0 in
+# mhvtl-control.service's cgroup.
+SocketMode=0600
+# One helper instance per connection (mhvtl-control-apply@.service), so no
+# root process stays resident between applies.
+Accept=yes
+MaxConnections=4
+RemoveOnStop=yes
+
+[Install]
+# Not enabled by the packages: enabling the socket is what turns
+# configuration writes on.
+WantedBy=sockets.target
