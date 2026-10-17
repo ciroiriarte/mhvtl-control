@@ -794,6 +794,31 @@ s_reboot_prep() {
 	systemd-run --on-active=5 --unit=apply-smoke-reboot systemctl reboot
 }
 
+# props UNIT PROP: the unit names in PROP, one per line.
+props() { systemctl show -p "$2" --value "$1" | tr ' ' '\n' | grep . | sort; }
+has() { props "$1" "$2" | grep -qx "$3" || { echo "$1 $2: $(props "$1" "$2" | xargs)"; return 1; }; }
+lacks() { ! props "$1" "$2" | grep -qx "$3" || { echo "$1 $2 has $3"; return 1; }; }
+
+# unit_graph: the unit graph orders boot recovery before mhvtl-media and
+# every instance, and only mhvtl.target pulls it in: an instance start
+# (the helper's own, or an operator's) never does.
+unit_graph() {
+	local r=mhvtl-control-apply-recover.service u p
+	systemctl show -p After,Before,WantedBy,Wants,Requires,Requisite,BindsTo \
+		"$r" mhvtl-media.service mhvtl.target $(lib_units "$LIB") >"$STEP_DIR/unit-graph.txt"
+	check "recover: Before mhvtl-media.service" has "$r" Before mhvtl-media.service
+	check "recover: Before mhvtl.target" has "$r" Before mhvtl.target
+	check "recover: WantedBy mhvtl.target" has "$r" WantedBy mhvtl.target
+	check "recover: WantedBy nothing else" eq "$(props "$r" WantedBy | xargs)" mhvtl.target
+	check "mhvtl-media: After recover" has mhvtl-media.service After "$r"
+	for u in $(lib_units "$LIB"); do
+		check "$u: After recover" has "$u" After "$r"
+		for p in Wants Requires Requisite BindsTo; do
+			check "$u: no $p on recover" lacks "$u" "$p" "$r"
+		done
+	done
+}
+
 s_reboot_check() {
 	systemctl is-system-running --wait >/dev/null || true
 	check "a reboot happened" bash -c "[ \"\$(cat /proc/sys/kernel/random/boot_id)\" != \"\$(cat '$SMOKE_STATE/reboot.boot_id')\" ]"
@@ -810,6 +835,7 @@ s_reboot_check() {
 	echo "recover exit $rec, mhvtl-media start $media, vtllibrary@$LIB start $lib" >>"$STEP_DIR/checks.log"
 	check "boot recovery finished before mhvtl-media started" test "$rec" -le "$media"
 	check "boot recovery finished before vtllibrary@$LIB started" test "$rec" -le "$lib"
+	unit_graph
 	restored "after reboot" "$SMOKE_STATE/reboot"
 }
 
