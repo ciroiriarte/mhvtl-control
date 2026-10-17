@@ -503,6 +503,38 @@ func TestHomeEmptySandboxedTmp(t *testing.T) {
 	if code, _, _ := Refused(CheckHomes(lib(filepath.Join(links, "x")), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl")); code != ErrHomeInUse {
 		t.Errorf("link to an existing hidden dir: %s", code)
 	}
+	// A relative target is resolved against the link's real directory, as
+	// the kernel does: srv/a -> data/a, data/a/l -> ../t, data/t ->
+	// <hidden>/z (dangling). Joined to the written srv/a it would land in
+	// srv/t, outside (#62 review N2-L1).
+	root := t.TempDir()
+	for _, d := range []string{"srv", "data/a"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{
+		"srv/a":    filepath.Join(root, "data/a"),
+		"data/a/l": "../t",
+		"data/t":   filepath.Join(hidden, "z"),
+		"rel":      "relhop",
+		"relhop":   filepath.Join(hidden, "w"),
+		"loop":     "loop",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, old := range []string{filepath.Join(root, "srv/a/l"), filepath.Join(root, "rel")} {
+		code, msg, _ := Refused(CheckHomes(lib(old), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl"))
+		if code != ErrHomeInUse || !strings.Contains(msg, "the service sandbox hides "+hidden) {
+			t.Errorf("%s: %s %s", old, code, msg)
+		}
+	}
+	// A loop cannot be seen through, so it is not judged empty either.
+	if code, msg, _ := Refused(CheckHomes(lib(filepath.Join(root, "loop")), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl")); code != ErrHomeInUse {
+		t.Errorf("loop: %s %s", code, msg)
+	}
 	if err := CheckHomes(lib(filepath.Join(links, "plain")), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl"); err != nil {
 		t.Errorf("home outside the sandboxed root: %v", err)
 	}
