@@ -56,3 +56,14 @@ func TestMhvtlConfCReader(t *testing.T) {
 		t.Error("new MHVTL_CONFIG_PATH in a CRLF file accepted")
 	}
 }
+
+// TestMhvtlConfKeys lists each assigned key once, in order of first
+// assignment; comments and a "KEY = value" line the shell does not assign
+// are not keys.
+func TestMhvtlConfKeys(t *testing.T) {
+	c := ParseMhvtlConf([]byte("# CAPACITY=1\nVERBOSE=1\nCAPACITY=500\nexport VTL_DEBUG=0\nVERBOSE=2\nFOO = bar\n"))
+	got := strings.Join(c.Keys(), ",")
+	if want := "VERBOSE,CAPACITY,VTL_DEBUG"; got != want {
+		t.Errorf("Keys = %s, want %s", got, want)
+	}
+}
