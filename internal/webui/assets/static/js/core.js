@@ -617,15 +617,37 @@
 
   // applyErrorAction says what the UI does with a failed staging or apply
   // request: reload (the files changed under the stage, or it is gone),
-  // replan (the stage needs a dry run first, or the helper recovered an
-  // apply), readonly, force (a drive_loaded plan) or show the message.
+  // replan (the stage needs a dry run first, the helper recovered an
+  // apply, or an apply found a drive loaded), readonly, force (a dry run
+  // refused for drive_loaded, which carries the token), applied (the stage
+  // was applied, maybe by a request whose answer was lost), lost (no
+  // answer: GET /config/stages/{id} says what happened) or show the
+  // message.
   function applyErrorAction(err) {
-    var code = err && err.code ? String(err.code) : "";
+    if (!err) { return "show"; }
+    var code = err.code ? String(err.code) : "";
+    if (!err.status) { return err.name === "AbortError" ? "show" : "lost"; }
     if (code === "conflict" || code === "stage_not_found") { return "reload"; }
     if (code === "plan_required" || code === "recovered") { return "replan"; }
+    if (code === "stage_applied") { return "applied"; }
     if (Object.prototype.hasOwnProperty.call(READONLY_CODES, code)) { return "readonly"; }
-    if (code === "drive_loaded") { return "force"; }
+    if (code === "drive_loaded") { return err.body && err.body.force_token ? "force" : "replan"; }
     return "show";
+  }
+
+  var STAGE_STATES = { open: 1, busy: 1, applied: 1 };
+
+  // stageOutcome reads GET /config/stages/{id}: the stage's state (open,
+  // busy while an apply runs, applied) and its last apply's result.
+  function stageOutcome(dto) {
+    var st = dto && Object.prototype.hasOwnProperty.call(STAGE_STATES, dto.state) ? dto.state : "unknown";
+    var last = (dto && dto.last_apply) || {};
+    return {
+      state: st,
+      result: last.result ? String(last.result) : "",
+      message: last.error && last.error.message ? String(last.error.message) : "",
+      units: coerceArray(last.plan && last.plan.units).map(String),
+    };
   }
 
   // libraryAttrFields and driveAttrFields are the device.conf keys the edit
@@ -717,6 +739,7 @@
     forceRemaining: forceRemaining,
     fmtCountdown: fmtCountdown,
     applyErrorAction: applyErrorAction,
+    stageOutcome: stageOutcome,
     libraryAttrFields: libraryAttrFields,
     driveAttrFields: driveAttrFields,
     buildAttrPatch: buildAttrPatch,

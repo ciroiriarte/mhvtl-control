@@ -110,10 +110,30 @@ test("applyErrorAction maps an apply or staging error to what the UI does", () =
   assert.strictEqual(act(403, "tls_required"), "readonly");
   assert.strictEqual(act(409, "intent_unreadable"), "readonly");
   assert.strictEqual(act(422, "legacy_env"), "readonly");
-  assert.strictEqual(act(422, "drive_loaded"), "force");
+  // A dry run refused for drive_loaded offers the force; an apply refused
+  // for it has no token, and plans again.
+  assert.strictEqual(core.applyErrorAction({ status: 422, code: "drive_loaded", body: { force_token: "t" } }), "force");
+  assert.strictEqual(act(422, "drive_loaded"), "replan");
+  assert.strictEqual(act(409, "stage_applied"), "applied");
+  assert.strictEqual(act(409, "stage_busy"), "show");
+  assert.strictEqual(act(413, "stage_too_large"), "show");
+  assert.strictEqual(act(422, "slots_out_of_range"), "show");
+  // No answer (the connection dropped): the stage says what happened.
+  assert.strictEqual(core.applyErrorAction(new Error("Failed to fetch")), "lost");
+  assert.strictEqual(core.applyErrorAction({ name: "AbortError" }), "show");
   assert.strictEqual(act(422, "invalid"), "show");
   assert.strictEqual(act(500, "rolled_back"), "show");
   assert.strictEqual(core.applyErrorAction(null), "show");
+});
+
+test("stageOutcome reads GET /config/stages/{id}", () => {
+  assert.deepStrictEqual(core.stageOutcome({ state: "applied", last_apply: { result: "applied", plan: { units: ["vtllibrary@10.service"] } } }),
+    { state: "applied", result: "applied", message: "", units: ["vtllibrary@10.service"] });
+  assert.deepStrictEqual(core.stageOutcome({ state: "open", last_apply: { result: "rolled_back", error: { code: "rolled_back", message: "start_failed: x" } } }),
+    { state: "open", result: "rolled_back", message: "start_failed: x", units: [] });
+  assert.deepStrictEqual(core.stageOutcome({ state: "busy" }), { state: "busy", result: "", message: "", units: [] });
+  assert.deepStrictEqual(core.stageOutcome(null), { state: "unknown", result: "", message: "", units: [] });
+  assert.strictEqual(core.stageOutcome({ state: "<b>" }).state, "unknown");
 });
 
 test("writesEditable and the notice when edits are open", () => {
