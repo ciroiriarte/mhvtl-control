@@ -274,7 +274,7 @@ func (h *Helper) handle(ctx context.Context, req *Request, rec *AuditRecord) Res
 	var resp Response
 	if err == nil {
 		var forced map[int][]changer.DriveState
-		forced, resp, err = h.planChecks(req, c)
+		forced, resp, err = h.planChecks(ctx, req, c)
 		if err == nil && resp.Result == "" {
 			if req.Op == OpPlan {
 				resp = Response{Result: ResultValidated}
@@ -300,18 +300,22 @@ func (h *Helper) handle(ctx context.Context, req *Request, rec *AuditRecord) Res
 // drive_loaded gets a force token; an apply with a valid one goes on with
 // those drives forced, and returns them. A non-empty response ends the
 // request with it.
-func (h *Helper) planChecks(req *Request, c *checked) (map[int][]changer.DriveState, Response, error) {
+func (h *Helper) planChecks(ctx context.Context, req *Request, c *checked) (map[int][]changer.DriveState, Response, error) {
 	if err := h.checkMediaPlan(c); err != nil {
 		return nil, Response{}, err
 	}
-	forced, standalone, err := h.loadedDrives(c)
+	forced, standalone, err := h.loadedDrives(ctx, c)
 	if err != nil {
 		return nil, Response{}, err
 	}
 	var loaded []string
 	for _, id := range sortedInts(forced) {
 		for _, d := range forced[id] {
-			loaded = append(loaded, fmt.Sprintf("library %d drive slot %d (%s)", id, d.Number, d.Barcode))
+			b := d.Barcode
+			if b == "" {
+				b = "a cartridge its stopped library does not know of"
+			}
+			loaded = append(loaded, fmt.Sprintf("library %d drive slot %d (%s)", id, d.Number, b))
 		}
 	}
 	for _, id := range standalone {

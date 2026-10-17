@@ -213,10 +213,13 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		return err
 	}
 	ls.Active = state != "inactive" && state != "failed"
+	devs := s.cfg.Devices
 	if !ls.Active {
+		if err := s.idleDrives(ctx, sl, ls); err != nil {
+			return err
+		}
 		return s.snapshot(sl, ls, &ls.Before)
 	}
-	devs := s.cfg.Devices
 	if ls.HCTL, err = devs.Locate(sl.Lib.Serial, scsi.PeripheralMediumChanger); err != nil {
 		return fmt.Errorf("library %d: %w", sl.Lib.ID, err)
 	}
@@ -294,6 +297,51 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		ls.ForcedUnloads = append(ls.ForcedUnloads, fu)
 	}
 	return s.snapshot(sl, ls, &ls.Before)
+}
+
+// idleDrives checks the drives of an inactive library whose vtltape@ still
+// runs: one may hold a cartridge no library knows of (Phase 0 amendment
+// 2). In apply mode a loaded drive must be one the plan stops, else the
+// change was validated without it; in rollback and recover it is a forced
+// unload whose cartridge is not known, and its vtltape@ is stopped.
+func (s *stopper) idleDrives(ctx context.Context, sl StopLib, ls *LibStop) error {
+	planned := map[int]bool{}
+	for _, d := range sl.Drives {
+		planned[d] = true
+	}
+	ls.DriveHCTL = map[int]string{}
+	for _, d := range sl.Lib.Drives {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		state, err := s.show(ctx, driveUnit(d.ID), "ActiveState")
+		if err != nil {
+			return err
+		}
+		if state != "active" {
+			continue
+		}
+		hctl, err := s.cfg.Devices.Locate(d.Serial, scsi.PeripheralSequential)
+		if err != nil {
+			return fmt.Errorf("library %d drive %d: %w", sl.Lib.ID, d.ID, err)
+		}
+		ls.DriveHCTL[d.ID] = hctl
+		loaded, err := s.cfg.Devices.Loaded(hctl)
+		if err != nil {
+			return fmt.Errorf("library %d drive %d: %w", sl.Lib.ID, d.ID, err)
+		}
+		switch {
+		case !loaded:
+		case s.mode == ModeApply:
+			ls.LoadedDrives = append(ls.LoadedDrives, ForcedUnload{Library: sl.Lib.ID, Drive: d.ID, Unknown: true})
+			if !planned[d.ID] {
+				return fmt.Errorf("library %d drive %d: %w: it holds a cartridge and its library is not running", sl.Lib.ID, d.ID, errRaced)
+			}
+		default:
+			ls.ForcedUnloads = append(ls.ForcedUnloads, ForcedUnload{Library: sl.Lib.ID, Drive: d.ID, Unknown: true})
+		}
+	}
+	return nil
 }
 
 // stop runs steps 6-8 for one library.
