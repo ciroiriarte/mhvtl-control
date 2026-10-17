@@ -276,7 +276,8 @@ func homeEmpty(dir string) error {
 // sandboxedRoot is the SandboxedTmp directory dir is in, as written or
 // through its links, or "". A link into the real /tmp dangles inside the
 // sandbox, so a link whose target is missing is followed as written
-// (os.Readlink), at most 40 times as the kernel's ELOOP limit.
+// (os.Readlink), a relative target from the link's real directory, at most
+// 40 times as the kernel's ELOOP limit.
 func sandboxedRoot(dir string) (string, error) {
 	p := filepath.Clean(dir)
 	for hop := 0; ; hop++ {
@@ -310,7 +311,13 @@ func sandboxedRoot(dir string) (string, error) {
 			return "", err
 		}
 		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(a), target)
+			// The kernel resolves it against the link's real directory,
+			// which differs from the written one when a parent is a link.
+			parent, err := filepath.EvalSymlinks(filepath.Dir(a))
+			if err != nil {
+				return "", errors.New("cannot resolve " + dir + ": " + err.Error())
+			}
+			target = filepath.Join(parent, target)
 		}
 		p = filepath.Join(target, rest)
 	}
