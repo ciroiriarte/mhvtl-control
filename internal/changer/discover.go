@@ -53,8 +53,11 @@ func (l *Locator) Find(lib config.Library) (string, error) {
 
 // FindBySerial returns the sg path of the device of peripheralType (sysfs
 // "type", else the INQUIRY peripheral device type) whose unit serial number
-// (sysfs vpd_pg80, else INQUIRY VPD 80h) equals serial. Errors wrap
-// ErrUnavailable.
+// (sysfs vpd_pg80, else INQUIRY VPD 80h) equals serial. It reads every
+// node: when more than one device of the type reports serial, such as two
+// IBM 03584 libraries whose serials share their first 10 characters, or a
+// device and a re-export of it, it names them all and returns none rather
+// than the first. Errors wrap ErrUnavailable.
 func (l *Locator) FindBySerial(serial string, peripheralType uint8) (string, error) {
 	want := strings.TrimSpace(serial)
 	if want == "" {
@@ -72,6 +75,7 @@ func (l *Locator) FindBySerial(serial string, peripheralType uint8) (string, err
 		}
 	}
 	sort.Strings(names)
+	var found []string
 	for _, name := range names {
 		devDir := filepath.Join(classDir, name, "device")
 		node := filepath.Join(l.DevRoot, name)
@@ -79,10 +83,17 @@ func (l *Locator) FindBySerial(serial string, peripheralType uint8) (string, err
 			continue
 		}
 		if s, ok := l.serial(devDir, node); ok && s == want {
-			return node, nil
+			found = append(found, node)
 		}
 	}
-	return "", fmt.Errorf("%w: no %s with serial %q under %s", ErrUnavailable, typeName(peripheralType), want, classDir)
+	switch len(found) {
+	case 0:
+		return "", fmt.Errorf("%w: no %s with serial %q under %s", ErrUnavailable, typeName(peripheralType), want, classDir)
+	case 1:
+		return found[0], nil
+	}
+	return "", fmt.Errorf("%w: %d devices of type %s report serial %q (%s); cannot tell which is meant",
+		ErrUnavailable, len(found), typeName(peripheralType), want, strings.Join(found, ", "))
 }
 
 // typeName names a peripheral device type in discovery errors.
