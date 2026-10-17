@@ -501,6 +501,34 @@ func TestConfigStageDownPersist(t *testing.T) {
 	}
 }
 
+// A .persist that cannot be taken as the stopped library's source (here a
+// link, which vtllibrary would follow but apply.FileSource refuses) is a
+// conflict with the files on disk, not a bad request: 409
+// persist_unreadable, and nothing staged (#61 review).
+func TestConfigStageDownPersistUnreadable(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	e.h.setLib(30, "inactive")
+	p := filepath.Join(e.dir, "device.conf")
+	dc := conffile.ParseDeviceConf([]byte(e.disk("device.conf")))
+	if err := dc.SetAttr("Library", 30, "PERSIST", "True"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, dc.Render(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	valid := filepath.Join(e.dir, "valid.persist")
+	if err := os.WriteFile(valid, []byte(e.disk("library_contents.30")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(valid, filepath.Join(e.dir, "library_contents.30.persist")); err != nil {
+		t.Fatal(err)
+	}
+	rec := e.call(http.MethodPatch, "/api/v1/config/libraries/30", map[string]any{"attrs": map[string]any{"Backoff": "500"}})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"persist_unreadable"`) || !strings.Contains(rec.Body.String(), "not a regular file") {
+		t.Errorf("%d %s", rec.Code, rec.Body)
+	}
+}
+
 // Deleting a library drops its note (#61 review L2).
 func TestConfigStageDeleteDropsNote(t *testing.T) {
 	e := newWriteEnv(t, nil)

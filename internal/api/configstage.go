@@ -314,7 +314,10 @@ func (s *Server) contents(ctx context.Context, st *stage, id int) (*conffile.Lib
 				persist := apply.PersistOn(conffile.ParseDeviceConf(st.disk["device.conf"]), id)
 				src, err := apply.FileSource(s.cfg.ConfigDir, lib, persist)
 				if err != nil {
-					return nil, err
+					// The files on disk, not the request, are at fault: the
+					// helper would refuse its stop the same way.
+					return nil, &editError{http.StatusConflict, "persist_unreadable", fmt.Sprintf(
+						"library %d: the file it loads at its next start cannot be read: %v", id, err)}
 				}
 				if src.Name != name {
 					lc, err := liveContents(data, lib, src.Placement)
