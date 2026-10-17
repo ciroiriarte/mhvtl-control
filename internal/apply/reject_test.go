@@ -470,3 +470,24 @@ func TestRejectForceToken(t *testing.T) {
 	e := newEnv(t)
 	e.refused("force", Request{Op: OpPlan, ForceToken: "x"}, ErrNotImplemented)
 }
+
+// TestPeerPIDFDErrors: CheckPeer falls back to the start-time recheck only
+// when the kernel lacks SO_PEERPIDFD (ENOPROTOOPT); any other error from it
+// is refused (S5).
+func TestPeerPIDFDErrors(t *testing.T) {
+	defer func(f func(int) (int, syscall.Errno)) { getsockoptPIDFD = f }(getsockoptPIDFD)
+	for _, e := range []syscall.Errno{syscall.EINVAL, syscall.ENODATA, syscall.EPERM, syscall.EBADF} {
+		getsockoptPIDFD = func(int) (int, syscall.Errno) { return -1, e }
+		a, _ := socketPair(t)
+		if _, err := CheckPeer(a); err == nil || !strings.Contains(err.Error(), "SO_PEERPIDFD") || !errors.Is(err, e) {
+			t.Errorf("%v: %v", e, err)
+		}
+	}
+	getsockoptPIDFD = func(int) (int, syscall.Errno) { return -1, syscall.ENOPROTOOPT }
+	a, _ := socketPair(t)
+	if _, err := CheckPeer(a); err == nil || strings.Contains(err.Error(), "SO_PEERPIDFD") {
+		// The fallback goes on to the uid and cgroup checks, which this
+		// test process fails.
+		t.Errorf("ENOPROTOOPT: %v", err)
+	}
+}
