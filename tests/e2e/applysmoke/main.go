@@ -1,4 +1,4 @@
-// Command applysmoke is the client of the Phase 3.5 VM smoke test
+// Command applysmoke is the client of the helper-socket VM smoke test
 // (tests/e2e/apply-smoke.sh). It talks to mhvtl-control-apply's socket
 // directly, with internal/applyclient, as the Phase 4 write API will: it
 // builds hello, plan and apply requests from files on disk and prints the
