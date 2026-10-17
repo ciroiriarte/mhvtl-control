@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 	"unicode"
 
 	"mhvtl-control/internal/validate"
@@ -98,6 +99,13 @@ const (
 	ResultRecovered = "recovered"
 	// ResultError answers a failure that is not a refusal.
 	ResultError = "error"
+	// ResultApplied answers an apply that wrote the files and restarted
+	// the units.
+	ResultApplied = "applied"
+	// ResultRolledBack answers an apply that failed after it stopped units
+	// and put the configuration and units back as they were; Error says
+	// why.
+	ResultRolledBack = "rolled_back"
 )
 
 // States of a hello.
@@ -146,6 +154,31 @@ type Response struct {
 	// RollbackDir is, for a recovery, the directory holding copies of the
 	// files as they were before the interrupted apply.
 	RollbackDir string `json:"rollback_dir,omitempty"`
+	// ForceToken answers a plan refused only for drive_loaded: an apply of
+	// the same change with it unloads those drives (plan 3.4). It expires
+	// at ForceExpires.
+	ForceToken   string     `json:"force_token,omitempty"`
+	ForceExpires *time.Time `json:"force_expires,omitempty"`
+	// ForcedUnloads are the cartridges a forced apply, or a rollback,
+	// unloaded, with the slot each went to.
+	ForcedUnloads []ForcedUnload `json:"forced_unloads,omitempty"`
+	// Warnings are what the apply did that may not be meant: a Slot
+	// cartridge missing from its home, which mhvtl-media.service creates
+	// blank at the library's start (mhvtl-control#43).
+	Warnings []string `json:"warnings,omitempty"`
+	// PlacementDrift is advisory: where READ ELEMENT STATUS after the
+	// restart differs from the placement written. Hosts are online by
+	// then, so a host move can cause it.
+	PlacementDrift []string `json:"placement_drift,omitempty"`
+	// FailedUnit, JournalTail, OrphanedMedia and Unplaced describe a
+	// rollback: the unit whose start failed and its last journal lines,
+	// the cartridges the apply created that the restored configuration
+	// does not list (kept in their home), and the cartridges no slot of
+	// the restored layout was free for (kept on the shelf).
+	FailedUnit    string   `json:"failed_unit,omitempty"`
+	JournalTail   string   `json:"journal_tail,omitempty"`
+	OrphanedMedia []string `json:"orphaned_media,omitempty"`
+	Unplaced      []string `json:"unplaced,omitempty"`
 }
 
 // Conflict is a file a recovery did not restore.
@@ -172,7 +205,32 @@ const (
 	ErrHomeInUse        = "home_in_use"
 	// ErrBudget: the apply and its rollback would not fit in the helper's
 	// RuntimeMaxSec= (plan 3.1).
-	ErrBudget           = "budget"
+	ErrBudget = "budget"
+	// ErrBusy: the daemon holds apply.lock for a move or media write.
+	ErrBusy = "busy"
+	// ErrMoveHome: a mhvtl-move-home journal is not settled.
+	ErrMoveHome = "move_home_in_progress"
+	// ErrDriveLoaded: a drive the apply stops holds a cartridge; a force
+	// token overrides it.
+	ErrDriveLoaded = "drive_loaded"
+	// ErrForce: the force token is malformed, expired, used, or bound to
+	// other values.
+	ErrForce = "force_token"
+	// ErrRaced: a library changed between the reads and the stop.
+	ErrRaced = "raced"
+	// ErrPersistMismatch: a trusted .persist disagrees with READ ELEMENT
+	// STATUS (plan Q7); the apply rolled back keeping the .persist
+	// placements.
+	ErrPersistMismatch = "persist_mismatch"
+	// ErrMedia: make_vtl_media cannot create the new cartridges right, or
+	// did not.
+	ErrMedia = "media"
+	// ErrLive: the live placement could not be read.
+	ErrLive = "live_state"
+	// ErrStart: a unit did not start.
+	ErrStart = "start_failed"
+	// ErrPlacement: the placement cannot be merged.
+	ErrPlacement        = "placement"
 	ErrNotWritable      = "not_writable"
 	ErrInvalid          = "invalid"
 	ErrNotImplemented   = "not_implemented"
