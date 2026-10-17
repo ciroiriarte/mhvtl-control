@@ -64,7 +64,9 @@ func stanza(header string) string {
 	return planConf[i : i+j+2]
 }
 
-func planOf(t *testing.T, dc, mc string, contents map[int]bool) UnitPlan {
+// planOf derives the plan from current device.conf cur and planMhvtlConf
+// to device.conf dc and mhvtl.conf mc.
+func planOf(t *testing.T, cur, dc, mc string, contents map[int]bool) UnitPlan {
 	t.Helper()
 	inv := func(dc string) config.Inventory {
 		inv, err := config.ReadInventory("/etc/mhvtl", func(name string) ([]byte, error) {
@@ -78,8 +80,8 @@ func planOf(t *testing.T, dc, mc string, contents map[int]bool) UnitPlan {
 		}
 		return inv
 	}
-	return derivePlan(conffile.ParseDeviceConf([]byte(planConf)), conffile.ParseDeviceConf([]byte(dc)),
-		inv(planConf), inv(dc), contents,
+	return derivePlan(conffile.ParseDeviceConf([]byte(cur)), conffile.ParseDeviceConf([]byte(dc)),
+		inv(cur), inv(dc), contents,
 		conffile.ParseMhvtlConf([]byte(planMhvtlConf)), conffile.ParseMhvtlConf([]byte(mc)))
 }
 
@@ -87,34 +89,38 @@ func TestDerivePlan(t *testing.T) {
 	newDrive := "Drive: 13 CHANNEL: 00 TARGET: 03 LUN: 00\n Library ID: 10 Slot: 03\n Vendor identification: IBM\n Product identification: ULT3580-TD8\n Unit serial number: DRV13\n\n"
 	newLibrary := "Library: 40 CHANNEL: 00 TARGET: 12 LUN: 00\n Vendor identification: STK\n Product identification: L700\n Unit serial number: LIB40\n\n" +
 		"Drive: 41 CHANNEL: 00 TARGET: 13 LUN: 00\n Library ID: 40 Slot: 01\n Vendor identification: IBM\n Product identification: ULT3580-TD8\n Unit serial number: DRV41\n"
+	home30 := strings.Replace(planConf, " Unit serial number: LIB30\n", " Unit serial number: LIB30\n Home directory: /opt/b\n", 1)
+	otherHome := strings.Replace(planMhvtlConf, "/opt/mhvtl", "/opt/other", 1)
 	for _, tc := range []struct {
 		name       string
+		cur        string // the current device.conf
 		dc, mc     string
 		contents   map[int]bool
 		stop, strt string // StopOrder and StartOrder, unit numbers only
 		notes      int
 	}{
-		{"nothing", planConf, planMhvtlConf, nil, "", "", 0},
-		{"a comment", strings.Replace(planConf, "VERSION: 5\n", "VERSION: 5\n# edited\n", 1), planMhvtlConf, nil, "", "", 0},
-		{"a library stanza", strings.Replace(planConf, " Backoff: 400", " Backoff: 500", 1), planMhvtlConf, nil, "L10", "L10", 0},
-		{"library_contents", planConf, planMhvtlConf, map[int]bool{30: true}, "L30", "L30", 0},
-		{"a drive stanza takes its library", strings.Replace(planConf, "DRV12", "DRV12X", 1), planMhvtlConf, nil, "L10 T12", "T12 L10", 0},
-		{"a drive moved between libraries", strings.Replace(planConf, " Library ID: 10 Slot: 02", " Library ID: 30 Slot: 02", 1), planMhvtlConf, nil, "L10 T12 L30", "L10 T12 L30", 0},
-		{"a drive added", planConf + "\n" + newDrive, planMhvtlConf, nil, "L10", "T13 L10", 0},
-		{"a drive removed", strings.Replace(planConf, stanza("Drive: 12 "), "", 1), planMhvtlConf, nil, "L10 T12", "L10", 0},
-		{"a library added", planConf + "\n" + newLibrary, planMhvtlConf, nil, "", "T41 L40", 0},
-		{"a library deleted", strings.Replace(strings.Replace(planConf, stanza("Library: 30 "), "", 1), stanza("Drive: 31 "), "", 1), planMhvtlConf, nil, "L30 T31", "", 0},
-		{"a standalone drive", strings.Replace(planConf, "DRV50", "DRV50X", 1), planMhvtlConf, nil, "T50", "T50", 0},
-		{"VERBOSE restarts every instance", planConf, strings.Replace(planMhvtlConf, "VERBOSE=1", "VERBOSE=2", 1), nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
-		{"a library's home directory takes its drives", strings.Replace(planConf, " Unit serial number: LIB10\n", " Unit serial number: LIB10\n Home directory: /opt/a\n", 1), planMhvtlConf, nil, "L10 T11 T12", "T11 T12 L10", 0},
-		{"MHVTL_HOME_PATH restarts libraries without a home, and standalone drives", planConf, strings.Replace(planMhvtlConf, "/opt/mhvtl", "/opt/other", 1), nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
-		{"MHVTL_HOME_PATH leaves a library with its own home", strings.Replace(planConf, " Unit serial number: LIB30\n", " Unit serial number: LIB30\n Home directory: /opt/b\n", 1), strings.Replace(planMhvtlConf, "/opt/mhvtl", "/opt/other", 1), nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
-		{"a library deleted, its drive's stanza kept", strings.Replace(planConf, stanza("Library: 30 "), "", 1), planMhvtlConf, nil, "L30 T31", "T31", 0},
-		{"a library adopts a standalone drive", planConf + "\nLibrary: 99 CHANNEL: 00 TARGET: 14 LUN: 00\n Vendor identification: STK\n Product identification: L700\n Unit serial number: LIB99\n", planMhvtlConf, nil, "T50", "T50 L99", 0},
-		{"VTL_DEBUG and CAPACITY restart nothing", planConf, strings.Replace(strings.Replace(planMhvtlConf, "VTL_DEBUG=0", "VTL_DEBUG=1", 1), "CAPACITY=500", "CAPACITY=900", 1), nil, "", "", 2},
+		{"nothing", planConf, planConf, planMhvtlConf, nil, "", "", 0},
+		{"a comment", planConf, strings.Replace(planConf, "VERSION: 5\n", "VERSION: 5\n# edited\n", 1), planMhvtlConf, nil, "", "", 0},
+		{"a library stanza", planConf, strings.Replace(planConf, " Backoff: 400", " Backoff: 500", 1), planMhvtlConf, nil, "L10", "L10", 0},
+		{"library_contents", planConf, planConf, planMhvtlConf, map[int]bool{30: true}, "L30", "L30", 0},
+		{"a drive stanza takes its library", planConf, strings.Replace(planConf, "DRV12", "DRV12X", 1), planMhvtlConf, nil, "L10 T12", "T12 L10", 0},
+		{"a drive moved between libraries", planConf, strings.Replace(planConf, " Library ID: 10 Slot: 02", " Library ID: 30 Slot: 02", 1), planMhvtlConf, nil, "L10 T12 L30", "L10 T12 L30", 0},
+		{"a drive added", planConf, planConf + "\n" + newDrive, planMhvtlConf, nil, "L10", "T13 L10", 0},
+		{"a drive removed", planConf, strings.Replace(planConf, stanza("Drive: 12 "), "", 1), planMhvtlConf, nil, "L10 T12", "L10", 0},
+		{"a library added", planConf, planConf + "\n" + newLibrary, planMhvtlConf, nil, "", "T41 L40", 0},
+		{"a library deleted", planConf, strings.Replace(strings.Replace(planConf, stanza("Library: 30 "), "", 1), stanza("Drive: 31 "), "", 1), planMhvtlConf, nil, "L30 T31", "", 0},
+		{"a standalone drive", planConf, strings.Replace(planConf, "DRV50", "DRV50X", 1), planMhvtlConf, nil, "T50", "T50", 0},
+		{"VERBOSE restarts every instance", planConf, planConf, strings.Replace(planMhvtlConf, "VERBOSE=1", "VERBOSE=2", 1), nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
+		{"a library's home directory takes its drives", planConf, strings.Replace(planConf, " Unit serial number: LIB10\n", " Unit serial number: LIB10\n Home directory: /opt/a\n", 1), planMhvtlConf, nil, "L10 T11 T12", "T11 T12 L10", 0},
+		{"MHVTL_HOME_PATH restarts libraries without a home, and standalone drives", planConf, planConf, strings.Replace(planMhvtlConf, "/opt/mhvtl", "/opt/other", 1), nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
+		{"MHVTL_HOME_PATH and a library given its own home", planConf, home30, otherHome, nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
+		{"MHVTL_HOME_PATH leaves a library with its own home", home30, home30, otherHome, nil, "L10 T11 T12 T50", "T11 T12 L10 T50", 0},
+		{"a library deleted, its drive's stanza kept", planConf, strings.Replace(planConf, stanza("Library: 30 "), "", 1), planMhvtlConf, nil, "L30 T31", "T31", 0},
+		{"a library adopts a standalone drive", planConf, planConf + "\nLibrary: 99 CHANNEL: 00 TARGET: 14 LUN: 00\n Vendor identification: STK\n Product identification: L700\n Unit serial number: LIB99\n", planMhvtlConf, nil, "T50", "T50 L99", 0},
+		{"VTL_DEBUG and CAPACITY restart nothing", planConf, planConf, strings.Replace(strings.Replace(planMhvtlConf, "VTL_DEBUG=0", "VTL_DEBUG=1", 1), "CAPACITY=500", "CAPACITY=900", 1), nil, "", "", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := planOf(t, tc.dc, tc.mc, tc.contents)
+			p := planOf(t, tc.cur, tc.dc, tc.mc, tc.contents)
 			if got := short(p.StopOrder()); got != tc.stop {
 				t.Errorf("stop order %q, want %q", got, tc.stop)
 			}
@@ -174,7 +180,7 @@ func short(units []string) string {
 func TestPlanBudget(t *testing.T) {
 	// VERBOSE on planConf: libraries 10 and 30 with drives 11, 12 and 31,
 	// and standalone drive 50.
-	p := planOf(t, planConf, strings.Replace(planMhvtlConf, "VERBOSE=1", "VERBOSE=2", 1), nil)
+	p := planOf(t, planConf, planConf, strings.Replace(planMhvtlConf, "VERBOSE=1", "VERBOSE=2", 1), nil)
 	units := 2*libraryStop + 4*driveStop + 2*libraryStart + 4*driveStart
 	want := bayMonitorTime + 2*guardLibrary + 3*guardDrive + daemonReload + units + startWait + 2*readback + // forward
 		2*guardLibrary + 3*guardDrive + daemonReload + units + 2*readback + // rollback
