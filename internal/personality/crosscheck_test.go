@@ -853,51 +853,100 @@ func TestCommentCitations(t *testing.T) {
 	}
 }
 
-var vpd80CallRe = regexp.MustCompile(`\b(update_\w+_vpd_80\([^)]*\))`)
+var (
+	vpd80CallRe = regexp.MustCompile(`\b(update_\w+_vpd_80\([^)]*\))`)
+	cCommentRe  = regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*`)
+)
 
-// unitSerialFacts are the statements of each page 80h builder that
-// UnitSerialPage mirrors; "" is vtllibrary's own page.
-var unitSerialFacts = map[string][]string{
-	"":                            {`alloc_vpd(strlen(lu->lu_serial_no))`},
-	"update_ibm_3584_vpd_80(lu)":  {`alloc_vpd(0x16)`, `snprintf((char *)&d[0], 11, "%-10.10s", lu->lu_serial_no)`, `snprintf((char *)&d[12], 5, "%04x", smc_p->pm->start_storage)`},
-	"update_ibm_3100_vpd_80(lu)":  {`alloc_vpd(0x10)`, `snprintf((char *)&d[0], 13, "%-12.12s", lu->lu_serial_no)`, `memcpy(&d[12], "_LL0", 4)`},
-	"update_eml_vpd_80(lu)":       {`alloc_vpd(0x12)`, `snprintf((char *)&d[0], 11, "%-10.10s", lu->lu_serial_no)`},
-	"update_scalar_vpd_80(lu)":    {`alloc_vpd(VPD_80_LEN)`, `"%-8.8s%-16.16s"`, `memcpy((*lu_vpd)->data, serial, VPD_80_LEN)`},
-	"update_stk_l_vpd_80(lu, 11)": {`alloc_vpd(sn_len)`, `memset((*lu_vpd)->data, ' ', sn_len)`, `strnlen(lu->lu_serial_no, sn_len)`},
-	"update_stk_l_vpd_80(lu, 12)": {`alloc_vpd(sn_len)`, `memset((*lu_vpd)->data, ' ', sn_len)`, `strnlen(lu->lu_serial_no, sn_len)`},
+// cFunc returns the definition of C function fn in f, from its signature to
+// its closing brace, with comments dropped and white space collapsed to
+// one blank, or "" when f has none.
+func cFunc(f cfile, fn string) string {
+	def := regexp.MustCompile(`^(static )?[\w ]+?\*?\b` + regexp.QuoteMeta(fn) + `\(`)
+	for i, l := range f.lines {
+		if !def.MatchString(l) {
+			continue
+		}
+		for j := i + 1; j < len(f.lines); j++ {
+			if strings.HasPrefix(f.lines[j], "}") {
+				return normC(strings.Join(f.lines[i:j+1], "\n"))
+			}
+		}
+	}
+	return ""
 }
 
-// TestCrossCheckUnitSerial checks Models[].UnitSerialCall against the
-// page 80h builder each init function calls, and that the builder still
-// holds the statements UnitSerialPage mirrors.
+func normC(s string) string {
+	return strings.Join(strings.Fields(cCommentRe.ReplaceAllString(s, "")), " ")
+}
+
+// unitSerialBuilders are the page 80h builders UnitSerialPage mirrors, as
+// cFunc returns them at 852b78a: any change to one, even a statement
+// added, fails TestCrossCheckUnitSerial until UnitSerialPage is checked
+// against it and the copy here updated.
+var unitSerialBuilders = map[string]string{
+	"update_ibm_3584_vpd_80": `static void update_ibm_3584_vpd_80(struct lu_phy_attr *lu) { struct vpd **lu_vpd; struct smc_priv *smc_p; uint8_t *d; int pg; lu_vpd = lu->lu_vpd; smc_p = lu->lu_private; pg = PCODE_OFFSET(0x80); if (lu_vpd[pg]) dealloc_vpd(lu_vpd[pg]); lu_vpd[pg] = alloc_vpd(0x16); if (!lu_vpd[pg]) { MHVTL_ERR("Could not malloc(0x16) bytes, line %d", __LINE__); return; } d = lu_vpd[pg]->data; snprintf((char *)&d[0], 11, "%-10.10s", lu->lu_serial_no); snprintf((char *)&d[12], 5, "%04x", smc_p->pm->start_storage); }`,
+	"update_ibm_3100_vpd_80": `static void update_ibm_3100_vpd_80(struct lu_phy_attr *lu) { struct vpd **lu_vpd = lu->lu_vpd; uint8_t *d; int pg; pg = PCODE_OFFSET(0x80); if (lu_vpd[pg]) dealloc_vpd(lu_vpd[pg]); lu_vpd[pg] = alloc_vpd(0x10); if (!lu_vpd[pg]) { MHVTL_ERR("Could not malloc(0x10) bytes, line %d", __LINE__); return; } d = lu_vpd[pg]->data; snprintf((char *)&d[0], 13, "%-12.12s", lu->lu_serial_no); memcpy(&d[12], "_LL0", 4); }`,
+	"update_eml_vpd_80":      `static void update_eml_vpd_80(struct lu_phy_attr *lu) { struct vpd **lu_vpd = lu->lu_vpd; uint8_t *d; int pg; pg = PCODE_OFFSET(0x80); if (lu_vpd[pg]) dealloc_vpd(lu_vpd[pg]); lu_vpd[pg] = alloc_vpd(0x12); if (lu_vpd[pg]) { d = lu_vpd[pg]->data; snprintf((char *)&d[0], 11, "%-10.10s", lu->lu_serial_no); } else { MHVTL_ERR("Could not malloc(0x12) bytes, line %d", __LINE__); } }`,
+	"update_scalar_vpd_80":   `static void update_scalar_vpd_80(struct lu_phy_attr *lu) { struct vpd **lu_vpd = &lu->lu_vpd[PCODE_OFFSET(0x80)]; char serial[VPD_80_LEN + 1]; if (*lu_vpd) { dealloc_vpd(*lu_vpd); *lu_vpd = NULL; } *lu_vpd = alloc_vpd(VPD_80_LEN); if (!*lu_vpd) { MHVTL_ERR("Could not malloc(%d) bytes, line %d", VPD_80_LEN, __LINE__); return; } snprintf(serial, sizeof(serial), "%-8.8s%-16.16s", lu->vendor_id, lu->lu_serial_no); memcpy((*lu_vpd)->data, serial, VPD_80_LEN); }`,
+	"update_stk_l_vpd_80":    `static void update_stk_l_vpd_80(struct lu_phy_attr *lu, uint8_t sn_len) { struct vpd **lu_vpd; lu_vpd = &lu->lu_vpd[PCODE_OFFSET(0x80)]; if (*lu_vpd) { dealloc_vpd(*lu_vpd); *lu_vpd = NULL; } *lu_vpd = alloc_vpd(sn_len); if (*lu_vpd) { memset((*lu_vpd)->data, ' ', sn_len); memcpy((*lu_vpd)->data, lu->lu_serial_no, strnlen(lu->lu_serial_no, sn_len)); } else { MHVTL_ERR("Could not malloc(%u) bytes, line %d", sn_len, __LINE__); } }`,
+	// vtllib.c, shared by vtllibrary's own page and vtltape's.
+	"update_vpd_80":      `void update_vpd_80(struct lu_phy_attr *lu, void *p) { struct vpd *vpd_pg = lu->lu_vpd[PCODE_OFFSET(0x80)]; assert(vpd_pg); memcpy(vpd_pg->data, p, strlen((const char *)p)); }`,
+	"ibm_lto_serial_pad": `void ibm_lto_serial_pad(const char *vendor, const char *product, char *sn, size_t size) { size_t len = strlen(sn); size_t vlen; vlen = strlen(vendor); while (vlen && vendor[vlen - 1] == ' ') vlen--; if (vlen != 3 || strncmp(vendor, "IBM", 3)) return; if (strncmp(product, "ULT3580-", 8) && strncmp(product, "ULTRIUM-", 8)) return; while (len && sn[len - 1] == ' ') len--; if (!len || len >= 10 || size < 11) return; memmove(&sn[10 - len], sn, len); memset(sn, '0', 10 - len); sn[10] = '\0'; }`,
+}
+
+// serialFacts are the statements of vtllibrary, vtltape and the headers
+// that UnitSerialPage and DriveUnitSerialPage mirror, inside functions too
+// long to keep whole; normalized as cFunc normalizes.
+var serialFacts = map[string][]string{
+	"usr/cmd/vtllibrary.c": {
+		`conf_clamp_string(v, SCSI_SN_LEN, linecount); snprintf(lu->lu_serial_no, SCSI_SN_LEN, "%-14s", v);`,
+		`conf_clamp_string(v, VENDOR_ID_LEN, linecount); snprintf(lu->vendor_id, VENDOR_ID_LEN + 1, "%-8s", v);`,
+		`lu_vpd[PCODE_OFFSET(0x80)] = alloc_vpd(strlen(lu->lu_serial_no)); update_vpd_80(lu, lu->lu_serial_no);`,
+	},
+	"usr/cmd/vtltape.c": {
+		`conf_clamp_string(v, MAX_DRIVE_SN_LEN, linecount); snprintf(lu->lu_serial_no, sizeof(lu->lu_serial_no), "%-10s", v);`,
+		`snprintf(lu->vendor_id, VENDOR_ID_LEN + 1, "%-8s", v);`,
+		`snprintf(lu->product_id, PRODUCT_ID_LEN + 1, "%-16s", v);`,
+		`ibm_lto_serial_pad(lu->vendor_id, lu->product_id, lu->lu_serial_no, sizeof(lu->lu_serial_no)); lu_vpd[PCODE_OFFSET(0x80)] = alloc_vpd(strlen(lu->lu_serial_no)); update_vpd_80(lu, lu->lu_serial_no);`,
+	},
+	"include/vtllib.h": {
+		fmt.Sprintf("#define SCSI_SN_LEN %d", scsiSNLen),
+		fmt.Sprintf("#define MAX_DRIVE_SN_LEN %d", maxDriveSNLen),
+		"char lu_serial_no[MAX_DRIVE_SN_LEN + 1];",
+	},
+	"include/common/vtl_common.h": {
+		fmt.Sprintf("#define VENDOR_ID_LEN %d", vendorIDLen),
+		"#define PRODUCT_ID_LEN 16",
+	},
+	"usr/pm/scalar_pm.c": {"#define VPD_80_LEN 24"},
+}
+
+// TestCrossCheckUnitSerial checks Models[].UnitSerialCall against the page
+// 80h builder each init function calls, every builder (and the shared
+// helpers) whole against unitSerialBuilders, the statements of
+// serialFacts, and that no drive personality writes page 80h.
 func TestCrossCheckUnitSerial(t *testing.T) {
 	root := mhvtlRepo(t)
 	files := pmFiles(t, root)
-	lib := readC(t, root, "usr/cmd/vtllibrary.c")
-	funcBody := func(f cfile, fn string) string {
-		def := regexp.MustCompile(`^(static )?void ` + regexp.QuoteMeta(fn) + `\(`)
-		for i, l := range f.lines {
-			if def.MatchString(l) {
-				for j := i + 1; j < len(f.lines); j++ {
-					if strings.HasPrefix(f.lines[j], "}") {
-						return strings.Join(f.lines[i:j], "\n")
-					}
-				}
+	for file, facts := range serialFacts {
+		text := normC(strings.Join(readC(t, root, file).lines, "\n"))
+		for _, s := range facts {
+			if !strings.Contains(text, s) {
+				t.Errorf("%s no longer has %s", file, s)
 			}
 		}
-		return ""
 	}
-	text := strings.Join(lib.lines, "\n")
-	for _, s := range []string{`snprintf(lu->lu_serial_no, SCSI_SN_LEN, "%-14s", v)`, `snprintf(lu->vendor_id, VENDOR_ID_LEN + 1, "%-8s", v)`} {
-		if !strings.Contains(text, s) {
-			t.Errorf("usr/cmd/vtllibrary.c no longer has %s", s)
+	vtllib := readC(t, root, "usr/vtllib.c")
+	for _, fn := range []string{"update_vpd_80", "ibm_lto_serial_pad"} {
+		if got := cFunc(vtllib, fn); got != unitSerialBuilders[fn] {
+			t.Errorf("usr/vtllib.c: %s changed:\n got %s\nwant %s", fn, got, unitSerialBuilders[fn])
 		}
 	}
-	if mk := readC(t, root, "include/vtllib.h"); !strings.Contains(strings.Join(mk.lines, "\n"), fmt.Sprintf("#define SCSI_SN_LEN %d", scsiSNLen)) {
-		t.Errorf("include/vtllib.h: SCSI_SN_LEN is not %d", scsiSNLen)
-	}
+	changers := map[string]bool{}
 	for fn, m := range Models {
 		f, first, last := findInit(t, files, fn)
+		changers[f.rel] = true
 		var calls []string
 		for n := first; n <= last; n++ {
 			for _, c := range vpd80CallRe.FindAllStringSubmatch(f.lines[n-1], -1) {
@@ -912,64 +961,24 @@ func TestCrossCheckUnitSerial(t *testing.T) {
 			t.Errorf("%s: %s calls %q; Models[%q].UnitSerialCall = %q", f.at(first-1), fn, calls, fn, m.UnitSerialCall)
 			continue
 		}
-		facts, ok := unitSerialFacts[got]
-		if !ok {
-			t.Errorf("%s: no facts for %q", fn, got)
+		if got == "" {
 			continue
 		}
-		body := text
-		if got != "" {
-			body = funcBody(f, got[:strings.Index(got, "(")])
+		name := got[:strings.Index(got, "(")]
+		want, ok := unitSerialBuilders[name]
+		if !ok {
+			t.Errorf("%s: no copy of %s", fn, name)
+			continue
 		}
-		for _, s := range facts {
-			if !strings.Contains(body, s) {
-				t.Errorf("%s: %s no longer has %s", f.rel, got, s)
-			}
-		}
-		if got == "update_scalar_vpd_80(lu)" && !strings.Contains(strings.Join(f.lines, "\n"), "#define VPD_80_LEN 24") {
-			t.Errorf("%s: VPD_80_LEN is not 24", f.rel)
+		if body := cFunc(f, name); body != want {
+			t.Errorf("%s: %s changed:\n got %s\nwant %s", f.rel, name, body, want)
 		}
 	}
-}
-
-// TestCrossCheckDriveUnitSerial checks the statements DriveUnitSerialPage
-// mirrors, and that no drive personality replaces VPD page 80h.
-func TestCrossCheckDriveUnitSerial(t *testing.T) {
-	root := mhvtlRepo(t)
-	for file, facts := range map[string][]string{
-		"usr/cmd/vtltape.c": {
-			`snprintf(lu->lu_serial_no, sizeof(lu->lu_serial_no), "%-10s", v)`,
-			`conf_clamp_string(v, MAX_DRIVE_SN_LEN, linecount)`,
-			`snprintf(lu->vendor_id, VENDOR_ID_LEN + 1, "%-8s", v)`,
-			`snprintf(lu->product_id, PRODUCT_ID_LEN + 1, "%-16s", v)`,
-			`ibm_lto_serial_pad(lu->vendor_id, lu->product_id, lu->lu_serial_no,`,
-			`lu_vpd[PCODE_OFFSET(0x80)] = alloc_vpd(strlen(lu->lu_serial_no));`,
-		},
-		"usr/vtllib.c": {
-			`if (vlen != 3 || strncmp(vendor, "IBM", 3))`,
-			`if (strncmp(product, "ULT3580-", 8) && strncmp(product, "ULTRIUM-", 8))`,
-			`if (!len || len >= 10 || size < 11)`,
-			`memset(sn, '0', 10 - len);`,
-		},
-		"include/vtllib.h": {fmt.Sprintf("#define MAX_DRIVE_SN_LEN %d", maxDriveSNLen)},
-	} {
-		text := strings.Join(readC(t, root, file).lines, "\n")
-		for _, s := range facts {
-			if !strings.Contains(text, s) {
-				t.Errorf("%s no longer has %s", file, s)
-			}
-		}
-	}
-	changers := map[string]bool{}
-	for fn := range Models {
-		f, _, _ := findInit(t, pmFiles(t, root), fn)
-		changers[f.rel] = true
-	}
-	for _, f := range pmFiles(t, root) {
+	for _, f := range files {
 		if changers[f.rel] {
 			continue
 		}
-		if text := strings.Join(f.lines, "\n"); strings.Contains(text, "PCODE_OFFSET(0x80)") || strings.Contains(text, "update_vpd_80(") {
+		if text := strings.Join(f.lines, "\n"); strings.Contains(text, "PCODE_OFFSET(0x80)") || strings.Contains(text, "vpd_80(") {
 			t.Errorf("%s, a drive personality, writes VPD page 80h", f.rel)
 		}
 	}
