@@ -3,10 +3,13 @@ package apply
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -276,6 +279,40 @@ func TestHelloStates(t *testing.T) {
 	}
 	if l := e.auditLines(); l != nil {
 		t.Errorf("hello was audited: %v", l)
+	}
+}
+
+// units reports the ActiveState of the vtllibrary@ instance of every
+// library in device.conf, for the daemon, which cannot ask systemd
+// itself. It changes nothing, takes no lock and is not audited.
+func TestUnits(t *testing.T) {
+	e := newEnv(t)
+	e.cfg.Systemctl = func(_ context.Context, args ...string) ([]byte, error) {
+		switch args[len(args)-1] {
+		case "vtllibrary@10.service":
+			return []byte("active\n"), nil
+		case "vtllibrary@30.service":
+			return []byte("failed\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected %v", args)
+	}
+	e.rebuild()
+	release := e.holdLock()
+	resp := e.do(Request{Op: OpUnits})
+	release()
+	if resp.Result != ResultOK || !reflect.DeepEqual(resp.LibraryStates, map[int]string{10: "active", 30: "failed"}) {
+		t.Errorf("units: %+v", resp)
+	}
+	if l := e.auditLines(); l != nil {
+		t.Errorf("units was audited: %v", l)
+	}
+	if resp := serveOnce(t, e.h, `{"v":1,"op":"units"}`); resp.Result != ResultOK || resp.LibraryStates[30] != "failed" {
+		t.Errorf("units over the socket: %+v", resp)
+	}
+	e.cfg.Systemctl = func(context.Context, ...string) ([]byte, error) { return nil, errors.New("no bus") }
+	e.rebuild()
+	if resp := e.do(Request{Op: OpUnits}); resp.Result == ResultOK || !strings.Contains(resp.Message, "no bus") {
+		t.Errorf("units without systemctl: %+v", resp)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -212,6 +213,17 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 		}
 		return Response{Result: ResultOK, State: st, Version: h.cfg.Version}
 	}
+	// Units is not audited either: it changes nothing, and the daemon asks
+	// it whenever a stage first edits a library. It takes no lock: a unit
+	// an apply stops or starts meanwhile shows as deactivating or
+	// activating, which the daemon does not take as down.
+	if req.Op == OpUnits {
+		states, err := h.libraryStates(ctx)
+		if err != nil {
+			return responseOf(err)
+		}
+		return Response{Result: ResultOK, LibraryStates: states}
+	}
 	rec := AuditRecord{TS: h.cfg.Now(), Actor: req.Actor, Peer: peer, Op: req.Op, Units: req.ExpectUnits}
 	l, held, err := h.waitLock()
 	if err != nil {
@@ -240,6 +252,25 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 		h.auditResponse(rec, resp)
 	}
 	return resp
+}
+
+// libraryStates is the ActiveState of the vtllibrary@ instance of each
+// library in device.conf, as readLive reads it.
+func (h *Helper) libraryStates(ctx context.Context) (map[int]string, error) {
+	b, err := os.ReadFile(filepath.Join(h.cfg.ConfigDir, deviceConf))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	states := map[int]string{}
+	for _, st := range conffile.ParseDeviceConf(b).Stanzas() {
+		if st.Kind != "Library" {
+			continue
+		}
+		if states[st.ID], err = showProp(ctx, &h.cfg, libraryUnit(st.ID), "ActiveState"); err != nil {
+			return nil, err
+		}
+	}
+	return states, nil
 }
 
 func (h *Helper) auditResponse(rec AuditRecord, resp Response) {

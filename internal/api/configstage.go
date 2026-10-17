@@ -78,6 +78,9 @@ type stage struct {
 	// file.
 	next         map[string][]byte
 	dispositions map[string]validate.Disposition // by library and barcode
+	// notes say, by library, where a placement the stage started from
+	// came from when not from the changer.
+	notes map[int]string
 	// rev counts edits; plan is the last dry run, valid while its rev is
 	// rev.
 	rev  int
@@ -284,11 +287,13 @@ func (st *stage) deviceConf() (*conffile.DeviceConf, error) {
 }
 
 // contents parses library id's library_contents in the stage. The first
-// time, the library's live placement is written in, from a READ ELEMENT
-// STATUS made now: the views' cache may be up to liveTTL older than a move
-// made outside the daemon, which the stage would then undo (#61 smoke,
-// dispositions). A library whose changer cannot be read is not edited: its
-// file may lag such moves.
+// time, a running library's live placement is written in, from a READ
+// ELEMENT STATUS made now: the views' cache may be up to liveTTL older than
+// a move made outside the daemon, which the stage would then undo (#61
+// smoke, dispositions). A running library whose changer cannot be read is
+// not edited: its file may lag such moves. A library whose vtllibrary@ is
+// inactive or failed loads the file at its next start, so the file is its
+// placement; one activating or deactivating is neither, and waits.
 func (s *Server) contents(ctx context.Context, st *stage, id int) (*conffile.LibContents, error) {
 	name := contentsFile(id)
 	if _, edited := st.next[name]; !edited {
@@ -297,19 +302,35 @@ func (s *Server) contents(ctx context.Context, st *stage, id int) (*conffile.Lib
 		}
 		data, ok := st.disk[name]
 		if lib, inCur := findConfigLibrary(st.cur, id); ok && inCur {
-			s.live.forget(id)
-			live, errs := s.readLive(ctx, []config.Library{lib})
-			p, known := live[id]
-			if !known {
-				return nil, &editError{http.StatusServiceUnavailable, "live_unreadable", fmt.Sprintf(
-					"library %d: its changer could not be read (%s); a stage starts from where the cartridges are now, so as not to undo moves made since %s was written",
-					id, errs[id], name)}
-			}
-			lc, err := liveContents(data, lib, p)
+			state, err := s.libraryState(ctx, id)
 			if err != nil {
-				return nil, fmt.Errorf("live placement not written into %s: %w", name, err)
+				return nil, &editError{http.StatusServiceUnavailable, "live_unreadable", fmt.Sprintf(
+					"library %d: whether vtllibrary@%d runs is unknown (%v), so where its cartridges are is too", id, id, err)}
 			}
-			data = lc
+			switch state {
+			case "inactive", "failed":
+				if st.notes == nil {
+					st.notes = map[int]string{}
+				}
+				st.notes[id] = fmt.Sprintf("library %d is not running; its placement comes from %s", id, name)
+			case "active":
+				s.live.forget(id)
+				live, errs := s.readLive(ctx, []config.Library{lib})
+				p, known := live[id]
+				if !known {
+					return nil, &editError{http.StatusServiceUnavailable, "live_unreadable", fmt.Sprintf(
+						"library %d: its changer could not be read (%s); a stage starts from where the cartridges are now, so as not to undo moves made since %s was written",
+						id, errs[id], name)}
+				}
+				lc, err := liveContents(data, lib, p)
+				if err != nil {
+					return nil, fmt.Errorf("live placement not written into %s: %w", name, err)
+				}
+				data = lc
+			default:
+				return nil, &editError{http.StatusServiceUnavailable, "live_unreadable", fmt.Sprintf(
+					"library %d: vtllibrary@%d is %s; try again once it has started or stopped", id, id, state)}
+			}
 		}
 		if data == nil {
 			data = []byte{} // nil would delete it
@@ -318,6 +339,27 @@ func (s *Server) contents(ctx context.Context, st *stage, id int) (*conffile.Lib
 	}
 	c := conffile.ParseLibContents(st.next[name])
 	return c, c.Writable()
+}
+
+// libraryState is the ActiveState of vtllibrary@id, which the daemon asks
+// the apply helper for: its unit keeps it away from systemd
+// (dist/mhvtl-control.service, InaccessiblePaths=/run/dbus).
+func (s *Server) libraryState(ctx context.Context, id int) (string, error) {
+	if s.cfg.Helper == nil {
+		return "", errors.New("the apply helper is not configured")
+	}
+	resp, err := s.cfg.Helper.Do(ctx, apply.Request{Op: apply.OpUnits})
+	if err != nil {
+		return "", err
+	}
+	if resp.Result != apply.ResultOK {
+		return "", fmt.Errorf("the apply helper answered %s: %s", resp.Result, resp.Message)
+	}
+	state, ok := resp.LibraryStates[id]
+	if !ok {
+		return "", fmt.Errorf("the apply helper does not know library %d", id)
+	}
+	return state, nil
 }
 
 // adopt reads the base of a library_contents the stage has not read: that
@@ -430,11 +472,18 @@ type stageDTO struct {
 	Dispositions []validate.Disposition `json:"dispositions"`
 	// LastApply is the answer of the stage's last apply, not a dry run.
 	LastApply *applyResultDTO `json:"last_apply,omitempty"`
+	// Notes say where the stage took a library's placement from when its
+	// changer was not read: a library that is not running.
+	Notes []string `json:"notes,omitempty"`
 }
 
 func (st *stage) dto(expires time.Time) stageDTO {
 	d := stageDTO{Stage: st.id, Expires: expires, State: stageOpen, Files: map[string]*string{}, Base: map[string]string{},
 		Dispositions: st.dispositionList(), LastApply: st.last}
+	for _, n := range st.notes {
+		d.Notes = append(d.Notes, n)
+	}
+	sort.Strings(d.Notes)
 	files, del := st.changes()
 	for _, f := range files {
 		c := string(f.Content)

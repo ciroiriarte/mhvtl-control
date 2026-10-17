@@ -38,6 +38,10 @@ const (
 	OpApply = "apply"
 	// OpRecover recovers an apply that died, and does nothing else.
 	OpRecover = "recover"
+	// OpUnits reports the ActiveState of each library's vtllibrary@
+	// instance and changes nothing. The daemon's unit keeps it away from
+	// systemd, so it asks here whether a library runs.
+	OpUnits = "units"
 )
 
 // Request is one call to the helper: a JSON object, decoded strictly.
@@ -133,6 +137,9 @@ type Response struct {
 	// State and Version answer hello.
 	State   string `json:"state,omitempty"`
 	Version string `json:"version,omitempty"`
+	// LibraryStates answer units: the ActiveState of vtllibrary@N for
+	// each library N of device.conf.
+	LibraryStates map[int]string `json:"library_states,omitempty"`
 	// Error is a machine-readable reason (one of the Err* codes) for
 	// refused and error results; Message says it in words.
 	Error   string `json:"error,omitempty"`
@@ -275,7 +282,7 @@ func DecodeRequest(r io.Reader) (*Request, error) {
 		return nil, refuse(ErrBadRequest, "protocol version %d, want %d", req.V, Version)
 	}
 	switch req.Op {
-	case OpHello, OpPlan, OpApply, OpRecover:
+	case OpHello, OpPlan, OpApply, OpRecover, OpUnits:
 	default:
 		return nil, refuse(ErrBadRequest, "unknown op %q", req.Op)
 	}
