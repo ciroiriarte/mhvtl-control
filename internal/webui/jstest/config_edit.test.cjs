@@ -119,6 +119,9 @@ test("applyErrorAction maps an apply or staging error to what the UI does", () =
   assert.strictEqual(act(413, "stage_too_large"), "show");
   assert.strictEqual(act(422, "slots_out_of_range"), "show");
   assert.strictEqual(act(503, "live_unreadable"), "show");
+  // A stopped library's .persist the daemon cannot take: its message says
+  // which file; a reload would meet it again.
+  assert.strictEqual(act(409, "persist_unreadable"), "show");
   // The helper gave an apply no answer: it may have run, and the stage
   // records the attempt. A dry run or an edit without the helper turns
   // the view read-only.
