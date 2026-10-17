@@ -254,9 +254,16 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 	return resp
 }
 
+// unitsTimeout bounds a units request's systemctl calls. Each reads one
+// property from the service manager, normally in milliseconds; 5 s allows a
+// busy manager and ends well before the daemon gives up on the request.
+var unitsTimeout = 5 * time.Second
+
 // libraryStates is the ActiveState of the vtllibrary@ instance of each
 // library in device.conf, as readLive reads it.
 func (h *Helper) libraryStates(ctx context.Context) (map[int]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, unitsTimeout)
+	defer cancel()
 	b, err := os.ReadFile(filepath.Join(h.cfg.ConfigDir, deviceConf))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
