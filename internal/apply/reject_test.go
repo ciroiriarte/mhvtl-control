@@ -450,6 +450,20 @@ func TestRejectHomeForbidden(t *testing.T) {
 			t.Errorf("%s: %q", h, p)
 		}
 	}
+	// An ancestor that cannot be looked at is refused, not climbed past.
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(t.TempDir(), "locked")
+		if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(locked, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(locked, 0o755) })
+		if p := homeProblem(filepath.Join(locked, "inner/tapes")); !strings.HasPrefix(p, "cannot resolve "+filepath.Join(locked, "inner/tapes")) {
+			t.Errorf("home under a 000 directory: %q", p)
+		}
+	}
 	// Library 30 renumbered 31: a new library.
 	b := string(e.read("device.conf"))
 	i := strings.Index(b, "Library: 30")
