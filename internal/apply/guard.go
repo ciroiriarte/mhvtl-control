@@ -164,27 +164,37 @@ func homeProblem(home string) string {
 	if p := validate.HomeProblem(home); p != "" {
 		return p
 	}
-	dir, rest := home, ""
+	resolved, err := resolveHome(home)
+	if err != nil {
+		return err.Error()
+	}
+	if p := validate.HomeProblem(resolved); p != "" {
+		return "resolves to " + resolved + ", " + p
+	}
+	return ""
+}
+
+// resolveHome is home with the symbolic links of its longest existing
+// ancestor followed, and the rest appended. Only an ancestor that does not
+// exist is climbed past; one that cannot be looked at is an error.
+func resolveHome(home string) (string, error) {
+	dir, rest := filepath.Clean(home), ""
 	for dir != "/" {
 		_, err := os.Lstat(dir)
 		if err == nil {
 			break
 		}
 		if !errors.Is(err, fs.ErrNotExist) {
-			return "cannot resolve " + dir + ": " + err.Error()
+			return "", errors.New("cannot resolve " + dir + ": " + err.Error())
 		}
 		rest = filepath.Join(filepath.Base(dir), rest)
 		dir = filepath.Dir(dir)
 	}
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		return "cannot resolve " + dir + ": " + err.Error()
+		return "", errors.New("cannot resolve " + dir + ": " + err.Error())
 	}
-	resolved = filepath.Join(resolved, rest)
-	if p := validate.HomeProblem(resolved); p != "" {
-		return "resolves to " + resolved + ", " + p
-	}
-	return ""
+	return filepath.Join(resolved, rest), nil
 }
 
 // CheckHomes applies the home rules of plan 4.3 (AC 30): a library that
@@ -238,14 +248,15 @@ func CheckHomes(cur, next config.Inventory, curDefault, nextDefault string) erro
 // usr/raw_bay_ops.c:96-132 at 852b78a,
 // https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/raw_bay_ops.c#L96-L132),
 // or cannot be listed. A missing dir is empty. A dir under /tmp or
-// /var/tmp is never judged empty: both services run with PrivateTmp=yes
+// /var/tmp, as written or as its links resolve (resolveHome), is never
+// judged empty: both services run with PrivateTmp=yes
 // (dist/mhvtl-control.service, dist/mhvtl-control-apply@.service), so they
 // see an empty /tmp whatever the real one holds.
 func homeEmpty(dir string) error {
-	for _, t := range SandboxedTmp {
-		if c := filepath.Clean(dir); c == t || strings.HasPrefix(c, t+"/") {
-			return errors.New("the service sandbox hides " + t + ", so the old home " + dir + " cannot be seen empty")
-		}
+	if t, err := sandboxedRoot(dir); err != nil {
+		return err
+	} else if t != "" {
+		return errors.New("the service sandbox hides " + t + ", so the old home " + dir + " cannot be seen empty")
 	}
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -262,10 +273,54 @@ func homeEmpty(dir string) error {
 	return nil
 }
 
+// sandboxedRoot is the SandboxedTmp directory dir is in, as written or
+// through its links, or "". A link into the real /tmp dangles inside the
+// sandbox, so a link whose target is missing is followed as written
+// (os.Readlink), at most 40 times as the kernel's ELOOP limit.
+func sandboxedRoot(dir string) (string, error) {
+	p := filepath.Clean(dir)
+	for hop := 0; ; hop++ {
+		for _, t := range SandboxedTmp {
+			if p == t || strings.HasPrefix(p, t+"/") {
+				return t, nil
+			}
+		}
+		if hop == 40 {
+			return "", errors.New("cannot resolve " + dir + ": too many links")
+		}
+		resolved, err := resolveHome(p)
+		if err == nil {
+			if resolved == p {
+				return "", nil
+			}
+			p = resolved
+			continue
+		}
+		// The longest existing ancestor dangles: follow it as written.
+		a, rest := p, ""
+		for a != "/" {
+			if _, err := os.Lstat(a); err == nil {
+				break
+			}
+			rest = filepath.Join(filepath.Base(a), rest)
+			a = filepath.Dir(a)
+		}
+		target, lerr := os.Readlink(a)
+		if lerr != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(a), target)
+		}
+		p = filepath.Join(target, rest)
+	}
+}
+
 // SandboxedTmp are the directories PrivateTmp=yes replaces with the
 // service's own (systemd.exec(5),
 // https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#PrivateTmp=).
-// Tests whose homes are under t.TempDir() clear it.
+// Tests whose homes are under t.TempDir() clear it: tests only; never
+// assign in production.
 var SandboxedTmp = []string{"/tmp", "/var/tmp"}
 
 // defaultHome is the home of a library without a "Home directory":

@@ -524,12 +524,17 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if sys.File != nil {
 		conf = []byte(sys.File.Content)
 	}
+	// An unreadable mhvtl.conf leaves the home unknown (system.file_error).
+	effective := ""
+	if sys.FileError == "" {
+		effective = effectiveDefaultHome(conf)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"config_dir": s.cfg.ConfigDir,
 		// default_home is where the dashboard looks for media (--home-dir);
 		// default_home_effective is what mhVTL and the apply helper use.
 		"default_home":           s.homeFor(config.Library{}),
-		"default_home_effective": effectiveDefaultHome(conf),
+		"default_home_effective": effective,
 		"files":                  files,
 		"libraries":              s.configLibraries(snap.inv),
 		"standalone_drives":      standalone,
@@ -544,16 +549,21 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 // systemDTO is mhvtl.conf's values of the keys PATCH /config/system sets
 // (a key the file lacks gives none), and the file, which a client diffs a
-// staged one against; none when it does not exist.
+// staged one against; none when it does not exist, and FileError says why
+// when it exists but cannot be read.
 type systemDTO struct {
-	Values map[string]string `json:"values"`
-	File   *configFileDTO    `json:"file,omitempty"`
+	Values    map[string]string `json:"values"`
+	File      *configFileDTO    `json:"file,omitempty"`
+	FileError string            `json:"file_error,omitempty"`
 }
 
 func (s *Server) systemValues() systemDTO {
 	d := systemDTO{Values: map[string]string{}}
 	data, err := os.ReadFile(filepath.Join(s.cfg.ConfigDir, mhvtlConf))
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			d.FileError = err.Error()
+		}
 		return d
 	}
 	d.File = &configFileDTO{Name: mhvtlConf, SHA256: conffile.Hash(data), Content: string(data)}

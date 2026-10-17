@@ -480,6 +480,32 @@ func TestHomeEmptySandboxedTmp(t *testing.T) {
 	if err := CheckHomes(lib("/srv/mhvtl-no-such-home"), lib("/tmp/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl"); err != nil {
 		t.Errorf("new home under /tmp: %v", err)
 	}
+
+	// A home that resolves into a sandboxed directory, through a link in
+	// it or in an ancestor, is hidden too (#62 review N2). The written
+	// path is outside the sandboxed root, as /srv/x linked to /tmp/y is.
+	defer func(s []string) { SandboxedTmp = s }(SandboxedTmp)
+	links, hidden := t.TempDir(), t.TempDir()
+	SandboxedTmp = []string{hidden}
+	if err := os.Symlink(filepath.Join(hidden, "y"), filepath.Join(links, "x")); err != nil {
+		t.Fatal(err)
+	}
+	for _, old := range []string{filepath.Join(links, "x"), filepath.Join(links, "x", "sub")} {
+		code, msg, _ := Refused(CheckHomes(lib(old), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl"))
+		if code != ErrHomeInUse || !strings.Contains(msg, "the service sandbox hides "+hidden) {
+			t.Errorf("%s: %s %s", old, code, msg)
+		}
+	}
+	// Seen from outside the sandbox, where the target exists.
+	if err := os.Mkdir(filepath.Join(hidden, "y"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := Refused(CheckHomes(lib(filepath.Join(links, "x")), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl")); code != ErrHomeInUse {
+		t.Errorf("link to an existing hidden dir: %s", code)
+	}
+	if err := CheckHomes(lib(filepath.Join(links, "plain")), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl"); err != nil {
+		t.Errorf("home outside the sandboxed root: %v", err)
+	}
 }
 
 func TestRejectHomeChange(t *testing.T) {

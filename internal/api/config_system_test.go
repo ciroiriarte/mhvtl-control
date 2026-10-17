@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -94,8 +95,23 @@ func TestConfigSystemRead(t *testing.T) {
 	}
 	os.Remove(filepath.Join(e.dir, "mhvtl.conf"))
 	rec = e.call(http.MethodGet, "/api/v1/config", nil)
-	if got := decodeBody[sys](t, rec).System; len(got.Values) != 0 || got.Values == nil || got.File != nil {
+	if got := decodeBody[sys](t, rec).System; len(got.Values) != 0 || got.Values == nil || got.File != nil || got.FileError != "" {
 		t.Errorf("no mhvtl.conf: %#v", got)
+	}
+	// A mhvtl.conf that cannot be read is not "no file" (#62 review N1).
+	if err := os.Mkdir(filepath.Join(e.dir, "mhvtl.conf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec = e.call(http.MethodGet, "/api/v1/config", nil)
+	if got := decodeBody[sys](t, rec).System; got.File != nil || !strings.Contains(got.FileError, "mhvtl.conf") {
+		t.Errorf("unreadable mhvtl.conf: %#v", got)
+	}
+	// Nor is the home it would set known.
+	var homes struct {
+		Effective *string `json:"default_home_effective"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &homes); err != nil || homes.Effective == nil || *homes.Effective != "" {
+		t.Errorf("default_home_effective with an unreadable mhvtl.conf: %v %v", homes.Effective, err)
 	}
 }
 
@@ -120,6 +136,17 @@ func TestConfigDefaultHomeEffective(t *testing.T) {
 	}
 	if got := get(); got != (homes{"/srv/tapes", "/srv/tapes"}) {
 		t.Errorf("MHVTL_HOME_PATH set: %+v", got)
+	}
+	// The shell takes the last of two assignments; both fields read the
+	// file as conffile does (#62 review N3).
+	if err := os.WriteFile(filepath.Join(e.dir, "mhvtl.conf"), []byte(conf+"MHVTL_HOME_PATH=/srv/later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := get(); got != (homes{"/srv/later", "/srv/later"}) {
+		t.Errorf("MHVTL_HOME_PATH twice: %+v", got)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "mhvtl.conf"), []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	st := e.edit(http.MethodPatch, "/api/v1/config/libraries/10", map[string]any{"attrs": map[string]any{"Backoff": "500"}})
 	if st.DefaultHomeEffective != "" {
