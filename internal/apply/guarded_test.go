@@ -12,6 +12,7 @@ import (
 
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/validate"
 )
 
 // stopEnv is a fake system for guardedStop: two libraries, 10 (drives 11,
@@ -310,7 +311,7 @@ func TestGuardedLoadedDrive(t *testing.T) {
 		out, err := e.stopper(mode).guardedStop(context.Background(), []StopLib{e.lib(10)})
 		switch mode {
 		case ModeApply:
-			if !errors.Is(err, ErrRaced) {
+			if !errors.Is(err, errRaced) {
 				t.Errorf("apply: %v", err)
 			}
 			if e.onlines() != "10" {
@@ -356,7 +357,7 @@ func TestGuardedReonline(t *testing.T) {
 	// The MAP barrier disagrees on library 30 after 10 was offlined.
 	e := newStopEnv(t)
 	e.maps[30] = []string{"", "M00001L8"}
-	if _, err := e.stopper(ModeApply).guardedStop(ctx, []StopLib{e.lib(10), e.lib(30)}); !errors.Is(err, ErrRaced) {
+	if _, err := e.stopper(ModeApply).guardedStop(ctx, []StopLib{e.lib(10), e.lib(30)}); !errors.Is(err, errRaced) {
 		t.Errorf("barrier: %v", err)
 	}
 	if e.onlines() != "10,30" {
@@ -405,6 +406,26 @@ func TestGuardedReonline(t *testing.T) {
 	}
 	if e.onlines() != "30" {
 		t.Errorf("journal failure: online %q", e.onlines())
+	}
+}
+
+// TestGuardedExpect: in apply mode R1′ must equal the placement the change
+// was validated against; a cartridge moved since is raced before the
+// library is taken offline or anything stopped.
+func TestGuardedExpect(t *testing.T) {
+	e := newStopEnv(t)
+	st := e.stopper(ModeApply)
+	st.expect = &validate.Live{Libraries: map[int]validate.Placement{10: {Slots: map[int]string{2: "E01001L8"}}}}
+	if _, err := st.guardedStop(context.Background(), []StopLib{e.lib(10)}); !errors.Is(err, errRaced) {
+		t.Fatalf("err %v", err)
+	}
+	if got := strings.Join(e.calls, ","); got != "RES 10" {
+		t.Errorf("calls %s", got)
+	}
+	st = e.stopper(ModeApply)
+	st.expect = &validate.Live{Libraries: map[int]validate.Placement{10: placementOf(e.inv[10])}}
+	if _, err := st.guardedStop(context.Background(), []StopLib{e.lib(10)}); err != nil {
+		t.Errorf("same placement: %v", err)
 	}
 }
 

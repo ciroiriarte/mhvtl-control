@@ -130,9 +130,9 @@ type LibStop struct {
 	SourceKind string             `json:"source_kind"`
 }
 
-// ErrRaced means a library changed between R1′ and the stop: the MAP
+// errRaced means a library changed between R1′ and the stop: the MAP
 // barrier disagreed, or a drive R1′ showed empty holds a cartridge.
-var ErrRaced = errors.New("raced")
+var errRaced = errors.New("raced")
 
 // stopper is guardedStop's view of the system.
 type stopper struct {
@@ -145,6 +145,9 @@ type stopper struct {
 	// R1′ and the MAP are durable: a helper killed between the offline
 	// and the stop leaves an intent recovery can re-online from.
 	prepared func([]*LibStop) error
+	// expect is, in apply mode, the live placement validation read: R1′
+	// must equal it, else the change was validated against a stale view.
+	expect *validate.Live
 	// journal runs once per library after its verdict and before .persist
 	// is moved aside, so the verdict and the bytes are durable first.
 	journal func(*LibStop) error
@@ -223,6 +226,11 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 	}
 	r1 := placementOf(inv)
 	ls.R1 = &r1
+	if s.mode == ModeApply && s.expect != nil {
+		if want, ok := s.expect.Libraries[sl.Lib.ID]; ok && !samePlacement(want, r1) {
+			return fmt.Errorf("library %d: %w: READ ELEMENT STATUS changed since the change was validated", sl.Lib.ID, errRaced)
+		}
+	}
 	if s.mode == ModeApply {
 		for _, d := range sl.Lib.Drives {
 			if st := driveState(inv, d.Slot); st != nil && st.Full {
@@ -252,7 +260,7 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		return fmt.Errorf("library %d: list map after offline: %w", sl.Lib.ID, err)
 	}
 	if barrier != ls.Map {
-		return fmt.Errorf("library %d: %w: the MAP changed between READ ELEMENT STATUS (%q) and offline (%q)", sl.Lib.ID, ErrRaced, ls.Map, barrier)
+		return fmt.Errorf("library %d: %w: the MAP changed between READ ELEMENT STATUS (%q) and offline (%q)", sl.Lib.ID, errRaced, ls.Map, barrier)
 	}
 	ls.DriveHCTL = map[int]string{}
 	for _, d := range sl.Lib.Drives {
@@ -275,7 +283,7 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		st := driveState(inv, n)
 		if s.mode == ModeApply {
 			if st == nil || !st.Full {
-				return fmt.Errorf("library %d drive %d: %w: it holds a cartridge READ ELEMENT STATUS did not show", sl.Lib.ID, d.ID, ErrRaced)
+				return fmt.Errorf("library %d drive %d: %w: it holds a cartridge READ ELEMENT STATUS did not show", sl.Lib.ID, d.ID, errRaced)
 			}
 			continue
 		}
@@ -455,11 +463,32 @@ func (s *stopper) snapshot(sl StopLib, ls *LibStop, snap *Snapshot) error {
 
 // show returns one property of unit.
 func (s *stopper) show(ctx context.Context, unit, prop string) (string, error) {
-	out, err := s.cfg.Systemctl(ctx, "show", "--property="+prop, "--value", unit)
+	return showProp(ctx, s.cfg, unit, prop)
+}
+
+func showProp(ctx context.Context, cfg *Config, unit, prop string) (string, error) {
+	out, err := cfg.Systemctl(ctx, "show", "--property="+prop, "--value", unit)
 	if err != nil {
 		return "", fmt.Errorf("systemctl show %s %s: %w", prop, unit, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// samePlacement compares the slots, MAP slots and drives of two READ
+// ELEMENT STATUS placements.
+func samePlacement(a, b validate.Placement) bool {
+	eq := func(x, y map[int]string) bool {
+		if len(x) != len(y) {
+			return false
+		}
+		for k, v := range x {
+			if y[k] != v {
+				return false
+			}
+		}
+		return true
+	}
+	return eq(a.Slots, b.Slots) && eq(a.MAPs, b.MAPs) && eq(a.Drives, b.Drives)
 }
 
 func persistName(id int) string  { return contentsName(id) + ".persist" }
