@@ -928,3 +928,39 @@ func TestExecRollbackCrashedDrive(t *testing.T) {
 		t.Errorf("library_contents.10:\n%s", diffLines(string(lc), got))
 	}
 }
+
+// TestExecMediaWarnsMissing: with new barcodes mhvtl-media.service creates
+// every missing Slot barcode of every library, so the missing-cartridge
+// warning covers library 30 too, which does not restart; it is computed
+// before media runs, so it still names cartridges media then created blank.
+func TestExecMediaWarnsMissing(t *testing.T) {
+	e, s := newExecEnv(t)
+	os.RemoveAll(filepath.Join(e.home, "E01002L8"))
+	os.RemoveAll(filepath.Join(e.home, "G03001TA"))
+	s.onMedia = func() error {
+		for _, b := range []string{"E01024L8", "E01002L8", "G03001TA"} {
+			os.Mkdir(filepath.Join(e.home, b), 0o755)
+		}
+		return nil
+	}
+	req := Request{Op: OpApply, Files: []File{e.edit("library_contents.10", "Slot 24:\n", "Slot 24: E01024L8\n")}, ExpectUnits: []string{"vtllibrary@10.service"}}
+	check := func(what string, w []string) {
+		t.Helper()
+		all := strings.Join(w, "\n")
+		if len(w) != 2 || !strings.Contains(all, "library 10 slot 2: E01002L8") || !strings.Contains(all, "library 30 slot 1: G03001TA") || strings.Contains(all, "E01024L8") {
+			t.Errorf("%s: warnings %q", what, w)
+		}
+	}
+	plan := req
+	plan.Op = OpPlan
+	pr := e.do(plan)
+	if pr.Result != ResultValidated {
+		t.Fatalf("plan: %+v", pr)
+	}
+	check("plan", pr.Warnings)
+	resp := e.do(req)
+	if resp.Result != ResultApplied || s.has("restart mhvtl-media.service") == false {
+		t.Fatalf("apply: %+v", resp)
+	}
+	check("apply", resp.Warnings)
+}
