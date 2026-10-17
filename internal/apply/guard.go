@@ -1,21 +1,42 @@
 package apply
 
 import (
+	"bytes"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/validate"
 )
 
-// mhvtl.conf keys a change may set (plan 3.2, guard.go; AC 30). A change
-// to MHVTL_HOME_PATH is let through to the home rules (checkHomes); any
-// other key is the operator's to edit by hand.
-var editableKeys = map[string]bool{"CAPACITY": true, "VERBOSE": true, "VTL_DEBUG": true}
+// mhvtl.conf keys a change may set (plan 3.2, guard.go; AC 30), each with
+// the pattern a new value must match. MHVTL_HOME_PATH also goes through
+// the home rules (checkHomes, validate.HomeProblem).
+var editableKeys = []struct {
+	key   string
+	valid func(string) bool
+}{
+	{"CAPACITY", func(v string) bool {
+		n, err := strconv.ParseUint(v, 10, 64)
+		return digitsRE.MatchString(v) && err == nil && n >= 1 && n <= maxCapacityMB
+	}},
+	{"VERBOSE", regexp.MustCompile(`^[0-3]$`).MatchString},
+	{"VTL_DEBUG", regexp.MustCompile(`^[01]$`).MatchString},
+	{homeKey, func(v string) bool { return validate.HomeProblem(v) == "" }},
+}
 
 const homeKey = "MHVTL_HOME_PATH"
+
+var digitsRE = regexp.MustCompile(`^[0-9]+$`)
+
+// maxCapacityMB bounds CAPACITY, in MiB, as maxSizeMB in internal/api
+// bounds a media request: mktape multiplies it by 2^20 in 64 bits.
+const maxCapacityMB = 1 << 32
 
 // checkLegacyEnv refuses while the daemon's options file is still at its
 // 0.2.0 path: it holds the API token and sits in the directory the helper
@@ -60,17 +81,36 @@ func (h *Helper) checkConfigPath(cur, next *conffile.MhvtlConf) error {
 	return nil
 }
 
-// checkMhvtlConfKeys refuses a change to any mhvtl.conf key but CAPACITY,
-// VERBOSE, VTL_DEBUG and MHVTL_HOME_PATH.
-func checkMhvtlConfKeys(cur, next *conffile.MhvtlConf) error {
-	keys := append(cur.Keys(), next.Keys()...)
-	for _, k := range keys {
-		cv, cok := cur.Get(k)
-		nv, nok := next.Get(k)
-		if cv == nv && cok == nok || editableKeys[k] || k == homeKey {
+// deriveMhvtlConf refuses a new mhvtl.conf unless it is the current one
+// with only the values of the editable keys changed, each through
+// conffile's round-trip setter and each matching its pattern.
+// make_vtl_media sources mhvtl.conf as bash, as root, from
+// mhvtl-media.service (markh794/mhvtl usr/cmd/make_vtl_media.in:307 at
+// d65d25f,
+// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L307),
+// so any other line or value would be code run as root: the request's
+// bytes are never trusted, only compared with the helper's derivation.
+func deriveMhvtlConf(cur, next []byte) error {
+	c, n := conffile.ParseMhvtlConf(cur), conffile.ParseMhvtlConf(next)
+	derived := conffile.ParseMhvtlConf(cur)
+	for _, k := range editableKeys {
+		cv, cok := c.Get(k.key)
+		nv, nok := n.Get(k.key)
+		if cv == nv && cok == nok {
 			continue
 		}
-		return refuse(ErrMhvtlConfKey, "mhvtl.conf: %s cannot be changed here; edit it by hand", k)
+		if !nok {
+			return refuse(ErrMhvtlConfKey, "mhvtl.conf: %s cannot be removed here", k.key)
+		}
+		if !k.valid(nv) {
+			return refuse(ErrMhvtlConfValue, "mhvtl.conf: %s=%q is not a valid value", k.key, nv)
+		}
+		if err := derived.Set(k.key, nv); err != nil {
+			return refuse(ErrMhvtlConfValue, "%v", err)
+		}
+	}
+	if !bytes.Equal(derived.Render(), next) {
+		return refuse(ErrMhvtlConfDerived, "the new mhvtl.conf may differ from the current one only in the values of CAPACITY, VERBOSE, VTL_DEBUG and MHVTL_HOME_PATH; edit anything else by hand")
 	}
 	return nil
 }

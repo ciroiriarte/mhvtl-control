@@ -152,11 +152,15 @@ const (
 	ErrLegacyEnv      = "legacy_env"
 	ErrConfigPath     = "config_path"
 	ErrMhvtlConfKey   = "mhvtl_conf_key"
-	ErrHomeInUse      = "home_in_use"
-	ErrNotWritable    = "not_writable"
-	ErrInvalid        = "invalid"
-	ErrNotImplemented = "not_implemented"
-	ErrInternal       = "internal"
+	ErrMhvtlConfValue = "mhvtl_conf_value"
+	// ErrMhvtlConfDerived: the new mhvtl.conf is not the current one with
+	// only editable values changed (deriveMhvtlConf).
+	ErrMhvtlConfDerived = "mhvtl_conf_not_derived"
+	ErrHomeInUse        = "home_in_use"
+	ErrNotWritable      = "not_writable"
+	ErrInvalid          = "invalid"
+	ErrNotImplemented   = "not_implemented"
+	ErrInternal         = "internal"
 )
 
 // refusal is a request the helper will not carry out.

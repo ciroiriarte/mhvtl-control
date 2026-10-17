@@ -257,7 +257,15 @@ func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validat
 	if err := h.checkConfigPath(curConf, nextConf); err != nil {
 		return nil, err
 	}
-	if err := checkMhvtlConfKeys(curConf, nextConf); err != nil {
+	curRaw, err := files.current(mhvtlConf)
+	if err != nil {
+		return nil, err
+	}
+	nextRaw, err := next.next(mhvtlConf)
+	if err != nil {
+		return nil, err
+	}
+	if err := deriveMhvtlConf(curRaw.data, nextRaw.data); err != nil {
 		return nil, err
 	}
 

@@ -343,15 +343,55 @@ func TestRejectConfigPath(t *testing.T) {
 	e.refused("mhvtl.conf mhVTL reads unlike the shell", Request{Op: OpPlan}, ErrNotWritable)
 }
 
-func TestMhvtlConfKeys(t *testing.T) {
+// TestMhvtlConfDerived: make_vtl_media sources mhvtl.conf as bash, as
+// root, so the new file must be the current one with only editable values
+// changed. Each probe would run code, or set a key, if let through.
+func TestMhvtlConfDerived(t *testing.T) {
 	e := newEnv(t)
-	for _, k := range []string{"CAPACITY=500\nDAEMON_DEBUG=-d", "CAPACITY=500\nMHVTL_CONFIG_PATH=" + e.dir} {
-		e.refused(k, Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", "CAPACITY=500", k)}}, ErrMhvtlConfKey)
+	for _, tc := range []struct{ old, new, code string }{
+		{"CAPACITY=500", "CAPACITY=500\ntouch /tmp/pwned", ErrMhvtlConfDerived},
+		{"CAPACITY=500", "touch /tmp/pwned\nCAPACITY=500", ErrMhvtlConfDerived},
+		{"CAPACITY=500", "CAPACITY=$(touch /tmp/pwned)", ErrMhvtlConfValue},
+		{"VERBOSE=1", "VERBOSE=1;touch /tmp/pwned", ErrMhvtlConfValue},
+		{"VTL_DEBUG=0", "VTL_DEBUG=`touch /tmp/pwned`", ErrMhvtlConfValue},
+		{"CAPACITY=500", "CAPACITY=500\nrm = -rf", ErrMhvtlConfDerived},
+		{"MHVTL_HOME_PATH=" + e.home, "MHVTL_HOME_PATH=$(id)", ErrMhvtlConfValue},
+		{"CAPACITY=500", "CAPACITY=500\nDAEMON_DEBUG=-d", ErrMhvtlConfDerived},
+		{"CAPACITY=500", "CAPACITY=500\nMHVTL_CONFIG_PATH=" + e.dir, ErrMhvtlConfDerived},
+		{"# Default media capacity", "# Default capacity", ErrMhvtlConfDerived},
+		{"CAPACITY=500", "CAPACITY='500'", ErrMhvtlConfDerived},
+		{"CAPACITY=500", "CAPACITY=500 ", ErrMhvtlConfDerived},
+		{"CAPACITY=500", "CAPACITY=0", ErrMhvtlConfValue},
+		{"CAPACITY=500", "CAPACITY=4294967297", ErrMhvtlConfValue},
+		{"CAPACITY=500", "CAPACITY=99999999999999999999", ErrMhvtlConfValue},
+		{"CAPACITY=500", "CAPACITY=5e2", ErrMhvtlConfValue},
+		{"VERBOSE=1", "VERBOSE=4", ErrMhvtlConfValue},
+		{"VTL_DEBUG=0", "VTL_DEBUG=2", ErrMhvtlConfValue},
+		{"CAPACITY=500\n", "", ErrMhvtlConfKey},
+		{"MHVTL_HOME_PATH=" + e.home, "MHVTL_HOME_PATH=/etc/mhvtl", ErrMhvtlConfValue},
+		{"MHVTL_HOME_PATH=" + e.home, "MHVTL_HOME_PATH=tapes", ErrMhvtlConfValue},
+	} {
+		e.refused(tc.new, Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", tc.old, tc.new)}}, tc.code)
 	}
-	for _, k := range []string{"CAPACITY=1000", "CAPACITY=500\nVERBOSE=3"} {
-		if resp := e.do(Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", "CAPACITY=500", k)}}); resp.Result != ResultValidated {
-			t.Errorf("%q: %+v", k, resp)
+	for _, tc := range []struct{ old, new string }{
+		{"CAPACITY=500", "CAPACITY=1000"},
+		{"CAPACITY=500", "CAPACITY=4294967296"},
+		{"VERBOSE=1", "VERBOSE=3"},
+		{"VTL_DEBUG=0", "VTL_DEBUG=1"},
+	} {
+		if resp := e.do(Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", tc.old, tc.new)}}); resp.Result != ResultValidated {
+			t.Errorf("%q: %+v", tc.new, resp)
 		}
+	}
+	// A key the file lacks is appended, as conffile's Set does.
+	b := e.read("mhvtl.conf")
+	cur := strings.Replace(string(b), "VTL_DEBUG=0\n", "", 1)
+	if err := os.WriteFile(filepath.Join(e.dir, "mhvtl.conf"), []byte(cur), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	add := File{Name: "mhvtl.conf", BaseSHA256: conffile.Hash([]byte(cur)), Content: []byte(cur + "VTL_DEBUG=1\n")}
+	if resp := e.do(Request{Op: OpPlan, Files: []File{add}}); resp.Result != ResultValidated {
+		t.Errorf("appended VTL_DEBUG: %+v", resp)
 	}
 }
 
