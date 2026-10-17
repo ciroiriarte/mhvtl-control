@@ -3,6 +3,7 @@ package apply
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -532,5 +533,33 @@ func TestRecoverCrashedDrive(t *testing.T) {
 	}
 	if string(e.read("library_contents.10")) != string(lc) || s.unitState("vtltape@11.service") != "active" {
 		t.Errorf("recovery: %v", s.calls)
+	}
+}
+
+// TestRecoverNewMedia: recovery of an apply killed after media created a
+// new pre-filled cartridge leaves it out of the restored layout and
+// reports its media as orphaned, in the response and the audit.
+func TestRecoverNewMedia(t *testing.T) {
+	e, s := newExecEnv(t)
+	lc := e.read("library_contents.10")
+	s.onMedia = func() error { return os.Mkdir(filepath.Join(e.home, "E01024L8"), 0o755) }
+	e.h.killPoint = func(st string) bool { return st == "media" }
+	req := Request{Op: OpApply, Actor: "admin", Files: []File{e.edit("library_contents.10", "Slot 24:\n", "Slot 24: E01024L8\n")}, ExpectUnits: []string{"vtllibrary@10.service"}}
+	if resp := e.do(req); resp.Result != ResultError {
+		t.Fatalf("killed apply: %+v", resp)
+	}
+	e.rebuild()
+	resp := e.do(Request{Op: OpRecover})
+	want := "[" + filepath.Join(e.home, "E01024L8") + "]"
+	if resp.Result != ResultRecovered || fmt.Sprint(resp.OrphanedMedia) != want {
+		t.Fatalf("recover: %+v", resp)
+	}
+	if string(e.read("library_contents.10")) != string(lc) {
+		t.Error("library_contents.10 not restored")
+	}
+	lines := e.auditLines()
+	var r AuditRecord
+	if len(lines) == 0 || json.Unmarshal([]byte(lines[len(lines)-1]), &r) != nil || fmt.Sprint(r.OrphanedMedia) != want {
+		t.Errorf("audit %v", lines)
 	}
 }

@@ -27,6 +27,7 @@ func (h *Helper) recover(ctx context.Context, it *Intent, boot bool, actor strin
 		resp.RollbackDir = filepath.Join(h.cfg.StateDir, rollbackDir, it.RollbackDir)
 	}
 	rec.Result, rec.Error, rec.Message, rec.Conflicts, rec.RollbackDir = resp.Result, resp.Error, resp.Message, resp.Conflicts, resp.RollbackDir
+	rec.OrphanedMedia = resp.OrphanedMedia
 	h.audit(rec)
 	return resp
 }
@@ -67,7 +68,11 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 	if len(conflicts) > 0 {
 		msg += "; " + restoreConflicts(conflicts).Error()
 	}
-	return Response{Result: ResultRecovered, Message: msg, Conflicts: conflicts}
+	resp := Response{Result: ResultRecovered, Message: msg, Conflicts: conflicts}
+	if it.Exec != nil {
+		resp.OrphanedMedia = it.Exec.NewMedia
+	}
+	return resp
 }
 
 // RecoverBoot is --recover-boot, run by mhvtl-control-apply-recover.service
