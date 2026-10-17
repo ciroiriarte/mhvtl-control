@@ -347,9 +347,9 @@
   var HELPER_STATE = "/var/lib/mhvtl-control-apply";
 
   // capabilityNotice turns GET /config/capabilities into the configuration
-  // view's banner: why the configuration is read-only here and what enables
-  // editing. It never suggests that this dashboard can write: there are no
-  // write controls (AC 17). command is a shell command to show, or null.
+  // view's banner: whether the configuration can be edited here, and if not,
+  // why and what enables editing. command is a shell command to show, or
+  // null.
   function capabilityNotice(caps) {
     caps = caps || {};
     var lines = [];
@@ -357,7 +357,9 @@
     var tone = "info";
     switch (String(caps.helper || "")) {
       case "present":
-        lines.push("The apply helper is enabled. This version of mhvtl-control shows the configuration read-only.");
+        lines.push(caps.writes === "ok"
+          ? "The apply helper is enabled: changes are staged here, checked by the helper, then applied."
+          : "Read-only. The apply helper is enabled, but this daemon refuses changes:");
         break;
       case "legacy_env_blocks":
         tone = "warn";
@@ -454,7 +456,273 @@
     return body;
   }
 
+  /* ---- configuration editing (plan 4.2) ------------------------------- */
+
+  // writesEditable is whether the dashboard offers edits: only when the
+  // daemon's gate is open (capabilities.writes "ok"). helper_absent,
+  // tls_required, token_required and helper_blocked all leave the view
+  // read-only, with the banner saying why.
+  function writesEditable(caps) {
+    return !!caps && caps.writes === "ok";
+  }
+
+  // splitLines splits a file into lines. A final newline ends the last line
+  // rather than starting an empty one; a file without one keeps its last
+  // line distinct ("a" and "a\n" differ, as they do to mhVTL's readline).
+  function splitLines(text) {
+    var t = text == null ? "" : String(text);
+    if (t === "") { return []; }
+    var lines = t.split("\n");
+    if (lines[lines.length - 1] === "") {
+      lines.pop();
+      return lines;
+    }
+    lines[lines.length - 1] += "\u0000"; // no final newline: never equal to a terminated line
+    return lines;
+  }
+
+  function unmark(line) { return line.replace(/\u0000$/, ""); }
+
+  // MAX_DIFF_CELLS bounds the LCS table; larger files diff as a whole
+  // replacement. mhVTL's files are a few hundred lines.
+  var MAX_DIFF_CELLS = 4000000;
+
+  // lineDiff is the line diff of a and b, as {op: "=" | "-" | "+", text},
+  // by longest common subsequence: deletions before insertions in a change.
+  function lineDiff(a, b) {
+    var x = splitLines(a), y = splitLines(b);
+    var n = x.length, m = y.length, out = [], i, j;
+    if (n * m > MAX_DIFF_CELLS) {
+      x.forEach(function (l) { out.push({ op: "-", text: unmark(l) }); });
+      y.forEach(function (l) { out.push({ op: "+", text: unmark(l) }); });
+      return out;
+    }
+    // lcs[i][j] is the LCS length of x[i:] and y[j:].
+    var lcs = [];
+    for (i = 0; i <= n; i++) { lcs.push(new Array(m + 1).fill(0)); }
+    for (i = n - 1; i >= 0; i--) {
+      for (j = m - 1; j >= 0; j--) {
+        lcs[i][j] = x[i] === y[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+      }
+    }
+    i = 0; j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && x[i] === y[j]) {
+        out.push({ op: "=", text: unmark(x[i]) }); i++; j++;
+      } else if (j >= m || (i < n && lcs[i + 1][j] >= lcs[i][j + 1])) {
+        out.push({ op: "-", text: unmark(x[i]) }); i++;
+      } else {
+        out.push({ op: "+", text: unmark(y[j]) }); j++;
+      }
+    }
+    return out;
+  }
+
+  // diffHunks groups a lineDiff into hunks with ctx unchanged lines around
+  // each change, as {oldStart, newStart (1-based), lines}. Changes closer
+  // than 2*ctx lines share a hunk. No change gives no hunk.
+  function diffHunks(ops, ctx) {
+    ops = coerceArray(ops);
+    ctx = Math.max(0, coerceNumber(ctx));
+    var changed = [];
+    ops.forEach(function (o, k) { if (o.op !== "=") { changed.push(k); } });
+    if (!changed.length) { return []; }
+    var ranges = [];
+    changed.forEach(function (k) {
+      var from = Math.max(0, k - ctx), to = Math.min(ops.length - 1, k + ctx);
+      var last = ranges[ranges.length - 1];
+      if (last && from <= last[1] + 1) { last[1] = Math.max(last[1], to); } else { ranges.push([from, to]); }
+    });
+    // Line numbers at each op: old lines are "=" and "-", new "=" and "+".
+    var oldNo = [], newNo = [], o = 1, nn = 1;
+    ops.forEach(function (op) {
+      oldNo.push(o); newNo.push(nn);
+      if (op.op !== "+") { o++; }
+      if (op.op !== "-") { nn++; }
+    });
+    return ranges.map(function (r) {
+      return { oldStart: oldNo[r[0]], newStart: newNo[r[0]], lines: ops.slice(r[0], r[1] + 1) };
+    });
+  }
+
+  // stageFileRows lists the files a stage changes, by name, each with its
+  // kind (modify, create, delete) and its diff against the file on disk
+  // (GET /config files).
+  function stageFileRows(stage, files) {
+    var staged = stage && stage.files && typeof stage.files === "object" ? stage.files : {};
+    var disk = Object.create(null);
+    coerceArray(files).forEach(function (f) {
+      if (f && typeof f.name === "string") { disk[f.name] = String(f.content == null ? "" : f.content); }
+    });
+    var has = function (o, k) { return Object.prototype.hasOwnProperty.call(o, k); };
+    return Object.keys(staged).sort().map(function (name) {
+      var next = staged[name];
+      var old = has(disk, name) ? disk[name] : null;
+      var kind = next === null ? "delete" : (old === null ? "create" : "modify");
+      return { name: name, kind: kind, hunks: diffHunks(lineDiff(old || "", next === null ? "" : String(next)), 3) };
+    });
+  }
+
+  // planSummary reads a POST /config/apply dry run (the 200 answer, or the
+  // body of a refusal) for display: the units, a note per library offline to
+  // hosts during the apply, the warnings to read before confirming
+  // (mhvtl-control#43), the findings, and for a drive_loaded refusal the
+  // force offer, with the vtltape@ units of the drives it unloads.
+  function planSummary(res) {
+    res = res || {};
+    var plan = res.plan || {};
+    var units = coerceArray(plan.units).map(String);
+    var code = res.error && res.error.code ? String(res.error.code) : "";
+    var force = null;
+    if (code === "drive_loaded" && res.force_token) {
+      force = {
+        token: String(res.force_token),
+        expires: String(res.force_expires || ""),
+        drives: units.filter(function (u) { return u.indexOf("vtltape@") === 0; }),
+        message: String(res.error.message || ""),
+      };
+    }
+    return {
+      canApply: res.result === "validated",
+      units: units,
+      notes: coerceArray(plan.notes).map(String),
+      offline: coerceArray(plan.offline_libraries).map(function (id) {
+        return "Library " + coerceNumber(id) + " is offline to hosts during the apply.";
+      }),
+      warnings: coerceArray(res.warnings).map(String),
+      findings: findingRows(res.findings),
+      force: force,
+      error: res.error && res.error.message ? String(res.error.message) : "",
+    };
+  }
+
+  // forceRemaining is how many whole seconds a force token has left at
+  // nowMs; 0 when it expired or the time cannot be read.
+  function forceRemaining(expires, nowMs) {
+    var t = Date.parse(String(expires || ""));
+    if (!Number.isFinite(t)) { return 0; }
+    return Math.max(0, Math.floor((t - coerceNumber(nowMs)) / 1000));
+  }
+
+  function fmtCountdown(sec) {
+    sec = Math.max(0, Math.floor(coerceNumber(sec)));
+    if (!sec) { return "expired"; }
+    var s = sec % 60;
+    return Math.floor(sec / 60) + ":" + (s < 10 ? "0" : "") + s;
+  }
+
+  // READONLY_CODES are the answers that mean the daemon or the helper will
+  // not take changes now: the view turns read-only and the banner says why.
+  var READONLY_CODES = { helper_absent: 1, helper_unreachable: 1, tls_required: 1, token_required: 1, helper_blocked: 1, intent_unreadable: 1, legacy_env: 1 };
+
+  // applyErrorAction says what the UI does with a failed staging or apply
+  // request: reload (the files changed under the stage, or it is gone),
+  // replan (the stage needs a dry run first, or the helper recovered an
+  // apply), readonly, force (a drive_loaded plan) or show the message.
+  function applyErrorAction(err) {
+    var code = err && err.code ? String(err.code) : "";
+    if (code === "conflict" || code === "stage_not_found") { return "reload"; }
+    if (code === "plan_required" || code === "recovered") { return "replan"; }
+    if (Object.prototype.hasOwnProperty.call(READONLY_CODES, code)) { return "readonly"; }
+    if (code === "drive_loaded") { return "force"; }
+    return "show";
+  }
+
+  // libraryAttrFields and driveAttrFields are the device.conf keys the edit
+  // dialogs offer, with the values GET /config reports.
+  function libraryAttrFields(lib) {
+    lib = lib || {};
+    return [
+      { key: "Vendor identification", value: String(lib.vendor || "") },
+      { key: "Product identification", value: String(lib.product || "") },
+      { key: "Unit serial number", value: String(lib.serial || "") },
+      { key: "NAA", value: String(lib.naa || "") },
+      { key: "Home directory", value: String(lib.home_dir || "") },
+    ];
+  }
+
+  function driveAttrFields(d) {
+    d = d || {};
+    return [
+      { key: "Vendor identification", value: String(d.vendor || "") },
+      { key: "Product identification", value: String(d.product || "") },
+      { key: "Product revision level", value: String(d.revision || "") },
+      { key: "Unit serial number", value: String(d.serial || "") },
+      { key: "NAA", value: String(d.naa || "") },
+    ];
+  }
+
+  // buildAttrPatch is the attrs of a PATCH: each offered field whose trimmed
+  // value changed, null for one emptied (the key is deleted). null when
+  // nothing changes.
+  function buildAttrPatch(fields, form) {
+    form = form || {};
+    var out = {}, any = false;
+    coerceArray(fields).forEach(function (f) {
+      if (!f || !Object.prototype.hasOwnProperty.call(form, f.key)) { return; }
+      var v = String(form[f.key] == null ? "" : form[f.key]).trim();
+      if (v === String(f.value || "")) { return; }
+      out[f.key] = v === "" ? null : v;
+      any = true;
+    });
+    return any ? out : null;
+  }
+
+  function withStage(stage, body) {
+    if (stage) { body.stage = String(stage); }
+    return body;
+  }
+
+  // buildSlotPatch pre-fills (or with "" empties) a Slot or MAP slot. A
+  // barcode library_contents could not hold whole is refused.
+  function buildSlotPatch(stage, kind, barcode) {
+    var bc = String(barcode == null ? "" : barcode).trim();
+    if (bc !== "" && !/^[\x21-\x7e]{1,32}$/.test(bc)) {
+      throw new RangeError("a barcode is one word of printable characters");
+    }
+    return withStage(stage, { kind: kind === "map" ? "map" : "slot", barcode: bc });
+  }
+
+  // buildSlotDelete removes a Slot or MAP slot. One that holds a cartridge
+  // needs a disposition: to a storage slot, the MAP (export) or the shelf.
+  function buildSlotDelete(stage, kind, barcode, disposition) {
+    var body = withStage(stage, { kind: kind === "map" ? "map" : "slot" });
+    if (!barcode) { return body; }
+    if (!disposition || !disposition.to) {
+      throw new RangeError("say where the cartridge " + String(barcode) + " goes");
+    }
+    var d = { to: String(disposition.to) };
+    if (d.to === "slot") {
+      var n = intField(disposition.slot);
+      if (!(n > 0)) { throw new RangeError("the slot must be a positive number"); }
+      d.slot = n;
+    }
+    body.disposition = d;
+    return body;
+  }
+
+  // buildSlotsAdd adds count Slot or MAP lines after the last.
+  function buildSlotsAdd(stage, kind, count) {
+    var n = intField(count);
+    if (!(n > 0 && n <= 4096)) { throw new RangeError("count must be 1-4096"); }
+    return withStage(stage, { kind: kind === "map" ? "map" : "slot", count: n });
+  }
+
   var API = {
+    writesEditable: writesEditable,
+    lineDiff: lineDiff,
+    diffHunks: diffHunks,
+    stageFileRows: stageFileRows,
+    planSummary: planSummary,
+    forceRemaining: forceRemaining,
+    fmtCountdown: fmtCountdown,
+    applyErrorAction: applyErrorAction,
+    libraryAttrFields: libraryAttrFields,
+    driveAttrFields: driveAttrFields,
+    buildAttrPatch: buildAttrPatch,
+    buildSlotPatch: buildSlotPatch,
+    buildSlotDelete: buildSlotDelete,
+    buildSlotsAdd: buildSlotsAdd,
     esc: esc,
     fmtRatio: fmtRatio,
     validBarcode: validBarcode,

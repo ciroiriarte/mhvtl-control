@@ -323,32 +323,33 @@ func TestReferencedAssetsDoNotFourOhFour(t *testing.T) {
 	}
 }
 
-// The configuration view is read-only (AC 17): it has its panels and the
-// banner, and the client sends nothing to the configuration but GETs and a
-// validation, which never writes.
-func TestConfigViewIsReadOnly(t *testing.T) {
+// The configuration view has its panels and the banner. Its edits are
+// offered only while capabilities.writes is "ok" (plan 4.2): every edit goes
+// through stageEdit, which refuses unless cfgEditable, and the stage panel
+// shows the diff and the dry run before an apply.
+func TestConfigView(t *testing.T) {
 	h := newServer()
 	_, index := get(t, h, "/")
 	for _, id := range []string{"config-panel", "config-status", "config-notice", "config-library", "config-target-app",
-		"config-view", "findings-panel", "findings-status", "config-findings"} {
+		"config-view", "config-mode", "findings-panel", "findings-status", "config-findings",
+		"stage-panel", "stage-status", "stage-view", "stage-count"} {
 		if !strings.Contains(index, `id="`+id+`"`) {
 			t.Errorf("index.html missing element id %q", id)
 		}
 	}
 	_, app := get(t, h, "/static/js/app.js")
-	for _, want := range []string{"/api/v1/config/capabilities", "/api/v1/config/personalities", "/api/v1/config/validate", "config.slots", "capabilityNotice"} {
+	for _, want := range []string{"/api/v1/config/capabilities", "/api/v1/config/personalities", "/api/v1/config/validate", "config.slots", "capabilityNotice",
+		"writesEditable(lastCfg.caps)", `if (!cfgEditable()) { done(new Error("Editing is not available now.")); return; }`, `cfgPath("/apply")`, "dry_run: true"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js missing marker %q", want)
 		}
 	}
-	if strings.Contains(app, "/api/v1/config/apply") {
-		t.Error("app.js names the apply route")
-	}
-	// Every call to a configuration route is a GET, but the validation.
+	// A configuration request other than a GET is the validation, a dry run
+	// or apply of the stage, or an edit sent through stageEdit.
 	for _, line := range strings.Split(app, "\n") {
 		if strings.Contains(line, `api("/api/v1/config`) && strings.Contains(line, "method:") &&
 			!strings.Contains(line, `api("/api/v1/config/validate", { method: "POST"`) {
-			t.Errorf("app.js sends a configuration request other than a GET or the validation: %s", strings.TrimSpace(line))
+			t.Errorf("app.js sends a configuration request outside stageEdit and the apply flow: %s", strings.TrimSpace(line))
 		}
 	}
 	_, core := get(t, h, "/static/js/core.js")
