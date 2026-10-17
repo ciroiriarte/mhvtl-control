@@ -132,10 +132,14 @@ func ScanNAA(value string) int { return cScanf(" NAA: "+value, naaFormat) }
 func scanfProblem(kind, key, b string) string {
 	switch {
 	case key == "Compression" && kind == "Drive":
-		// vtltape.c:2219-2232 tests the first sscanf for truth: EOF (-1),
-		// from an empty value or one that stops inside "factor", is taken
-		// as a match, and so is "factor N" alone; both load uninitialised
-		// ints into the compression settings.
+		// vtltape.c:2219-2232 needs all of "factor N enabled M", or one
+		// number, and ignores anything else (markh794/mhvtl#286). Before
+		// #286 it tested the first sscanf for truth: EOF (-1), from an
+		// empty value or one that stops inside "factor", was taken as a
+		// match, and so was "factor N" alone; both loaded uninitialised
+		// ints into the compression settings
+		// (https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtltape.c#L2204-L2213).
+		// The editor may run against such an mhVTL, so these stay flagged.
 		switch cScanf(b, " Compression: factor %d enabled %d") {
 		case 2:
 			return ""
@@ -145,7 +149,7 @@ func scanfProblem(kind, key, b string) string {
 			}
 			return "Compression is neither 'factor N enabled M' nor a number: vtltape ignores it"
 		}
-		return "partial or empty Compression: vtltape's sscanf (vtltape.c:2219) takes it as a match and loads uninitialised compression settings; write 'factor N enabled M'"
+		return "partial or empty Compression: vtltape ignores it (vtltape.c:2219-2232); before markh794/mhvtl#286 it loaded uninitialised compression settings; write 'factor N enabled M'"
 	case key == "NAA":
 		switch n := cScanf(b, naaFormat); {
 		case n == 0:

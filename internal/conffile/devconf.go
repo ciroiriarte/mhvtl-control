@@ -197,9 +197,10 @@ func lineProblem(l Line) string {
 // three or more for none. Inside a Drive record, a line vtltape does not end
 // the record at (strlen 2 or more) also reaches its sscanf " Compression:
 // factor %d enabled %d" (mhvtl usr/cmd/vtltape.c:2219), which returns EOF on
-// it; vtltape takes that as a match and loads uninitialised compression
-// settings. Every non-empty white-space line is flagged, not just the ones
-// they disagree on, so no edit has to reason about them.
+// it. vtltape ignores that from markh794/mhvtl#286 on; before, it took it as
+// a match and loaded uninitialised compression settings. Every non-empty
+// white-space line is flagged, not just the ones they disagree on, so no
+// edit has to reason about them.
 // The model ends a record at the lines all of them agree on (separates).
 // An indented line of cLen 2 (" #", "\ta") is split on the same way, and
 // flagged too. (A column-1 one is a comment, which every parser skips first,
@@ -262,10 +263,13 @@ type Stanza struct {
 	Kind string // "Library" or "Drive"
 	ID   int
 	// HasAddress is set when the header carries CHANNEL, TARGET and LUN.
-	// Without them the header is an ambiguous Problem: sscanf returns 1 or
-	// 2, which vtltape and vtllibrary take as a match, and they copy an
-	// uninitialised mhvtl_ctl (mhvtl usr/cmd/vtltape.c:2081, :2155, used by
-	// add_lu at :2709; usr/cmd/vtllibrary.c:1224, :1296). Only the
+	// Without them the header is an ambiguous Problem: sscanf returns 1 to
+	// 3, and vtltape and vtllibrary ignore the record (mhvtl
+	// usr/cmd/vtltape.c:2157-2163, usr/cmd/vtllibrary.c:1298-1304,
+	// markh794/mhvtl#286), so with no other header for it the daemon finds
+	// no entry and exits (vtltape.c:2525-2529, vtllibrary.c:1716-1720).
+	// Before #286 they took a partial count as a match and copied an
+	// uninitialised mhvtl_ctl, which add_lu registered. Only the
 	// changer's element descriptor gets a defined SCSI ID for a bare
 	// "Drive: N", 0 (vtllibrary.c:682-684). Without an address Channel,
 	// Target and LUN stay 0, so internal/config projects such a header as
@@ -323,7 +327,7 @@ func (c *DeviceConf) index() {
 		if cur >= 0 && !isComment(l.Text) {
 			switch {
 			case ambiguousBlank(l) && c.stanzas[cur].Kind == "Drive" && cLen(l) > 1:
-				problem(i, true, "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record, and vtltape's Compression sscanf (vtltape.c:2219) takes it as a match and loads uninitialised compression settings; make it empty")
+				problem(i, true, "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record, and before markh794/mhvtl#286 vtltape's Compression sscanf (vtltape.c:2219) loaded uninitialised compression settings from it; make it empty")
 			case ambiguousBlank(l):
 				problem(i, true, "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record; make it empty")
 			case cLen(l) == 2 && (l.Text[0] == ' ' || l.Text[0] == '\t'):
@@ -364,9 +368,9 @@ func (c *DeviceConf) index() {
 			}
 			switch {
 			case !st.HasAddress && st.Kind == "Drive":
-				problem(i, true, "Drive %d has no CHANNEL, TARGET and LUN: vtltape registers it at an uninitialised address (vtltape.c:2081, :2155)", st.ID)
+				problem(i, true, "Drive %d has no CHANNEL, TARGET and LUN: vtltape ignores the record (vtltape.c:2157-2163); before markh794/mhvtl#286 it registered the drive at an uninitialised address", st.ID)
 			case !st.HasAddress:
-				problem(i, true, "Library %d has no CHANNEL, TARGET and LUN: vtllibrary registers it at an uninitialised address (vtllibrary.c:1224, :1296)", st.ID)
+				problem(i, true, "Library %d has no CHANNEL, TARGET and LUN: vtllibrary ignores the record (vtllibrary.c:1298-1304); before markh794/mhvtl#286 it registered the library at an uninitialised address", st.ID)
 			}
 			// mhVTL's parsers follow one kind of record each and only a
 			// blank line ends it (vtllibrary.c:677-740 and :1282-1305,
