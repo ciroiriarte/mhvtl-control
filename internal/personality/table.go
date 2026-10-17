@@ -122,6 +122,9 @@ var Models = map[string]Model{
 		VPD83:        true,
 		DvcidLen:     34,
 	},
+	// markh794/mhvtl#287 moved the 03584 MAP from 0x0300 to 0x0301, so the
+	// window allows 512 drives. With an mhVTL before #287, drive 512 sits
+	// on MAP 0x0300, and the limit there is 511.
 	"init_ibm3584": {
 		InitFn: "init_ibm3584", Name: "IBM 03584",
 		StartPicker: 0x0001, StartMAP: 0x0301, StartDrive: 0x0101, StartStorage: 0x0400,

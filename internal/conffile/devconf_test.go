@@ -74,7 +74,7 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 	}
 
 	// Adjacent Libraries read as written: each header switches vtllibrary
-	// to the new library (vtllibrary.c:1284).
+	// to the new library (vtllibrary.c:1288-1290).
 	if c := ParseDeviceConf([]byte(lib + " Unit serial number: A\nLibrary: 30 CHANNEL: 00 TARGET: 08 LUN: 00\n")); len(c.Problems) != 0 {
 		t.Errorf("adjacent libraries flagged: %v", c.Problems)
 	}

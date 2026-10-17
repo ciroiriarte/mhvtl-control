@@ -368,7 +368,7 @@ func (c *DeviceConf) index() {
 			}
 			switch {
 			case !st.HasAddress && st.Kind == "Drive":
-				problem(i, true, "Drive %d has no CHANNEL, TARGET and LUN: vtltape ignores the record (vtltape.c:2157-2163); before markh794/mhvtl#286 it registered the drive at an uninitialised address", st.ID)
+				problem(i, true, "Drive %d has no CHANNEL, TARGET and LUN: vtltape ignores the record (vtltape.c:2157-2163), but vtllibrary still reports the drive (vtllibrary.c:682-684); before markh794/mhvtl#286 vtltape registered it at an uninitialised address", st.ID)
 			case !st.HasAddress:
 				problem(i, true, "Library %d has no CHANNEL, TARGET and LUN: vtllibrary ignores the record (vtllibrary.c:1298-1304); before markh794/mhvtl#286 it registered the library at an uninitialised address", st.ID)
 			}
@@ -511,9 +511,9 @@ func (c *DeviceConf) attrValue(i int) string {
 
 // parseStanzaHeader parses "Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00" or
 // a Drive header with the sscanf pattern mhVTL uses (mhvtl
-// usr/cmd/vtllibrary.c:1284, usr/cmd/vtltape.c:2143). ok is set when sscanf
-// reads at least the id; HasAddress when it reads all four numbers. Text
-// after LUN is ignored, as sscanf ignores it.
+// usr/cmd/vtllibrary.c:1288-1290, usr/cmd/vtltape.c:2147-2149). ok is set
+// when sscanf reads at least the id; HasAddress when it reads all four
+// numbers. Text after LUN is ignored, as sscanf ignores it.
 func parseStanzaHeader(text string) (st Stanza, ok bool) {
 	for _, kind := range []string{"Library", "Drive"} {
 		n, v := cScan(text, kind+": %d CHANNEL: %d TARGET: %d LUN: %d")
