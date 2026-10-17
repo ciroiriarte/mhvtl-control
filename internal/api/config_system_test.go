@@ -1,0 +1,163 @@
+package api
+
+import (
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"mhvtl-control/internal/apply"
+	"mhvtl-control/internal/conffile"
+)
+
+const shippedMhvtlConf = "#\n# mhvtl.conf\n#\n\n# Home directory for tape emulation files\nMHVTL_HOME_PATH=/var/lib/mhvtl\n\n" +
+	"# Default media capacity (500 M)\nCAPACITY=500\n\n# Set default verbosity [0|1|2|3]\nVERBOSE=1\n\n" +
+	"# Set kernel module debugging [0|1]\nVTL_DEBUG=0\n"
+
+// PATCH /config/system stages mhvtl.conf as the helper derives it: the
+// current file with only the values changed (plan, amendment "mhvtl.conf
+// is shell").
+func TestConfigSystem(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	if err := os.WriteFile(filepath.Join(e.dir, "mhvtl.conf"), []byte(shippedMhvtlConf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := e.edit(http.MethodPatch, "/api/v1/config/system", map[string]any{"values": map[string]string{"CAPACITY": "600", "VERBOSE": "2"}})
+	want := strings.Replace(strings.Replace(shippedMhvtlConf, "CAPACITY=500\n", "CAPACITY=600\n", 1), "VERBOSE=1\n", "VERBOSE=2\n", 1)
+	if got := file(t, st, "mhvtl.conf"); got != want {
+		t.Errorf("mhvtl.conf:\n%s\nwant:\n%s", got, want)
+	}
+	if err := apply.DeriveMhvtlConf([]byte(shippedMhvtlConf), []byte(want)); err != nil {
+		t.Errorf("the helper would refuse it: %v", err)
+	}
+	if st.Base["mhvtl.conf"] != conffile.Hash([]byte(shippedMhvtlConf)) || len(st.Files) != 1 {
+		t.Errorf("stage %+v", st)
+	}
+	st = e.edit(http.MethodPatch, "/api/v1/config/system", map[string]any{"stage": st.Stage, "values": map[string]string{"VTL_DEBUG": "1", "CAPACITY": "500"}})
+	want = strings.Replace(strings.Replace(want, "VTL_DEBUG=0\n", "VTL_DEBUG=1\n", 1), "CAPACITY=600\n", "CAPACITY=500\n", 1)
+	if got := file(t, st, "mhvtl.conf"); got != want {
+		t.Errorf("second edit:\n%s", got)
+	}
+
+	// The apply sends it.
+	e.answer(func(apply.Request) apply.Response { return apply.Response{Result: apply.ResultValidated} })
+	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage, "dry_run": true}); rec.Code != http.StatusOK {
+		t.Fatalf("dry run: %d %s", rec.Code, rec.Body)
+	}
+	reqs := e.requests()
+	if len(reqs) != 1 || len(reqs[0].Files) != 1 || reqs[0].Files[0].Name != "mhvtl.conf" || string(reqs[0].Files[0].Content) != want {
+		t.Errorf("plan request: %+v", reqs)
+	}
+
+	for _, tc := range []struct {
+		values map[string]string
+		code   string
+	}{
+		{map[string]string{"CAPACITY": "0600"}, apply.ErrMhvtlConfValue},
+		{map[string]string{"VERBOSE": "4"}, apply.ErrMhvtlConfValue},
+		{map[string]string{"VTL_DEBUG": "1; rm -rf /"}, apply.ErrMhvtlConfValue},
+		{map[string]string{"MHVTL_HOME_PATH": "/srv/tapes"}, "bad_request"},
+		{map[string]string{"DAEMON_DEBUG": "-d"}, "bad_request"},
+		{map[string]string{}, "bad_request"},
+	} {
+		rec := e.call(http.MethodPatch, "/api/v1/config/system", map[string]any{"stage": st.Stage, "values": tc.values})
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), `"code":"`+tc.code+`"`) {
+			t.Errorf("%v: %d %s, want 400 %s", tc.values, rec.Code, rec.Body, tc.code)
+		}
+	}
+	if rec := e.call(http.MethodPatch, "/api/v1/config/system", map[string]any{"stage": st.Stage, "values": map[string]string{"MHVTL_HOME_PATH": "/srv/tapes"}}); !strings.Contains(rec.Body.String(), "mhvtl-move-home") {
+		t.Errorf("MHVTL_HOME_PATH: %s", rec.Body)
+	}
+}
+
+// Without a mhvtl.conf the edit creates one, which must not exist yet.
+func TestConfigSystemNoFile(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	st := e.edit(http.MethodPatch, "/api/v1/config/system", map[string]any{"values": map[string]string{"VERBOSE": "2"}})
+	if got := file(t, st, "mhvtl.conf"); got != "VERBOSE=2\n" {
+		t.Errorf("mhvtl.conf %q", got)
+	}
+	if b, ok := st.Base["mhvtl.conf"]; !ok || b != "" {
+		t.Errorf("base %q %v", b, ok)
+	}
+}
+
+// setHomes gives libraries of the env's device.conf their own Home
+// directory.
+func (e *writeEnv) setHomes(homes map[int]string) {
+	e.t.Helper()
+	p := filepath.Join(e.dir, "device.conf")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	dc := conffile.ParseDeviceConf(b)
+	for id, h := range homes {
+		if err := dc.SetAttr("Library", id, "Home directory", h); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(p, dc.Render(), 0o644); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// A library's home changes only when the old one holds no cartridge and no
+// other library uses it (plan 4.3); otherwise mhvtl-move-home moves it. A
+// new library may get a new home. The helper applies the same rules
+// (apply.CheckHomes).
+func TestConfigHomeRules(t *testing.T) {
+	root := t.TempDir()
+	h1, h2, h3 := filepath.Join(root, "h1"), filepath.Join(root, "h2"), filepath.Join(root, "h3")
+	if err := os.MkdirAll(filepath.Join(h1, "E01001L8"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(h2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	homeOf := func(h string) map[string]any { return map[string]any{"attrs": map[string]any{"Home directory": h}} }
+
+	e := newWriteEnv(t, nil)
+	e.readable(30)
+	e.setHomes(map[int]string{10: h1, 30: h2})
+	rec := e.call(http.MethodPatch, "/api/v1/config/libraries/10", homeOf(h3))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), apply.ErrHomeInUse) ||
+		!strings.Contains(rec.Body.String(), "E01001L8") || !strings.Contains(rec.Body.String(), "mhvtl-move-home") {
+		t.Errorf("home with a cartridge: %d %s", rec.Code, rec.Body)
+	}
+	st := e.edit(http.MethodPatch, "/api/v1/config/libraries/30", homeOf(h3))
+	if got := file(t, st, "device.conf"); !strings.Contains(got, " Home directory: "+h3+"\n") {
+		t.Errorf("empty home not changed:\n%s", got)
+	}
+	// A refused edit leaves the stage as it was.
+	if rec := e.call(http.MethodPatch, "/api/v1/config/libraries/10", map[string]any{"stage": st.Stage, "attrs": map[string]any{"Home directory": nil}}); rec.Code != http.StatusConflict {
+		t.Errorf("home with a cartridge to the default: %d %s", rec.Code, rec.Body)
+	}
+	if got := file(t, st, "device.conf"); !strings.Contains(got, " Home directory: "+h1+"\n") {
+		t.Errorf("library 10's home lost:\n%s", got)
+	}
+
+	// A shared home stays, empty or not.
+	e = newWriteEnv(t, nil)
+	e.readable(30)
+	e.setHomes(map[int]string{10: h2, 30: h2})
+	if rec := e.call(http.MethodPatch, "/api/v1/config/libraries/30", homeOf(h3)); rec.Code != http.StatusConflict ||
+		!strings.Contains(rec.Body.String(), "shared with library 10") {
+		t.Errorf("shared home: %d %s", rec.Code, rec.Body)
+	}
+
+	// A new library: a new home is fine, a forbidden one is not.
+	e = newWriteEnv(t, nil)
+	newLib := func(home string) map[string]any {
+		return map[string]any{"id": 50, "target": 9, "slots": 1,
+			"attrs": []map[string]string{{"key": "Home directory", "value": home}}}
+	}
+	if rec := e.call(http.MethodPost, "/api/v1/config/libraries", newLib(filepath.Join(root, "new"))); rec.Code != http.StatusOK {
+		t.Errorf("new library, new home: %d %s", rec.Code, rec.Body)
+	}
+	if rec := e.call(http.MethodPost, "/api/v1/config/libraries", newLib("/etc/mhvtl/tapes")); rec.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(rec.Body.String(), apply.ErrHomeForbidden) {
+		t.Errorf("new library, forbidden home: %d %s", rec.Code, rec.Body)
+	}
+}

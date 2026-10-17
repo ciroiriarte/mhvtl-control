@@ -382,9 +382,9 @@ func (s *Server) libraryState(ctx context.Context, id int) (string, error) {
 	return state, nil
 }
 
-// adopt reads the base of a library_contents the stage has not read: that
-// of a library device.conf does not have, which mhVTL would read whatever
-// file of that name is there.
+// adopt reads the base of a file the stage has not read: mhvtl.conf, or the
+// library_contents of a library device.conf does not have, which mhVTL
+// would read whatever file of that name is there.
 func (s *Server) adopt(st *stage, name string) error {
 	if _, known := st.base[name]; known {
 		return nil
@@ -412,6 +412,8 @@ func (st *stage) writable() error {
 		case data == nil:
 		case name == "device.conf":
 			err = conffile.ParseDeviceConf(data).Writable()
+		case name == mhvtlConf:
+			err = conffile.ParseMhvtlConf(data).Writable()
 		default:
 			err = conffile.ParseLibContents(data).Writable()
 		}
@@ -420,6 +422,53 @@ func (st *stage) writable() error {
 		}
 	}
 	return nil
+}
+
+// mhvtlConf is the file PATCH /config/system edits.
+const mhvtlConf = "mhvtl.conf"
+
+// defaultHomes are the media home of a library without a "Home directory"
+// on disk and in the stage: MHVTL_HOME_PATH, else the compiled-in default.
+func (s *Server) defaultHomes(st *stage) (cur, next string, err error) {
+	if err := s.adopt(st, mhvtlConf); err != nil {
+		return "", "", err
+	}
+	def := s.cfg.DefaultHome
+	if def == "" {
+		def = defaultHome
+	}
+	home := func(data []byte) string {
+		if v, ok := conffile.ParseMhvtlConf(data).Get("MHVTL_HOME_PATH"); ok && v != "" {
+			return v
+		}
+		return def
+	}
+	nextData, _ := st.file(mhvtlConf)
+	return home(st.disk[mhvtlConf]), home(nextData), nil
+}
+
+// checkHomes applies the home rules of plan 4.3 to the stage, as the
+// helper does (apply.CheckHomes): a library's home changes only when the
+// old one holds no cartridge and no other library uses it, else that is
+// mhvtl-move-home's; a home set must be one a media home may be.
+func (s *Server) checkHomes(st *stage) error {
+	next, err := st.inventory(s.cfg.ConfigDir)
+	if err != nil {
+		return err
+	}
+	curHome, nextHome, err := s.defaultHomes(st)
+	if err != nil {
+		return err
+	}
+	err = apply.CheckHomes(st.cur, next, curHome, nextHome)
+	if code, msg, ok := apply.Refused(err); ok {
+		status := http.StatusUnprocessableEntity
+		if code == apply.ErrHomeInUse {
+			status = http.StatusConflict
+		}
+		return &editError{status, code, msg}
+	}
+	return err
 }
 
 // edited records an edit: the plan, if any, no longer stands.
