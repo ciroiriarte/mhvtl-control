@@ -158,12 +158,24 @@ func (s *Server) helperState(ctx context.Context) (string, error) {
 	}
 }
 
-// hello1 asks the helper once and caches the answer.
+// hello1 asks the helper once and caches the answer. A Hello that panics
+// is its callers' error, and not cached: it runs on its own goroutine, out
+// of reach of the HTTP recover middleware, and the flight must end so the
+// next caller asks again rather than wait on it.
 func (s *Server) hello1(ctx context.Context, f *helloFlight) {
 	ctx, cancel := context.WithTimeout(ctx, helloTimeout)
 	defer cancel()
-	f.state, f.err = s.cfg.Helper.Hello(ctx)
 	c := &s.hello
+	defer func() {
+		if r := recover(); r != nil {
+			f.state, f.err = "", fmt.Errorf("hello panicked: %v", r)
+			c.mu.Lock()
+			c.flight = nil
+			c.mu.Unlock()
+			close(f.done)
+		}
+	}()
+	f.state, f.err = s.cfg.Helper.Hello(ctx)
 	c.mu.Lock()
 	c.state, c.err, c.at, c.flight = f.state, f.err, s.now(), nil
 	c.mu.Unlock()

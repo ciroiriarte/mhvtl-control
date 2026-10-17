@@ -872,6 +872,62 @@ func TestHelloCancelledCaller(t *testing.T) {
 	}
 }
 
+// funcHelper answers hello with its func, counting the calls.
+type funcHelper struct {
+	mu    sync.Mutex
+	calls int
+	hello func(n int) (string, error) // n counts from 1
+}
+
+func (h *funcHelper) Hello(context.Context) (string, error) {
+	h.mu.Lock()
+	h.calls++
+	n := h.calls
+	h.mu.Unlock()
+	return h.hello(n)
+}
+
+func (h *funcHelper) Do(context.Context, apply.Request) (apply.Response, error) {
+	return apply.Response{}, errors.New("funcHelper only answers hello")
+}
+
+// An error answer is cached like any other, and asked again after helloTTL.
+func TestHelloErrorCached(t *testing.T) {
+	h := &funcHelper{hello: func(int) (string, error) { return "", errors.New("helper response: garbage") }}
+	srv := NewServer(Config{Helper: h})
+	clock := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	srv.now = func() time.Time { return clock }
+	for _, step := range []time.Duration{0, 1999 * time.Millisecond, time.Millisecond} {
+		clock = clock.Add(step)
+		if _, err := srv.helperState(context.Background()); err == nil {
+			t.Errorf("+%v: no error", step)
+		}
+	}
+	if h.calls != 2 {
+		t.Errorf("%d hellos, want 2: cached under 2 s, asked again at 2 s", h.calls)
+	}
+}
+
+// A hello that panics answers its callers with an error, leaves no hello in
+// flight for the next caller to wait on forever, and is not cached.
+func TestHelloPanic(t *testing.T) {
+	h := &funcHelper{hello: func(n int) (string, error) {
+		if n == 1 {
+			panic("boom")
+		}
+		return applyclient.Present, nil
+	}}
+	srv := NewServer(Config{Helper: h})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := srv.helperState(ctx); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Errorf("panicking hello: %v", err)
+	}
+	if st, err := srv.helperState(ctx); st != applyclient.Present || err != nil {
+		t.Errorf("next hello: %q %v", st, err)
+	}
+}
+
 // A helper enabled while the daemon runs: absent until the cached hello
 // expires, then present.
 func TestHelloAbsentToPresent(t *testing.T) {
