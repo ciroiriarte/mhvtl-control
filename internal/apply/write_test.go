@@ -206,3 +206,65 @@ func TestAuditFields(t *testing.T) {
 		t.Errorf("diff of %d bytes, truncated %v", len(diff), cut)
 	}
 }
+
+// TestAuditNoDiffBeforeValidation: a request a guard refuses leaves its
+// file hashes in the audit, not its content.
+func TestAuditNoDiffBeforeValidation(t *testing.T) {
+	e := newEnv(t)
+	mc := e.edit("mhvtl.conf", "CAPACITY=500", "CAPACITY=500\n"+strings.Repeat("# filler\n", 1000))
+	e.refused("not derived", Request{Op: OpPlan, Files: []File{mc}}, ErrMhvtlConfDerived)
+	var r AuditRecord
+	lines := e.auditLines()
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Diff != "" || r.DiffTruncated || len(r.Files) != 1 || r.Files[0].After != conffile.Hash(mc.Content) {
+		t.Errorf("audit record %+v", r)
+	}
+}
+
+// TestAuditRotation: audit.jsonl is rotated to audit.jsonl.1 before it
+// would pass maxAudit, and only one older file is kept.
+func TestAuditRotation(t *testing.T) {
+	defer func(m int64) { maxAudit = m }(maxAudit)
+	maxAudit = 2048
+	e := newEnv(t)
+	path := filepath.Join(e.state, auditFile)
+	const n = 40
+	for i := 0; i < n; i++ {
+		e.do(Request{Op: OpPlan, Actor: fmt.Sprint("actor-", i), ForceToken: "x"})
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Size() > maxAudit {
+			t.Fatalf("audit.jsonl is %d bytes, over %d", fi.Size(), maxAudit)
+		}
+	}
+	old, err := os.ReadFile(path + ".1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(old) == 0 || int64(len(old)) > maxAudit {
+		t.Errorf("audit.jsonl.1 is %d bytes", len(old))
+	}
+	if _, err := os.Stat(path + ".2"); !os.IsNotExist(err) {
+		t.Errorf("audit.jsonl.2: %v", err)
+	}
+	// The newest record is last in audit.jsonl; the rotated file ends
+	// where audit.jsonl begins.
+	cur := e.auditLines()
+	if !strings.Contains(cur[len(cur)-1], fmt.Sprintf(`"actor-%d"`, n-1)) {
+		t.Errorf("last record %s", cur[len(cur)-1])
+	}
+	var first, last AuditRecord
+	olds := strings.Split(strings.TrimSpace(string(old)), "\n")
+	json.Unmarshal([]byte(olds[len(olds)-1]), &last)
+	json.Unmarshal([]byte(cur[0]), &first)
+	var a, b int
+	fmt.Sscanf(last.Actor, "actor-%d", &a)
+	fmt.Sscanf(first.Actor, "actor-%d", &b)
+	if b != a+1 {
+		t.Errorf("audit.jsonl.1 ends at %s, audit.jsonl starts at %s", last.Actor, first.Actor)
+	}
+}

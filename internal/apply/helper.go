@@ -244,7 +244,10 @@ func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validat
 		return nil, err
 	}
 	next := files.withChanges(req)
-	rec.Files, rec.Diff, rec.DiffTruncated = auditFiles(changesOf(req), files)
+	// The hashes go in every record from here; the diff only once the
+	// request passed the guards, so a refused one cannot fill the audit.
+	auditedFiles, diff, truncated := auditFiles(changesOf(req), files)
+	rec.Files = auditedFiles
 
 	curConf, err := mhvtlConfOf(files.current)
 	if err != nil {
@@ -300,6 +303,8 @@ func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validat
 	if err := checkHomes(cur, nextInv, curHome, nextHome); err != nil {
 		return nil, err
 	}
+
+	rec.Diff, rec.DiffTruncated = diff, truncated
 
 	// Validation runs without the live placement: reading it needs the
 	// SG_IO guard of PR 3b, which then passes R1 here.
