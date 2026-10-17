@@ -71,6 +71,22 @@ func (m Model) UnitSerialPage(vendor, serial string) []byte {
 	panic("personality: no VPD 80h layout for " + m.UnitSerialCall)
 }
 
+// UnitSerialWidth is how many characters of the device.conf serial the
+// page 80h of UnitSerialPage carries; a longer serial is cut there.
+func (m Model) UnitSerialWidth() int {
+	switch m.UnitSerialCall {
+	case "update_ibm_3584_vpd_80(lu)", "update_eml_vpd_80(lu)":
+		return 10
+	case "update_stk_l_vpd_80(lu, 11)":
+		return 11
+	case "update_ibm_3100_vpd_80(lu)", "update_stk_l_vpd_80(lu, 12)":
+		return 12
+	}
+	// vtllibrary holds at most SCSI_SN_LEN - 1 characters, which its own
+	// page and the Scalar's 16-character field carry whole.
+	return scsiSNLen - 1
+}
+
 // UnitSerial is UnitSerialPage trimmed of blanks and NULs at both ends, as
 // scsi.ParseVPDSerial returns a page: the serial to compare with what the
 // changer reports. It is matched whole, never as a substring, so XYZZY_4

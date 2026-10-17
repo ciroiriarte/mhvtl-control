@@ -202,3 +202,15 @@ func TestDriveUnitSerialPage(t *testing.T) {
 		t.Errorf("VM reports %q, DriveUnitSerial %q", got, want)
 	}
 }
+
+// UnitSerialWidth is where UnitSerialPage cuts a long serial.
+func TestUnitSerialWidth(t *testing.T) {
+	const long = "ABCDEFGHIJKLMNOPQRSTU"
+	for fn, m := range Models {
+		w := m.UnitSerialWidth()
+		page := m.UnitSerialPage("V", long)
+		if !strings.Contains(string(page), long[:w]) || strings.Contains(string(page), long[:w+1]) {
+			t.Errorf("%s: width %d, page %q", fn, w, page)
+		}
+	}
+}
