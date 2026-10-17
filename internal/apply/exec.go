@@ -75,6 +75,9 @@ type checked struct {
 	curDC, nextDC     *conffile.DeviceConf
 	curHome, nextHome string
 	nextFiles         *fileSet
+	// warnings are the missing cartridges (missingCartridges), found
+	// before anything runs.
+	warnings []string
 	// live is R1, READ ELEMENT STATUS of every running library, and inv
 	// the inventories it came from; nil when the helper has no device
 	// access (tests of the request checks).
@@ -414,7 +417,7 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 			return x.rollback(ctx, err)
 		}
 	}
-	warnings := x.missingCartridges()
+	warnings := append([]string{}, c.warnings...)
 
 	// 8. Units.
 	if err := x.units(ctx); err != nil {
@@ -620,29 +623,39 @@ func (x *execution) media(ctx context.Context) error {
 	return nil
 }
 
-// missingCartridges warns about each Slot cartridge of a library about to
-// start whose cartridge is missing from its home: mhvtl-media.service,
-// which every vtllibrary@ wants, creates it blank, so data it was expected
-// to hold would become an empty tape (mhvtl-control#43).
-func (x *execution) missingCartridges() []string {
+// missingCartridges warns, before anything runs, about each Slot
+// cartridge of the new configuration missing from its home that
+// mhvtl-media.service would create blank, so data it was expected to hold
+// would become an empty tape (mhvtl-control#43). The service runs
+// make_vtl_media, which creates every missing Slot barcode of every
+// library
+// ([usr/cmd/make_vtl_media.in:340-375](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L340-L375)):
+// when the apply restarts it for new barcodes every library is covered,
+// those new barcodes excepted; otherwise the libraries that start, whose
+// vtllibrary@ wants the service.
+func missingCartridges(c *checked) []string {
+	ids := startLibs(*c.plan)
+	created := map[string]bool{}
+	if c.plan.NewBarcodes > 0 {
+		ids = nil
+		for _, l := range c.next.Libraries {
+			ids = append(ids, l.ID)
+		}
+		sort.Ints(ids)
+		for _, nb := range newSlotBarcodes(c.cur, c.next) {
+			created[nb.barcode] = true
+		}
+	}
 	var out []string
-	for _, id := range startLibs(x.plan) {
-		lib, ok := findLib(x.c.next, id)
+	for _, id := range ids {
+		lib, ok := findLib(c.next, id)
 		if !ok {
 			continue
 		}
-		home := homeOf(lib, x.c.nextHome)
-		slots := map[int]string{}
-		if m, ok := x.it.Exec.Merged[id]; ok {
-			slots = m.Slots
-		} else {
-			for _, s := range lib.Slots {
-				slots[s.Number] = s.Barcode
-			}
-		}
-		for _, n := range sortedInts(slots) {
-			if b := slots[n]; b != "" && !media.Exists(home, b) {
-				out = append(out, fmt.Sprintf("library %d slot %d: %s is not in %s; mhvtl-media.service creates it blank when the library starts", id, n, b, home))
+		home := homeOf(lib, c.nextHome)
+		for _, sl := range lib.Slots {
+			if b := sl.Barcode; b != "" && !created[b] && !media.Exists(home, b) {
+				out = append(out, fmt.Sprintf("library %d slot %d: %s is not in %s; mhvtl-media.service creates it blank when the library starts", id, sl.Number, b, home))
 			}
 		}
 	}

@@ -277,7 +277,7 @@ func (h *Helper) handle(ctx context.Context, req *Request, rec *AuditRecord) Res
 		forced, resp, err = h.planChecks(ctx, req, c)
 		if err == nil && resp.Result == "" {
 			if req.Op == OpPlan {
-				resp = Response{Result: ResultValidated}
+				resp = Response{Result: ResultValidated, Warnings: c.warnings}
 			} else {
 				resp = h.execute(ctx, req, c, forced, rec)
 			}
@@ -288,6 +288,9 @@ func (h *Helper) handle(ctx context.Context, req *Request, rec *AuditRecord) Res
 	}
 	if c != nil {
 		resp.Findings = c.res
+		if len(resp.Warnings) == 0 {
+			resp.Warnings = c.warnings
+		}
 		if c.plan != nil && resp.Units == nil {
 			resp.Units, resp.Notes = c.plan.Units(), c.plan.Notes
 		}
@@ -502,6 +505,7 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 	if err := checkBudget(plan); err != nil {
 		return c, err
 	}
+	c.warnings = missingCartridges(c)
 	return c, nil
 }
 
