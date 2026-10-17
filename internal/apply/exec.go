@@ -316,7 +316,8 @@ type execution struct {
 	// held are the libraries bringUp started and holds offline; a
 	// rollback's guardedStop takes them over.
 	held []int
-	// approved are the units the plan showed and expect_units named.
+	// approved are the units expect_units named, which the checks found
+	// equal to the plan's.
 	approved map[string]bool
 }
 
@@ -355,7 +356,9 @@ func (x *execution) allow(u string) error {
 //
 // A failure from step 4 on, once a unit was stopped, rolls back (step 12).
 func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced map[int][]changer.DriveState, rec *AuditRecord) Response {
-	x := &execution{h: h, req: req, c: c, plan: withForced(*c.plan, c, forced), approved: set(c.plan.Units())}
+	// The plan is the one the checks derived, the forced drives in it
+	// (planChecks): derived once, from the drive states read there.
+	x := &execution{h: h, req: req, c: c, plan: *c.plan, approved: set(req.ExpectUnits)}
 	boot, err := h.bootID()
 	if err != nil {
 		return responseOf(err)
