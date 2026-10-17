@@ -99,6 +99,38 @@ func TestConfigSystemRead(t *testing.T) {
 	}
 }
 
+// GET /config gives the default home the helper judges with,
+// default_home_effective: MHVTL_HOME_PATH, else /var/lib/mhvtl. A stage
+// that has mhvtl.conf gives it as staged. default_home stays the
+// dashboard's media path: MHVTL_HOME_PATH too, but --home-dir rather than
+// the helper's default when mhvtl.conf sets none.
+func TestConfigDefaultHomeEffective(t *testing.T) {
+	e := newWriteEnv(t, func(c *Config) { c.DefaultHome = "/srv/served" })
+	type homes struct {
+		DefaultHome          string `json:"default_home"`
+		DefaultHomeEffective string `json:"default_home_effective"`
+	}
+	get := func() homes { return decodeBody[homes](t, e.call(http.MethodGet, "/api/v1/config", nil)) }
+	if got := get(); got != (homes{"/srv/served", apply.DefaultHome}) {
+		t.Errorf("no mhvtl.conf: %+v", got)
+	}
+	conf := strings.Replace(shippedMhvtlConf, "MHVTL_HOME_PATH=/var/lib/mhvtl", "MHVTL_HOME_PATH=/srv/tapes", 1)
+	if err := os.WriteFile(filepath.Join(e.dir, "mhvtl.conf"), []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := get(); got != (homes{"/srv/tapes", "/srv/tapes"}) {
+		t.Errorf("MHVTL_HOME_PATH set: %+v", got)
+	}
+	st := e.edit(http.MethodPatch, "/api/v1/config/libraries/10", map[string]any{"attrs": map[string]any{"Backoff": "500"}})
+	if st.DefaultHomeEffective != "" {
+		t.Errorf("stage without mhvtl.conf: %q", st.DefaultHomeEffective)
+	}
+	st = e.edit(http.MethodPatch, "/api/v1/config/system", map[string]any{"stage": st.Stage, "values": map[string]string{"VERBOSE": "2"}})
+	if st.DefaultHomeEffective != "/srv/tapes" {
+		t.Errorf("stage with mhvtl.conf: %q", st.DefaultHomeEffective)
+	}
+}
+
 // Without a mhvtl.conf the edit creates one, which must not exist yet.
 func TestConfigSystemNoFile(t *testing.T) {
 	e := newWriteEnv(t, nil)

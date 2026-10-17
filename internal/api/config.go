@@ -519,18 +519,26 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	for _, d := range snap.inv.Standalone {
 		standalone = append(standalone, toDriveDTO(d))
 	}
+	sys := s.systemValues()
+	var conf []byte
+	if sys.File != nil {
+		conf = []byte(sys.File.Content)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"config_dir":        s.cfg.ConfigDir,
-		"default_home":      s.homeFor(config.Library{}),
-		"files":             files,
-		"libraries":         s.configLibraries(snap.inv),
-		"standalone_drives": standalone,
-		"problems":          toProblems(snap.inv.Problems),
-		"live_errors":       liveErrs,
+		"config_dir": s.cfg.ConfigDir,
+		// default_home is where the dashboard looks for media (--home-dir);
+		// default_home_effective is what mhVTL and the apply helper use.
+		"default_home":           s.homeFor(config.Library{}),
+		"default_home_effective": effectiveDefaultHome(conf),
+		"files":                  files,
+		"libraries":              s.configLibraries(snap.inv),
+		"standalone_drives":      standalone,
+		"problems":               toProblems(snap.inv.Problems),
+		"live_errors":            liveErrs,
 		// The slots of each library, as GET /config/libraries/{id}/slots
 		// gives them, so a client reads every changer once.
 		"slots":  slots,
-		"system": s.systemValues(),
+		"system": sys,
 	})
 }
 
