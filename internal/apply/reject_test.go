@@ -424,6 +424,35 @@ func TestRejectHomeChange(t *testing.T) {
 	}
 }
 
+// TestRejectHomeForbidden: a media home the change sets, in device.conf
+// for an old or a new library, or as MHVTL_HOME_PATH, must be an absolute
+// clean path outside system trees and the helper's state (S1).
+func TestRejectHomeForbidden(t *testing.T) {
+	e := newEnv(t)
+	bad := []string{"relative/dir", "/proc/sys/kernel", "/var/lib/mhvtl-control-apply", "/var/lib/mhvtl-control-apply/rollback", "/etc/mhvtl", "/x/../etc/cron.d", "/"}
+	for _, h := range bad {
+		e.refused("library 10 at "+h, Request{Op: OpPlan, Files: []File{e.edit("device.conf", " Home directory: "+e.home, " Home directory: "+h)}}, ErrHomeForbidden)
+		e.refused("MHVTL_HOME_PATH="+h, Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", "MHVTL_HOME_PATH="+e.home, "MHVTL_HOME_PATH="+h)}}, ErrMhvtlConfValue)
+	}
+	// Library 30 renumbered 31: a new library.
+	b := string(e.read("device.conf"))
+	i := strings.Index(b, "Library: 30")
+	renum := b[:i] + strings.ReplaceAll(strings.Replace(b[i:], "Library: 30", "Library: 31", 1), "Library ID: 30", "Library ID: 31")
+	for _, h := range bad {
+		next := renum[:i] + strings.Replace(renum[i:], " Home directory: "+e.home, " Home directory: "+h, 1)
+		e.refused("new library 31 at "+h, Request{Op: OpPlan, Files: []File{{Name: "device.conf", BaseSHA256: conffile.Hash([]byte(b)), Content: []byte(next)}}}, ErrHomeForbidden)
+	}
+	for _, h := range []string{"/opt/mhvtl", "/srv/tapes"} {
+		if resp := e.do(Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", "MHVTL_HOME_PATH="+e.home, "MHVTL_HOME_PATH="+h)}}); resp.Result != ResultValidated {
+			t.Errorf("MHVTL_HOME_PATH=%s: %+v", h, resp)
+		}
+		next := renum[:i] + strings.Replace(renum[i:], " Home directory: "+e.home, " Home directory: "+h, 1)
+		if resp := e.do(Request{Op: OpPlan, Files: []File{{Name: "device.conf", BaseSHA256: conffile.Hash([]byte(b)), Content: []byte(next)}}}); resp.Error == ErrHomeForbidden {
+			t.Errorf("new library 31 at %s: %+v", h, resp)
+		}
+	}
+}
+
 func TestRejectNotWritable(t *testing.T) {
 	e := newEnv(t)
 	e.refused("duplicate stanza", Request{Op: OpPlan, Files: []File{e.edit("device.conf", "Library: 30 CHANNEL: 00 TARGET: 08 LUN: 00", "Library: 10 CHANNEL: 00 TARGET: 08 LUN: 00")}}, ErrNotWritable)

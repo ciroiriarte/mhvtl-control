@@ -156,6 +156,7 @@ const (
 	// ErrMhvtlConfDerived: the new mhvtl.conf is not the current one with
 	// only editable values changed (deriveMhvtlConf).
 	ErrMhvtlConfDerived = "mhvtl_conf_not_derived"
+	ErrHomeForbidden    = "home_forbidden"
 	ErrHomeInUse        = "home_in_use"
 	ErrNotWritable      = "not_writable"
 	ErrInvalid          = "invalid"

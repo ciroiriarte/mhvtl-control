@@ -119,8 +119,10 @@ func deriveMhvtlConf(cur, next []byte) error {
 // stays in device.conf may change its media home, through its own "Home
 // directory" or MHVTL_HOME_PATH, only when the old home holds no cartridge
 // and no other library uses it. Otherwise the move is mhvtl-move-home's. A
-// new library may have any home; validate checks its barcodes against the
-// cartridges already there.
+// new library may have any home validate.HomeProblem allows; validate
+// checks its barcodes against the cartridges already there. A "Home
+// directory" the change sets, for a new library or an old one, must pass
+// validate.HomeProblem: mktape and make_vtl_media create the home as root.
 func checkHomes(cur, next config.Inventory, curDefault, nextDefault string) error {
 	homeOf := func(l config.Library, def string) string {
 		if l.HomeDir != "" {
@@ -133,6 +135,11 @@ func checkHomes(cur, next config.Inventory, curDefault, nextDefault string) erro
 		for i := range cur.Libraries {
 			if cur.Libraries[i].ID == nl.ID {
 				cl = &cur.Libraries[i]
+			}
+		}
+		if nl.HomeDir != "" && (cl == nil || cl.HomeDir != nl.HomeDir) {
+			if p := validate.HomeProblem(nl.HomeDir); p != "" {
+				return refuse(ErrHomeForbidden, "library %d: Home directory %q cannot be a media home: %s", nl.ID, nl.HomeDir, p)
 			}
 		}
 		if cl == nil {
