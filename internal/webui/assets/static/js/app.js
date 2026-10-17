@@ -2193,7 +2193,10 @@
     });
     var db = listBlock("Cartridges leaving their element", disp, "");
     if (db) { box.appendChild(db); }
-    box.appendChild(mk("p", { class: "muted", text: "library_contents is written with the live placement, so the diff includes cartridges moved since the file was written." }));
+    // A library that is not running keeps its file's placement (notes).
+    var nb = listBlock("Placement", coerceArray(cfgStage.data.notes).map(String), "");
+    if (nb) { box.appendChild(nb); }
+    box.appendChild(mk("p", { class: "muted", text: "library_contents of a running library is written with the live placement, so the diff includes cartridges moved since the file was written." }));
 
     var editable = cfgEditable();
     var check = editButton("Check", "Check the pending changes with the apply helper", function () { checkStage(); });
