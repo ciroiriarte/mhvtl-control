@@ -104,7 +104,6 @@ fi
 # mhvtl-control-apply-recover.service is what turns configuration writes on.
 # The helper's template is started by its socket alone.
 %tmpfiles_create %{_tmpfilesdir}/mhvtl-control.conf
-%{_presetdir}/50-mhvtl-control.preset
 %if 0%{?suse_version}
 %service_add_post mhvtl-control.service mhvtl-control-apply.socket mhvtl-control-apply-recover.service
 %else
