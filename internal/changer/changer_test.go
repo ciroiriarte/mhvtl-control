@@ -588,3 +588,21 @@ func TestLocatorFindReportedSerial(t *testing.T) {
 		}
 	}
 }
+
+// Two changers that report the same unit serial number, such as two IBM
+// 03584 libraries whose serials share their first 10 characters, or a
+// changer and a re-export of it, are refused rather than the first taken.
+func TestLocatorFindAmbiguous(t *testing.T) {
+	root := t.TempDir()
+	fakeSysfs(t, root, "sg0", "8", "XYZZY_4000")
+	fakeSysfs(t, root, "sg1", "8", "XYZZY_4000")
+	fakeSysfs(t, root, "sg2", "1", "XYZZY_4000") // a tape drive does not count
+	loc := &Locator{SysRoot: root, DevRoot: "/dev"}
+	_, err := loc.FindBySerial("XYZZY_4000", scsi.PeripheralMediumChanger)
+	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "/dev/sg0") || !strings.Contains(err.Error(), "/dev/sg1") {
+		t.Errorf("two changers: err = %v", err)
+	}
+	if p, err := loc.FindBySerial("XYZZY_4000", scsi.PeripheralSequential); err != nil || p != "/dev/sg2" {
+		t.Errorf("tape = %q, %v; want /dev/sg2", p, err)
+	}
+}
