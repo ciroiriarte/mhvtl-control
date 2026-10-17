@@ -1081,3 +1081,45 @@ func TestForceLoadedSince(t *testing.T) {
 		t.Errorf("stopped: %v", s.calls)
 	}
 }
+
+// TestExecRollbackHeld: the start fails with libraries 10 and 30 both
+// held offline. Nothing puts them online before the rollback, whose
+// guardedStop takes them over; when it fails at library 10, library 30,
+// which it never reached, is put back online.
+func TestExecRollbackHeld(t *testing.T) {
+	e, s := newExecEnv(t)
+	dc := string(e.read("device.conf"))
+	i := strings.Index(dc, "Drive: 31 ")
+	next := strings.Replace(dc[:i], " Compression type: lzo", " Compression type: zlib", 1) +
+		strings.Replace(dc[i:], " Compression type: lzo", " Compression type: zlib", 1)
+	req := Request{Op: OpApply, Actor: "admin", Files: []File{{Name: "device.conf", BaseSHA256: e.sha("device.conf"), Content: []byte(next)}},
+		ExpectUnits: []string{"vtllibrary@10.service", "vtllibrary@30.service", "vtltape@11.service", "vtltape@31.service"}}
+	s.onStart = func(u string) {
+		if u == "vtllibrary@30.service" {
+			s.state["vtltape@31.service"] = "failed" // fails the start
+		}
+	}
+	// As the rollback begins, library 10 stops answering the queue, which
+	// fails the rollback's guardedStop at it.
+	e.cfg.JournalTail = func(context.Context, string) ([]byte, error) {
+		s.state["vtllibrary@10.service"] = "activating"
+		return nil, nil
+	}
+	e.rebuild()
+	resp := e.do(req)
+	if resp.Result != ResultError {
+		t.Fatalf("apply: %+v", resp)
+	}
+	first := s.index("offline 30", s.index("start vtllibrary@30.service", 0))
+	if first < 0 {
+		t.Fatalf("library 30 not held offline: %v", s.calls)
+	}
+	// After the hold, the rollback's online of 10 comes first, then 30's.
+	onl10, onl30 := s.index("online 10", first), s.index("online 30", first)
+	if onl10 < 0 || onl30 < onl10 || s.offline[30] {
+		t.Errorf("held libraries: %v (offline %v)", s.calls[first:], s.offline)
+	}
+	if strings.Count(strings.Join(s.calls[first:], ","), "online 30") != 1 {
+		t.Errorf("library 30 put online more than once: %v", s.calls[first:])
+	}
+}

@@ -253,6 +253,9 @@ type execution struct {
 	plan UnitPlan
 	it   *Intent
 	rb   string
+	// held are the libraries bringUp started and holds offline; a
+	// rollback's guardedStop takes them over.
+	held []int
 }
 
 // execute runs the apply sequence, plan 3.3 exec.go steps 3-12, for a
@@ -429,9 +432,9 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 		return x.step("start "+u, func() { x.it.Exec.Started = append(x.it.Exec.Started, u) })
 	})
 	if err != nil {
-		if !errors.Is(err, errKilled) {
-			h.online(offline)
-		}
+		// Left offline: the rollback stops them through guardedStop, and
+		// puts back online any it does not reach.
+		x.held = offline
 		return x.rollback(ctx, err)
 	}
 	if err := x.step("started", nil); err != nil {
@@ -979,6 +982,20 @@ func (x *execution) rollback(ctx context.Context, cause error) Response {
 	}
 	if err == nil {
 		err = h.removeIntent()
+	}
+	if err != nil && !errors.Is(err, errKilled) {
+		// A held library guardedStop did not reach is still offline.
+		reached := map[int]bool{}
+		for _, ls := range again {
+			reached[ls.ID] = true
+		}
+		var left []int
+		for _, id := range x.held {
+			if !reached[id] {
+				left = append(left, id)
+			}
+		}
+		h.online(left)
 	}
 	if err != nil {
 		return Response{Result: ResultError, Error: ErrInternal, Conflicts: resp.Conflicts,
