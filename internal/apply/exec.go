@@ -925,7 +925,8 @@ func (x *execution) forcedReport() []ForcedUnload {
 // fails leaves the intent for recovery.
 //
 // It runs on a context of its own: the apply's may have been cancelled by
-// SIGTERM, which leaves stopSlack to roll back in.
+// SIGTERM, which leaves stopSlack before systemd's SIGKILL; the rollback
+// then gets sigtermRollback of it.
 func (x *execution) rollback(ctx context.Context, cause error) Response {
 	if errors.Is(cause, errKilled) {
 		return killed(cause)
@@ -933,7 +934,7 @@ func (x *execution) rollback(ctx context.Context, cause error) Response {
 	h := x.h
 	budget := x.plan.Budget()
 	if ctx.Err() != nil {
-		budget = stopSlack
+		budget = sigtermRollback
 	}
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
 	defer cancel()
