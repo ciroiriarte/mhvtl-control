@@ -87,6 +87,30 @@ test("usedAddresses and usedIDs read device.conf as GET /config gives it", () =>
   assert.deepStrictEqual(core.usedAddresses(config), [{ channel: 0, target: 0, lun: 0 }, { channel: 0, target: 1, lun: 0 }, { channel: 0, target: 9, lun: 0 }]);
   assert.deepStrictEqual(core.usedSerials(config), ["XYZZY_A", "XYZZY_A1", "SA"]);
   assert.deepStrictEqual(core.usedIDs(null), []);
+  assert.deepStrictEqual(core.usedNAAs({ libraries: [{ id: 10, naa: "10:22:33:44:ab:00:00:00", drives: [{ id: 11, naa: "" }] }] }), ["10:22:33:44:ab:00:00:00"]);
+});
+
+// The stage's device.conf, a second wizard run in the same stage avoids
+// what the first staged (4b pre-review M1).
+const stagedConf = "VERSION: 5\n\nLibrary: 20 CHANNEL: 00 TARGET: 02 LUN: 00\n Vendor identification: IBM\n Unit serial number: MHV0020\n" +
+  " NAA: 20:22:33:44:ab:00:02:00\n\nDrive: 21 CHANNEL: 00 TARGET: 03 LUN: 00\n Library ID: 20 Slot: 01\n Unit serial number: MHV002001\n" +
+  " NAA: 20:22:33:44:ab:00:03:00\n# Drive: 99 CHANNEL: 00 TARGET: 15 LUN: 00\n";
+
+test("stagedDevices reads the stage's device.conf headers, serials and NAAs", () => {
+  assert.deepStrictEqual(core.stagedDevices({ files: { "device.conf": stagedConf } }), [
+    { id: 20, channel: 0, target: 2, lun: 0, serial: "MHV0020", naa: "20:22:33:44:ab:00:02:00" },
+    { id: 21, channel: 0, target: 3, lun: 0, serial: "MHV002001", naa: "20:22:33:44:ab:00:03:00" },
+  ]);
+  assert.deepStrictEqual(core.stagedDevices({ files: {} }), []);
+  assert.deepStrictEqual(core.stagedDevices(null), []);
+  const config = { libraries: [{ id: 10, channel: 0, target: 0, lun: 0, serial: "XYZZY_A", naa: "10:22:33:44:ab:00:00:00", drives: [] }] };
+  const stage = { files: { "device.conf": stagedConf } };
+  assert.deepStrictEqual(core.usedIDs(config, stage), [10, 20, 21]);
+  assert.deepStrictEqual(core.usedSerials(config, stage), ["XYZZY_A", "MHV0020", "MHV002001"]);
+  assert.deepStrictEqual(core.usedAddresses(config, stage).map((a) => a.target), [0, 2, 3]);
+  assert.deepStrictEqual(core.usedNAAs(config, stage), ["10:22:33:44:ab:00:00:00", "20:22:33:44:ab:00:02:00", "20:22:33:44:ab:00:03:00"]);
+  const ibm = pers.libraries.find((l) => l.init_fn === "init_ibm3584");
+  assert.strictEqual(core.wizardDefaults(config, ibm, stage).id, 30);
 });
 
 test("wizardDefaults clamp to the personality and avoid what is taken", () => {
@@ -103,8 +127,10 @@ test("serials and NAA: within the 10-character policy, unique by ID and address"
   assert.strictEqual(core.driveSerial(20, 1, 2), "MHV002001");
   assert.strictEqual(core.driveSerial(1020, 3, 120), "MHV1020003");
   assert.ok(core.driveSerial(1023, 512, 512).length <= 10);
-  assert.strictEqual(core.naaFor(20, 0, 10, 0), "14:22:33:44:ab:00:0a:00");
-  assert.strictEqual(core.naaFor(300, 1, 2, 3), "2c:22:33:44:ab:01:02:03");
+  // Decimal, as generate_device_conf's printf %02d writes it.
+  assert.strictEqual(core.naaFor(20, 0, 10, 0), "20:22:33:44:ab:00:10:00");
+  assert.strictEqual(core.naaFor(5, 1, 2, 3), "05:22:33:44:ab:01:02:03");
+  assert.strictEqual(core.naaFor(300, 0, 12, 0), "300:22:33:44:ab:00:12:00");
 });
 
 test("driveVendorFor: the vendor a drive product is sold under", () => {
@@ -144,6 +170,12 @@ test("wizardErrors: counts within the limits, IDs, serials and home", () => {
   assert.deepStrictEqual(core.wizardErrors(wiz, lim, { ids: [], serials: ["MHV002002"] }), ["Serial MHV002002, for drive 2, is taken."]);
   assert.deepStrictEqual(core.wizardErrors(Object.assign({}, wiz, { driveProduct: "" }), lim, { ids: [], serials: [] }), ["Choose a drive model."]);
   assert.deepStrictEqual(core.wizardErrors(Object.assign({}, wiz, { targets: [2] }), lim, { ids: [], serials: [] }), ["Not enough free SCSI targets on channel 0."]);
+  // NAAs: the library's and each drive's (4b pre-review L1).
+  assert.deepStrictEqual(core.wizardErrors(wiz, lim, { ids: [], serials: [], naas: ["20:22:33:44:ab:00:03:00"] }), ["NAA 20:22:33:44:ab:00:03:00, for drive 1, is taken."]);
+  assert.deepStrictEqual(core.wizardErrors(wiz, lim, { ids: [], serials: [], naas: ["20:22:33:44:ab:00:02:00"] }), ["NAA 20:22:33:44:ab:00:02:00, for the library, is taken."]);
+  // Drives need a vendor (4b pre-review L2).
+  assert.deepStrictEqual(core.wizardErrors(Object.assign({}, wiz, { driveVendor: " ", driveProduct: "other" }), lim, { ids: [], serials: [] }), ["Drive vendor identification is required."]);
+  assert.deepStrictEqual(core.wizardErrors(Object.assign({}, wiz, { driveVendor: "", drives: 0 }), lim, { ids: [], serials: [] }), []);
 });
 
 test("wizardRequests: the library, then each drive, as the write routes take them", () => {
@@ -155,7 +187,7 @@ test("wizardRequests: the library, then each drive, as the write routes take the
       { key: "Vendor identification", value: "IBM" },
       { key: "Product identification", value: "03584L32" },
       { key: "Unit serial number", value: "MHV0020" },
-      { key: "NAA", value: "14:22:33:44:ab:00:02:00" },
+      { key: "NAA", value: "20:22:33:44:ab:00:02:00" },
     ] },
   });
   assert.deepStrictEqual(reqs[2], {
@@ -164,7 +196,7 @@ test("wizardRequests: the library, then each drive, as the write routes take the
       { key: "Vendor identification", value: "IBM" },
       { key: "Product identification", value: "ULT3580-TD8" },
       { key: "Unit serial number", value: "MHV002002" },
-      { key: "NAA", value: "14:22:33:44:ab:00:04:00" },
+      { key: "NAA", value: "20:22:33:44:ab:00:04:00" },
     ] },
   });
   const homed = core.wizardRequests(Object.assign({}, wiz, { home: "/srv/vtl20", drives: 0 }));

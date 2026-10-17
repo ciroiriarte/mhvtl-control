@@ -866,7 +866,30 @@
   }
 
   // devices lists every library and drive of GET /config.
-  function devices(config) {
+  // stagedDevices are the devices of the stage's device.conf (stageData is
+  // its GET /config/stages answer): each Library or Drive header's ID and
+  // address, with the stanza's serial and NAA. Only a staged device.conf is
+  // read; one the stage leaves alone is GET /config's.
+  function stagedDevices(stageData) {
+    var conf = stageData && stageData.files && stageData.files["device.conf"];
+    var out = [], cur = null;
+    if (typeof conf !== "string") { return out; }
+    conf.split("\n").forEach(function (line) {
+      var h = /^(?:Library|Drive):\s*(\d+)\s+CHANNEL:\s*(\d+)\s+TARGET:\s*(\d+)\s+LUN:\s*(\d+)/.exec(line);
+      if (h) {
+        cur = { id: Number(h[1]), channel: Number(h[2]), target: Number(h[3]), lun: Number(h[4]), serial: "", naa: "" };
+        out.push(cur);
+        return;
+      }
+      var a = /^\s+(Unit serial number|NAA):\s*(.*?)\s*$/.exec(line);
+      if (cur && a) { cur[a[1] === "NAA" ? "naa" : "serial"] = a[2]; }
+    });
+    return out;
+  }
+
+  // devices are config's devices, then those the stage's device.conf has:
+  // what the wizard must not reuse.
+  function devices(config, stageData) {
     var out = [];
     coerceArray(config && config.libraries).forEach(function (l) {
       if (!l) { return; }
@@ -874,30 +897,37 @@
       coerceArray(l.drives).forEach(function (d) { if (d) { out.push(d); } });
     });
     coerceArray(config && config.standalone_drives).forEach(function (d) { if (d) { out.push(d); } });
+    var seen = {};
+    out.forEach(function (d) { seen[coerceNumber(d.id)] = true; });
+    stagedDevices(stageData).forEach(function (d) { if (!seen[d.id]) { out.push(d); } });
     return out;
   }
 
-  function usedIDs(config) {
-    return devices(config).map(function (d) { return coerceNumber(d.id); });
+  function usedIDs(config, stageData) {
+    return devices(config, stageData).map(function (d) { return coerceNumber(d.id); });
   }
 
-  function usedAddresses(config) {
-    return devices(config).map(function (d) {
+  function usedAddresses(config, stageData) {
+    return devices(config, stageData).map(function (d) {
       return { channel: coerceNumber(d.channel), target: coerceNumber(d.target), lun: coerceNumber(d.lun) };
     });
   }
 
-  function usedSerials(config) {
-    return devices(config).map(function (d) { return String(d.serial || ""); }).filter(function (s) { return s !== ""; });
+  function usedSerials(config, stageData) {
+    return devices(config, stageData).map(function (d) { return String(d.serial || ""); }).filter(function (s) { return s !== ""; });
+  }
+
+  function usedNAAs(config, stageData) {
+    return devices(config, stageData).map(function (d) { return String(d.naa || ""); }).filter(function (s) { return s !== ""; });
   }
 
   // wizardDefaults are the wizard's starting values: a free library ID,
   // and 20 storage slots, 4 MAP slots and 2 drives, within personality
   // p's limits.
-  function wizardDefaults(config, p) {
+  function wizardDefaults(config, p, stageData) {
     var lim = createLimits(p);
     var drives = Math.min(2, lim.drives);
-    var id = nextLibraryID(usedIDs(config), drives);
+    var id = nextLibraryID(usedIDs(config, stageData), drives);
     return { id: id, slots: Math.min(20, lim.slots), maps: Math.min(4, lim.maps), drives: Math.min(drives, createLimits(p, id).drives) };
   }
 
@@ -915,13 +945,14 @@
     return librarySerial(libID) + pad(coerceNumber(slot), Math.max(2, String(coerceNumber(count)).length));
   }
 
-  function hex2(n) { return pad((coerceNumber(n) & 0xff).toString(16), 2); }
+  function dec2(n) { return pad(coerceNumber(n), 2); }
 
-  // naaFor is the NAA mhVTL's generate_device_conf writes, in hex: the
-  // library ID, then the device's channel, target and LUN, which no two
-  // devices share.
+  // naaFor is the NAA mhVTL's generate_device_conf writes: the library ID,
+  // then the device's channel, target and LUN, which no two devices share,
+  // each printed "%02d", in decimal digits
+  // (https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/generate_device_conf.in#L86).
   function naaFor(libID, channel, target, lun) {
-    return [hex2(libID), "22", "33", "44", "ab", hex2(channel), hex2(target), hex2(lun)].join(":");
+    return [dec2(libID), "22", "33", "44", "ab", dec2(channel), dec2(target), dec2(lun)].join(":");
   }
 
   // driveVendorFor is the vendor a drive product is sold under, for its
@@ -938,12 +969,14 @@
 
   // wizardErrors checks the wizard's values w (id, vendor, product,
   // serial, home, slots, maps, drives, driveProduct, targets) against the
-  // limits and what device.conf already uses (taken: {ids, serials}).
+  // limits and what device.conf and the stage already use (taken: {ids,
+  // serials, naas}).
   function wizardErrors(w, lim, taken) {
     var errs = [];
-    var ids = {}, serials = {};
+    var ids = {}, serials = {}, naas = {};
     coerceArray(taken && taken.ids).forEach(function (i) { ids[coerceNumber(i)] = true; });
     coerceArray(taken && taken.serials).forEach(function (s) { serials[String(s)] = true; });
+    coerceArray(taken && taken.naas).forEach(function (s) { naas[String(s).toLowerCase()] = true; });
     var id = coerceNumber(w.id);
     if (!(Number.isInteger(id) && id >= 1 && id <= MAX_ID)) { errs.push("The library ID must be 1 to " + MAX_ID + "."); }
     if (!String(w.vendor || "").trim()) { errs.push("Vendor identification is required."); }
@@ -966,12 +999,20 @@
     if (ids[id]) { errs.push("ID " + id + ", for the library, is taken."); }
     if (serials[serial]) { errs.push("Serial " + serial + ", for the library, is taken."); }
     if (drives > 0 && !w.driveProduct) { errs.push("Choose a drive model."); }
+    if (drives > 0 && w.driveProduct && !String(w.driveVendor || driveVendorFor(w.driveProduct)).trim()) {
+      errs.push("Drive vendor identification is required.");
+    }
+    var targets = coerceArray(w.targets);
+    var libNAA = targets.length ? naaFor(id, 0, targets[0], 0) : "";
+    if (libNAA && naas[libNAA]) { errs.push("NAA " + libNAA + ", for the library, is taken."); }
     for (var i = 1; i <= drives; i++) {
       if (ids[id + i]) { errs.push("ID " + (id + i) + ", for drive " + i + ", is taken."); }
       var ds = driveSerial(id, i, drives);
       if (serials[ds]) { errs.push("Serial " + ds + ", for drive " + i + ", is taken."); }
+      var dn = i < targets.length ? naaFor(id, 0, targets[i], 0) : "";
+      if (dn && naas[dn]) { errs.push("NAA " + dn + ", for drive " + i + ", is taken."); }
     }
-    if (coerceArray(w.targets).length < 1 + drives) { errs.push("Not enough free SCSI targets on channel 0."); }
+    if (targets.length < 1 + drives) { errs.push("Not enough free SCSI targets on channel 0."); }
     return errs;
   }
 
@@ -1050,6 +1091,8 @@
     fmtCountdown: fmtCountdown,
     applyErrorAction: applyErrorAction,
     stageEditable: stageEditable,
+    stagedDevices: stagedDevices,
+    usedNAAs: usedNAAs,
     stageOutcome: stageOutcome,
     outcomeUnread: outcomeUnread,
     intField: intField,
