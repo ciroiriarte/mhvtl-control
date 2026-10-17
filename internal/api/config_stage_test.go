@@ -271,6 +271,7 @@ func TestConfigWriteRoutesGated(t *testing.T) {
 		{http.MethodPatch, "/api/v1/config/libraries/10/slots/1"},
 		{http.MethodDelete, "/api/v1/config/libraries/10/slots/1"},
 		{http.MethodPost, "/api/v1/config/apply"},
+		{http.MethodPatch, "/api/v1/config/system"},
 		{http.MethodDelete, "/api/v1/config/stages/0123"},
 	}
 	anon := newWriteEnv(t, nil)

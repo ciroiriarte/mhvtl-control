@@ -228,6 +228,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/config/libraries/{id}/slots", s.handleConfigSlotsAdd)
 	mux.HandleFunc("PATCH /api/v1/config/libraries/{id}/slots/{n}", s.handleConfigSlotPatch)
 	mux.HandleFunc("DELETE /api/v1/config/libraries/{id}/slots/{n}", s.handleConfigSlotDelete)
+	mux.HandleFunc("PATCH /api/v1/config/system", s.handleConfigSystemPatch)
 	mux.HandleFunc("POST /api/v1/config/apply", s.handleConfigApply)
 	mux.HandleFunc("GET /api/v1/config/stages/{id}", s.handleConfigStage)
 	mux.HandleFunc("DELETE /api/v1/config/stages/{id}", s.handleConfigStageDelete)
