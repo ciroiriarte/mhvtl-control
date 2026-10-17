@@ -229,7 +229,24 @@ func (h *Helper) idleLoaded(ctx context.Context, d config.Drive) (bool, error) {
 // duplicates there. A MAP pre-fill, which make_vtl_media never creates
 // (:313), is refused by validation (media.not_in_home) before this runs.
 func (h *Helper) checkMediaPlan(c *checked) error {
-	if c.plan.NewBarcodes == 0 || media.PerLibraryHome(h.cfg.MakeVTLMedia) {
+	if c.plan.NewBarcodes == 0 {
+		return nil
+	}
+	// make_vtl_media skips only an existing directory
+	// ([usr/cmd/make_vtl_media.in:365](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L365)),
+	// so it would run mktape on a bay cartridge's symlink in a Slot line,
+	// fail, and exit before the cartridges after it
+	// ([:380](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L380)).
+	for _, lib := range c.next.Libraries {
+		home := homeOf(lib, c.nextHome)
+		bay := bayIn(home)
+		for _, s := range lib.Slots {
+			if bay(s.Barcode) {
+				return refuse(ErrMedia, "library %d slot %d: %s is a bay cartridge (a symlink in %s), and make_vtl_media, which the apply runs for the new barcodes, would run mktape on it; move it back to the MAP first, or add the new barcodes in an apply of their own once it is there", lib.ID, s.Number, s.Barcode, home)
+			}
+		}
+	}
+	if media.PerLibraryHome(h.cfg.MakeVTLMedia) {
 		return nil
 	}
 	for _, lib := range c.next.Libraries {
@@ -615,7 +632,7 @@ func (x *execution) media(ctx context.Context) error {
 		x.h.cfg.Logf("systemctl restart %s: %v; checking the cartridges", mediaService, err)
 	}
 	var missing []string
-	for _, nb := range newSlotBarcodes(x.c.cur, x.c.next) {
+	for _, nb := range newSlotBarcodes(x.c.cur, x.c.next, x.c.nextHome) {
 		lib, _ := findLib(x.c.next, nb.lib)
 		home := homeOf(lib, x.c.nextHome)
 		if media.Exists(home, nb.barcode) {
@@ -652,7 +669,7 @@ func missingCartridges(c *checked) []string {
 			ids = append(ids, l.ID)
 		}
 		sort.Ints(ids)
-		for _, nb := range newSlotBarcodes(c.cur, c.next) {
+		for _, nb := range newSlotBarcodes(c.cur, c.next, c.nextHome) {
 			created[nb.barcode] = true
 		}
 	}
