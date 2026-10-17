@@ -27,19 +27,22 @@ type moveHomeJournal struct {
 	Step string `json:"step"`
 }
 
-// moveHomeSettled are the steps in which a move holds nothing half done:
-// planned (nothing touched yet), done, cleaned and rolled_back. They are
-// the steps in which `mhvtl-move-home status --quiet` exits 0 (plan 5.3,
-// "Media seeding guard"). Every other step (quiesced, copying, copied,
-// verified, switching, switched, restarted, cleaning) is a move in
-// progress or interrupted: its consumers may be stopped, its homes half
-// copied, and mhvtl.conf or device.conf about to be switched.
-var moveHomeSettled = map[string]bool{"planned": true, "done": true, "cleaned": true, "rolled_back": true}
+// moveHomeSettled are the steps in which a move is over: done, cleaned
+// and rolled_back. A planned move has touched nothing yet, but it was
+// planned against the configuration an apply would change, and running
+// it after the apply would switch homes from a stale plan, so it refuses
+// an apply too, with its own message: run it or cancel it first. Every
+// other step (quiesced, copying, copied, verified, switching, switched,
+// restarted, cleaning) is a move in progress or interrupted: its
+// consumers may be stopped, its homes half copied, and mhvtl.conf or
+// device.conf about to be switched.
+var moveHomeSettled = map[string]bool{"done": true, "cleaned": true, "rolled_back": true}
 
 // checkMoveHome refuses an apply while any move-home journal under dir is
-// in an unsettled step, or cannot be read: an apply then would write the
-// configuration the move is switching, or start the units it stopped
-// (plan 3.3, exec step 1). A missing dir is no move.
+// planned, in an unsettled step, or cannot be read: an apply then would
+// write the configuration the move is switching or was planned against,
+// or start the units it stopped (plan 3.3, exec step 1). A missing dir is
+// no move.
 func checkMoveHome(dir string) error {
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -48,7 +51,7 @@ func checkMoveHome(dir string) error {
 	if err != nil {
 		return fmt.Errorf("move-home journals: %w", err)
 	}
-	var busy []string
+	var busy, planned []string
 	for _, e := range ents {
 		if !e.IsDir() {
 			continue
@@ -61,13 +64,20 @@ func checkMoveHome(dir string) error {
 		if err != nil {
 			return refuse(ErrMoveHome, "%s: %v; settle the move with mhvtl-move-home first", path, err)
 		}
-		if !moveHomeSettled[step] {
+		switch {
+		case step == "planned":
+			planned = append(planned, e.Name())
+		case !moveHomeSettled[step]:
 			busy = append(busy, e.Name()+" ("+step+")")
 		}
 	}
 	if len(busy) > 0 {
 		sort.Strings(busy)
 		return refuse(ErrMoveHome, "media home moves in progress: %s; resume or roll them back with mhvtl-move-home first", strings.Join(busy, ", "))
+	}
+	if len(planned) > 0 {
+		sort.Strings(planned)
+		return refuse(ErrMoveHome, "media home moves planned and not run: %s; run or cancel them with mhvtl-move-home first, since the apply would change the configuration they were planned against", strings.Join(planned, ", "))
 	}
 	return nil
 }

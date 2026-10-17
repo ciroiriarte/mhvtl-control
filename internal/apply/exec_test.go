@@ -468,7 +468,7 @@ func TestExecRaced(t *testing.T) {
 }
 
 // TestExecBusy: apply.lock held by the daemon is busy; a move-home journal
-// in an unsettled step refuses too, a settled one does not.
+// planned or in an unsettled step refuses too, a settled one does not.
 func TestExecBusy(t *testing.T) {
 	e, _ := newExecEnv(t)
 	f, err := openApplyLock(e.cfg.ApplyLockDir)
@@ -483,13 +483,16 @@ func TestExecBusy(t *testing.T) {
 	}
 	f.Close()
 
-	for step, refused := range map[string]bool{"copying": true, "switched": true, "planned": false, "done": false, "cleaned": false, "rolled_back": false} {
+	for step, refused := range map[string]bool{"copying": true, "switched": true, "planned": true, "done": false, "cleaned": false, "rolled_back": false} {
 		dir := filepath.Join(e.cfg.MoveHomeDir, "m1")
 		os.MkdirAll(dir, 0o700)
 		os.WriteFile(filepath.Join(dir, "journal.json"), []byte(`{"step":"`+step+`"}`), 0o600)
 		resp := e.do(compression(e))
 		if got := resp.Error == ErrMoveHome; got != refused {
 			t.Errorf("move-home %s: %+v", step, resp)
+		}
+		if step == "planned" && (!strings.Contains(resp.Message, "m1") || !strings.Contains(resp.Message, "run or cancel")) {
+			t.Errorf("move-home planned: %q", resp.Message)
 		}
 		if resp.Result == ResultApplied {
 			e, _ = newExecEnv(t) // start over from the shipped files
