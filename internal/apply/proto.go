@@ -112,6 +112,10 @@ const (
 	// StateIncomplete: an apply died and left its intent; the next plan,
 	// apply or recover recovers it.
 	StateIncomplete = "incomplete_apply"
+	// StateIntentUnreadable: an apply died and left an intent.json the
+	// helper cannot read or does not trust; every change is refused with
+	// ErrIntentUnreadable until the operator recovers by hand.
+	StateIntentUnreadable = "intent_unreadable"
 )
 
 // Response is the helper's answer.
@@ -165,6 +169,7 @@ const (
 	ErrInvalid          = "invalid"
 	ErrNotImplemented   = "not_implemented"
 	ErrInternal         = "internal"
+	ErrIntentUnreadable = "intent_unreadable"
 )
 
 // refusal is a request the helper will not carry out.

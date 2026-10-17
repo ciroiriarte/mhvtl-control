@@ -90,6 +90,14 @@ func (h *Helper) saveIntent(it *Intent) error {
 
 // loadIntent returns the intent, nil when there is none.
 func (h *Helper) loadIntent() (*Intent, error) {
+	it, err := h.readIntent()
+	if err != nil {
+		return nil, refuse(ErrIntentUnreadable, "%v; recover by hand from the copies under %s, then remove %s", err, filepath.Join(h.cfg.StateDir, rollbackDir), h.intentPath())
+	}
+	return it, nil
+}
+
+func (h *Helper) readIntent() (*Intent, error) {
 	f, err := os.OpenFile(h.intentPath(), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -181,10 +189,10 @@ func (h *Helper) state() (string, error) {
 		return StateInProgress, nil
 	}
 	defer l.release()
-	if _, err := os.Lstat(h.intentPath()); err == nil {
+	if it, err := h.readIntent(); err != nil {
+		return StateIntentUnreadable, nil
+	} else if it != nil {
 		return StateIncomplete, nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return "", err
 	}
 	if err := h.checkLegacyEnv(); err != nil {
 		var r *refusal

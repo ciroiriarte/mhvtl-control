@@ -34,6 +34,9 @@ const (
 	// Incomplete: an apply died; the next plan, apply or recover recovers
 	// it.
 	Incomplete = apply.StateIncomplete
+	// IntentUnreadable: an apply died and left an intent the helper cannot
+	// read; it refuses every change until the operator recovers by hand.
+	IntentUnreadable = apply.StateIntentUnreadable
 )
 
 // Client calls the helper.
@@ -100,7 +103,7 @@ func (c *Client) Do(ctx context.Context, req apply.Request) (apply.Response, err
 }
 
 // Hello returns the helper's state: Absent, Present, LegacyEnv,
-// InProgress or Incomplete.
+// InProgress, Incomplete or IntentUnreadable.
 func (c *Client) Hello(ctx context.Context) (string, error) {
 	resp, err := c.Do(ctx, apply.Request{Op: apply.OpHello})
 	if errors.Is(err, ErrAbsent) {
@@ -115,7 +118,7 @@ func (c *Client) Hello(ctx context.Context) (string, error) {
 	switch resp.State {
 	case apply.StateReady:
 		return Present, nil
-	case LegacyEnv, InProgress, Incomplete:
+	case LegacyEnv, InProgress, Incomplete, IntentUnreadable:
 		return resp.State, nil
 	}
 	return "", fmt.Errorf("helper reported unknown state %q", resp.State)
