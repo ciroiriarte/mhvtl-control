@@ -44,10 +44,10 @@ type fakeSystem struct {
 	onListMap func(lib int) string
 	// offline are the libraries taken offline: their READ ELEMENT STATUS
 	// is NOT READY / OFFLINE (02/04/12) until online or a restart, as
-	// vtllibrary answers it (usr/cmd/vtllibrary.c:213-225 at d65d25f).
+	// vtllibrary answers it (usr/cmd/vtllibrary.c:213-225 at 852b78a).
 	// An online takes effect only with the next queue message to the
 	// library (pendingOnline): vtllibrary takes one message per pass of
-	// its loop (usr/cmd/vtllibrary.c:1865-1912).
+	// its loop (usr/cmd/vtllibrary.c:1877-1924).
 	offline, pendingOnline map[int]bool
 }
 

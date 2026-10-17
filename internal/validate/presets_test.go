@@ -7,7 +7,7 @@ import (
 )
 
 func TestPresets(t *testing.T) {
-	const l700Why = "the STK L-series (L180/L700) personality (init_stklxx, selected at usr/cmd/vtllibrary.c:1497) has no such page; use a model that has it, such as IBM 03584 or Quantum Scalar"
+	const l700Why = "the STK L-series (L180/L700) personality (init_stklxx, selected at usr/cmd/vtllibrary.c:1509) has no such page; use a model that has it, such as IBM 03584 or Quantum Scalar"
 	for _, tc := range []struct {
 		name          string
 		lib           config.Library

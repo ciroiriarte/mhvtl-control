@@ -186,7 +186,7 @@ type stopper struct {
 //     Result=success and it parses; journal, then move any .persist aside,
 //     trusted or not, fresh or not, because a .persist left in place wins
 //     over the merged library_contents
-//     ([usr/cmd/vtllibrary.c:980](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L980));
+//     ([usr/cmd/vtllibrary.c:980](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L980));
 //  8. return the source: the trusted .persist, else R1′.
 //
 // Steps 1-5 run for every library before any is stopped, so a race found
@@ -315,7 +315,7 @@ const barrierRetries = 3
 // offline (the apply held it offline, or died with it so), and vtllibrary
 // answers READ ELEMENT STATUS with NOT READY / OFFLINE (02/04/12) while
 // offline
-// ([usr/cmd/vtllibrary.c:213-225](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L213-L225)),
+// ([usr/cmd/vtllibrary.c:213-225](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L213-L225)),
 // so it is put online first, and READ ELEMENT STATUS waits for the
 // online to take effect (onlineBarrier); a changed MAP there reads R1′
 // again, up to
@@ -388,7 +388,7 @@ func (s *stopper) readOffline(ctx context.Context, sl StopLib, ls *LibStop) (cha
 // onlineBarrier puts library id online and waits until the online took
 // effect. vtllibrary takes one queue message per pass of its loop and
 // serves SCSI commands in the same loop
-// ([usr/cmd/vtllibrary.c:1865-1912](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L1865-L1912)),
+// ([usr/cmd/vtllibrary.c:1877-1924](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L1877-L1924)),
 // so a READ ELEMENT STATUS sent right after "online" can be served before
 // it and fail NOT READY / OFFLINE. Messages are taken in order: a reply to
 // a "list map" sent after "online" means the online was handled, the same
@@ -450,8 +450,8 @@ func (s *stopper) idleDrives(ctx context.Context, sl StopLib, ls *LibStop) error
 
 // stopWait bounds the wait for a unit to leave deactivating after a failed
 // or cancelled stop: TimeoutStopSec=10 of vtllibrary@ and vtltape@
-// ([etc/vtllibrary@.service.in:20](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtllibrary@.service.in#L20),
-// [etc/vtltape@.service.in:17](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtltape@.service.in#L17)),
+// ([etc/vtllibrary@.service.in:20](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/vtllibrary@.service.in#L20),
+// [etc/vtltape@.service.in:17](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/vtltape@.service.in#L17)),
 // after which systemd kills it, plus a margin.
 const stopWait = 15 * time.Second
 
@@ -592,8 +592,8 @@ func (s *stopper) stop(ctx context.Context, sl StopLib, ls *LibStop) error {
 
 // fileSource is the source of an inactive library: the file vtllibrary
 // would load at its next start, by the rule of __init_slot_info
-// ([usr/cmd/vtllibrary.c:958-991](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L958-L991)
-// at d65d25f):
+// ([usr/cmd/vtllibrary.c:958-991](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L958-L991)
+// at 852b78a):
 // .persist when PERSIST is on, it exists, and library_contents.N is not
 // newer by st_mtime in whole seconds; else library_contents.N.
 func (s *stopper) fileSource(sl StopLib, ls *LibStop) error {

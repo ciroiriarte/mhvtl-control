@@ -402,7 +402,7 @@ func trimASCII(v []byte) string {
 // PerLibraryHome reports whether the make_vtl_media at path (or found in
 // PATH) has the --per-library-home option, the marker of
 // markh794/mhvtl#276 (usr/cmd/make_vtl_media.in:43,271, upstream master
-// 993b193). make_vtl_media is a shell script, so its text names the option
+// 852b78a). make_vtl_media is a shell script, so its text names the option
 // that --help lists; reading it runs nothing.
 func PerLibraryHome(path string) bool {
 	if !strings.Contains(path, "/") {

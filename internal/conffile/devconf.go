@@ -3,7 +3,7 @@
 // exact bytes, so rendering an unedited file reproduces it byte for byte, and
 // an edit rewrites only the lines it touches.
 //
-// Citations of mhVTL source lines refer to upstream master 6458223
+// Citations of mhVTL source lines refer to upstream master 852b78a
 // (github.com/markh794/mhvtl).
 //
 // Every writer must call Writable on the model it is about to write, and
@@ -12,14 +12,14 @@
 // Known gaps, for the editor's validation and apply phases (4.3, 5). Those
 // marked [writer] must be closed before any writer is wired:
 //   - [writer] The media home is read by find_media_home_directory (mhvtl
-//     usr/vtllib.c:1673-1737), not like other attributes: its "found" flag
+//     usr/vtllib.c:1673-1740), not like other attributes: its "found" flag
 //     is never reset, so the first " Home directory:" line after the
 //     library's header wins even when it is in a later stanza, and sscanf
-//     "%s" (:1720) cuts the path at its first blank. A home path with a
+//     "%s" (:1723) cuts the path at its first blank. A home path with a
 //     blank, and a " Home directory:" line outside its library's stanza,
 //     are not flagged here.
 //   - [writer] mhVTL's other readers of device.conf are not modelled. The
-//     systemd generator (usr/cmd/mhvtl-device-conf-generator.c:229-247)
+//     systemd generator (usr/cmd/mhvtl-device-conf-generator.c:229-262)
 //     needs "Library: " or "Drive: " in column 1 with exactly one space,
 //     so it skips "Library:10" and "Library:\t10", which vtllibrary
 //     reads; it parses the id with strtol base 0, so "Drive: 011" starts
@@ -28,7 +28,7 @@
 //     '$1 == "Drive:"', so it too skips "Library:10", and it takes an
 //     indented " Drive: 12" line, which the model reads as an attribute.
 //   - [writer] make_vtl_media reads both files with awk, not like
-//     vtllibrary (usr/cmd/make_vtl_media.in:304, :313). '/Library:/ {print
+//     vtllibrary (usr/cmd/make_vtl_media.in:341, :364). '/Library:/ {print
 //     $2}' is unanchored: a commented-out "# Library: 20 ..." line prints
 //     "Library:", so the script looks for library_contents.Library: and
 //     exits whatever the other files hold ("#Library: 20", with no space,
@@ -187,8 +187,8 @@ func lineProblem(l Line) string {
 // ending aside). mhVTL's parsers disagree on whether it ends a record. They
 // read lines with readline (mhvtl usr/vtllib.c:1064), which drops a '\n'
 // past the first byte, then test:
-//   - strlen(b) == 1 in mhvtl usr/cmd/vtllibrary.c:740 and :1281, and
-//     mhvtl usr/cmd/vtltape.c:2137;
+//   - strlen(b) == 1 in mhvtl usr/cmd/vtllibrary.c:740 and :1282, and
+//     mhvtl usr/cmd/vtltape.c:2141;
 //   - strlen(b) < 3 in mhvtl usr/vtllib.c:1710 (find_media_home_directory).
 //
 // An empty line, LF or CRLF ("\r" alone, strlen 1), separates records for
@@ -196,7 +196,7 @@ func lineProblem(l Line) string {
 // such as "  " or " \r", separate only for the home-directory lookup, and
 // three or more for none. Inside a Drive record, a line vtltape does not end
 // the record at (strlen 2 or more) also reaches its sscanf " Compression:
-// factor %d enabled %d" (mhvtl usr/cmd/vtltape.c:2204), which returns EOF on
+// factor %d enabled %d" (mhvtl usr/cmd/vtltape.c:2219), which returns EOF on
 // it; vtltape takes that as a match and loads uninitialised compression
 // settings. Every non-empty white-space line is flagged, not just the ones
 // they disagree on, so no edit has to reason about them.
@@ -264,8 +264,8 @@ type Stanza struct {
 	// HasAddress is set when the header carries CHANNEL, TARGET and LUN.
 	// Without them the header is an ambiguous Problem: sscanf returns 1 or
 	// 2, which vtltape and vtllibrary take as a match, and they copy an
-	// uninitialised mhvtl_ctl (mhvtl usr/cmd/vtltape.c:2078, :2146, used by
-	// add_lu at :2684; usr/cmd/vtllibrary.c:1224, :1290). Only the
+	// uninitialised mhvtl_ctl (mhvtl usr/cmd/vtltape.c:2081, :2155, used by
+	// add_lu at :2709; usr/cmd/vtllibrary.c:1224, :1296). Only the
 	// changer's element descriptor gets a defined SCSI ID for a bare
 	// "Drive: N", 0 (vtllibrary.c:682-684). Without an address Channel,
 	// Target and LUN stay 0, so internal/config projects such a header as
@@ -323,11 +323,11 @@ func (c *DeviceConf) index() {
 		if cur >= 0 && !isComment(l.Text) {
 			switch {
 			case ambiguousBlank(l) && c.stanzas[cur].Kind == "Drive" && cLen(l) > 1:
-				problem(i, true, "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record, and vtltape's Compression sscanf (vtltape.c:2204) takes it as a match and loads uninitialised compression settings; make it empty")
+				problem(i, true, "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record, and vtltape's Compression sscanf (vtltape.c:2219) takes it as a match and loads uninitialised compression settings; make it empty")
 			case ambiguousBlank(l):
 				problem(i, true, "white-space line inside a record: mhVTL's parsers disagree on whether it ends the record; make it empty")
 			case cLen(l) == 2 && (l.Text[0] == ' ' || l.Text[0] == '\t'):
-				problem(i, true, "two-byte line inside a record: strlen 2 is blank to strlen(b) < 3 (vtllib.c:1710) but not to strlen(b) == 1 (vtllibrary.c:740, :1281, vtltape.c:2137)")
+				problem(i, true, "two-byte line inside a record: strlen 2 is blank to strlen(b) < 3 (vtllib.c:1710) but not to strlen(b) == 1 (vtllibrary.c:740, :1282, vtltape.c:2141)")
 			}
 		}
 		text := strings.TrimRight(l.Text, " \t\r")
@@ -357,20 +357,20 @@ func (c *DeviceConf) index() {
 				continue
 			}
 			// The systemd generator reads the id with strtol base 0
-			// (mhvtl usr/cmd/mhvtl-device-conf-generator.c:238, :243), so it starts
+			// (mhvtl usr/cmd/mhvtl-device-conf-generator.c:238, :251), so it starts
 			// "Drive: 011" as vtltape@9; vtltape reads 11.
 			if id := strings.TrimLeft(text[len(st.Kind)+1:], " \t\v\f\r"); len(id) > 1 && id[0] == '0' && id[1] >= '0' && id[1] <= '9' {
 				problem(i, true, "%s id with a leading 0: the systemd generator reads it as octal, mhVTL as decimal", st.Kind)
 			}
 			switch {
 			case !st.HasAddress && st.Kind == "Drive":
-				problem(i, true, "Drive %d has no CHANNEL, TARGET and LUN: vtltape registers it at an uninitialised address (vtltape.c:2078, :2146)", st.ID)
+				problem(i, true, "Drive %d has no CHANNEL, TARGET and LUN: vtltape registers it at an uninitialised address (vtltape.c:2081, :2155)", st.ID)
 			case !st.HasAddress:
-				problem(i, true, "Library %d has no CHANNEL, TARGET and LUN: vtllibrary registers it at an uninitialised address (vtllibrary.c:1224, :1290)", st.ID)
+				problem(i, true, "Library %d has no CHANNEL, TARGET and LUN: vtllibrary registers it at an uninitialised address (vtllibrary.c:1224, :1296)", st.ID)
 			}
 			// mhVTL's parsers follow one kind of record each and only a
-			// blank line ends it (vtllibrary.c:677-740 and :1281-1293,
-			// vtltape.c:2137-2148): a header of the other kind leaves the
+			// blank line ends it (vtllibrary.c:677-740 and :1282-1305,
+			// vtltape.c:2141-2163): a header of the other kind leaves the
 			// open record running, so its attributes apply to both.
 			if cur >= 0 && c.stanzas[cur].Kind != st.Kind {
 				problem(i, true, "%s header with no blank line after %s %d: mhVTL reads what follows as part of %s %d too",
@@ -420,9 +420,9 @@ func (c *DeviceConf) index() {
 			}
 			// mhVTL does not settle a repeated key one way: a string read
 			// by conf_value keeps its last non-empty value, PERSIST is
-			// true once any line says so (vtllibrary.c:1323-1328), and an
+			// true once any line says so (vtllibrary.c:1335-1340), and an
 			// invalid Compression type, Backoff or commandtimeout keeps the
-			// earlier value (vtltape.c:2184-2199, vtllibrary.c:1332-1341).
+			// earlier value (vtltape.c:2199-2214, vtllibrary.c:1344-1353).
 			for _, a := range st.Attrs {
 				if a.Key == key {
 					problem(i, true, "%s repeated (first at line %d): mhVTL does not always keep the last one; keep one line", key, a.Line+1)
@@ -439,7 +439,7 @@ func (c *DeviceConf) index() {
 
 	// vtllibrary's update_drive_details applies a drive's attributes only
 	// from its " Library ID:" line on (mhvtl usr/cmd/vtllibrary.c:686-738,
-	// upstream master 993b193), while vtltape reads the whole stanza. One
+	// upstream master 852b78a), while vtltape reads the whole stanza. One
 	// above it gives the drive itself one value and the changer another
 	// (or none): for Unit serial number, the serial the changer reports for
 	// the drive slot stays the library_contents Drive line's.
@@ -478,7 +478,7 @@ func (c *DeviceConf) index() {
 }
 
 // changerReads holds the drive attributes vtllibrary's update_drive_details
-// reads (mhvtl usr/cmd/vtllibrary.c:716-738, upstream master 993b193).
+// reads (mhvtl usr/cmd/vtllibrary.c:716-738, upstream master 852b78a).
 var changerReads = map[string]bool{
 	"Unit serial number":     true,
 	"Product identification": true,
@@ -507,7 +507,7 @@ func (c *DeviceConf) attrValue(i int) string {
 
 // parseStanzaHeader parses "Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00" or
 // a Drive header with the sscanf pattern mhVTL uses (mhvtl
-// usr/cmd/vtllibrary.c:1283, usr/cmd/vtltape.c:2139). ok is set when sscanf
+// usr/cmd/vtllibrary.c:1284, usr/cmd/vtltape.c:2143). ok is set when sscanf
 // reads at least the id; HasAddress when it reads all four numbers. Text
 // after LUN is ignored, as sscanf ignores it.
 func parseStanzaHeader(text string) (st Stanza, ok bool) {

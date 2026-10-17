@@ -55,16 +55,16 @@ func (p Placement) holds() map[string]bool {
 
 // MaxBarcodeLen is the longest barcode vtllibrary accepts; add_barcode exits
 // on a longer one (mhvtl include/vtllib.h MAX_BARCODE_LEN :90,
-// usr/cmd/vtllibrary.c add_barcode :324-328, upstream master 993b193).
+// usr/cmd/vtllibrary.c add_barcode :324-328, upstream master 852b78a).
 const MaxBarcodeLen = 16
 
 // barcodeChars reports whether b is only ASCII letters and digits, the
 // barcodes mhvtl-control creates (media.ValidBarcode) and upstream's
 // generate_library_contents writes ([A-Z0-9], etc/generate_library_contents.in
-// :94-119, upstream master 993b193). vtllibrary takes the first word of a
+// :94-119, upstream master 852b78a). vtllibrary takes the first word of a
 // Slot, MAP or Picker line as the barcode ("Slot %d: %s",
 // usr/cmd/vtllibrary.c:1045-1055), and vtltape opens the cartridge at
-// <home>/<barcode> (usr/vtlcart.c:1306); make_vtl_media passes awk's third
+// <home>/<barcode> (usr/vtlcart.c:1316); make_vtl_media passes awk's third
 // field to "mktape -m" and to "rm -rf $LIBHOME/$a" unchecked
 // (usr/cmd/make_vtl_media.in:364-377). So a
 // '/', a "..", or a shell metacharacter would reach outside the home as

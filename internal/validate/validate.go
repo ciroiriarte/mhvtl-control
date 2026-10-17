@@ -360,7 +360,7 @@ func HomeProblem(path string) string {
 // checkHomes refuses a "Home directory" with a blank in it, and one
 // HomeProblem rejects.
 // find_media_home_directory reads it with sscanf "%s" and stops at the blank
-// (usr/vtllib.c:1723, upstream master 993b193), and make_vtl_media uses
+// (usr/vtllib.c:1723, upstream master 852b78a), and make_vtl_media uses
 // $LIBHOME unquoted (usr/cmd/make_vtl_media.in:355-377), so neither finds the
 // directory meant. One the configuration in force already has unchanged is a
 // pre-existing warning, whatever else the change touches in the library.

@@ -117,7 +117,7 @@ func DefaultConfig(configDir, version string) Config {
 		ApplyLockDir: ApplyLockDir,
 		MoveHomeDir:  MoveHomeDir,
 		// SYSTEMD_GENERATOR_DIR, /usr/lib/systemd/system-generators by
-		// default (mhvtl config.mk at d65d25f), under /lib before the
+		// default (mhvtl config.mk at 852b78a), under /lib before the
 		// /usr merge.
 		Generators: []string{
 			"/usr/lib/systemd/system-generators/mhvtl-device-conf-generator",

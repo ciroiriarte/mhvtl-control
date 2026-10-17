@@ -34,8 +34,8 @@ const homeKey = "MHVTL_HOME_PATH"
 
 // capacityRE is a positive decimal without leading zeros: one spelling
 // per value. mktape reads it as decimal (sscanf PRId64, usr/cmd/mktape.c:164
-// at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/mktape.c#L164),
+// at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/mktape.c#L164),
 // but shell arithmetic would read 0600 as octal.
 var capacityRE = regexp.MustCompile(`^[1-9][0-9]*$`)
 
@@ -60,13 +60,13 @@ func (h *Helper) checkLegacyEnv() error {
 // directory other than --config-dir. vtllibrary and vtltape take it from
 // MHVTL_CONFIG_PATH in the environment, else from the first
 // MHVTL_CONFIG_PATH line of mhvtl.conf (markh794/mhvtl usr/vtllib.c:279-308
-// at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/vtllib.c#L279-L308),
+// at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/vtllib.c#L279-L308),
 // and their units load mhvtl.conf as an EnvironmentFile too
 // (etc/vtllibrary@.service.in:16,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtllibrary@.service.in#L16,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/vtllibrary@.service.in#L16,
 // and etc/vtltape@.service.in:13,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtltape@.service.in#L13). The helper's
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/vtltape@.service.in#L13). The helper's
 // own environment stands for the one systemd gives it; mhvtl.conf is checked
 // as it is and as the request leaves it. A mhvtl.conf with a Problem leaves
 // the path mhVTL reads unclear (conffile.MhvtlConf), so it is refused too.
@@ -94,8 +94,8 @@ func (h *Helper) checkConfigPath(cur, next *conffile.MhvtlConf) error {
 // conffile's round-trip setter and each matching its pattern.
 // make_vtl_media sources mhvtl.conf as bash, as root, from
 // mhvtl-media.service (markh794/mhvtl usr/cmd/make_vtl_media.in:307 at
-// d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L307),
+// 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/make_vtl_media.in#L307),
 // so any other line or value would be code run as root: the request's
 // bytes are never trusted, only compared with the helper's derivation.
 func deriveMhvtlConf(cur, next []byte) error {
@@ -204,8 +204,8 @@ func checkHomes(cur, next config.Inventory, curDefault, nextDefault string) erro
 
 // homeEmpty fails when dir holds a directory (a cartridge) or a symbolic
 // link (a raw-disk cartridge, ensure_symlink in markh794/mhvtl
-// usr/raw_bay_ops.c:96-132 at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/raw_bay_ops.c#L96-L132),
+// usr/raw_bay_ops.c:96-132 at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/raw_bay_ops.c#L96-L132),
 // or cannot be listed. A missing dir is empty.
 func homeEmpty(dir string) error {
 	ents, err := os.ReadDir(dir)

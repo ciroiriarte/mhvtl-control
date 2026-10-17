@@ -121,7 +121,7 @@ func isDigit(c byte, hex bool) bool {
 const naaFormat = " NAA: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x"
 
 // ScanNAA returns what sscanf " NAA: %02x:...:%02x" (mhvtl
-// usr/cmd/vtltape.c:2217, usr/cmd/vtllibrary.c:1342) returns for an NAA
+// usr/cmd/vtltape.c:2236, usr/cmd/vtllibrary.c:1354) returns for an NAA
 // value: 8 for a valid one; 1 to 7 when mhVTL drops it for its default NAA;
 // 0 or -1 when it ignores the line.
 func ScanNAA(value string) int { return cScanf(" NAA: "+value, naaFormat) }
@@ -132,7 +132,7 @@ func ScanNAA(value string) int { return cScanf(" NAA: "+value, naaFormat) }
 func scanfProblem(kind, key, b string) string {
 	switch {
 	case key == "Compression" && kind == "Drive":
-		// vtltape.c:2204-2213 tests the first sscanf for truth: EOF (-1),
+		// vtltape.c:2219-2232 tests the first sscanf for truth: EOF (-1),
 		// from an empty value or one that stops inside "factor", is taken
 		// as a match, and so is "factor N" alone; both load uninitialised
 		// ints into the compression settings.
@@ -145,16 +145,16 @@ func scanfProblem(kind, key, b string) string {
 			}
 			return "Compression is neither 'factor N enabled M' nor a number: vtltape ignores it"
 		}
-		return "partial or empty Compression: vtltape's sscanf (vtltape.c:2204) takes it as a match and loads uninitialised compression settings; write 'factor N enabled M'"
+		return "partial or empty Compression: vtltape's sscanf (vtltape.c:2219) takes it as a match and loads uninitialised compression settings; write 'factor N enabled M'"
 	case key == "NAA":
 		switch n := cScanf(b, naaFormat); {
 		case n == 0:
 			return "NAA is not 8 hex bytes: mhVTL ignores it"
 		case n > 0 && n < 8:
-			return fmt.Sprintf("NAA has %d of 8 hex bytes: mhVTL drops it and uses its default (vtltape.c:2217, vtllibrary.c:1342)", n)
+			return fmt.Sprintf("NAA has %d of 8 hex bytes: mhVTL drops it and uses its default (vtltape.c:2236, vtllibrary.c:1354)", n)
 		}
 	case key == "Library ID" && kind == "Drive":
-		// vtltape reads only the number (conf_value, vtltape.c:2176).
+		// vtltape reads only the number (conf_value, vtltape.c:2191).
 		if n := cScanf(b, " Library ID: %ld Slot: %d"); n >= 0 && n != 2 {
 			return "Library ID without 'Slot: N': vtllibrary puts the drive in no slot (vtllibrary.c:686)"
 		}

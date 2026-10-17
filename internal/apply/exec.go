@@ -23,8 +23,8 @@ import (
 )
 
 // mediaService is mhVTL's oneshot that runs make_vtl_media
-// (etc/mhvtl-media.service.in at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/mhvtl-media.service.in).
+// (etc/mhvtl-media.service.in at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/etc/mhvtl-media.service.in).
 const mediaService = "mhvtl-media.service"
 
 // ExecJournal is the progress of the apply sequence, in intent.json. Each
@@ -222,8 +222,8 @@ func (h *Helper) idleLoaded(ctx context.Context, d config.Drive) (bool, error) {
 // checkMediaPlan runs the media refusals of plan 3.3 exec step 7 when the
 // apply adds pre-filled barcodes. make_vtl_media loops over every library
 // of device.conf; without the --per-library-home option of
-// markh794/mhvtl#276 (usr/cmd/make_vtl_media.in:43,271 at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L271)
+// markh794/mhvtl#276 (usr/cmd/make_vtl_media.in:43,271 at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/make_vtl_media.in#L271)
 // it creates every library's cartridges in MHVTL_HOME_PATH, so a library
 // with a home of its own and pre-filled slots, affected or not, would get
 // duplicates there. A MAP pre-fill, which make_vtl_media never creates
@@ -233,17 +233,17 @@ func (h *Helper) checkMediaPlan(c *checked) error {
 		return nil
 	}
 	// make_vtl_media skips only an existing directory
-	// ([usr/cmd/make_vtl_media.in:365](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L365)),
+	// ([usr/cmd/make_vtl_media.in:365](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/make_vtl_media.in#L365)),
 	// so it runs mktape on a bay cartridge's symlink in a Slot line.
 	// mktape takes the raw backend for it
-	// ([usr/vtlcart.c:168-179](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/vtlcart.c#L168-L179))
+	// ([usr/vtlcart.c:168-179](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/vtlcart.c#L168-L179))
 	// and, when the exclusive open succeeds, finds the cartridge existing
 	// and writes nothing
-	// ([usr/vtlcart_raw.c:575-585](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/vtlcart_raw.c#L575-L585)).
+	// ([usr/vtlcart_raw.c:575-585](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/vtlcart_raw.c#L575-L585)).
 	// The open fails when the device is busy or has no valid superblock
-	// ([:238](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/vtlcart_raw.c#L238)); mktape then fails,
+	// ([:238](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/vtlcart_raw.c#L238)); mktape then fails,
 	// and make_vtl_media exits before creating the cartridges after it
-	// ([usr/cmd/make_vtl_media.in:380](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L380)).
+	// ([usr/cmd/make_vtl_media.in:380](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/make_vtl_media.in#L380)).
 	for _, lib := range c.next.Libraries {
 		home := homeOf(lib, c.nextHome)
 		bay := bayIn(home)
@@ -631,8 +631,8 @@ func (x *execution) changes(merged map[string][]byte) ([]change, error) {
 
 // media restarts mhvtl-media.service and checks that every new cartridge
 // exists (plan 3.3 exec step 7). make_vtl_media exits 1 when mktape fails
-// for any library (usr/cmd/make_vtl_media.in:329 at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L329),
+// for any library (usr/cmd/make_vtl_media.in:329 at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/make_vtl_media.in#L329),
 // so its exit code is logged and the stat decides.
 func (x *execution) media(ctx context.Context) error {
 	if _, err := x.h.cfg.Systemctl(ctx, "restart", mediaService); err != nil {
@@ -663,7 +663,7 @@ func (x *execution) media(ctx context.Context) error {
 // would become an empty tape (mhvtl-control#43). The service runs
 // make_vtl_media, which creates every missing Slot barcode of every
 // library
-// ([usr/cmd/make_vtl_media.in:340-375](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/make_vtl_media.in#L340-L375)):
+// ([usr/cmd/make_vtl_media.in:340-375](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/make_vtl_media.in#L340-L375)):
 // when the apply restarts it for new barcodes every library is covered,
 // those new barcodes excepted; otherwise the libraries that start, whose
 // vtllibrary@ wants the service.
@@ -774,9 +774,9 @@ func startGroups(p UnitPlan) []unitGroup {
 // be active, up to startWait each. It returns the libraries it took
 // offline, which the caller puts back online.
 //
-// Residual, stated: vtllibrary comes up online (usr/cmd/vtllibrary.c:1715
-// at d65d25f), discards the messages queued before it (:1745-1749), and
-// opens its transport (:1752) before it handles messages, so hosts can
+// Residual, stated: vtllibrary comes up online (usr/cmd/vtllibrary.c:1727
+// at 852b78a), discards the messages queued before it (:1757-1761), and
+// opens its transport (:1764) before it handles messages, so hosts can
 // reach it for about one poll interval before the offline.
 func (h *Helper) bringUp(ctx context.Context, groups []unitGroup, record func(string) error) ([]int, error) {
 	var all []string
@@ -1374,8 +1374,8 @@ func forcedOf(ls *LibStop) []ForcedUnload {
 
 // persistOn reports whether library id has PERSIST on: any PERSIST line
 // whose value begins with yes or true, in any case, as vtllibrary reads it
-// (usr/cmd/vtllibrary.c:1323-1327 at d65d25f,
-// https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L1323-L1327).
+// (usr/cmd/vtllibrary.c:1335-1339 at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L1335-L1339).
 func persistOn(dc *conffile.DeviceConf, id int) bool {
 	st, ok := dc.Stanza("Library", id)
 	if !ok {

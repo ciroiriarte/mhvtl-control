@@ -55,31 +55,31 @@ type Personality struct {
 	Rule Rule
 }
 
-// Rules is customise_lu (vtllibrary.c:1524-1541) and its helpers
-// (vtllibrary.c:1478-1522) in evaluation order. An OR of two strncasecmp is
+// Rules is customise_lu (vtllibrary.c:1536-1553) and its helpers
+// (vtllibrary.c:1490-1534) in evaluation order. An OR of two strncasecmp is
 // two rules.
 var Rules = []Rule{
-	{Vendor: "stk", ProductPrefix: "SL500", InitFn: "init_stkslxx", Source: "usr/cmd/vtllibrary.c:1488"},
-	{Vendor: "stk", ProductPrefix: "L20", InitFn: "init_stkl20", Source: "usr/cmd/vtllibrary.c:1490"},
-	{Vendor: "stk", ProductPrefix: "L40", InitFn: "init_stkl20", Source: "usr/cmd/vtllibrary.c:1492"},
-	{Vendor: "stk", ProductPrefix: "L80", InitFn: "init_stkl20", Source: "usr/cmd/vtllibrary.c:1494"},
-	{Vendor: "stk", InitFn: "init_stklxx", Source: "usr/cmd/vtllibrary.c:1497"},
-	{Vendor: "IBM", ProductPrefix: "3573-TL", InitFn: "init_ibmts3100", Source: "usr/cmd/vtllibrary.c:1479"},
-	{Vendor: "IBM", ProductPrefix: "03584", InitFn: "init_ibm3584", Source: "usr/cmd/vtllibrary.c:1481"},
-	{Vendor: "IBM", InitFn: "init_default_smc", Source: "usr/cmd/vtllibrary.c:1484"},
-	{Vendor: "HP", ProductPrefix: "MSL", InitFn: "init_hp_msl_smc", Source: "usr/cmd/vtllibrary.c:1506"},
-	{Vendor: "HP", ProductPrefix: "1x8", InitFn: "init_hp_msl_smc", Source: "usr/cmd/vtllibrary.c:1507"},
-	{Vendor: "HP", InitFn: "init_hp_eml_smc", Source: "usr/cmd/vtllibrary.c:1510"},
-	{ProductPrefix: "OVERLAND", InitFn: "init_overland_smc", Source: "usr/cmd/vtllibrary.c:1531"},
-	{Vendor: "ADIC", InitFn: "init_scalar_smc", Source: "usr/cmd/vtllibrary.c:1533"},
-	{Vendor: "QUANTUM", InitFn: "init_scalar_smc", Source: "usr/cmd/vtllibrary.c:1534"},
-	{ProductPrefix: "Scalar", InitFn: "init_scalar_smc", Source: "usr/cmd/vtllibrary.c:1535"},
+	{Vendor: "stk", ProductPrefix: "SL500", InitFn: "init_stkslxx", Source: "usr/cmd/vtllibrary.c:1500"},
+	{Vendor: "stk", ProductPrefix: "L20", InitFn: "init_stkl20", Source: "usr/cmd/vtllibrary.c:1502"},
+	{Vendor: "stk", ProductPrefix: "L40", InitFn: "init_stkl20", Source: "usr/cmd/vtllibrary.c:1504"},
+	{Vendor: "stk", ProductPrefix: "L80", InitFn: "init_stkl20", Source: "usr/cmd/vtllibrary.c:1506"},
+	{Vendor: "stk", InitFn: "init_stklxx", Source: "usr/cmd/vtllibrary.c:1509"},
+	{Vendor: "IBM", ProductPrefix: "3573-TL", InitFn: "init_ibmts3100", Source: "usr/cmd/vtllibrary.c:1491"},
+	{Vendor: "IBM", ProductPrefix: "03584", InitFn: "init_ibm3584", Source: "usr/cmd/vtllibrary.c:1493"},
+	{Vendor: "IBM", InitFn: "init_default_smc", Source: "usr/cmd/vtllibrary.c:1496"},
+	{Vendor: "HP", ProductPrefix: "MSL", InitFn: "init_hp_msl_smc", Source: "usr/cmd/vtllibrary.c:1518"},
+	{Vendor: "HP", ProductPrefix: "1x8", InitFn: "init_hp_msl_smc", Source: "usr/cmd/vtllibrary.c:1519"},
+	{Vendor: "HP", InitFn: "init_hp_eml_smc", Source: "usr/cmd/vtllibrary.c:1522"},
+	{ProductPrefix: "OVERLAND", InitFn: "init_overland_smc", Source: "usr/cmd/vtllibrary.c:1543"},
+	{Vendor: "ADIC", InitFn: "init_scalar_smc", Source: "usr/cmd/vtllibrary.c:1545"},
+	{Vendor: "QUANTUM", InitFn: "init_scalar_smc", Source: "usr/cmd/vtllibrary.c:1546"},
+	{ProductPrefix: "Scalar", InitFn: "init_scalar_smc", Source: "usr/cmd/vtllibrary.c:1547"},
 	// strncasecmp(vendor_id, "SPECTRA ", 7) compares "SPECTRA" only.
-	{Vendor: "SPECTRA", ProductPrefix: "PYTHON", InitFn: "init_spectra_logic_smc", Source: "usr/cmd/vtllibrary.c:1514"},
-	{Vendor: "SPECTRA", ProductPrefix: "GATOR", InitFn: "init_spectra_gator_smc", Source: "usr/cmd/vtllibrary.c:1516"},
-	{Vendor: "SPECTRA", ProductPrefix: "215", InitFn: "init_spectra_215_smc", Source: "usr/cmd/vtllibrary.c:1518"},
-	{Vendor: "SPECTRA", InitFn: "init_spectra_logic_smc", Source: "usr/cmd/vtllibrary.c:1521"},
-	{InitFn: "init_default_smc", Source: "usr/cmd/vtllibrary.c:1540"},
+	{Vendor: "SPECTRA", ProductPrefix: "PYTHON", InitFn: "init_spectra_logic_smc", Source: "usr/cmd/vtllibrary.c:1526"},
+	{Vendor: "SPECTRA", ProductPrefix: "GATOR", InitFn: "init_spectra_gator_smc", Source: "usr/cmd/vtllibrary.c:1528"},
+	{Vendor: "SPECTRA", ProductPrefix: "215", InitFn: "init_spectra_215_smc", Source: "usr/cmd/vtllibrary.c:1530"},
+	{Vendor: "SPECTRA", InitFn: "init_spectra_logic_smc", Source: "usr/cmd/vtllibrary.c:1533"},
+	{InitFn: "init_default_smc", Source: "usr/cmd/vtllibrary.c:1552"},
 }
 
 // Models holds the library personalities by init function. Values are the
@@ -229,7 +229,7 @@ type Limits struct {
 // Element N of a type sits at start+N-1, so with the next higher start at
 // next the largest N is next-start, and with none, 0x10000-start: past the
 // next start vtllibrary drops the element (check_overflow, mhvtl
-// usr/cmd/vtllibrary.c:761-849, upstream master 993b193), and package
+// usr/cmd/vtllibrary.c:761-849, upstream master 852b78a), and package
 // validate refuses it, as it does past the 16-bit address space.
 func (m Model) Limits() Limits {
 	starts := []uint16{m.StartPicker, m.StartMAP, m.StartDrive, m.StartStorage}
