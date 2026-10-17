@@ -68,6 +68,11 @@ func newExecEnv(t *testing.T) (*env, *fakeSystem) {
 		onStop: func(string) {}, onMedia: func() error { return nil }, onStart: func(string) {}}
 	e.cfg.Systemctl = s.systemctl
 	e.cfg.Queue, e.cfg.Devices = s, s
+	e.calls = func() []string {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return append([]string{}, s.calls...)
+	}
 	e.cfg.JournalTail = func(_ context.Context, unit string) ([]byte, error) { return []byte("tail of " + unit), nil }
 	e.rebuild()
 	// Every cartridge of the shipped configuration exists.
@@ -665,7 +670,7 @@ func TestExecLoaded(t *testing.T) {
 	if pr.Error != ErrDriveLoaded || pr.ForceToken == "" || pr.ForceExpires == nil {
 		t.Fatalf("plan: %+v", pr)
 	}
-	req.ForceToken = pr.ForceToken
+	req.ForceToken, req.ExpectUnits = pr.ForceToken, pr.Units
 	resp := e.do(req)
 	if resp.Result != ResultApplied {
 		t.Fatalf("forced apply: %+v", resp)
@@ -984,7 +989,7 @@ func TestExecInactiveLibraryLoaded(t *testing.T) {
 	if pr.Error != ErrDriveLoaded || pr.ForceToken == "" || !strings.Contains(pr.Message, "drive slot 2") {
 		t.Fatalf("plan: %+v", pr)
 	}
-	req.ForceToken = pr.ForceToken
+	req.ForceToken, req.ExpectUnits = pr.ForceToken, pr.Units
 	resp := e.do(req)
 	if resp.Result != ResultApplied {
 		t.Fatalf("forced apply: %+v", resp)

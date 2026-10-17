@@ -1,8 +1,10 @@
 package apply
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,5 +135,83 @@ func TestForceApply(t *testing.T) {
 	bad.ForceToken = tok
 	if resp := e.do(bad); resp.Error != ErrInvalid {
 		t.Errorf("validation error: %+v", resp)
+	}
+}
+
+// TestForceUnitSet: a forced apply stops and starts the vtltape@ of each
+// drive it unloads (plan amendment 2), so the plan refused with
+// drive_loaded lists those units already, the token binds them, and the
+// forced apply's expect_units must name them and its response lists them.
+func TestForceUnitSet(t *testing.T) {
+	forcedUnits := []string{"vtllibrary@10.service", "vtltape@11.service", "vtltape@12.service"}
+	e, s, req := loadedEnv(t)
+	plan := req
+	plan.Op = OpPlan
+	pr := e.do(plan)
+	if pr.Error != ErrDriveLoaded || fmt.Sprint(pr.Units) != fmt.Sprint(forcedUnits) {
+		t.Fatalf("plan: units %v, want %v (%+v)", pr.Units, forcedUnits, pr)
+	}
+	// The units of the change alone no longer do.
+	req.ForceToken = pr.ForceToken
+	if resp := e.do(req); resp.Result != ResultRefused || resp.Error != ErrUnit || !strings.Contains(resp.Message, "vtltape@12.service") {
+		t.Fatalf("forced apply with the unforced units: %+v", resp)
+	}
+	if s.has("stop vtllibrary@10.service") {
+		t.Errorf("stopped: %v", s.calls)
+	}
+	req.ExpectUnits = pr.Units
+	resp := e.do(req)
+	if resp.Result != ResultApplied || fmt.Sprint(resp.Units) != fmt.Sprint(forcedUnits) {
+		t.Fatalf("forced apply: %+v", resp)
+	}
+	if !s.before("stop vtltape@12.service", "start vtltape@12.service") {
+		t.Errorf("drive 12 not restarted: %v", s.calls)
+	}
+}
+
+// TestForceUnitSetContentsOnly is the VM case: an edit of library_contents
+// alone restarts only vtllibrary@10, but forced it restarts the loaded
+// drive's vtltape@ too, and says so.
+func TestForceUnitSetContentsOnly(t *testing.T) {
+	e, s := newExecEnv(t)
+	s.liveWith(10, func(inv *changer.Inventory) {
+		inv.Slots[1] = changer.SlotState{Number: 2}
+		inv.Drives[1] = changer.DriveState{Number: 2, Full: true, Barcode: "E01002L8", SourceSlot: 2}
+	})
+	s.loaded["XYZZY_A2"] = true
+	req := Request{Op: OpApply, Actor: "admin", Files: []File{e.edit("library_contents.10", "Slot 2: E01002L8\n", "Slot 2:\n")},
+		ExpectUnits: []string{"vtllibrary@10.service"}}
+	plan := req
+	plan.Op = OpPlan
+	pr := e.do(plan)
+	want := []string{"vtllibrary@10.service", "vtltape@12.service"}
+	if pr.Error != ErrDriveLoaded || fmt.Sprint(pr.Units) != fmt.Sprint(want) {
+		t.Fatalf("plan: units %v, want %v (%+v)", pr.Units, want, pr)
+	}
+	req.ForceToken, req.ExpectUnits = pr.ForceToken, pr.Units
+	resp := e.do(req)
+	if resp.Result != ResultApplied || fmt.Sprint(resp.Units) != fmt.Sprint(want) {
+		t.Fatalf("forced apply: %+v", resp)
+	}
+	if !s.has("start vtltape@12.service") {
+		t.Errorf("drive 12 not restarted: %v", s.calls)
+	}
+}
+
+// TestForceTokenNoLoaded: a force token on an apply that finds no loaded
+// drive is not used, and expect_units is checked against the change's own
+// units.
+func TestForceTokenNoLoaded(t *testing.T) {
+	e, s, req := loadedEnv(t)
+	plan := req
+	plan.Op = OpPlan
+	pr := e.do(plan)
+	delete(s.loaded, "XYZZY_A2")
+	s.liveWith(10, func(inv *changer.Inventory) {
+		inv.Slots[1] = changer.SlotState{Number: 2}
+	})
+	req.ForceToken, req.ExpectUnits = pr.ForceToken, pr.Units
+	if resp := e.do(req); resp.Result != ResultRefused || resp.Error != ErrUnit {
+		t.Fatalf("forced units with nothing loaded: %+v", resp)
 	}
 }
