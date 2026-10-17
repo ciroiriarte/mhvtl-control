@@ -41,18 +41,21 @@ func TestIdentities(t *testing.T) {
 		// The STK L-series page 80h has room for 11 characters, the IBM
 		// 03584's for 10.
 		{"library serial cut, STK", func(i *config.Inventory) { i.Libraries[0].Serial = "ABCDEFGHIJKL" },
-			[]string{`library 10: serial "ABCDEFGHIJKL" is 12 characters; the STK L-series (L180/L700) personality reports only the first 11 in VPD page 80h`}, nil},
+			[]string{`library 10: serial "ABCDEFGHIJKL" is 12 characters; the STK L-series (L180/L700) personality reports only the first 11 in VPD page 80h (update_stk_l_vpd_80)`}, nil},
 		{"library serial cut, IBM 03584", func(i *config.Inventory) {
 			i.Libraries[0].Vendor, i.Libraries[0].Product, i.Libraries[0].Serial = "IBM", "03584L32", "ABCDEFGHIJK"
-		}, []string{`library 10: serial "ABCDEFGHIJK" is 11 characters; the IBM 03584 personality reports only the first 10 in VPD page 80h`}, nil},
+		}, []string{`library 10: serial "ABCDEFGHIJK" is 11 characters; the IBM 03584 personality reports only the first 10 in VPD page 80h (update_ibm_3584_vpd_80)`}, nil},
+		{"library serial cut, default", func(i *config.Inventory) {
+			i.Libraries[0].Vendor, i.Libraries[0].Product, i.Libraries[0].Serial = "ACME", "ROBOT", "ABCDEFGHIJKLMNOP"
+		}, []string{`library 10: serial "ABCDEFGHIJKLMNOP" is 16 characters; the mhVTL default library personality reports only the first 15 in VPD page 80h (vtllibrary holds it in SCSI_SN_LEN bytes)`}, nil},
 		// Both report "XYZZY_4000", then the start of storage: the helper could not tell them apart.
 		{"two IBM 03584 report the same serial", func(i *config.Inventory) {
 			for k, sn := range []string{"XYZZY_400001", "XYZZY_400002"} {
 				i.Libraries[k].Vendor, i.Libraries[k].Product, i.Libraries[k].Serial = "IBM", "03584L32", sn
 			}
 		}, []string{
-			`library 10: serial "XYZZY_400001" is 12 characters; the IBM 03584 personality reports only the first 10 in VPD page 80h`,
-			`library 30: serial "XYZZY_400002" is 12 characters; the IBM 03584 personality reports only the first 10 in VPD page 80h`,
+			`library 10: serial "XYZZY_400001" is 12 characters; the IBM 03584 personality reports only the first 10 in VPD page 80h (update_ibm_3584_vpd_80)`,
+			`library 30: serial "XYZZY_400002" is 12 characters; the IBM 03584 personality reports only the first 10 in VPD page 80h (update_ibm_3584_vpd_80)`,
 			`library 10 and library 30 both report serial "XYZZY_4000\x00\x000400" in VPD page 80h`,
 		}, nil},
 		// Drive 11, an IBM LTO drive, reports XYZZY_A1 as 00XYZZY_A1.

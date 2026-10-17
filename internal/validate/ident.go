@@ -216,8 +216,14 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 				d, d.serial, len(d.serial), personality.Lookup(d.vendor, d.product).Name, MaxSerialLen)
 		case len(d.serial) > personality.Lookup(d.vendor, d.product).UnitSerialWidth():
 			p := personality.Lookup(d.vendor, d.product)
-			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; the %s personality reports only the first %d in VPD page 80h (personality.UnitSerialPage), so another library can report the same",
-				d, d.serial, len(d.serial), p.Name, p.UnitSerialWidth())
+			// The mhVTL function that builds the page: the personality's,
+			// else vtllibrary's own page of the serial it holds.
+			builder := "vtllibrary holds it in SCSI_SN_LEN bytes"
+			if c := p.UnitSerialCall; c != "" {
+				builder = c[:strings.Index(c, "(")]
+			}
+			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; the %s personality reports only the first %d in VPD page 80h (%s), so another library can report the same",
+				d, d.serial, len(d.serial), p.Name, p.UnitSerialWidth(), builder)
 		case len(d.serial) > MaxSerialLen:
 			r.warnf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; the %s personality reports it whole in VPD page 80h, but mhvtl-control's policy (not an mhVTL limit) and generate_device_conf keep serials to %d, and other personalities would cut it",
 				d, d.serial, len(d.serial), personality.Lookup(d.vendor, d.product).Name, MaxSerialLen)
