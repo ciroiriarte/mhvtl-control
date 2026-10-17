@@ -32,9 +32,9 @@
 #
 # Each scenario prints ok/FAIL per check and PASS/FAIL at its end; the run
 # ends with a summary and exits non-zero if any scenario failed. Requests
-# and responses go to OUTDIR/<scenario>/; a failed scenario also gets
-# OUTDIR/<scenario>/logs/ with the helper's journal, audit.jsonl, the
-# configuration, unit states, lsscsi and mtx status.
+# and responses go to OUTDIR/<scenario>/, and every scenario, passed or
+# failed, gets OUTDIR/<scenario>/logs/ with the journal of its run,
+# audit.jsonl, the configuration, unit states, lsscsi and mtx status.
 #
 # Test-only technique: the helper serves only processes in
 # mhvtl-control.service's cgroup (internal/apply/peer.go), so the client
@@ -892,8 +892,8 @@ main() {
 			results+=("PASS $s")
 		else
 			results+=("FAIL $s")
-			collect "$s" "$since"
 		fi
+		collect "$s" "$since"
 		log "${results[-1]}"
 	done
 	cp -p "$STATE_DIR/audit.jsonl" "$OUT/" 2>/dev/null || true
