@@ -125,7 +125,8 @@ func deriveMhvtlConf(cur, next []byte) error {
 
 // homeProblem is validate.HomeProblem on home as written and as it
 // resolves: the longest ancestor of home that exists, with its symbolic
-// links followed, then the rest. A home through a link into /usr, say,
+// links followed, then the rest. Only an ancestor that does not exist is
+// climbed past; one that cannot be looked at is refused. A home through a link into /usr, say,
 // is refused like /usr itself. A link planted after the check is not
 // caught; the home's parents are root's to write.
 func homeProblem(home string) string {
@@ -133,9 +134,13 @@ func homeProblem(home string) string {
 		return p
 	}
 	dir, rest := home, ""
-	for {
-		if _, err := os.Lstat(dir); err == nil {
+	for dir != "/" {
+		_, err := os.Lstat(dir)
+		if err == nil {
 			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "cannot resolve " + dir + ": " + err.Error()
 		}
 		rest = filepath.Join(filepath.Base(dir), rest)
 		dir = filepath.Dir(dir)
