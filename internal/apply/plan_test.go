@@ -3,6 +3,8 @@ package apply
 import (
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -82,7 +84,7 @@ func planOf(t *testing.T, cur, dc, mc string, contents map[int]bool) UnitPlan {
 	}
 	return derivePlan(conffile.ParseDeviceConf([]byte(cur)), conffile.ParseDeviceConf([]byte(dc)),
 		inv(cur), inv(dc), contents,
-		conffile.ParseMhvtlConf([]byte(planMhvtlConf)), conffile.ParseMhvtlConf([]byte(mc)))
+		conffile.ParseMhvtlConf([]byte(planMhvtlConf)), conffile.ParseMhvtlConf([]byte(mc)), "")
 }
 
 func TestDerivePlan(t *testing.T) {
@@ -234,7 +236,15 @@ func TestNewBarcodes(t *testing.T) {
 	next := config.Inventory{Libraries: []config.Library{{ID: 10, Slots: []config.Slot{
 		{Number: 1, Barcode: "A00001L8"}, {Number: 2, Barcode: "M00001L8"}, {Number: 3, Barcode: "B00001L8"}, {Number: 4},
 	}}}}
-	if n := newBarcodes(cur, next); n != 1 {
+	if n := newBarcodes(cur, next, ""); n != 1 {
 		t.Errorf("new barcodes %d, want 1", n)
+	}
+	// B00001L8 a bay cartridge, a symlink in the home: not new.
+	home := t.TempDir()
+	if err := os.Symlink("/dev/null", filepath.Join(home, "B00001L8")); err != nil {
+		t.Fatal(err)
+	}
+	if n := newBarcodes(cur, next, home); n != 0 {
+		t.Errorf("new barcodes with a bay cartridge %d, want 0", n)
 	}
 }

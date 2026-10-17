@@ -85,8 +85,9 @@ func driveUnit(id int) string   { return fmt.Sprintf("vtltape@%d.service", id) }
 //
 // Stanzas compare by header address and attributes, so a comment edit
 // restarts nothing. contents lists the libraries whose library_contents
-// the request writes with other bytes, or deletes.
-func derivePlan(curDC, nextDC *conffile.DeviceConf, cur, next config.Inventory, contents map[int]bool, curConf, nextConf *conffile.MhvtlConf) UnitPlan {
+// the request writes with other bytes, or deletes. home is the new
+// configuration's default media home.
+func derivePlan(curDC, nextDC *conffile.DeviceConf, cur, next config.Inventory, contents map[int]bool, curConf, nextConf *conffile.MhvtlConf, home string) UnitPlan {
 	curLibs, nextLibs := libraryIDs(cur), libraryIDs(next)
 	curDrives, nextDrives := drivesOf(cur), drivesOf(next)
 	curHomes, nextHomes := homesOf(cur), homesOf(next)
@@ -244,7 +245,7 @@ func derivePlan(curDC, nextDC *conffile.DeviceConf, cur, next config.Inventory, 
 			p.RollbackGuardDrives++
 		}
 	}
-	p.NewBarcodes = newBarcodes(cur, next)
+	p.NewBarcodes = newBarcodes(cur, next, home)
 	if confChanged(curConf, nextConf, "VTL_DEBUG") {
 		p.Notes = append(p.Notes, "VTL_DEBUG applies on the next load of the mhvtl kernel module")
 	}
@@ -486,7 +487,9 @@ func confChanged(a, b *conffile.MhvtlConf, key string) bool {
 	return av != bv || aok != bok
 }
 
-func newBarcodes(cur, next config.Inventory) int { return len(newSlotBarcodes(cur, next)) }
+func newBarcodes(cur, next config.Inventory, home string) int {
+	return len(newSlotBarcodes(cur, next, home))
+}
 
 type newBarcode struct {
 	lib     int
@@ -494,8 +497,12 @@ type newBarcode struct {
 }
 
 // newSlotBarcodes are the Slot barcodes of next that cur lists nowhere:
-// the cartridges make_vtl_media is to create.
-func newSlotBarcodes(cur, next config.Inventory) []newBarcode {
+// the cartridges make_vtl_media is to create. A bay cartridge is none: the
+// bay monitor placed it as a symlink in the library's home (home is the
+// default home), and a host may have moved it from the MAP, where the
+// file does not list it, to a storage slot; mktape must never run against
+// it.
+func newSlotBarcodes(cur, next config.Inventory, home string) []newBarcode {
 	have := map[string]bool{}
 	for _, l := range cur.Libraries {
 		for _, s := range l.Slots {
@@ -510,8 +517,9 @@ func newSlotBarcodes(cur, next config.Inventory) []newBarcode {
 	}
 	var out []newBarcode
 	for _, l := range next.Libraries {
+		bay := bayIn(homeOf(l, home))
 		for _, s := range l.Slots {
-			if s.Barcode != "" && !have[s.Barcode] {
+			if s.Barcode != "" && !have[s.Barcode] && !bay(s.Barcode) {
 				have[s.Barcode] = true
 				out = append(out, newBarcode{l.ID, s.Barcode})
 			}

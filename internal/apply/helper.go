@@ -493,7 +493,7 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 	if err != nil {
 		return c, err
 	}
-	plan := derivePlan(c.curDC, c.nextDC, cur, nextInv, contents, curConf, nextConf)
+	plan := derivePlan(c.curDC, c.nextDC, cur, nextInv, contents, curConf, nextConf, nextHome)
 	c.plan = &plan
 	// A plan reports the units; the daemon echoes them in expect_units on
 	// the apply, which alone must name them exactly.

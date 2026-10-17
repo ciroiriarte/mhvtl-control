@@ -1123,3 +1123,31 @@ func TestExecRollbackHeld(t *testing.T) {
 		t.Errorf("library 30 put online more than once: %v", s.calls[first:])
 	}
 }
+
+// TestExecBayCartridgeInSlot: a bay cartridge (a symlink in the home) a
+// host moved to a storage slot is no new barcode: written to a Slot line
+// it applies without restarting mhvtl-media.service. With a real new
+// barcode in the same apply, make_vtl_media would run mktape on it, so the
+// apply is refused.
+func TestExecBayCartridgeInSlot(t *testing.T) {
+	e, s := newExecEnv(t)
+	if err := os.Symlink("/dev/null", filepath.Join(e.home, "R00001L8")); err != nil {
+		t.Fatal(err)
+	}
+	req := Request{Op: OpApply, Files: []File{e.edit("library_contents.10", "Slot 24:\n", "Slot 24: R00001L8\n")}, ExpectUnits: []string{"vtllibrary@10.service"}}
+	if resp := e.do(req); resp.Result != ResultApplied || s.has("restart mhvtl-media.service") {
+		t.Fatalf("bay cartridge: %+v", resp)
+	}
+
+	e, s = newExecEnv(t)
+	os.Symlink("/dev/null", filepath.Join(e.home, "R00001L8"))
+	f := e.edit("library_contents.10", "Slot 24:\n", "Slot 24: R00001L8\n")
+	f.Content = []byte(strings.Replace(string(f.Content), "Slot 25:\n", "Slot 25: E01025L8\n", 1))
+	req = Request{Op: OpApply, Files: []File{f}, ExpectUnits: []string{"vtllibrary@10.service"}}
+	if resp := e.do(req); resp.Result != ResultRefused || resp.Error != ErrMedia || !strings.Contains(resp.Message, "R00001L8") {
+		t.Errorf("with a new barcode: %+v", resp)
+	}
+	if s.has("restart mhvtl-media.service") || s.has("stop vtllibrary@10.service") {
+		t.Errorf("ran: %v", s.calls)
+	}
+}
