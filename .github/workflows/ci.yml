@@ -21,7 +21,7 @@ jobs:
           repository: markh794/mhvtl
           # The commit the upstream citations and the personality tables
           # are checked against; a bump PR moves it with them.
-          ref: d65d25f350f66bbb8e9d572a0cb718f3052ec7da
+          ref: 852b78a7ae3add53ffdc418add5f14999762d788
           path: mhvtl-src
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
