@@ -50,9 +50,11 @@ export GOCACHE=%{_builddir}/.gocache GOTOOLCHAIN=local GOPROXY=off
 go test ./...
 
 %install
+# LIBEXECDIR is /usr/libexec, which the helper's units name, rather than
+# %%{_libexecdir}: that is /usr/lib on openSUSE Leap.
 make install DESTDIR=%{buildroot} BINDIR=%{_bindir} UNITDIR=%{_unitdir} \
     TMPFILESDIR=%{_tmpfilesdir} SYSCONFDIR=%{_sysconfdir} \
-    LOCALSTATEDIR=%{_localstatedir} MANDIR=%{_mandir}
+    LOCALSTATEDIR=%{_localstatedir} MANDIR=%{_mandir} LIBEXECDIR=%{_prefix}/libexec
 
 # The options file moved from /etc/mhvtl to /etc/mhvtl-control after 0.2.0.
 # rpm decides each file's fate before %%pre runs, so a copy %%pre put at the
@@ -72,7 +74,7 @@ if [ -f %{_sysconfdir}/mhvtl/mhvtl-control.env ] && [ ! -e %{_sysconfdir}/mhvtl-
     cp -p %{_sysconfdir}/mhvtl/mhvtl-control.env %{_sysconfdir}/mhvtl-control/mhvtl-control.env.rpm-migrate
 fi
 %if 0%{?suse_version}
-%service_add_pre mhvtl-control.service
+%service_add_pre mhvtl-control.service mhvtl-control-apply.socket mhvtl-control-apply-recover.service
 %endif
 
 %posttrans
@@ -94,32 +96,47 @@ fi
 
 %post
 # The unit masks /run/mhvtl-control-apply, so create it before any restart.
+# None of the units is enabled on install (the distributions' default
+# presets disable them): enabling mhvtl-control-apply.socket and
+# mhvtl-control-apply-recover.service is what turns configuration writes on.
+# The helper's template is started by its socket alone.
 %tmpfiles_create %{_tmpfilesdir}/mhvtl-control.conf
 %if 0%{?suse_version}
-%service_add_post mhvtl-control.service
+%service_add_post mhvtl-control.service mhvtl-control-apply.socket mhvtl-control-apply-recover.service
 %else
-%systemd_post mhvtl-control.service
+%systemd_post mhvtl-control.service mhvtl-control-apply.socket mhvtl-control-apply-recover.service
 %endif
 
 %preun
 %if 0%{?suse_version}
-%service_del_preun mhvtl-control.service
+%service_del_preun mhvtl-control.service mhvtl-control-apply.socket mhvtl-control-apply-recover.service
 %else
-%systemd_preun mhvtl-control.service
+%systemd_preun mhvtl-control.service mhvtl-control-apply.socket mhvtl-control-apply-recover.service
 %endif
 
 %postun
 %if 0%{?suse_version}
-%service_del_postun mhvtl-control.service
+%service_del_postun mhvtl-control.service mhvtl-control-apply.socket mhvtl-control-apply-recover.service
 %else
-%systemd_postun_with_restart mhvtl-control.service
+%systemd_postun_with_restart mhvtl-control.service mhvtl-control-apply.socket
+%systemd_postun mhvtl-control-apply-recover.service
 %endif
 
 %files
 %license LICENSE
 %doc README.md
 %{_bindir}/mhvtl-control
+%dir %{_prefix}/libexec/mhvtl-control
+%{_prefix}/libexec/mhvtl-control/mhvtl-control-apply
 %{_unitdir}/mhvtl-control.service
+%{_unitdir}/mhvtl-control-apply.socket
+%{_unitdir}/mhvtl-control-apply@.service
+%{_unitdir}/mhvtl-control-apply-recover.service
+# Ordering drop-ins for mhVTL's instances (after boot recovery).
+%dir %{_unitdir}/vtllibrary@.service.d
+%{_unitdir}/vtllibrary@.service.d/50-mhvtl-control-apply-recover.conf
+%dir %{_unitdir}/vtltape@.service.d
+%{_unitdir}/vtltape@.service.d/50-mhvtl-control-apply-recover.conf
 %{_tmpfilesdir}/mhvtl-control.conf
 %{_mandir}/man8/mhvtl-control.8*
 %dir %attr(0750,root,root) %{_sysconfdir}/mhvtl-control

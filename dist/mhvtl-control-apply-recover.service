@@ -1,0 +1,65 @@
+[Unit]
+Description=Recover an interrupted mhvtl-control configuration apply
+Documentation=https://github.com/ciroiriarte/mhvtl-control
+# Only when an apply died and left its intent journal.
+ConditionPathExists=/var/lib/mhvtl-control-apply/intent.json
+# Before any mhVTL unit: the drop-ins in vtllibrary@.service.d and
+# vtltape@.service.d order the instances after this unit (ordering only, so
+# the helper's own starts during an apply do not pull it in), and
+# mhvtl-media.service must not create media from half-written files.
+DefaultDependencies=no
+After=local-fs.target
+Before=mhvtl.target mhvtl-media.service
+
+[Service]
+Type=oneshot
+# Acts only on an apply of an earlier boot, with exclusive.lock free and no
+# vtllibrary@ or vtltape@ instance active; otherwise it exits 0 at once.
+ExecStart=/usr/libexec/mhvtl-control/mhvtl-control-apply --config-dir=/etc/mhvtl --recover-boot
+StandardOutput=journal
+StandardError=journal
+
+# The helper's sandbox, without the sg nodes. CAP_CHOWN: the restored file
+# is written as a root-owned temp file, fchown()ed to the original's owner
+# and renamed into place; fchown needs CAP_CHOWN.
+CapabilityBoundingSet=CAP_CHOWN
+NoNewPrivileges=yes
+ProtectSystem=strict
+# Only mhVTL's configuration. Not /run/mhvtl-control: tmpfiles may not have
+# created it this early (DefaultDependencies=no), and the daemon, whose lock
+# lives there, starts after mhvtl.target.
+ReadWritePaths=/etc/mhvtl
+StateDirectory=mhvtl-control-apply
+StateDirectoryMode=0700
+RuntimeDirectory=mhvtl-control-apply
+RuntimeDirectoryMode=0700
+# Kept after the oneshot exits: the helper's instances share it, and
+# mhvtl-control.service masks it, which fails if it is missing.
+RuntimeDirectoryPreserve=yes
+# The daemon's options file holds the API token; '-' because either path
+# may be absent.
+InaccessiblePaths=-/etc/mhvtl/mhvtl-control.env -/etc/mhvtl-control
+PrivateDevices=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+# Pulled in only when mhvtl.target starts (at boot, or a manual start of
+# the target), never by an instance start. Enabled together with the
+# helper's socket.
+WantedBy=mhvtl.target
