@@ -106,8 +106,8 @@ type LibStop struct {
 	// cartridge; the caller refuses them unless forced (drive_loaded).
 	LoadedDrives []ForcedUnload `json:"loaded_drives,omitempty"`
 	// Stopped are the units stopped, in order, each recorded before its
-	// stop was asked for; one whose stop failed stays only when it is no
-	// longer active.
+	// stop was asked for; one whose stop failed stays only when it is
+	// inactive or failed, or still deactivating after stopWait.
 	Stopped []string `json:"stopped,omitempty"`
 	// Result is the library unit's systemd Result= after the stop.
 	Result string `json:"result,omitempty"`
@@ -117,6 +117,9 @@ type LibStop struct {
 	After   Snapshot `json:"persist_after"`
 	Fresh   bool     `json:"persist_fresh"`
 	Trusted bool     `json:"persist_trusted"`
+	// Deactivating are the units still deactivating stopWait after their
+	// stop failed; the library's .persist is then not trusted.
+	Deactivating []string `json:"deactivating,omitempty"`
 	// PersistReason says why a fresh .persist was not trusted.
 	PersistReason string `json:"persist_reason,omitempty"`
 	// PersistData are the bytes of a trusted .persist, or of the .persist
@@ -140,6 +143,9 @@ type stopper struct {
 	configDir string
 	aside     string
 	mode      StopMode
+	// poll and wait are the interval and the bound of settled; zero
+	// means 200 ms and stopWait.
+	poll, wait time.Duration
 	// prepared runs once every library is prepared (R1′, offline, the
 	// barrier, TUR) and before the first stop, so that the offline set,
 	// R1′ and the MAP are durable: a helper killed between the offline
@@ -344,6 +350,55 @@ func (s *stopper) idleDrives(ctx context.Context, sl StopLib, ls *LibStop) error
 	return nil
 }
 
+// stopWait bounds the wait for a unit to leave deactivating after a failed
+// or cancelled stop: TimeoutStopSec=10 of vtllibrary@ and vtltape@
+// ([etc/vtllibrary@.service.in:20](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtllibrary@.service.in#L20),
+// [etc/vtltape@.service.in:17](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/etc/vtltape@.service.in#L17)),
+// after which systemd kills it, plus a margin.
+const stopWait = 15 * time.Second
+
+// settled reports whether unit u, whose stop failed, is down: inactive or
+// failed. A unit still deactivating is polled until it leaves that state,
+// up to stopWait; one that never does counts as down, being on its way
+// there, and is recorded in ls.Deactivating, which keeps the library's
+// .persist from being trusted. Any other state is up.
+func (s *stopper) settled(ctx context.Context, u string, ls *LibStop) (bool, error) {
+	poll, wait := s.poll, s.wait
+	if poll <= 0 {
+		poll = 200 * time.Millisecond
+	}
+	if wait <= 0 {
+		wait = stopWait
+	}
+	qctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), wait+5*time.Second)
+	defer cancel()
+	deadline := time.Now().Add(wait)
+	for {
+		state, err := s.show(qctx, u, "ActiveState")
+		if err != nil {
+			return false, err
+		}
+		switch state {
+		case "inactive", "failed":
+			return true, nil
+		case "deactivating":
+			if time.Now().After(deadline) {
+				ls.Deactivating = append(ls.Deactivating, u)
+				return true, nil
+			}
+		default:
+			return false, nil
+		}
+		t := time.NewTimer(poll)
+		select {
+		case <-qctx.Done():
+			t.Stop()
+			return false, qctx.Err()
+		case <-t.C:
+		}
+	}
+}
+
 // stop runs steps 6-8 for one library.
 func (s *stopper) stop(ctx context.Context, sl StopLib, ls *LibStop) error {
 	units := []string{libraryUnit(sl.Lib.ID)}
@@ -372,14 +427,12 @@ func (s *stopper) stop(ctx context.Context, sl StopLib, ls *LibStop) error {
 		ls.Stopped = append(ls.Stopped, u)
 		if _, err := s.cfg.Systemctl(ctx, "stop", u); err != nil {
 			// The stop may have taken effect anyway (a cancel after the
-			// job was queued): what decides is whether the unit is still
-			// active, asked on a context of its own.
-			qctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			state, serr := s.show(qctx, u, "ActiveState")
-			cancel()
-			if serr != nil || state == "active" {
+			// job was queued): what decides is the unit's state, asked on
+			// a context of its own.
+			down, serr := s.settled(ctx, u, ls)
+			if serr != nil || !down {
 				ls.Stopped = ls.Stopped[:len(ls.Stopped)-1]
-				return fmt.Errorf("systemctl stop %s: %w", u, err)
+				return fmt.Errorf("systemctl stop %s: %w", u, errors.Join(err, serr))
 			}
 			if ctx.Err() != nil {
 				return fmt.Errorf("systemctl stop %s: %w", u, err)
@@ -394,8 +447,11 @@ func (s *stopper) stop(ctx context.Context, sl StopLib, ls *LibStop) error {
 		return err
 	}
 	ls.Fresh = ls.After != ls.Before
-	ls.Trusted = ls.Active && ls.Fresh && ls.Result == "success"
-	if ls.Active && ls.Fresh && !ls.Trusted {
+	ls.Trusted = ls.Active && ls.Fresh && ls.Result == "success" && len(ls.Deactivating) == 0
+	switch {
+	case ls.Active && ls.Fresh && len(ls.Deactivating) > 0:
+		ls.PersistReason = "still deactivating after the stop failed: " + strings.Join(ls.Deactivating, ", ")
+	case ls.Active && ls.Fresh && !ls.Trusted:
 		ls.PersistReason = "the library stopped with Result=" + ls.Result
 	}
 	persist := filepath.Join(s.configDir, persistName(sl.Lib.ID))
