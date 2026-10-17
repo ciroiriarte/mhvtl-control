@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"mhvtl-control/internal/apply"
+	"mhvtl-control/internal/changer"
 )
 
 // A stage is bounded in size (maxStageBytes) and in each library's
@@ -304,5 +305,75 @@ func TestHelloPanicLogged(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "boom") {
 		t.Errorf("log: %q", buf.String())
+	}
+}
+
+// A stage's first edit of a library reads its changer afresh, not from the
+// views' cache: a move made outside the daemon just before must not be
+// undone (#61 smoke, dispositions). Later edits of the stage keep what the
+// first read.
+func TestConfigStageReadsLiveFresh(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	if rec := e.call(http.MethodGet, "/api/v1/config", nil); rec.Code != http.StatusOK { // warms the cache
+		t.Fatalf("GET /config: %d", rec.Code)
+	}
+	e.fc.mu.Lock()
+	inv := e.fc.invByLib[10]
+	inv.Slots = append([]changer.SlotState(nil), inv.Slots...)
+	for i := range inv.Slots {
+		switch inv.Slots[i].Number {
+		case 2:
+			inv.Slots[i].Full, inv.Slots[i].Barcode = false, ""
+		case 24:
+			inv.Slots[i].Full, inv.Slots[i].Barcode = true, "E01002L8"
+		}
+	}
+	e.fc.invByLib[10] = inv
+	e.fc.calls = nil
+	e.fc.mu.Unlock()
+
+	st := e.edit(http.MethodPatch, "/api/v1/config/libraries/10/slots/25", map[string]any{"barcode": "NEW025L8"})
+	got := file(t, st, "library_contents.10")
+	if !strings.Contains(got, "\nSlot 2:\n") || !strings.Contains(got, "\nSlot 24: E01002L8\n") {
+		t.Errorf("stage not built from the placement after the move:\n%s", got)
+	}
+	// The slot holding a cartridge now needs a disposition.
+	rec := e.call(http.MethodDelete, "/api/v1/config/libraries/10/slots/24", map[string]any{"stage": st.Stage, "disposition": map[string]any{"to": "shelf"}})
+	if rec.Code != http.StatusOK {
+		t.Errorf("delete slot 24 to the shelf: %d %s", rec.Code, rec.Body)
+	}
+	e.fc.mu.Lock()
+	reads := len(e.fc.calls)
+	e.fc.mu.Unlock()
+	if reads != 1 {
+		t.Errorf("%d changer reads for two edits of one stage, want 1", reads)
+	}
+}
+
+// An apply whose helper answer is lost (a transport error, or the apply's
+// deadline) leaves its stage needing a new plan, and GET shows the attempt
+// (#61 review N2).
+func TestConfigApplyLost(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	st := e.staged()
+	e.answer(func(req apply.Request) apply.Response {
+		if req.Op == apply.OpPlan {
+			return apply.Response{Result: apply.ResultValidated, Units: []string{"vtllibrary@10.service"}}
+		}
+		return apply.Response{Result: notJSON}
+	})
+	e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage, "dry_run": true})
+	rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage})
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), helperUnreachable) {
+		t.Fatalf("apply with no answer: %d %s", rec.Code, rec.Body)
+	}
+	got := decodeBody[stageDTO](t, e.call(http.MethodGet, "/api/v1/config/stages/"+st.Stage, nil))
+	if got.State != stageOpen || got.LastApply == nil || got.LastApply.Error == nil || got.LastApply.Error.Code != helperUnreachable ||
+		got.LastApply.Error.Message == "" || got.LastApply.Result != "unknown" {
+		t.Errorf("stage after a lost apply: %+v", got)
+	}
+	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage}); rec.Code != http.StatusConflict ||
+		!strings.Contains(rec.Body.String(), "plan_required") {
+		t.Errorf("apply again: %d %s", rec.Code, rec.Body)
 	}
 }

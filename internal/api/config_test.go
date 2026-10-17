@@ -613,6 +613,10 @@ func TestConfigCapabilities(t *testing.T) {
 // fakeHelper answers each connection on a unix socket the way
 // mhvtl-control-apply does: one JSON request, one response. Hello answers
 // state; another op gets answer's response, and is kept in reqs.
+// notJSON as an answer's Result makes the fake helper answer with bytes
+// that are not JSON, as a transport failure does.
+const notJSON = "\x00not json"
+
 type fakeHelper struct {
 	ln     net.Listener
 	mu     sync.Mutex
@@ -651,7 +655,11 @@ func newFakeHelper(t *testing.T, socket string) *fakeHelper {
 				h.mu.Unlock()
 				switch {
 				case req.Op != apply.OpHello && answer != nil:
-					json.NewEncoder(c).Encode(answer(req))
+					if resp := answer(req); resp.Result == notJSON {
+						c.Write([]byte("not json"))
+					} else {
+						json.NewEncoder(c).Encode(resp)
+					}
 				case state == "" || req.Op != apply.OpHello:
 					c.Write([]byte("not json"))
 				default:

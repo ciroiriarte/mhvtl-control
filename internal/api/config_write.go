@@ -962,6 +962,13 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		if !req.DryRun {
+			// The apply may have run, or not: the stage plans again, and
+			// shows the attempt (GET /config/stages/{id}).
+			st.plan = nil
+			st.last = &applyResultDTO{Stage: st.id, Result: "unknown", Dispositions: hreq.Dispositions,
+				Error: &errorDetail{Code: helperUnreachable, Message: "no answer from the apply helper: " + err.Error()}}
+		}
 		writeError(w, http.StatusBadGateway, helperUnreachable, err.Error())
 		return
 	}
@@ -1031,25 +1038,22 @@ func (s *Server) handleConfigStage(w http.ResponseWriter, r *http.Request) {
 		writeStageError(w, err)
 		return
 	}
-	st.busy++
-	c.mu.Unlock()
 	if !st.mu.TryLock() {
-		c.mu.Lock()
-		st.busy--
 		expires := st.expires
 		c.mu.Unlock()
 		writeJSON(w, http.StatusOK, stageDTO{Stage: id, Expires: expires, State: stageBusy, Files: map[string]*string{}, Base: map[string]string{}})
 		return
 	}
+	st.busy++
+	c.mu.Unlock()
 	if st.closed {
 		// Applied since find: the tombstone answers.
 		s.releaseStage(st)
 		s.handleConfigStage(w, r)
 		return
 	}
-	d := st.dto(now.Add(stageTTL))
-	s.releaseStage(st)
-	writeJSON(w, http.StatusOK, d)
+	defer s.releaseStage(st)
+	writeJSON(w, http.StatusOK, st.dto(now.Add(stageTTL)))
 }
 
 // handleConfigStageDelete discards a stage (#61 review L1). A stage an
