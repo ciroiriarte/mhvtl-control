@@ -14,7 +14,7 @@ const pers = {
     { init_fn: "init_stkl20", name: "STK L20/L40/L80", vpd83: false, limits: { pickers: 9, maps: 490, drives: 500, slots: 64536 },
       rules: [{ vendor: "stk", product_prefix: "L20", order: 1 }, { vendor: "stk", product_prefix: "L80", order: 3 }] },
     { init_fn: "init_stklxx", name: "STK L-series (L180/L700)", vpd83: false, limits: { pickers: 9, maps: 490, drives: 500, slots: 64536 },
-      rules: [{ vendor: "stk", product_prefix: "", order: 4 }] },
+      rules: [{ vendor: "stk", product_prefix: "", order: 4, source: "usr/cmd/vtllibrary.c:1866" }] },
     { init_fn: "init_stkslxx", name: "STK SL500", vpd83: false, limits: { pickers: 9, maps: 490, drives: 500, slots: 64536 },
       rules: [{ vendor: "stk", product_prefix: "SL500", order: 0 }] },
     { init_fn: "init_ibm3584", name: "IBM 03584", vpd83: true, limits: { pickers: 256, maps: 255, drives: 512, slots: 64512 },
@@ -194,4 +194,27 @@ test("systemFields and buildSystemPatch: only CAPACITY, VERBOSE and VTL_DEBUG, c
     assert.throws(() => core.buildSystemPatch(fields, form), RangeError, k + "=" + v);
   });
   assert.deepStrictEqual(core.buildSystemPatch(fields, { CAPACITY: "4294967296" }), { CAPACITY: "4294967296" });
+});
+
+test("presetWarning is the preset finding for a target app the personality does not suit", () => {
+  assert.strictEqual(core.presetWarning(pers, "pbs", "STK", "L700", 40),
+    "library 40 is set up for Proxmox Backup Server, but it finds changers by udev's ID_SCSI_SERIAL, which comes from VPD page 83h, " +
+    "and the STK L-series (L180/L700) personality (init_stklxx, selected at usr/cmd/vtllibrary.c:1866) has no such page; " +
+    "use a model that has it, such as IBM 03584 or Quantum Scalar");
+  assert.strictEqual(core.presetWarning(pers, "pbs", "IBM", "03584L32", 40), "");
+  assert.strictEqual(core.presetWarning(pers, "", "STK", "L700", 40), "");
+  assert.strictEqual(core.presetWarning(pers, "pbs", "ST", "L700", 40), ""); // the default library has page 83h
+  assert.strictEqual(core.presetWarning(pers, "other", "STK", "L700", 40), "");
+  assert.strictEqual(core.presetWarning({}, "pbs", "STK", "L700", 40), "");
+});
+
+test("wizardDefaultHome is the home the helper gives a blank Home directory", () => {
+  const config = { default_home: "/srv/served", default_home_effective: "/var/lib/mhvtl" };
+  assert.strictEqual(core.wizardDefaultHome(config, null), "/var/lib/mhvtl");
+  assert.strictEqual(core.wizardDefaultHome(config, { default_home_effective: "/srv/staged" }), "/srv/staged");
+  assert.strictEqual(core.wizardDefaultHome(config, { files: {} }), "/var/lib/mhvtl");
+  assert.strictEqual(core.wizardDefaultHome({ default_home: "/srv/served" }, null), "/srv/served"); // an older daemon
+  assert.strictEqual(core.wizardDefaultHome(null, null), "");
+  // mhvtl.conf exists but cannot be read: the home is unknown, not --home-dir.
+  assert.strictEqual(core.wizardDefaultHome({ default_home: "/srv/served", default_home_effective: "", system: { file_error: "EACCES" } }, null), "");
 });

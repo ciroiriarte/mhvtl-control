@@ -773,12 +773,44 @@
   // this vendor and product: the first rule whose vendor and product
   // prefixes both match, case-insensitively (personality.Lookup).
   function resolvePersonality(pers, vendor, product) {
+    var m = resolveRule(pers, vendor, product);
+    return m ? m.p : null;
+  }
+
+  // resolveRule is that first matching rule, with its personality.
+  function resolveRule(pers, vendor, product) {
     var rules = allRules(pers);
     for (var i = 0; i < rules.length; i++) {
       var r = rules[i].rule;
-      if (hasPrefixFold(vendor, r.vendor) && hasPrefixFold(product, r.product_prefix)) { return rules[i].p; }
+      if (hasPrefixFold(vendor, r.vendor) && hasPrefixFold(product, r.product_prefix)) { return rules[i]; }
     }
     return null;
+  }
+
+  // presetWarning is the finding validation will give a library of this
+  // vendor and product set up for target app (validate.Presets): for
+  // Proxmox Backup Server, a personality without VPD page 83h. "" when it
+  // suits.
+  function presetWarning(pers, app, vendor, product, libID) {
+    if (app !== "pbs") { return ""; }
+    var m = resolveRule(pers, vendor, product);
+    if (!m || m.p.vpd83) { return ""; }
+    var name = "Proxmox Backup Server";
+    coerceArray(pers && pers.target_apps).forEach(function (a) { if (a && a.id === app && a.name) { name = String(a.name); } });
+    return "library " + coerceNumber(libID) + " is set up for " + name + ", but it finds changers by udev's ID_SCSI_SERIAL, which comes from VPD page 83h, " +
+      "and the " + String(m.p.name || "") + " personality (" + String(m.p.init_fn || "") + ", selected at " + String(m.rule.source || "") + ") has no such page; " +
+      "use a model that has it, such as IBM 03584 or Quantum Scalar";
+  }
+
+  // wizardDefaultHome is the home a blank "Home directory" gets: the
+  // stage's mhvtl.conf when it has one, else the file on disk, as the
+  // helper reads them (default_home_effective); default_home from a daemon
+  // that does not report it. "" when mhvtl.conf cannot be read.
+  function wizardDefaultHome(config, stageData) {
+    if (stageData && stageData.default_home_effective) { return String(stageData.default_home_effective); }
+    if (config && config.system && config.system.file_error) { return ""; }
+    if (config && config.default_home_effective) { return String(config.default_home_effective); }
+    return config && config.default_home ? String(config.default_home) : "";
   }
 
   // modelPresets are the models the wizard offers to fill in: each rule
@@ -1022,6 +1054,8 @@
     outcomeUnread: outcomeUnread,
     intField: intField,
     resolvePersonality: resolvePersonality,
+    presetWarning: presetWarning,
+    wizardDefaultHome: wizardDefaultHome,
     modelPresets: modelPresets,
     createLimits: createLimits,
     nextLibraryID: nextLibraryID,

@@ -41,6 +41,7 @@
   var writesEditable = core.writesEditable, stageFileRows = core.stageFileRows, planSummary = core.planSummary;
   var forceRemaining = core.forceRemaining, fmtCountdown = core.fmtCountdown, applyErrorAction = core.applyErrorAction;
   var stageEditable = core.stageEditable;
+  var presetWarning = core.presetWarning, wizardDefaultHome = core.wizardDefaultHome;
   var stageOutcome = core.stageOutcome, outcomeUnread = core.outcomeUnread;
   var resolvePersonality = core.resolvePersonality, modelPresets = core.modelPresets, createLimits = core.createLimits;
   var freeTargets = core.freeTargets, usedIDs = core.usedIDs, usedAddresses = core.usedAddresses, usedSerials = core.usedSerials;
@@ -2227,9 +2228,11 @@
     driveModel.value = "ULT3580-TD8";
     field("Drive model", driveModel);
     var driveVendor = field("Drive vendor", input("text", driveVendorFor(driveModel.value)));
+    var defHome = wizardDefaultHome(config, cfgStage && cfgStage.data);
     var home = field("Home directory", input("text", ""), mk("small", { class: "muted",
-      text: "Blank: the default home, " + String(config.default_home || "") + ". Another must be a new, empty directory." }));
-    home.placeholder = String(config.default_home || "");
+      text: (defHome ? "Blank: the default home, " + defHome + "." : "Blank: the default home, unknown while mhvtl.conf cannot be read.") +
+        " Another must be a new, empty directory." }));
+    home.placeholder = defHome;
     var app = mk("select");
     app.appendChild(mk("option", { text: "Any application", attrs: { value: "" } }));
     coerceArray(pers.target_apps).forEach(function (a) {
@@ -2237,6 +2240,10 @@
     });
     app.value = cfgView.app || "";
     field("For", app);
+    // The target app's finding, shown before staging; it does not block.
+    var appWarn = mk("p", { class: "cfg-notice warn", attrs: { role: "status", style: "grid-column:1/-1;margin:0" } });
+    appWarn.hidden = true;
+    grid.appendChild(appWarn);
     var errs = mk("ul", { class: "dialog-error", attrs: { role: "alert", style: "grid-column:1/-1" } });
     grid.appendChild(errs);
     form.appendChild(grid);
@@ -2272,6 +2279,9 @@
       drivesHint.textContent = "max " + v.lim.drives + (v.w.drives > 0 ? "; IDs " + (v.w.id + 1) + "–" + (v.w.id + v.w.drives) : "");
       idHint.textContent = "drives take the IDs after it";
       if (!serialEdited) { serial.value = librarySerial(v.w.id); }
+      var warn = presetWarning(pers, app.value, v.w.vendor, v.w.product, v.w.id);
+      appWarn.textContent = warn;
+      appWarn.hidden = !warn;
       clear(errs);
       return v;
     }
