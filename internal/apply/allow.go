@@ -101,7 +101,7 @@ func checkLibraries(req *Request, cur, next map[int]bool) error {
 
 // checkUnits refuses an expect_units entry that is not a vtllibrary@N or
 // vtltape@N instance, or one listed twice. Whether the set matches the
-// helper's own derivation is plan.go's (PR 3b).
+// helper's own derivation is checkExpectUnits'.
 func checkUnits(units []string) error {
 	seen := map[string]bool{}
 	for _, u := range units {

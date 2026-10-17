@@ -171,8 +171,8 @@ func TestWriteRollbackCopies(t *testing.T) {
 // units, the result, and that it reaches the journal.
 func TestAuditFields(t *testing.T) {
 	e := newEnv(t)
-	dc := e.edit("device.conf", "# Each 'record'", "# Every 'record'")
-	e.do(Request{Op: OpApply, Actor: "admin@203.0.113.7", Files: []File{dc}, ExpectUnits: []string{"vtllibrary@10.service"}})
+	dc := e.edit("device.conf", "Compression type: lzo", "Compression type: zlib")
+	e.do(Request{Op: OpApply, Actor: "admin@203.0.113.7", Files: []File{dc}, ExpectUnits: []string{"vtllibrary@10.service", "vtltape@11.service"}})
 	lines := e.auditLines()
 	if len(lines) != 1 {
 		t.Fatalf("audit lines %v", lines)
@@ -190,8 +190,8 @@ func TestAuditFields(t *testing.T) {
 	json.Unmarshal([]byte(lines[0]), &r)
 	if r.Actor != "admin@203.0.113.7" || r.Peer != e.peer || r.Op != OpApply || r.TS.IsZero() ||
 		len(r.Files) != 1 || r.Files[0] != (AuditFile{Name: "device.conf", Before: dc.BaseSHA256, After: conffile.Hash(dc.Content)}) ||
-		!strings.Contains(r.Diff, "-# Each 'record'") || !strings.Contains(r.Diff, "+# Every 'record'") ||
-		fmt.Sprint(r.Units) != "[vtllibrary@10.service]" || r.Result != ResultRefused {
+		!strings.Contains(r.Diff, "- Compression type: lzo") || !strings.Contains(r.Diff, "+ Compression type: zlib") ||
+		fmt.Sprint(r.Units) != "[vtllibrary@10.service vtltape@11.service]" || r.Result != ResultRefused {
 		t.Errorf("audit record %+v", r)
 	}
 	if len(e.journal) != 1 || e.journal[0]["MESSAGE_ID"] != msgRefused || e.journal[0]["MHVTL_APPLY_ACTOR"] != r.Actor ||

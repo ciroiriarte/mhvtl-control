@@ -152,9 +152,24 @@ func TestRejectUnits(t *testing.T) {
 		e.refused(u, Request{Op: OpPlan, ExpectUnits: []string{u}}, ErrUnit)
 	}
 	e.refused("listed twice", Request{Op: OpPlan, ExpectUnits: []string{"vtltape@11.service", "vtltape@11.service"}}, ErrUnit)
-	if resp := e.do(Request{Op: OpPlan, ExpectUnits: []string{"vtllibrary@10.service", "vtltape@11.service"}}); resp.Result != ResultValidated {
+	// A drive stanza edit restarts the drive and its library (amendment 1);
+	// expect_units must name exactly those (AC 26).
+	dc := e.edit("device.conf", "Compression type: lzo", "Compression type: zlib")
+	want := []string{"vtllibrary@10.service", "vtltape@11.service"}
+	resp := e.do(Request{Op: OpPlan, Files: []File{dc}, ExpectUnits: want})
+	if resp.Result != ResultValidated || fmt.Sprint(resp.Units) != fmt.Sprint(want) {
 		t.Errorf("template instances: %+v", resp)
 	}
+	for name, units := range map[string][]string{
+		"none":                {},
+		"library only":        {"vtllibrary@10.service"},
+		"a unit not affected": {"vtllibrary@10.service", "vtltape@11.service", "vtltape@12.service"},
+		"another library":     {"vtllibrary@30.service", "vtltape@11.service"},
+	} {
+		e.refused(name, Request{Op: OpPlan, Files: []File{dc}, ExpectUnits: units}, ErrUnit)
+	}
+	e.refused("units for a comment edit", Request{Op: OpPlan, Files: []File{e.edit("device.conf", "# Each 'record'", "# Every 'record'")},
+		ExpectUnits: []string{"vtllibrary@10.service"}}, ErrUnit)
 }
 
 func TestRejectHashAtRequest(t *testing.T) {
@@ -376,13 +391,16 @@ func TestMhvtlConfDerived(t *testing.T) {
 	} {
 		e.refused(tc.new, Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", tc.old, tc.new)}}, tc.code)
 	}
-	for _, tc := range []struct{ old, new string }{
-		{"CAPACITY=500", "CAPACITY=1000"},
-		{"CAPACITY=500", "CAPACITY=4294967296"},
-		{"VERBOSE=1", "VERBOSE=3"},
-		{"VTL_DEBUG=0", "VTL_DEBUG=1"},
+	for _, tc := range []struct {
+		old, new string
+		units    []string
+	}{
+		{"CAPACITY=500", "CAPACITY=1000", nil},
+		{"CAPACITY=500", "CAPACITY=4294967296", nil},
+		{"VERBOSE=1", "VERBOSE=3", shippedUnits},
+		{"VTL_DEBUG=0", "VTL_DEBUG=1", nil},
 	} {
-		if resp := e.do(Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", tc.old, tc.new)}}); resp.Result != ResultValidated {
+		if resp := e.do(Request{Op: OpPlan, Files: []File{e.edit("mhvtl.conf", tc.old, tc.new)}, ExpectUnits: tc.units}); resp.Result != ResultValidated {
 			t.Errorf("%q: %+v", tc.new, resp)
 		}
 	}

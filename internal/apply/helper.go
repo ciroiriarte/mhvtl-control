@@ -15,6 +15,7 @@
 package apply
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -214,17 +215,55 @@ func (h *Helper) handle(req *Request, rec *AuditRecord) Response {
 	}
 
 	files := newFileSet(h.cfg.ConfigDir)
-	findings, err := h.check(req, files, rec)
+	findings, plan, err := h.check(req, files, rec)
+	var resp Response
+	switch {
+	case err != nil:
+		resp = responseOf(err)
+	case req.Op == OpPlan:
+		resp = Response{Result: ResultValidated}
+	default:
+		resp = Response{Result: ResultRefused, Error: ErrNotImplemented,
+			Message: "the request passed every check; applying needs the apply sequence of PR 3b-2"}
+	}
+	resp.Findings = findings
+	if plan != nil {
+		resp.Units, resp.Notes = plan.Units(), plan.Notes
+	}
+	return resp
+}
+
+func deviceConfOf(get func(string) (fileState, error)) (*conffile.DeviceConf, error) {
+	st, err := get(deviceConf)
 	if err != nil {
-		resp := responseOf(err)
-		resp.Findings = findings
-		return resp
+		return nil, err
 	}
-	if req.Op == OpPlan {
-		return Response{Result: ResultValidated, Findings: findings}
+	return conffile.ParseDeviceConf(st.data), nil
+}
+
+// changedContents lists the libraries whose library_contents the request
+// writes with other bytes, or deletes.
+func changedContents(req *Request, files *fileSet) (map[int]bool, error) {
+	out := map[int]bool{}
+	for _, f := range req.Files {
+		n, ok := libraryOf(f.Name)
+		if !ok {
+			continue
+		}
+		st, err := files.current(f.Name)
+		if err != nil {
+			return nil, err
+		}
+		if !st.exists || !bytes.Equal(st.data, f.Content) {
+			out[n] = true
+		}
 	}
-	return Response{Result: ResultRefused, Error: ErrNotImplemented, Findings: findings,
-		Message: "the request passed every check; applying needs the unit lifecycle of PR 3b"}
+	for _, d := range req.Delete {
+		if n, ok := libraryOf(d.Name); ok {
+			out[n] = true
+		}
+	}
+	return out, nil
 }
 
 // check runs every refusal of plan 3.2 on the request, in order: names and
@@ -232,18 +271,18 @@ func (h *Helper) handle(req *Request, rec *AuditRecord) Response {
 // mhvtl.conf keys and homes, then the full validation of the new files
 // against the current ones and the host. It returns the validation
 // findings when it got that far.
-func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validate.Result, error) {
+func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validate.Result, *UnitPlan, error) {
 	if err := checkNames(req); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := checkUnits(req.ExpectUnits); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := h.checkLegacyEnv(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := checkBases(req, files); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	next := files.withChanges(req)
 	// The hashes go in every record from here; the diff only once the
@@ -253,25 +292,25 @@ func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validat
 
 	curConf, err := mhvtlConfOf(files.current)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	nextConf, err := mhvtlConfOf(next.next)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := h.checkConfigPath(curConf, nextConf); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	curRaw, err := files.current(mhvtlConf)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	nextRaw, err := next.next(mhvtlConf)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := deriveMhvtlConf(curRaw.data, nextRaw.data); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Every file written must be one mhVTL reads as written.
@@ -286,24 +325,24 @@ func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validat
 			werr = conffile.ParseLibContents(f.Content).Writable()
 		}
 		if werr != nil {
-			return nil, refuse(ErrNotWritable, "%s: %v", f.Name, werr)
+			return nil, nil, refuse(ErrNotWritable, "%s: %v", f.Name, werr)
 		}
 	}
 
 	cur, err := config.ReadInventory(h.cfg.ConfigDir, reader(files.current))
 	if err != nil && !missingDeviceConf(err) {
-		return nil, err
+		return nil, nil, err
 	}
 	nextInv, err := config.ReadInventory(h.cfg.ConfigDir, reader(next.next))
 	if err != nil && !missingDeviceConf(err) {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := checkLibraries(req, libraryIDs(cur), libraryIDs(nextInv)); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	curHome, nextHome := h.defaultHome(curConf), h.defaultHome(nextConf)
 	if err := checkHomes(cur, nextInv, curHome, nextHome); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	rec.Diff, rec.DiffTruncated = diff, truncated
@@ -319,9 +358,32 @@ func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validat
 		HostErr:        hostErr,
 	})
 	if !res.OK() {
-		return &res, refuse(ErrInvalid, "%d blocking finding(s), first: %s", len(res.Errors), res.Errors[0].Message)
+		return &res, nil, refuse(ErrInvalid, "%d blocking finding(s), first: %s", len(res.Errors), res.Errors[0].Message)
 	}
-	return &res, nil
+
+	// The units the change affects, which expect_units must name exactly,
+	// and the time stopping and starting them may take.
+	curDC, err := deviceConfOf(files.current)
+	if err != nil {
+		return &res, nil, err
+	}
+	nextDC, err := deviceConfOf(next.next)
+	if err != nil {
+		return &res, nil, err
+	}
+	contents, err := changedContents(req, files)
+	if err != nil {
+		return &res, nil, err
+	}
+	plan := derivePlan(curDC, nextDC, cur, nextInv, contents, curConf, nextConf)
+	if err := checkExpectUnits(req.ExpectUnits, plan); err != nil {
+		return &res, &plan, err
+	}
+	if err := checkBudget(plan); err != nil {
+		return &res, &plan, err
+	}
+
+	return &res, &plan, nil
 }
 
 func mhvtlConfOf(get func(string) (fileState, error)) (*conffile.MhvtlConf, error) {

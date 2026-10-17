@@ -127,6 +127,11 @@ func (e *env) edit(name, old, new string) File {
 	return File{Name: name, BaseSHA256: conffile.Hash([]byte(b)), Content: []byte(strings.Replace(b, old, new, 1))}
 }
 
+// shippedUnits are every instance of the shipped configuration.
+var shippedUnits = []string{"vtllibrary@10.service", "vtllibrary@30.service",
+	"vtltape@11.service", "vtltape@12.service", "vtltape@13.service", "vtltape@14.service",
+	"vtltape@31.service", "vtltape@32.service", "vtltape@33.service", "vtltape@34.service"}
+
 // do sends req through Handle as the configured peer.
 func (e *env) do(req Request) Response {
 	e.t.Helper()
