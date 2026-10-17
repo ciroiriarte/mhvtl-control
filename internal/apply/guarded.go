@@ -8,9 +8,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/conffile"
@@ -64,13 +66,18 @@ type Snapshot struct {
 
 // ForcedUnload is a drive found holding a cartridge in rollback or
 // recover mode: its cartridge goes back to its source element and its
-// vtltape@ is stopped too.
+// vtltape@ is stopped too. In apply mode, it is a drive R1′ shows loaded
+// (LibStop.LoadedDrives).
 type ForcedUnload struct {
 	Library    int    `json:"library"`
 	Drive      int    `json:"drive"`
 	Barcode    string `json:"barcode,omitempty"`
 	SourceSlot int    `json:"source_slot,omitempty"`
 	SourceMAP  int    `json:"source_map,omitempty"`
+	// Unknown: TEST UNIT READY found a cartridge READ ELEMENT STATUS did
+	// not show, so its barcode and source are not known; the merge
+	// reports it unplaced rather than drop it.
+	Unknown bool `json:"unknown,omitempty"`
 }
 
 // Placement sources.
@@ -95,7 +102,12 @@ type LibStop struct {
 	// Offline is set once the library was taken offline.
 	Offline       bool           `json:"offline"`
 	ForcedUnloads []ForcedUnload `json:"forced_unloads,omitempty"`
-	// Stopped are the units stopped, in order.
+	// LoadedDrives are, in apply mode, the drives R1′ shows holding a
+	// cartridge; the caller refuses them unless forced (drive_loaded).
+	LoadedDrives []ForcedUnload `json:"loaded_drives,omitempty"`
+	// Stopped are the units stopped, in order, each recorded before its
+	// stop was asked for; one whose stop failed stays only when it is no
+	// longer active.
 	Stopped []string `json:"stopped,omitempty"`
 	// Result is the library unit's systemd Result= after the stop.
 	Result string `json:"result,omitempty"`
@@ -105,6 +117,8 @@ type LibStop struct {
 	After   Snapshot `json:"persist_after"`
 	Fresh   bool     `json:"persist_fresh"`
 	Trusted bool     `json:"persist_trusted"`
+	// PersistReason says why a fresh .persist was not trusted.
+	PersistReason string `json:"persist_reason,omitempty"`
 	// PersistData are the bytes of a trusted .persist, or of the .persist
 	// an inactive library would load.
 	PersistData []byte `json:"persist_data,omitempty"`
@@ -126,6 +140,11 @@ type stopper struct {
 	configDir string
 	aside     string
 	mode      StopMode
+	// prepared runs once every library is prepared (R1′, offline, the
+	// barrier, TUR) and before the first stop, so that the offline set,
+	// R1′ and the MAP are durable: a helper killed between the offline
+	// and the stop leaves an intent recovery can re-online from.
+	prepared func([]*LibStop) error
 	// journal runs once per library after its verdict and before .persist
 	// is moved aside, so the verdict and the bytes are durable first.
 	journal func(*LibStop) error
@@ -143,15 +162,17 @@ type stopper struct {
 //  5. snapshot .persist;
 //  6. stop the library's units, library first (amendment 1), and read its
 //     Result=;
-//  7. verdict: .persist is fresh if the snapshot changed, trusted if fresh
-//     and Result=success; journal, then move any .persist aside, trusted or
-//     not, fresh or not, because a .persist left in place wins over the
-//     merged library_contents at vtllibrary.c:980;
+//  7. verdict: .persist is fresh if the snapshot changed, trusted if fresh,
+//     Result=success and it parses; journal, then move any .persist aside,
+//     trusted or not, fresh or not, because a .persist left in place wins
+//     over the merged library_contents
+//     ([usr/cmd/vtllibrary.c:980](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L980));
 //  8. return the source: the trusted .persist, else R1′.
 //
 // Steps 1-5 run for every library before any is stopped, so a race found
-// in one stops none. A library taken offline and not stopped is put back
-// online on every return, error or panic.
+// in one stops none; then prepared journals them all. A library taken
+// offline and not stopped is put back online on every return, error or
+// panic.
 func (s *stopper) guardedStop(ctx context.Context, libs []StopLib) (out []*LibStop, err error) {
 	defer func() {
 		for _, ls := range out {
@@ -165,12 +186,17 @@ func (s *stopper) guardedStop(ctx context.Context, libs []StopLib) (out []*LibSt
 	for _, sl := range libs {
 		ls := &LibStop{ID: sl.Lib.ID}
 		out = append(out, ls)
-		if err := s.prepare(ctx, sl, ls); err != nil {
+		if err = s.prepare(ctx, sl, ls); err != nil {
+			return out, err
+		}
+	}
+	if s.prepared != nil {
+		if err = s.prepared(out); err != nil {
 			return out, err
 		}
 	}
 	for i, sl := range libs {
-		if err := s.stop(ctx, sl, out[i]); err != nil {
+		if err = s.stop(ctx, sl, out[i]); err != nil {
 			return out, err
 		}
 	}
@@ -197,15 +223,30 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 	}
 	r1 := placementOf(inv)
 	ls.R1 = &r1
+	if s.mode == ModeApply {
+		for _, d := range sl.Lib.Drives {
+			if st := driveState(inv, d.Slot); st != nil && st.Full {
+				ls.LoadedDrives = append(ls.LoadedDrives, ForcedUnload{Library: sl.Lib.ID, Drive: d.ID, Barcode: st.Barcode, SourceSlot: st.SourceSlot, SourceMAP: st.SourceMAP})
+			}
+		}
+	}
 	if ls.Map, err = s.cfg.Queue.ListMap(int64(sl.Lib.ID)); err != nil {
 		return fmt.Errorf("library %d: list map: %w", sl.Lib.ID, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := s.cfg.Queue.Offline(int64(sl.Lib.ID)); err != nil {
 		return fmt.Errorf("library %d: offline: %w", sl.Lib.ID, err)
 	}
 	ls.Offline = true
 	// The barrier: vtllibrary handles messages in order, so a reply to a
-	// "list map" sent after "offline" means the offline took effect.
+	// "list map" sent after "offline" means the offline took effect. It is
+	// compared with the "list map" taken right after READ ELEMENT STATUS,
+	// not with R1′'s MAP slots: both replies come from vtllibrary in the
+	// same format, so equal replies mean no import or export happened
+	// between R1′ and the offline, while comparing with the element status
+	// would depend on how the two encode an empty or barcode-less slot.
 	barrier, err := s.cfg.Queue.ListMap(int64(sl.Lib.ID))
 	if err != nil {
 		return fmt.Errorf("library %d: list map after offline: %w", sl.Lib.ID, err)
@@ -215,6 +256,9 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 	}
 	ls.DriveHCTL = map[int]string{}
 	for _, d := range sl.Lib.Drives {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		hctl, err := devs.Locate(d.Serial, scsi.PeripheralSequential)
 		if err != nil {
 			return fmt.Errorf("library %d drive %d: %w", sl.Lib.ID, d.ID, err)
@@ -235,8 +279,8 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 			}
 			continue
 		}
-		fu := ForcedUnload{Library: sl.Lib.ID, Drive: d.ID}
-		if st != nil {
+		fu := ForcedUnload{Library: sl.Lib.ID, Drive: d.ID, Unknown: st == nil || !st.Full}
+		if !fu.Unknown {
 			fu.Barcode, fu.SourceSlot, fu.SourceMAP = st.Barcode, st.SourceSlot, st.SourceMAP
 		}
 		ls.ForcedUnloads = append(ls.ForcedUnloads, fu)
@@ -260,14 +304,31 @@ func (s *stopper) stop(ctx context.Context, sl StopLib, ls *LibStop) error {
 			delete(drives, d.ID)
 		}
 	}
-	for d := range drives { // plan drives no longer in the library's stanzas
+	var rest []int // plan drives no longer in the library's stanzas
+	for d := range drives {
+		rest = append(rest, d)
+	}
+	sort.Ints(rest)
+	for _, d := range rest {
 		units = append(units, driveUnit(d))
 	}
 	for _, u := range units {
-		if _, err := s.cfg.Systemctl(ctx, "stop", u); err != nil {
-			return fmt.Errorf("systemctl stop %s: %w", u, err)
-		}
 		ls.Stopped = append(ls.Stopped, u)
+		if _, err := s.cfg.Systemctl(ctx, "stop", u); err != nil {
+			// The stop may have taken effect anyway (a cancel after the
+			// job was queued): what decides is whether the unit is still
+			// active, asked on a context of its own.
+			qctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			state, serr := s.show(qctx, u, "ActiveState")
+			cancel()
+			if serr != nil || state == "active" {
+				ls.Stopped = ls.Stopped[:len(ls.Stopped)-1]
+				return fmt.Errorf("systemctl stop %s: %w", u, err)
+			}
+			if ctx.Err() != nil {
+				return fmt.Errorf("systemctl stop %s: %w", u, err)
+			}
+		}
 	}
 	var err error
 	if ls.Result, err = s.show(ctx, libraryUnit(sl.Lib.ID), "Result"); err != nil {
@@ -278,6 +339,9 @@ func (s *stopper) stop(ctx context.Context, sl StopLib, ls *LibStop) error {
 	}
 	ls.Fresh = ls.After != ls.Before
 	ls.Trusted = ls.Active && ls.Fresh && ls.Result == "success"
+	if ls.Active && ls.Fresh && !ls.Trusted {
+		ls.PersistReason = "the library stopped with Result=" + ls.Result
+	}
 	persist := filepath.Join(s.configDir, persistName(sl.Lib.ID))
 
 	switch {
@@ -289,12 +353,14 @@ func (s *stopper) stop(ctx context.Context, sl StopLib, ls *LibStop) error {
 		if conffile.Hash(data) != ls.After.SHA256 {
 			return fmt.Errorf("library %d: %s changed after the stop", sl.Lib.ID, persist)
 		}
-		ls.PersistData = data
-		ls.Source, err = persistPlacement(data)
-		if err != nil {
-			return fmt.Errorf("library %d: %s: %w", sl.Lib.ID, persist, err)
+		src, perr := persistPlacement(data)
+		if perr != nil {
+			// Unreadable: R1′ is the source; the file still goes aside.
+			ls.Trusted, ls.PersistReason = false, perr.Error()
+			ls.Source, ls.SourceKind = *ls.R1, SourceLive
+			break
 		}
-		ls.SourceKind = SourcePersist
+		ls.PersistData, ls.Source, ls.SourceKind = data, src, SourcePersist
 	case ls.Active:
 		ls.Source, ls.SourceKind = *ls.R1, SourceLive
 	default:
@@ -315,9 +381,9 @@ func (s *stopper) stop(ctx context.Context, sl StopLib, ls *LibStop) error {
 }
 
 // fileSource is the source of an inactive library: the file vtllibrary
-// would load at its next start, by the rule of __init_slot_info, mhvtl
-// usr/cmd/vtllibrary.c:958-991 at d65d25f
-// (https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L958-L991):
+// would load at its next start, by the rule of __init_slot_info
+// ([usr/cmd/vtllibrary.c:958-991](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L958-L991)
+// at d65d25f):
 // .persist when PERSIST is on, it exists, and library_contents.N is not
 // newer by st_mtime in whole seconds; else library_contents.N.
 func (s *stopper) fileSource(sl StopLib, ls *LibStop) error {
@@ -332,6 +398,9 @@ func (s *stopper) fileSource(sl StopLib, ls *LibStop) error {
 			if err != nil {
 				return err
 			}
+			if conffile.Hash(data) != ls.After.SHA256 {
+				return fmt.Errorf("library %d: %s changed after it was read", sl.Lib.ID, persistName(sl.Lib.ID))
+			}
 			ls.PersistData = data
 			ls.Source, err = persistPlacement(data)
 			ls.SourceKind = SourcePersist
@@ -339,9 +408,9 @@ func (s *stopper) fileSource(sl StopLib, ls *LibStop) error {
 		}
 	}
 	p := newPlacement()
-	for _, sl := range sl.Lib.Slots {
-		if sl.Barcode != "" {
-			p.Slots[sl.Number] = sl.Barcode
+	for _, slot := range sl.Lib.Slots {
+		if slot.Barcode != "" {
+			p.Slots[slot.Number] = slot.Barcode
 		}
 	}
 	for _, m := range sl.Lib.MAPs {
