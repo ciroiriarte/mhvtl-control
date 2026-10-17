@@ -586,6 +586,7 @@ dialog.wide { max-width: 720px; }
   border-radius: var(--radius-sm); background: var(--bg-elev-2); font-size: 13px; }
 .cfg-notice:empty { display: none; }
 .cfg-notice.warn { border-left-color: var(--warn); }
+.cfg-notice.error { border-left-color: var(--err); }
 .cfg-notice p { margin: 0 0 4px; }
 .cfg-notice .cfg-command { display: inline-block; margin: 2px 0 6px; padding: 2px 8px; border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm); background: var(--bg-elev); user-select: all; }

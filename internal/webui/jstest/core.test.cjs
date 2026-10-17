@@ -416,6 +416,25 @@ test("capabilityNotice: legacy env file, TLS and an unknown payload", () => {
   assert.strictEqual(core.capabilityNotice(null).facts[0][1], "not installed");
 });
 
+test("capabilityNotice: the helper's hello states", () => {
+  const busy = core.capabilityNotice({ helper: "in_progress", writes: "ok" });
+  assert.strictEqual(busy.tone, "info");
+  assert.strictEqual(busy.command, null);
+  assert.ok(busy.lines[0].includes("An apply is running"));
+  const incomplete = core.capabilityNotice({ helper: "incomplete_apply", writes: "ok" });
+  assert.strictEqual(incomplete.tone, "warn");
+  assert.ok(incomplete.lines[0].includes("did not finish"));
+  const unreadable = core.capabilityNotice({ helper: "intent_unreadable", writes: "ok" });
+  assert.strictEqual(unreadable.tone, "error");
+  assert.strictEqual(unreadable.command, null);
+  const text = unreadable.lines.join(" ");
+  assert.ok(text.includes("/var/lib/mhvtl-control-apply/rollback"), text);
+  assert.ok(text.includes("/var/lib/mhvtl-control-apply/intent.json"), text);
+  const down = core.capabilityNotice({ helper: "unreachable", writes: "ok", helper_error: "helper response: <b>x</b>" });
+  assert.strictEqual(down.tone, "warn");
+  assert.ok(down.lines.join(" ").includes("helper response: <b>x</b>"));
+});
+
 test("findingRows flattens errors then warnings with their elements", () => {
   const rows = core.findingRows({
     errors: [{ code: "preset.unmet", library: 10, message: "m1", elements: [{ kind: "library", library: 10, number: 10 }] }],

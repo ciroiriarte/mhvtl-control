@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"mhvtl-control/internal/api"
+	"mhvtl-control/internal/applyclient"
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/drivestats"
 	"mhvtl-control/internal/ipc"
@@ -122,6 +123,7 @@ func main() {
 		// Configuration writes need TLS off loopback (plan 4.1); GET
 		// /config/capabilities reports it.
 		InsecureListen: !isLoopbackHost(host) && (*tlsCert == "" || *tlsKey == ""),
+		Helper:         &applyclient.Client{Socket: api.DefaultCapabilityPaths.HelperSocket},
 	}
 
 	srv := &http.Server{

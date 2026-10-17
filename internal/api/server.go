@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"mhvtl-control/internal/applyclient"
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/ipc"
@@ -66,7 +67,19 @@ type Config struct {
 	// InsecureListen is whether the daemon listens on a non-loopback address
 	// without TLS, where configuration writes are refused (plan 4.1).
 	InsecureListen bool
+	// Helper talks to the apply helper, mhvtl-control-apply; implemented by
+	// *applyclient.Client. Nil means GET /config/capabilities only checks
+	// that its socket exists.
+	Helper HelperService
 }
+
+// HelperService is the apply helper surface the API uses.
+type HelperService interface {
+	// Hello returns the helper's state, one of the applyclient constants.
+	Hello(ctx context.Context) (string, error)
+}
+
+var _ HelperService = (*applyclient.Client)(nil)
 
 // ChangerService is the medium-changer surface the API uses; implemented by
 // *changer.Manager.
@@ -119,6 +132,10 @@ type Server struct {
 	// live shares each library's live placement among the configuration
 	// routes.
 	live liveCache
+	// hello caches the helper's state for GET /config/capabilities.
+	hello helloCache
+	// now is the clock; time.Now unless a test sets it.
+	now func() time.Time
 }
 
 // keyedMutex is a set of mutexes created on first use.
@@ -166,7 +183,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 
 // NewServer returns a Server configured with cfg.
 func NewServer(cfg Config) *Server {
-	return &Server{cfg: cfg}
+	return &Server{cfg: cfg, now: time.Now}
 }
 
 // Handler builds the route mux and wraps it in the middleware chain

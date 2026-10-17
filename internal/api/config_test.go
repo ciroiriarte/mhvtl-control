@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"mhvtl-control/internal/apply"
+	"mhvtl-control/internal/applyclient"
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
@@ -577,6 +579,125 @@ func TestConfigCapabilities(t *testing.T) {
 	paths.MakeVTLMedia = "make_vtl_media"
 	if !get(Config{}).PerLibraryHomeMedia {
 		t.Error("make_vtl_media not found in PATH")
+	}
+}
+
+// fakeHelper answers each connection on a unix socket the way
+// mhvtl-control-apply answers hello: one JSON request, one response.
+type fakeHelper struct {
+	ln    net.Listener
+	mu    sync.Mutex
+	state string // the hello state; "" sends a response that is not JSON
+	conns int
+}
+
+func newFakeHelper(t *testing.T, socket string) *fakeHelper {
+	t.Helper()
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &fakeHelper{ln: ln, state: apply.StateReady}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			h.mu.Lock()
+			h.conns++
+			state := h.state
+			h.mu.Unlock()
+			var req apply.Request
+			json.NewDecoder(c).Decode(&req)
+			if state == "" || req.Op != apply.OpHello {
+				c.Write([]byte("not json"))
+			} else {
+				json.NewEncoder(c).Encode(apply.Response{Result: apply.ResultOK, State: state})
+			}
+			c.Close()
+		}
+	}()
+	t.Cleanup(func() { ln.Close() })
+	return h
+}
+
+func (h *fakeHelper) set(state string) {
+	h.mu.Lock()
+	h.state = state
+	h.mu.Unlock()
+}
+
+func (h *fakeHelper) calls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.conns
+}
+
+// TestConfigCapabilitiesHello: with the helper client configured, the
+// helper value is the helper's own hello, asked at most every 2 s (plan
+// 4.1): hello starts a helper instance per connection.
+func TestConfigCapabilitiesHello(t *testing.T) {
+	dir, err := os.MkdirTemp("", "caps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "apply.sock")
+	h := newFakeHelper(t, socket)
+	srv := NewServer(Config{
+		Capabilities: CapabilityPaths{HelperSocket: socket, LegacyEnv: filepath.Join(dir, "env"), Generators: []string{}, MakeVTLMedia: filepath.Join(dir, "none")},
+		Helper:       &applyclient.Client{Socket: socket},
+	})
+	clock := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	srv.now = func() time.Time { return clock }
+	handler := srv.Handler()
+	get := func() capabilitiesDTO {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/config/capabilities", nil))
+		return decodeBody[capabilitiesDTO](t, rec)
+	}
+
+	if got := get(); got.Helper != "present" || got.Writes != "ok" || got.HelperError != "" {
+		t.Errorf("ready: %+v", got)
+	}
+	// Cached for 2 s.
+	h.set(apply.StateInProgress)
+	clock = clock.Add(1999 * time.Millisecond)
+	if got := get(); got.Helper != "present" || h.calls() != 1 {
+		t.Errorf("within 2 s: %+v after %d hellos", got, h.calls())
+	}
+	for _, tc := range []struct{ state, helper string }{
+		{apply.StateInProgress, "in_progress"},
+		{apply.StateIncomplete, "incomplete_apply"},
+		{apply.StateIntentUnreadable, "intent_unreadable"},
+		{apply.StateLegacyEnv, "legacy_env_blocks"},
+		{apply.StateReady, "present"},
+	} {
+		h.set(tc.state)
+		clock = clock.Add(2 * time.Second)
+		if got := get(); got.Helper != tc.helper || got.Writes != "ok" {
+			t.Errorf("hello %s: %+v", tc.state, got)
+		}
+	}
+	if n := h.calls(); n != 6 {
+		t.Errorf("%d hellos, want 6", n)
+	}
+
+	// A helper that answers garbage is reported, with why.
+	h.set("")
+	clock = clock.Add(2 * time.Second)
+	if got := get(); got.Helper != "unreachable" || !strings.Contains(got.HelperError, "helper response") {
+		t.Errorf("garbage: %+v", got)
+	}
+
+	// The socket goes away mid-session: absent once the cache expires.
+	h.ln.Close()
+	os.Remove(socket)
+	clock = clock.Add(2 * time.Second)
+	if got := get(); got.Helper != "absent" || got.Writes != "helper_absent" {
+		t.Errorf("socket gone: %+v", got)
 	}
 }
 
