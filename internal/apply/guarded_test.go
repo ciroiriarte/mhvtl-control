@@ -28,6 +28,7 @@ type stopEnv struct {
 	loaded map[string]bool // by drive serial
 	onStop func(unit string)
 	failOn string // systemctl stop of this unit fails
+	onRES  func()
 }
 
 func newStopEnv(t *testing.T) *stopEnv {
@@ -84,6 +85,9 @@ func (e *stopEnv) Locate(serial string, typ uint8) (string, error) {
 
 func (e *stopEnv) Inventory(lib config.Library, hctl string) (changer.Inventory, error) {
 	e.calls = append(e.calls, fmt.Sprint("RES ", lib.ID))
+	if e.onRES != nil {
+		e.onRES()
+	}
 	return e.inv[lib.ID], nil
 }
 
@@ -211,6 +215,7 @@ func TestGuardedVerdict(t *testing.T) {
 		{"a fresh .persist, Result=success", true, "\nSlot 1: P00001L8\nSlot 2: P00002L8 \n", "success", true, true, SourcePersist},
 		{"a truncated .persist, Result=timeout", true, "\nSlot 1: P00", "timeout", true, false, SourceLive},
 		{"a fresh .persist, Result=signal", false, "\nSlot 1: P00001L8\n", "signal", true, false, SourceLive},
+		{"a fresh .persist, Result=success, unreadable", true, "\nSlot 1: P00001L8\nSlot 1: P00002L8\n", "success", true, false, SourceLive},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newStopEnv(t)
@@ -239,6 +244,10 @@ func TestGuardedVerdict(t *testing.T) {
 			ls := out[0]
 			if ls.Fresh != tc.fresh || ls.Trusted != tc.trusted || ls.SourceKind != tc.wantKind || !journaled {
 				t.Errorf("fresh %v trusted %v source %s journaled %v", ls.Fresh, ls.Trusted, ls.SourceKind, journaled)
+			}
+			// A fresh .persist not trusted says why.
+			if (ls.Fresh && !ls.Trusted) != (ls.PersistReason != "") {
+				t.Errorf("persist reason %q", ls.PersistReason)
 			}
 			switch tc.wantKind {
 			case SourcePersist:
@@ -311,7 +320,8 @@ func TestGuardedLoadedDrive(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: %v", mode, err)
 			}
-			if len(out[0].ForcedUnloads) != 1 || out[0].ForcedUnloads[0].Drive != 11 ||
+			// Its barcode is not known: flagged, so the merge reports it.
+			if len(out[0].ForcedUnloads) != 1 || out[0].ForcedUnloads[0] != (ForcedUnload{Library: 10, Drive: 11, Unknown: true}) ||
 				strings.Join(out[0].Stopped, " ") != "vtllibrary@10.service vtltape@11.service" {
 				t.Errorf("%s: %+v", mode, out[0])
 			}
@@ -330,9 +340,10 @@ func TestGuardedLoadedDrive(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", mode, err)
 		}
-		fu := out[0].ForcedUnloads
-		if mode == ModeApply && len(fu) != 0 || mode == ModeRollback && (len(fu) != 1 || fu[0] != ForcedUnload{Library: 10, Drive: 11, Barcode: "E01002L8", SourceSlot: 2}) {
-			t.Errorf("%s: forced unloads %+v", mode, fu)
+		fu, ld := out[0].ForcedUnloads, out[0].LoadedDrives
+		want := ForcedUnload{Library: 10, Drive: 11, Barcode: "E01002L8", SourceSlot: 2}
+		if mode == ModeApply && (len(fu) != 0 || len(ld) != 1 || ld[0] != want) || mode == ModeRollback && (len(fu) != 1 || fu[0] != want || len(ld) != 0) {
+			t.Errorf("%s: forced unloads %+v, loaded drives %+v", mode, fu, ld)
 		}
 	}
 }
@@ -406,5 +417,100 @@ func TestPersistPlacement(t *testing.T) {
 	}
 	if fmt.Sprint(p.Slots) != "map[1:E01001L8 3:E01003L8]" || fmt.Sprint(p.MAPs) != "map[1:M00001L8]" || len(p.Drives) != 0 || len(p.Pickers) != 0 {
 		t.Errorf("%+v", p)
+	}
+}
+
+// TestGuardedPrepared: once every library is offline and before the first
+// stop, the prepared hook journals R1′, the offline set and the MAP. A
+// helper killed in the hook (the kill point) has stopped nothing, and what
+// it journaled names every library to put back online.
+func TestGuardedPrepared(t *testing.T) {
+	e := newStopEnv(t)
+	e.maps[10] = []string{"M00001L8", "M00001L8"}
+	sp := e.stopper(ModeApply)
+	killed := errors.New("SIGKILL")
+	var journaled []LibStop
+	sp.prepared = func(out []*LibStop) error {
+		for _, c := range e.calls {
+			if strings.HasPrefix(c, "stop ") {
+				t.Errorf("%q before the prepared journal", c)
+			}
+		}
+		for _, ls := range out {
+			journaled = append(journaled, *ls)
+		}
+		return killed
+	}
+	if _, err := sp.guardedStop(context.Background(), []StopLib{e.lib(10), e.lib(30)}); !errors.Is(err, killed) {
+		t.Fatalf("err %v", err)
+	}
+	if len(journaled) != 2 {
+		t.Fatalf("journaled %+v", journaled)
+	}
+	for _, ls := range journaled {
+		if !ls.Offline || ls.R1 == nil || len(ls.DriveHCTL) == 0 || len(ls.Stopped) != 0 {
+			t.Errorf("library %d: %+v", ls.ID, ls)
+		}
+	}
+	if journaled[0].Map != "M00001L8" {
+		t.Errorf("map %q", journaled[0].Map)
+	}
+}
+
+// TestGuardedStopError: a unit whose stop fails but that is no longer
+// active counts as stopped; one still active does not.
+func TestGuardedStopError(t *testing.T) {
+	e := newStopEnv(t)
+	e.failOn = "vtltape@11.service"
+	e.state["vtltape@11.service"] = "failed"
+	l10 := e.lib(10)
+	l10.Drives = []int{11, 12}
+	out, err := e.stopper(ModeRollback).guardedStop(context.Background(), []StopLib{l10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(out[0].Stopped, " "); got != "vtllibrary@10.service vtltape@11.service vtltape@12.service" {
+		t.Errorf("stopped %s", got)
+	}
+
+	// A cancel during the stop: the unit went down, the stop reports the
+	// cancel, and the unit is recorded as stopped for the rollback.
+	e = newStopEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.failOn = "vtllibrary@10.service"
+	e.state["vtllibrary@10.service"] = "inactive"
+	sp := e.stopper(ModeApply)
+	orig := sp.cfg.Systemctl
+	sp.cfg.Systemctl = func(c context.Context, args ...string) ([]byte, error) {
+		if args[0] == "stop" {
+			cancel()
+		}
+		return orig(c, args...)
+	}
+	out, err = sp.guardedStop(ctx, []StopLib{e.lib(10)})
+	if err == nil {
+		t.Error("cancel: no error")
+	}
+	if got := strings.Join(out[0].Stopped, " "); got != "vtllibrary@10.service" {
+		t.Errorf("cancel: stopped %q", got)
+	}
+	if e.onlines() != "" {
+		t.Errorf("cancel: a stopped library put online: %s", e.onlines())
+	}
+}
+
+// TestGuardedCancel: a cancel between READ ELEMENT STATUS and the offline
+// takes nothing offline.
+func TestGuardedCancel(t *testing.T) {
+	e := newStopEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.onRES = cancel
+	if _, err := e.stopper(ModeApply).guardedStop(ctx, []StopLib{e.lib(10)}); !errors.Is(err, context.Canceled) {
+		t.Errorf("err %v", err)
+	}
+	for _, c := range e.calls {
+		if strings.HasPrefix(c, "offline") || strings.HasPrefix(c, "stop") {
+			t.Errorf("%q after the cancel", c)
+		}
 	}
 }
