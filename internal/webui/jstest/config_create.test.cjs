@@ -250,3 +250,14 @@ test("wizardDefaultHome is the home the helper gives a blank Home directory", ()
   // mhvtl.conf exists but cannot be read: the home is unknown, not --home-dir.
   assert.strictEqual(core.wizardDefaultHome({ default_home: "/srv/served", default_home_effective: "", system: { file_error: "EACCES" } }, null), "");
 });
+
+test("wizardHomeHint names the default home, or why it is unknown", () => {
+  const tail = " Another must be a new, empty directory.";
+  assert.strictEqual(core.wizardHomeHint({ default_home_effective: "/var/lib/mhvtl" }, null), "Blank: the default home, /var/lib/mhvtl." + tail);
+  // mhvtl.conf unreadable and nothing staged: unknown, with the read error.
+  const unreadable = { default_home: "/srv/served", default_home_effective: "", system: { file_error: "open /etc/mhvtl/mhvtl.conf: permission denied" } };
+  assert.strictEqual(core.wizardHomeHint(unreadable, null), "Blank: the default home, unknown (mhvtl.conf: open /etc/mhvtl/mhvtl.conf: permission denied)." + tail);
+  // A staged mhvtl.conf decides it, whatever the file on disk.
+  assert.strictEqual(core.wizardHomeHint(unreadable, { default_home_effective: "/srv/staged" }), "Blank: the default home, /srv/staged." + tail);
+  assert.strictEqual(core.wizardHomeHint(null, null), "Blank: the default home, unknown." + tail);
+});
