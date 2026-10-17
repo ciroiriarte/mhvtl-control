@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,7 +8,6 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -19,6 +17,7 @@ import (
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/hostids"
+	"mhvtl-control/internal/media"
 	"mhvtl-control/internal/personality"
 	"mhvtl-control/internal/validate"
 )
@@ -139,30 +138,8 @@ func (s *Server) capabilities() capabilitiesDTO {
 			break
 		}
 	}
-	c.PerLibraryHomeMedia = perLibraryHome(p.MakeVTLMedia)
+	c.PerLibraryHomeMedia = media.PerLibraryHome(p.MakeVTLMedia)
 	return c
-}
-
-// perLibraryHome reports whether the make_vtl_media at path (or found in
-// PATH) has the --per-library-home option, the marker of
-// markh794/mhvtl#276 (usr/cmd/make_vtl_media.in:43,271, upstream master
-// 993b193). make_vtl_media is a shell script, so its text names the option
-// that --help lists; reading it runs nothing.
-func perLibraryHome(path string) bool {
-	if !strings.Contains(path, "/") {
-		found, err := exec.LookPath(path)
-		if err != nil {
-			return false
-		}
-		path = found
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 1<<20))
-	return err == nil && bytes.Contains(b, []byte("--per-library-home"))
 }
 
 func (s *Server) handleConfigCapabilities(w http.ResponseWriter, _ *http.Request) {
