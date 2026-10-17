@@ -145,9 +145,14 @@ func (a SCSIAccess) open(hctl string, typ uint8) (changer.Device, error) {
 	}
 	// The node may have been renumbered to another device between the
 	// resolve and the open: it must still name hctl.
-	if again, err := a.hctlOf(filepath.Base(node)); err != nil || again != hctl {
+	again, err := a.hctlOf(filepath.Base(node))
+	if err != nil {
 		dev.Close()
-		return nil, fmt.Errorf("sgguard: %s no longer names %s (now %q): %v", node, hctl, again, err)
+		return nil, fmt.Errorf("sgguard: %s: %w", node, err)
+	}
+	if again != hctl {
+		dev.Close()
+		return nil, fmt.Errorf("sgguard: %s no longer names %s, but %s", node, hctl, again)
 	}
 	g := guardedDevice{dev}
 	buf := make([]byte, 36)
