@@ -11,6 +11,7 @@ import (
 
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/personality"
 	"mhvtl-control/internal/scsi"
 )
 
@@ -86,6 +87,20 @@ func (a SCSIAccess) Locate(serial string, typ uint8) (string, error) {
 		return "", err
 	}
 	return a.hctlOf(filepath.Base(path))
+}
+
+// LocateLibrary returns the H:C:T:L of lib's changer, by the unit serial
+// number mhVTL reports for it (personality.ChangerUnitSerial), which some
+// personalities pad or add to.
+func (a SCSIAccess) LocateLibrary(lib config.Library) (string, error) {
+	return a.Locate(personality.ChangerUnitSerial(lib.Vendor, lib.Product, lib.Serial), scsi.PeripheralMediumChanger)
+}
+
+// LocateDrive returns the H:C:T:L of drive d, by the unit serial number
+// vtltape reports for it (personality.DriveUnitSerial): an IBM LTO serial
+// shorter than 10 gets leading zeroes.
+func (a SCSIAccess) LocateDrive(d config.Drive) (string, error) {
+	return a.Locate(personality.DriveUnitSerial(d.Vendor, d.Product, d.Serial), scsi.PeripheralSequential)
 }
 
 // hctlOf reads the H:C:T:L of sg node name from sysfs: the target of

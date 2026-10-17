@@ -432,22 +432,3 @@ func TestZeroTemperatureUnknown(t *testing.T) {
 		t.Errorf("temperature = %d, want unknown", *st.TemperatureC)
 	}
 }
-
-func TestUnitSerial(t *testing.T) {
-	cases := []struct {
-		d    config.Drive
-		want string
-	}{
-		{config.Drive{Vendor: "IBM", Product: "ULT3580-TD8", Serial: "XYZZY_A1"}, "00XYZZY_A1"},
-		{config.Drive{Vendor: "IBM ", Product: "ULTRIUM-HH9", Serial: "ABC"}, "0000000ABC"},
-		{config.Drive{Vendor: "IBM", Product: "ULT3580-TD8", Serial: "1234567890"}, "1234567890"},
-		{config.Drive{Vendor: "IBM", Product: "03592E07", Serial: "XYZZY_A1"}, "XYZZY_A1"},
-		{config.Drive{Vendor: "HP", Product: "Ultrium 6-SCSI", Serial: "XYZZY_A1"}, "XYZZY_A1"},
-		{config.Drive{Vendor: "STK", Product: "T10000B", Serial: "XYZZY_B1 "}, "XYZZY_B1"},
-	}
-	for _, c := range cases {
-		if got := unitSerial(c.d); got != c.want {
-			t.Errorf("unitSerial(%+v) = %q, want %q", c.d, got, c.want)
-		}
-	}
-}

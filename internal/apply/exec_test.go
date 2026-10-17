@@ -217,7 +217,11 @@ func (s *fakeSystem) ListMap(lib int64) (string, error) {
 	return "", nil
 }
 
-func (s *fakeSystem) Locate(serial string, typ uint8) (string, error) { return "hctl-" + serial, nil }
+func (s *fakeSystem) LocateLibrary(lib config.Library) (string, error) {
+	return "hctl-" + lib.Serial, nil
+}
+
+func (s *fakeSystem) LocateDrive(d config.Drive) (string, error) { return "hctl-" + d.Serial, nil }
 
 func (s *fakeSystem) Inventory(lib config.Library, hctl string) (changer.Inventory, error) {
 	s.log("RES %d", lib.ID)

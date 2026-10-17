@@ -16,6 +16,7 @@ import (
 
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/personality"
 	"mhvtl-control/internal/scsi"
 )
 
@@ -207,7 +208,7 @@ func (r *Reader) Locate(d config.Drive) (string, error) {
 	if r.Locator == nil {
 		return "", fmt.Errorf("%w: drive %d: no --drive override and no locator", ErrUnavailable, d.ID)
 	}
-	p, err := r.Locator.FindBySerial(unitSerial(d), scsi.PeripheralSequential)
+	p, err := r.Locator.FindBySerial(personality.DriveUnitSerial(d.Vendor, d.Product, d.Serial), scsi.PeripheralSequential)
 	if err != nil {
 		return "", fmt.Errorf("%w: drive %d: %w", ErrUnavailable, d.ID, err)
 	}
@@ -389,18 +390,3 @@ func ratio(host, medium *uint64) *float64 {
 }
 
 func pageName(pg uint8) string { return fmt.Sprintf("0x%02x", pg) }
-
-// unitSerial is the serial the drive reports in VPD page 80h. mhVTL pads the
-// device.conf serial of an IBM LTO drive (vendor IBM, product ULT3580-* or
-// ULTRIUM-*) shorter than 10 characters to 10 with leading zeroes, as the real
-// drives do (mhvtl usr/vtllib.c ibm_lto_serial_pad); other serials are
-// reported as configured.
-func unitSerial(d config.Drive) string {
-	sn := strings.TrimRight(d.Serial, " ")
-	if strings.TrimRight(d.Vendor, " ") != "IBM" ||
-		!(strings.HasPrefix(d.Product, "ULT3580-") || strings.HasPrefix(d.Product, "ULTRIUM-")) ||
-		sn == "" || len(sn) >= 10 {
-		return sn
-	}
-	return strings.Repeat("0", 10-len(sn)) + sn
-}
