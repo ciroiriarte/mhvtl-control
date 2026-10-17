@@ -1,7 +1,8 @@
 #!/bin/bash
-# apply-smoke.sh: the Phase 3.5 VM smoke test of mhvtl-control-apply, the
-# privileged configuration helper (plan Phase 3.5 and Phase 7 steps 1-7,
-# through the helper's socket; the Phase 4 write API does not exist yet).
+# apply-smoke.sh: the helper-socket VM smoke test of mhvtl-control-apply,
+# the privileged configuration helper (plan Phase 3.5). It drives the
+# helper's socket directly through Phase 7 steps 1-7; it is not the Phase 7
+# end-to-end test, whose API and UI halves need the Phase 4 write API.
 #
 # Run it as root on a disposable VM with mhVTL running (libraries 10 and 30
 # of mhVTL's sample device.conf), mhvtl-control installed and
