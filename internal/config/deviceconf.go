@@ -43,9 +43,10 @@ func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, problems
 		}
 		for _, a := range st.Attrs {
 			// conf_value ignores a field with no value, and so do the sscanf
-			// reads of NAA, Library ID and Home directory. An empty
-			// Compression is not ignored (vtltape.c:2219): conffile flags it,
-			// and there is no value to project.
+			// reads of NAA, Library ID and Home directory. vtltape ignores
+			// an empty Compression too (vtltape.c:2219-2232), but not before
+			// markh794/mhvtl#286: conffile flags it, and there is no value
+			// to project.
 			if a.Value == "" {
 				continue
 			}
