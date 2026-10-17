@@ -23,6 +23,7 @@ import (
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/personality"
 	"mhvtl-control/internal/validate"
 )
 
@@ -313,6 +314,23 @@ func TestConfigPersonalities(t *testing.T) {
 	}
 	if !ibm {
 		t.Error("init_ibm3584 missing")
+	}
+	// Each rule says where it stands in vtllibrary's evaluation order,
+	// which the grouping by personality does not keep: the client resolves
+	// a vendor and product as vtllibrary does.
+	order := map[int]ruleDTO{}
+	for _, l := range got.Libraries {
+		for _, r := range l.Rules {
+			order[r.Order] = r
+		}
+	}
+	if len(order) != len(personality.Rules) {
+		t.Errorf("%d distinct rule orders, want %d", len(order), len(personality.Rules))
+	}
+	for i, r := range personality.Rules {
+		if o := order[i]; o.Vendor != r.Vendor || o.ProductPrefix != r.ProductPrefix || o.Source != r.Source {
+			t.Errorf("rule %d = %+v, want %+v", i, o, r)
+		}
 	}
 	var td8 bool
 	for _, d := range got.Drives {

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -72,6 +73,33 @@ func TestConfigSystem(t *testing.T) {
 }
 
 // Without a mhvtl.conf the edit creates one, which must not exist yet.
+// GET /config reports the mhvtl.conf values PATCH /config/system sets, as
+// the file has them; a key it lacks is left out.
+func TestConfigSystemRead(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	conf := strings.Replace(shippedMhvtlConf, "VTL_DEBUG=0\n", "", 1)
+	if err := os.WriteFile(filepath.Join(e.dir, "mhvtl.conf"), []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	type sys struct {
+		System systemDTO `json:"system"`
+	}
+	rec := e.call(http.MethodGet, "/api/v1/config", nil)
+	got := decodeBody[sys](t, rec).System
+	if !reflect.DeepEqual(got.Values, map[string]string{"CAPACITY": "500", "VERBOSE": "1"}) {
+		t.Errorf("system values = %v", got.Values)
+	}
+	// The file itself, which a client diffs a staged mhvtl.conf against.
+	if got.File == nil || got.File.Name != "mhvtl.conf" || got.File.Content != conf || got.File.SHA256 != conffile.Hash([]byte(conf)) {
+		t.Errorf("system file = %+v", got.File)
+	}
+	os.Remove(filepath.Join(e.dir, "mhvtl.conf"))
+	rec = e.call(http.MethodGet, "/api/v1/config", nil)
+	if got := decodeBody[sys](t, rec).System; len(got.Values) != 0 || got.Values == nil || got.File != nil {
+		t.Errorf("no mhvtl.conf: %#v", got)
+	}
+}
+
 func TestConfigSystemNoFile(t *testing.T) {
 	e := newWriteEnv(t, nil)
 	st := e.edit(http.MethodPatch, "/api/v1/config/system", map[string]any{"values": map[string]string{"VERBOSE": "2"}})

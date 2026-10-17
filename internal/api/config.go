@@ -529,8 +529,33 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"live_errors":       liveErrs,
 		// The slots of each library, as GET /config/libraries/{id}/slots
 		// gives them, so a client reads every changer once.
-		"slots": slots,
+		"slots":  slots,
+		"system": s.systemValues(),
 	})
+}
+
+// systemDTO is mhvtl.conf's values of the keys PATCH /config/system sets
+// (a key the file lacks gives none), and the file, which a client diffs a
+// staged one against; none when it does not exist.
+type systemDTO struct {
+	Values map[string]string `json:"values"`
+	File   *configFileDTO    `json:"file,omitempty"`
+}
+
+func (s *Server) systemValues() systemDTO {
+	d := systemDTO{Values: map[string]string{}}
+	data, err := os.ReadFile(filepath.Join(s.cfg.ConfigDir, mhvtlConf))
+	if err != nil {
+		return d
+	}
+	d.File = &configFileDTO{Name: mhvtlConf, SHA256: conffile.Hash(data), Content: string(data)}
+	c := conffile.ParseMhvtlConf(data)
+	for k := range systemKeys {
+		if v, ok := c.Get(k); ok {
+			d.Values[k] = v
+		}
+	}
+	return d
 }
 
 // contentsLibrary returns the library whose library_contents file name is.
@@ -697,6 +722,9 @@ type ruleDTO struct {
 	Vendor        string `json:"vendor"`
 	ProductPrefix string `json:"product_prefix"`
 	Source        string `json:"source"`
+	// Order is the rule's place in vtllibrary's evaluation, across
+	// personalities: the first that matches wins.
+	Order int `json:"order"`
 }
 
 type mediaDTO struct {
@@ -727,14 +755,14 @@ func (s *Server) handleConfigPersonalities(w http.ResponseWriter, _ *http.Reques
 	}
 	var libs []libraryPersonality
 	at := map[string]int{}
-	for _, r := range personality.Rules {
+	for n, r := range personality.Rules {
 		i, ok := at[r.InitFn]
 		if !ok {
 			i = len(libs)
 			at[r.InitFn] = i
 			libs = append(libs, libraryPersonality{personalityDTO: toPersonality(personality.Models[r.InitFn])})
 		}
-		libs[i].Rules = append(libs[i].Rules, ruleDTO{r.Vendor, r.ProductPrefix, r.Source})
+		libs[i].Rules = append(libs[i].Rules, ruleDTO{r.Vendor, r.ProductPrefix, r.Source, n})
 	}
 	drives := make([]driveModelDTO, 0, len(personality.DriveProducts))
 	for _, d := range personality.DriveProducts {
