@@ -931,3 +931,46 @@ func TestCrossCheckUnitSerial(t *testing.T) {
 		}
 	}
 }
+
+// TestCrossCheckDriveUnitSerial checks the statements DriveUnitSerialPage
+// mirrors, and that no drive personality replaces VPD page 80h.
+func TestCrossCheckDriveUnitSerial(t *testing.T) {
+	root := mhvtlRepo(t)
+	for file, facts := range map[string][]string{
+		"usr/cmd/vtltape.c": {
+			`snprintf(lu->lu_serial_no, sizeof(lu->lu_serial_no), "%-10s", v)`,
+			`conf_clamp_string(v, MAX_DRIVE_SN_LEN, linecount)`,
+			`snprintf(lu->vendor_id, VENDOR_ID_LEN + 1, "%-8s", v)`,
+			`snprintf(lu->product_id, PRODUCT_ID_LEN + 1, "%-16s", v)`,
+			`ibm_lto_serial_pad(lu->vendor_id, lu->product_id, lu->lu_serial_no,`,
+			`lu_vpd[PCODE_OFFSET(0x80)] = alloc_vpd(strlen(lu->lu_serial_no));`,
+		},
+		"usr/vtllib.c": {
+			`if (vlen != 3 || strncmp(vendor, "IBM", 3))`,
+			`if (strncmp(product, "ULT3580-", 8) && strncmp(product, "ULTRIUM-", 8))`,
+			`if (!len || len >= 10 || size < 11)`,
+			`memset(sn, '0', 10 - len);`,
+		},
+		"include/vtllib.h": {fmt.Sprintf("#define MAX_DRIVE_SN_LEN %d", maxDriveSNLen)},
+	} {
+		text := strings.Join(readC(t, root, file).lines, "\n")
+		for _, s := range facts {
+			if !strings.Contains(text, s) {
+				t.Errorf("%s no longer has %s", file, s)
+			}
+		}
+	}
+	changers := map[string]bool{}
+	for fn := range Models {
+		f, _, _ := findInit(t, pmFiles(t, root), fn)
+		changers[f.rel] = true
+	}
+	for _, f := range pmFiles(t, root) {
+		if changers[f.rel] {
+			continue
+		}
+		if text := strings.Join(f.lines, "\n"); strings.Contains(text, "PCODE_OFFSET(0x80)") || strings.Contains(text, "update_vpd_80(") {
+			t.Errorf("%s, a drive personality, writes VPD page 80h", f.rel)
+		}
+	}
+}

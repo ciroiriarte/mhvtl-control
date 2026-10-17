@@ -86,26 +86,36 @@ func ChangerUnitSerial(vendor, product, serial string) string {
 	return Lookup(vendor, product).UnitSerial(vendor, serial)
 }
 
-// DriveUnitSerial returns the unit serial number the vtltape of a drive with
-// this device.conf vendor, product and serial reports, as
-// scsi.ParseVPDSerial returns it. vtltape clamps the serial to
-// MAX_DRIVE_SN_LEN and holds it as "%-10s" (usr/cmd/vtltape.c:2169-2173;
-// MAX_DRIVE_SN_LEN 40, include/vtllib.h:88), pads an IBM LTO serial shorter than 10 with
-// leading zeroes, as the real drives do, and reports what it holds
-// (:2275-2278,
-// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtltape.c#L2275-L2278;
-// ibm_lto_serial_pad, usr/vtllib.c:2374-2395,
+// DriveUnitSerialPage returns the data of the VPD page 80h a drive with
+// this device.conf vendor, product and serial reports, after its 4-byte
+// header. vtltape builds it for every drive personality alike, none
+// replaces it (usr/cmd/vtltape.c:2274-2278,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtltape.c#L2274-L2278):
+// the serial as held, clamped to MAX_DRIVE_SN_LEN and "%-10s"
+// (:2169-2173,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtltape.c#L2169-L2173;
+// MAX_DRIVE_SN_LEN 40, include/vtllib.h:88), after ibm_lto_serial_pad
+// has zero-filled it on the left to 10 characters when the vendor is IBM,
+// the product ULT3580-* or ULTRIUM-*, and the serial shorter than 10, as
+// the real drives report it (usr/vtllib.c:2374-2395,
 // https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/vtllib.c#L2374-L2395).
-// No drive personality replaces page 80h.
-func DriveUnitSerial(vendor, product, serial string) string {
-	serial = cut(serial, maxDriveSNLen)
-	sn := strings.TrimRight(serial, " ")
-	if strings.TrimRight(vendor, " ") != "IBM" ||
-		!(strings.HasPrefix(product, "ULT3580-") || strings.HasPrefix(product, "ULTRIUM-")) ||
+// It compares the vendor_id ("%-8s") without its trailing blanks and the
+// product_id ("%-16s") case-sensitively (:2177, :2183).
+func DriveUnitSerialPage(vendor, product, serial string) []byte {
+	held := fmt.Sprintf("%-10s", cut(serial, maxDriveSNLen))
+	sn := strings.TrimRight(held, " ")
+	v := strings.TrimRight(cut(vendor, vendorIDLen), " ")
+	if v != "IBM" || !(strings.HasPrefix(product, "ULT3580-") || strings.HasPrefix(product, "ULTRIUM-")) ||
 		sn == "" || len(sn) >= 10 {
-		return trimVPD([]byte(serial))
+		return []byte(held)
 	}
-	return strings.Repeat("0", 10-len(sn)) + sn
+	return []byte(strings.Repeat("0", 10-len(sn)) + sn)
+}
+
+// DriveUnitSerial is DriveUnitSerialPage as scsi.ParseVPDSerial reads it:
+// the serial to compare with what the drive reports, whole.
+func DriveUnitSerial(vendor, product, serial string) string {
+	return trimVPD(DriveUnitSerialPage(vendor, product, serial))
 }
 
 // heldLibrarySerial is the serial as vtllibrary holds it: clamped to

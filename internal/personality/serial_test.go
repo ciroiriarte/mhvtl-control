@@ -117,3 +117,88 @@ func TestDriveUnitSerial(t *testing.T) {
 		}
 	}
 }
+
+// vmULT3580 is the VPD page 80h of an IBM ULT3580-TD8 drive with serial
+// XYZZY_41, read on an mhVTL 852b78a test VM.
+var vmULT3580 = []byte{0x01, 0x80, 0x00, 0x0a, 0x30, 0x30, 0x58, 0x59, 0x5a, 0x5a, 0x59, 0x5f, 0x34, 0x31}
+
+func TestDriveUnitSerialPage(t *testing.T) {
+	const blank = "XYZZY_41  " // "%-10s"
+	cases := []struct{ vendor, product, serial, want string }{
+		// IBM LTO: shorter than 10, zero-filled on the left.
+		{"IBM", "ULT3580-TD1", "XYZZY_41", "00XYZZY_41"},
+		{"IBM", "ULT3580-TD2", "XYZZY_41", "00XYZZY_41"},
+		{"IBM", "ULT3580-TD3", "XYZZY_41", "00XYZZY_41"},
+		{"IBM", "ULT3580-TD4", "XYZZY_41", "00XYZZY_41"},
+		{"IBM", "ULT3580-TD5", "XYZZY_41", "00XYZZY_41"},
+		{"IBM", "ULT3580-TD6", "XYZZY_41", "00XYZZY_41"},
+		{"IBM", "ULT3580-TD7", "XYZZY_41", "00XYZZY_41"},
+		{"IBM", "ULT3580-TD8", "XYZZY_41", "00XYZZY_41"},
+		{"IBM", "ULT3580-TD8", "XYZZY_A1", "00XYZZY_A1"},
+		{"IBM", "ULT3580-TD9", "XYZZY_41", "00XYZZY_41"},
+		{"IBM", "ULT3580-TDA", "XYZZY_41", "00XYZZY_41"},
+		{"IBM", "ULTRIUM-HH9", "ABC", "0000000ABC"},
+		{"IBM ", "ULTRIUM-TD5", "XYZZY_41", "00XYZZY_41"},
+		// 10 or more: as configured.
+		{"IBM", "ULT3580-TD8", "1234567890", "1234567890"},
+		{"IBM", "ULT3580-TD8", "XYZZY_400001", "XYZZY_400001"},
+		// Only vendor IBM pads.
+		{"HP", "ULTRIUM-TD5", "XYZZY_41", blank},
+		// Every other drive: "%-10s".
+		{"HP", "Ultrium 1-SCSI", "XYZZY_41", blank},
+		{"HP", "Ultrium 2-SCSI", "XYZZY_41", blank},
+		{"HP", "Ultrium 3-SCSI", "XYZZY_41", blank},
+		{"HP", "Ultrium 4-SCSI", "XYZZY_41", blank},
+		{"HP", "Ultrium 5-SCSI", "XYZZY_41", blank},
+		{"HP", "Ultrium 6-SCSI", "XYZZY_41", blank},
+		{"HP", "Ultrium 7-SCSI", "XYZZY_41", blank},
+		{"HP", "Ultrium 8-SCSI", "XYZZY_41", blank},
+		{"SONY", "SDX-300C", "XYZZY_41", blank},
+		{"SONY", "SDX-500C", "XYZZY_41", blank},
+		{"SONY", "SDX-700C", "XYZZY_41", blank},
+		{"SONY", "SDX-900V", "XYZZY_41", blank},
+		{"IBM", "03592J1A", "XYZZY_41", blank},
+		{"IBM", "03592E05", "XYZZY_41", blank},
+		{"IBM", "03592E06", "XYZZY_41", blank},
+		{"IBM", "03592E07", "XYZZY_41", blank},
+		{"STK", "T10000A", "XYZZY_41", blank},
+		{"STK", "T10000B", "XYZZY_41", blank},
+		{"STK", "T10000C", "XYZZY_41", blank},
+		{"STK", "T9840A", "XYZZY_41", blank},
+		{"STK", "T9840B", "XYZZY_41", blank},
+		{"STK", "T9840C", "XYZZY_41", blank},
+		{"STK", "T9840D", "XYZZY_41", blank},
+		{"STK", "T9940A", "XYZZY_41", blank},
+		{"STK", "T9940B", "XYZZY_41", blank},
+		{"QUANTUM", "DLT7000", "XYZZY_41", blank},
+		{"QUANTUM", "DLT8000", "XYZZY_41", blank},
+		{"QUANTUM", "SDLT 320", "XYZZY_41", blank},
+		{"QUANTUM", "SDLT600", "XYZZY_41", blank},
+		{"mhVTL", "VIRTUAL TAPE", "XYZZY_41", blank},
+		{"STK", "T10000B", "XYZZY_B1 ", "XYZZY_B1  "},
+	}
+	covered := map[string]bool{}
+	for _, c := range cases {
+		covered[DriveFor(c.product).InitFn] = true
+		if got := DriveUnitSerialPage(c.vendor, c.product, c.serial); string(got) != c.want {
+			t.Errorf("%q %q %q: page %q, want %q", c.vendor, c.product, c.serial, got, c.want)
+		}
+	}
+	for _, m := range DriveModels {
+		if !covered[m.InitFn] {
+			t.Errorf("drive personality %s has no VPD 80h case", m.InitFn)
+		}
+	}
+
+	page := DriveUnitSerialPage("IBM", "ULT3580-TD8", "XYZZY_41")
+	if !bytes.Equal(page, vmULT3580[4:]) || int(vmULT3580[3]) != len(page) {
+		t.Errorf("ULT3580-TD8 page % x, want % x", page, vmULT3580[4:])
+	}
+	got, err := scsi.ParseVPDSerial(vmULT3580)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := DriveUnitSerial("IBM", "ULT3580-TD8", "XYZZY_41"); got != want {
+		t.Errorf("VM reports %q, DriveUnitSerial %q", got, want)
+	}
+}
