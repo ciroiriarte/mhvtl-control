@@ -562,3 +562,29 @@ func TestLocatorFind(t *testing.T) {
 		t.Errorf("override = %q, %v; want /dev/sg7", p, err)
 	}
 }
+
+// An IBM 03584 changer does not report its bare serial in VPD page 80h:
+// mhVTL writes it "%-10.10s", two NULs, then the first storage element
+// address. sg0 holds the page read on a test VM for XYZZY_40; sg1 has
+// XYZZY_4, a prefix of it, which must not match.
+func TestLocatorFindReportedSerial(t *testing.T) {
+	root := t.TempDir()
+	fakeSysfs(t, root, "sg0", "8", "")
+	fakeSysfs(t, root, "sg1", "8", "")
+	page := func(s string) []byte { return append([]byte{0x08, 0x80, 0, byte(len(s))}, s...) }
+	for name, b := range map[string][]byte{
+		"sg0": page("XYZZY_40  \x00\x000400\x00\x00\x00\x00\x00\x00"),
+		"sg1": page("XYZZY_4   \x00\x000400\x00\x00\x00\x00\x00\x00"),
+	} {
+		if err := os.WriteFile(filepath.Join(root, "class", "scsi_generic", name, "device", "vpd_pg80"), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loc := &Locator{SysRoot: root, DevRoot: "/dev"}
+	for serial, want := range map[string]string{"XYZZY_40": "/dev/sg0", "XYZZY_4": "/dev/sg1"} {
+		lib := config.Library{ID: 10, Vendor: "IBM", Product: "03584L32", Serial: serial}
+		if p, err := loc.Find(lib); err != nil || p != want {
+			t.Errorf("03584 %s = %q, %v; want %s", serial, p, err, want)
+		}
+	}
+}

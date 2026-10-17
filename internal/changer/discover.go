@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/personality"
 	"mhvtl-control/internal/scsi"
 )
 
@@ -33,8 +34,9 @@ type Locator struct {
 
 // Find returns the sg path of lib's changer. It scans
 // <SysRoot>/class/scsi_generic/sg*/device for a medium changer (type 8) whose
-// unit serial number (sysfs vpd_pg80, else INQUIRY VPD 80h) equals the
-// library's "Unit serial number" from device.conf.
+// unit serial number (sysfs vpd_pg80, else INQUIRY VPD 80h) is the one
+// mhVTL reports for the library's "Unit serial number" from device.conf:
+// some personalities pad it or add to it (personality.ChangerUnitSerial).
 func (l *Locator) Find(lib config.Library) (string, error) {
 	if p, ok := l.Overrides[lib.ID]; ok {
 		return p, nil
@@ -42,7 +44,7 @@ func (l *Locator) Find(lib config.Library) (string, error) {
 	if strings.TrimSpace(lib.Serial) == "" {
 		return "", fmt.Errorf("%w: library %d has no Unit serial number in device.conf", ErrUnavailable, lib.ID)
 	}
-	p, err := l.FindBySerial(lib.Serial, scsi.PeripheralMediumChanger)
+	p, err := l.FindBySerial(personality.ChangerUnitSerial(lib.Vendor, lib.Product, lib.Serial), scsi.PeripheralMediumChanger)
 	if err != nil {
 		return "", fmt.Errorf("library %d: %w", lib.ID, err)
 	}

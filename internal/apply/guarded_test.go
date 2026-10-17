@@ -82,8 +82,12 @@ func (e *stopEnv) ListMap(lib int64) (string, error) {
 	return r[0], nil
 }
 
-func (e *stopEnv) Locate(serial string, typ uint8) (string, error) {
-	return "hctl-" + serial, nil
+func (e *stopEnv) LocateLibrary(lib config.Library) (string, error) {
+	return "hctl-" + lib.Serial, nil
+}
+
+func (e *stopEnv) LocateDrive(d config.Drive) (string, error) {
+	return "hctl-" + d.Serial, nil
 }
 
 func (e *stopEnv) Inventory(lib config.Library, hctl string) (changer.Inventory, error) {

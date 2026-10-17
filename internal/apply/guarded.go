@@ -17,7 +17,6 @@ import (
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
-	"mhvtl-control/internal/scsi"
 	"mhvtl-control/internal/validate"
 )
 
@@ -32,7 +31,10 @@ type Queue interface {
 // Devices is the helper's changer and drive access (SCSIAccess in
 // production).
 type Devices interface {
-	Locate(serial string, typ uint8) (hctl string, err error)
+	// LocateLibrary and LocateDrive return the H:C:T:L of a library's
+	// changer and of a drive.
+	LocateLibrary(lib config.Library) (hctl string, err error)
+	LocateDrive(d config.Drive) (hctl string, err error)
 	Inventory(lib config.Library, hctl string) (changer.Inventory, error)
 	Loaded(hctl string) (bool, error)
 }
@@ -241,7 +243,7 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 		}
 		return s.snapshot(sl, ls, &ls.Before)
 	}
-	if ls.HCTL, err = devs.Locate(sl.Lib.Serial, scsi.PeripheralMediumChanger); err != nil {
+	if ls.HCTL, err = devs.LocateLibrary(sl.Lib); err != nil {
 		return fmt.Errorf("library %d: %w", sl.Lib.ID, err)
 	}
 	inv, err := s.readOffline(ctx, sl, ls)
@@ -276,7 +278,7 @@ func (s *stopper) prepare(ctx context.Context, sl StopLib, ls *LibStop) error {
 				continue
 			}
 		}
-		hctl, err := devs.Locate(d.Serial, scsi.PeripheralSequential)
+		hctl, err := devs.LocateDrive(d)
 		if err != nil {
 			return fmt.Errorf("library %d drive %d: %w", sl.Lib.ID, d.ID, err)
 		}
@@ -425,7 +427,7 @@ func (s *stopper) idleDrives(ctx context.Context, sl StopLib, ls *LibStop) error
 		if state != "active" {
 			continue
 		}
-		hctl, err := s.cfg.Devices.Locate(d.Serial, scsi.PeripheralSequential)
+		hctl, err := s.cfg.Devices.LocateDrive(d)
 		if err != nil {
 			return fmt.Errorf("library %d drive %d: %w", sl.Lib.ID, d.ID, err)
 		}

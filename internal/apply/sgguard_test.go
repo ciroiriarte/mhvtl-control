@@ -262,3 +262,23 @@ func TestGuardRenumberedAtOpen(t *testing.T) {
 		t.Errorf("closed %v, CDBs sent % x", s.closed, s.cdbs)
 	}
 }
+
+// LocateLibrary and LocateDrive match the unit serial number the device
+// reports, which is not always device.conf's: an IBM 03584 changer writes
+// "%-10.10s", two NULs and its first storage address (the page read on a
+// test VM), and an IBM LTO drive pads a serial shorter than 10 with
+// leading zeroes.
+func TestGuardLocateReportedSerial(t *testing.T) {
+	s := newSGTree(t)
+	s.add(t, "3:0:0:0", "sg1", "8", "XYZZY_40  \x00\x000400\x00\x00\x00\x00\x00\x00")
+	s.add(t, "3:0:1:0", "sg2", "1", "00000DRV11")
+	a := s.access()
+	lib := config.Library{ID: 10, Vendor: "IBM", Product: "03584L32", Serial: "XYZZY_40"}
+	if hctl, err := a.LocateLibrary(lib); err != nil || hctl != "3:0:0:0" {
+		t.Errorf("LocateLibrary = %q, %v; want 3:0:0:0", hctl, err)
+	}
+	d := config.Drive{ID: 11, Vendor: "IBM", Product: "ULT3580-TD8", Serial: "DRV11"}
+	if hctl, err := a.LocateDrive(d); err != nil || hctl != "3:0:1:0" {
+		t.Errorf("LocateDrive = %q, %v; want 3:0:1:0", hctl, err)
+	}
+}

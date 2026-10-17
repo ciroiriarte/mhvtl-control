@@ -18,7 +18,6 @@ import (
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/media"
-	"mhvtl-control/internal/scsi"
 	"mhvtl-control/internal/validate"
 )
 
@@ -137,7 +136,7 @@ func (h *Helper) readLive(ctx context.Context, cur config.Inventory) (*validate.
 		if state == "inactive" || state == "failed" {
 			continue
 		}
-		hctl, err := h.cfg.Devices.Locate(lib.Serial, scsi.PeripheralMediumChanger)
+		hctl, err := h.cfg.Devices.LocateLibrary(lib)
 		if err != nil {
 			return nil, nil, refuse(ErrLive, "library %d: %v", lib.ID, err)
 		}
@@ -190,7 +189,7 @@ func (h *Helper) loadedDrives(ctx context.Context, c *checked) (map[int][]change
 		if !ok {
 			continue
 		}
-		hctl, err := h.cfg.Devices.Locate(d.Serial, scsi.PeripheralSequential)
+		hctl, err := h.cfg.Devices.LocateDrive(d)
 		if err != nil {
 			return nil, nil, refuse(ErrLive, "drive %d: %v", id, err)
 		}
@@ -212,7 +211,7 @@ func (h *Helper) idleLoaded(ctx context.Context, d config.Drive) (bool, error) {
 	if err != nil || state != "active" {
 		return false, err
 	}
-	hctl, err := h.cfg.Devices.Locate(d.Serial, scsi.PeripheralSequential)
+	hctl, err := h.cfg.Devices.LocateDrive(d)
 	if err != nil {
 		return false, err
 	}
@@ -887,7 +886,7 @@ func (x *execution) readback() []string {
 		if !ok {
 			want = validate.Baseline(lib, nil, bay)
 		}
-		hctl, err := x.h.cfg.Devices.Locate(lib.Serial, scsi.PeripheralMediumChanger)
+		hctl, err := x.h.cfg.Devices.LocateLibrary(lib)
 		var inv changer.Inventory
 		if err == nil {
 			inv, err = x.h.cfg.Devices.Inventory(lib, hctl)
