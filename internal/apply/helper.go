@@ -384,8 +384,12 @@ func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validat
 		return &res, nil, err
 	}
 	plan := derivePlan(curDC, nextDC, cur, nextInv, contents, curConf, nextConf)
-	if err := checkExpectUnits(req.ExpectUnits, plan); err != nil {
-		return &res, &plan, err
+	// A plan reports the units; the daemon echoes them in expect_units on
+	// the apply, which alone must name them exactly.
+	if req.Op == OpApply {
+		if err := checkExpectUnits(req.ExpectUnits, plan); err != nil {
+			return &res, &plan, err
+		}
 	}
 	if err := checkBudget(plan); err != nil {
 		return &res, &plan, err

@@ -154,9 +154,11 @@ func TestRejectUnits(t *testing.T) {
 	e.refused("listed twice", Request{Op: OpPlan, ExpectUnits: []string{"vtltape@11.service", "vtltape@11.service"}}, ErrUnit)
 	// A drive stanza edit restarts the drive and its library (amendment 1);
 	// expect_units must name exactly those (AC 26).
+	// A plan needs no expect_units: it reports the units, which the daemon
+	// echoes on the apply.
 	dc := e.edit("device.conf", "Compression type: lzo", "Compression type: zlib")
 	want := []string{"vtllibrary@10.service", "vtltape@11.service"}
-	resp := e.do(Request{Op: OpPlan, Files: []File{dc}, ExpectUnits: want})
+	resp := e.do(Request{Op: OpPlan, Files: []File{dc}})
 	if resp.Result != ResultValidated || fmt.Sprint(resp.Units) != fmt.Sprint(want) {
 		t.Errorf("template instances: %+v", resp)
 	}
@@ -166,9 +168,9 @@ func TestRejectUnits(t *testing.T) {
 		"a unit not affected": {"vtllibrary@10.service", "vtltape@11.service", "vtltape@12.service"},
 		"another library":     {"vtllibrary@30.service", "vtltape@11.service"},
 	} {
-		e.refused(name, Request{Op: OpPlan, Files: []File{dc}, ExpectUnits: units}, ErrUnit)
+		e.refused(name, Request{Op: OpApply, Files: []File{dc}, ExpectUnits: units}, ErrUnit)
 	}
-	e.refused("units for a comment edit", Request{Op: OpPlan, Files: []File{e.edit("device.conf", "# Each 'record'", "# Every 'record'")},
+	e.refused("units for a comment edit", Request{Op: OpApply, Files: []File{e.edit("device.conf", "# Each 'record'", "# Every 'record'")},
 		ExpectUnits: []string{"vtllibrary@10.service"}}, ErrUnit)
 }
 
