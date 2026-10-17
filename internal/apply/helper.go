@@ -26,9 +26,11 @@ import (
 	"os/exec"
 	"time"
 
+	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/hostids"
+	"mhvtl-control/internal/ipc"
 	"mhvtl-control/internal/validate"
 )
 
@@ -62,6 +64,10 @@ type Config struct {
 	// Journal sends structured fields to the journal.
 	Journal func(fields map[string]string)
 	Logf    func(format string, a ...any)
+	// Queue is the mhVTL message queue; Devices the changers and drives,
+	// through the SG_IO guard.
+	Queue   Queue
+	Devices Devices
 	// Lifecycle stops and restarts the units an interrupted apply had
 	// touched (PR 3b). Nil until then: an intent naming libraries is then
 	// left for a helper that has it.
@@ -93,6 +99,8 @@ func DefaultConfig(configDir, version string) Config {
 				logf("%s", fields["MESSAGE"])
 			}
 		},
+		Queue:       ipc.NewIPCController(),
+		Devices:     SCSIAccess{SysRoot: "/sys", DevRoot: "/dev", Open: changer.OpenSG},
 		Logf:        logf,
 		ReadTimeout: 30 * time.Second,
 	}

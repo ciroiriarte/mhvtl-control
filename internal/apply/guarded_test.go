@@ -1,0 +1,410 @@
+package apply
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/config"
+)
+
+// stopEnv is a fake system for guardedStop: two libraries, 10 (drives 11,
+// 12) and 30 (drive 31), a message queue, changers and drives, and
+// systemctl.
+type stopEnv struct {
+	t      *testing.T
+	dir    string
+	calls  []string
+	maps   map[int][]string // successive "list map" replies
+	state  map[string]string
+	result map[string]string
+	inv    map[int]changer.Inventory
+	loaded map[string]bool // by drive serial
+	onStop func(unit string)
+	failOn string // systemctl stop of this unit fails
+}
+
+func newStopEnv(t *testing.T) *stopEnv {
+	return &stopEnv{
+		t: t, dir: t.TempDir(),
+		maps:   map[int][]string{},
+		state:  map[string]string{},
+		result: map[string]string{},
+		inv: map[int]changer.Inventory{
+			10: {Drives: []changer.DriveState{{Number: 1}, {Number: 2}}, Slots: []changer.SlotState{{Number: 1, Full: true, Barcode: "E01001L8"}, {Number: 2}}, MAPs: []changer.SlotState{{Number: 1}}},
+			30: {Drives: []changer.DriveState{{Number: 1}}, Slots: []changer.SlotState{{Number: 1, Full: true, Barcode: "G03001L8"}}},
+		},
+		loaded: map[string]bool{},
+		onStop: func(string) {},
+	}
+}
+
+func (e *stopEnv) lib(id int) StopLib {
+	switch id {
+	case 10:
+		return StopLib{Lib: config.Library{ID: 10, Serial: "LIB10",
+			Drives: []config.Drive{{ID: 11, Slot: 1, Serial: "DRV11"}, {ID: 12, Slot: 2, Serial: "DRV12"}},
+			Slots:  []config.Slot{{Number: 1, Barcode: "E01001L8"}, {Number: 2, Barcode: "E01002L8"}}}}
+	case 30:
+		return StopLib{Lib: config.Library{ID: 30, Serial: "LIB30",
+			Drives: []config.Drive{{ID: 31, Slot: 1, Serial: "DRV31"}},
+			Slots:  []config.Slot{{Number: 1, Barcode: "G03001L8"}}}}
+	}
+	e.t.Fatalf("no library %d", id)
+	return StopLib{}
+}
+
+func (e *stopEnv) Offline(lib int64) error {
+	e.calls = append(e.calls, fmt.Sprint("offline ", lib))
+	return nil
+}
+func (e *stopEnv) Online(lib int64) error {
+	e.calls = append(e.calls, fmt.Sprint("online ", lib))
+	return nil
+}
+func (e *stopEnv) ListMap(lib int64) (string, error) {
+	e.calls = append(e.calls, fmt.Sprint("list map ", lib))
+	r := e.maps[int(lib)]
+	if len(r) == 0 {
+		return "", nil
+	}
+	e.maps[int(lib)] = r[1:]
+	return r[0], nil
+}
+
+func (e *stopEnv) Locate(serial string, typ uint8) (string, error) {
+	return "hctl-" + serial, nil
+}
+
+func (e *stopEnv) Inventory(lib config.Library, hctl string) (changer.Inventory, error) {
+	e.calls = append(e.calls, fmt.Sprint("RES ", lib.ID))
+	return e.inv[lib.ID], nil
+}
+
+func (e *stopEnv) Loaded(hctl string) (bool, error) {
+	e.calls = append(e.calls, "TUR "+strings.TrimPrefix(hctl, "hctl-"))
+	return e.loaded[strings.TrimPrefix(hctl, "hctl-")], nil
+}
+
+func (e *stopEnv) systemctl(_ context.Context, args ...string) ([]byte, error) {
+	switch args[0] {
+	case "stop":
+		e.calls = append(e.calls, "stop "+args[1])
+		if args[1] == e.failOn {
+			return nil, errors.New("exit status 1")
+		}
+		e.onStop(args[1])
+		return nil, nil
+	case "show":
+		unit := args[3]
+		switch args[1] {
+		case "--property=ActiveState":
+			if s, ok := e.state[unit]; ok {
+				return []byte(s + "\n"), nil
+			}
+			return []byte("active\n"), nil
+		case "--property=Result":
+			if r, ok := e.result[unit]; ok {
+				return []byte(r + "\n"), nil
+			}
+			return []byte("success\n"), nil
+		}
+	}
+	e.t.Fatalf("systemctl %v", args)
+	return nil, nil
+}
+
+func (e *stopEnv) stopper(mode StopMode) *stopper {
+	cfg := &Config{Queue: e, Devices: e, Systemctl: e.systemctl, Logf: e.t.Logf}
+	aside := filepath.Join(e.dir, "aside")
+	os.MkdirAll(aside, 0o700)
+	return &stopper{cfg: cfg, configDir: e.dir, aside: aside, mode: mode, journal: func(*LibStop) error { return nil }}
+}
+
+func (e *stopEnv) write(name, data string, mtime time.Time) {
+	e.t.Helper()
+	p := filepath.Join(e.dir, name)
+	if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+		e.t.Fatal(err)
+	}
+	if err := os.Chtimes(p, mtime, mtime); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// onlines lists the libraries put back online, in order.
+func (e *stopEnv) onlines() string {
+	var out []string
+	for _, c := range e.calls {
+		if strings.HasPrefix(c, "online ") {
+			out = append(out, strings.TrimPrefix(c, "online "))
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+func TestGuardedInactiveFileRule(t *testing.T) {
+	old, newer := time.Unix(1_700_000_000, 0), time.Unix(1_700_000_100, 0)
+	for _, tc := range []struct {
+		name    string
+		persist bool
+		lcTime  time.Time
+		pTime   *time.Time
+		want    string // slot 1 barcode
+		kind    string
+	}{
+		{"PERSIST off", false, old, &newer, "E01001L8", SourceFile},
+		{"PERSIST on, no .persist", true, old, nil, "E01001L8", SourceFile},
+		{"PERSIST on, .persist newer", true, old, &newer, "P00001L8", SourcePersist},
+		{"PERSIST on, same second", true, old, &old, "P00001L8", SourcePersist},
+		{"PERSIST on, library_contents newer", true, newer, &old, "E01001L8", SourceFile},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, mode := range []StopMode{ModeApply, ModeRollback, ModeRecover} {
+				e := newStopEnv(t)
+				e.state["vtllibrary@10.service"] = "failed"
+				e.write("library_contents.10", "VERSION: 2\nSlot 1: E01001L8\n", tc.lcTime)
+				if tc.pTime != nil {
+					e.write("library_contents.10.persist", "\nSlot 1: P00001L8   \nSlot 2: \n", *tc.pTime)
+				}
+				sl := e.lib(10)
+				sl.Persist = tc.persist
+				out, err := e.stopper(mode).guardedStop(context.Background(), []StopLib{sl})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ls := out[0]
+				if ls.Active || ls.R1 != nil || ls.Offline || ls.Source.Slots[1] != tc.want || ls.SourceKind != tc.kind || ls.Trusted {
+					t.Errorf("%s: %+v", mode, ls)
+				}
+				for _, c := range e.calls {
+					if strings.HasPrefix(c, "RES") || strings.HasPrefix(c, "TUR") || strings.HasPrefix(c, "offline") || strings.HasPrefix(c, "list map") {
+						t.Errorf("%s: inactive library got %q", mode, c)
+					}
+				}
+				if _, err := os.Stat(filepath.Join(e.dir, "library_contents.10.persist")); err == nil {
+					t.Errorf("%s: .persist left in place", mode)
+				}
+			}
+		})
+	}
+}
+
+func TestGuardedVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		before   bool   // a .persist exists before the stop
+		write    string // what the stop writes to .persist, "" for nothing
+		result   string
+		fresh    bool
+		trusted  bool
+		wantKind string
+	}{
+		{"no .persist, PERSIST off", false, "", "success", false, false, SourceLive},
+		{"an old .persist the stop leaves", true, "", "success", false, false, SourceLive},
+		{"a fresh .persist, Result=success", true, "\nSlot 1: P00001L8\nSlot 2: P00002L8 \n", "success", true, true, SourcePersist},
+		{"a truncated .persist, Result=timeout", true, "\nSlot 1: P00", "timeout", true, false, SourceLive},
+		{"a fresh .persist, Result=signal", false, "\nSlot 1: P00001L8\n", "signal", true, false, SourceLive},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newStopEnv(t)
+			p := filepath.Join(e.dir, "library_contents.10.persist")
+			if tc.before {
+				e.write("library_contents.10.persist", "\nSlot 1: OLD001L8\n", time.Unix(1_700_000_000, 0))
+			}
+			e.onStop = func(unit string) {
+				if unit == "vtllibrary@10.service" && tc.write != "" {
+					os.WriteFile(p, []byte(tc.write), 0o644)
+				}
+			}
+			e.result["vtllibrary@10.service"] = tc.result
+			sp := e.stopper(ModeApply)
+			journaled := false
+			sp.journal = func(ls *LibStop) error {
+				// The verdict is journaled while .persist is still in place.
+				_, err := os.Stat(p)
+				journaled = err == nil || !ls.After.Exists
+				return nil
+			}
+			out, err := sp.guardedStop(context.Background(), []StopLib{e.lib(10)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ls := out[0]
+			if ls.Fresh != tc.fresh || ls.Trusted != tc.trusted || ls.SourceKind != tc.wantKind || !journaled {
+				t.Errorf("fresh %v trusted %v source %s journaled %v", ls.Fresh, ls.Trusted, ls.SourceKind, journaled)
+			}
+			switch tc.wantKind {
+			case SourcePersist:
+				if ls.Source.Slots[2] != "P00002L8" || len(ls.PersistData) == 0 {
+					t.Errorf("source %+v", ls.Source)
+				}
+			case SourceLive:
+				if ls.Source.Slots[1] != "E01001L8" || ls.Source.Slots[2] != "" {
+					t.Errorf("source %+v, want R1′", ls.Source)
+				}
+			}
+			// Any .persist is moved aside, trusted or not.
+			if _, err := os.Stat(p); err == nil {
+				t.Error(".persist left in place")
+			}
+			if ls.After.Exists && ls.Aside == "" {
+				t.Error("no aside path")
+			}
+			if want := "RES 10,list map 10,offline 10,list map 10,TUR DRV11,TUR DRV12,stop vtllibrary@10.service"; strings.Join(e.calls, ",") != want {
+				t.Errorf("calls %q\nwant  %q", strings.Join(e.calls, ","), want)
+			}
+		})
+	}
+}
+
+// TestGuardedStopOrder: the library goes down before its drives
+// (amendment 1), and steps 1-5 run for every library before any stop.
+func TestGuardedStopOrder(t *testing.T) {
+	e := newStopEnv(t)
+	l10, l30 := e.lib(10), e.lib(30)
+	l10.Drives, l30.Drives = []int{12, 11}, []int{31}
+	if _, err := e.stopper(ModeApply).guardedStop(context.Background(), []StopLib{l10, l30}); err != nil {
+		t.Fatal(err)
+	}
+	var stops []string
+	firstStop := -1
+	for i, c := range e.calls {
+		if strings.HasPrefix(c, "stop ") {
+			stops = append(stops, short([]string{strings.TrimPrefix(c, "stop ")}))
+			if firstStop < 0 {
+				firstStop = i
+			}
+		} else if firstStop >= 0 {
+			t.Errorf("%q after the first stop", c)
+		}
+	}
+	if strings.Join(stops, " ") != "L10 T11 T12 L30 T31" {
+		t.Errorf("stops %v", stops)
+	}
+	if e.onlines() != "" {
+		t.Errorf("stopped libraries put online: %s", e.onlines())
+	}
+}
+
+func TestGuardedLoadedDrive(t *testing.T) {
+	// R1′ shows drive 1 empty, TUR finds a cartridge.
+	for _, mode := range []StopMode{ModeApply, ModeRollback, ModeRecover} {
+		e := newStopEnv(t)
+		e.loaded["DRV11"] = true
+		out, err := e.stopper(mode).guardedStop(context.Background(), []StopLib{e.lib(10)})
+		switch mode {
+		case ModeApply:
+			if !errors.Is(err, ErrRaced) {
+				t.Errorf("apply: %v", err)
+			}
+			if e.onlines() != "10" {
+				t.Errorf("apply: online %q", e.onlines())
+			}
+		default:
+			if err != nil {
+				t.Fatalf("%s: %v", mode, err)
+			}
+			if len(out[0].ForcedUnloads) != 1 || out[0].ForcedUnloads[0].Drive != 11 ||
+				strings.Join(out[0].Stopped, " ") != "vtllibrary@10.service vtltape@11.service" {
+				t.Errorf("%s: %+v", mode, out[0])
+			}
+		}
+	}
+
+	// R1′ shows drive 1 loaded from slot 2: consistent in apply mode; a
+	// forced unload back to slot 2 in rollback mode.
+	for _, mode := range []StopMode{ModeApply, ModeRollback} {
+		e := newStopEnv(t)
+		e.loaded["DRV11"] = true
+		inv := e.inv[10]
+		inv.Drives[0] = changer.DriveState{Number: 1, Full: true, Barcode: "E01002L8", SourceSlot: 2}
+		e.inv[10] = inv
+		out, err := e.stopper(mode).guardedStop(context.Background(), []StopLib{e.lib(10)})
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		fu := out[0].ForcedUnloads
+		if mode == ModeApply && len(fu) != 0 || mode == ModeRollback && (len(fu) != 1 || fu[0] != ForcedUnload{Library: 10, Drive: 11, Barcode: "E01002L8", SourceSlot: 2}) {
+			t.Errorf("%s: forced unloads %+v", mode, fu)
+		}
+	}
+}
+
+// TestGuardedReonline: every exit path after an offline puts the
+// libraries taken offline and not stopped back online.
+func TestGuardedReonline(t *testing.T) {
+	ctx := context.Background()
+
+	// The MAP barrier disagrees on library 30 after 10 was offlined.
+	e := newStopEnv(t)
+	e.maps[30] = []string{"", "M00001L8"}
+	if _, err := e.stopper(ModeApply).guardedStop(ctx, []StopLib{e.lib(10), e.lib(30)}); !errors.Is(err, ErrRaced) {
+		t.Errorf("barrier: %v", err)
+	}
+	if e.onlines() != "10,30" {
+		t.Errorf("barrier: online %q", e.onlines())
+	}
+
+	// The stop of library 30 fails: 10 is down, 30 still up and offline.
+	e = newStopEnv(t)
+	e.failOn = "vtllibrary@30.service"
+	if _, err := e.stopper(ModeRollback).guardedStop(ctx, []StopLib{e.lib(10), e.lib(30)}); err == nil {
+		t.Error("stop failure: no error")
+	}
+	if e.onlines() != "30" {
+		t.Errorf("stop failure: online %q", e.onlines())
+	}
+
+	// A panic in the journal of library 30, stopped first: 10 is offline
+	// and still running.
+	e = newStopEnv(t)
+	sp := e.stopper(ModeRecover)
+	sp.journal = func(*LibStop) error { panic("journal") }
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("no panic")
+			}
+		}()
+		sp.guardedStop(ctx, []StopLib{e.lib(30), e.lib(10)})
+	}()
+	if e.onlines() != "10" {
+		t.Errorf("panic: online %q", e.onlines())
+	}
+
+	// A journal error after the first library stopped.
+	e = newStopEnv(t)
+	sp = e.stopper(ModeApply)
+	n := 0
+	sp.journal = func(*LibStop) error {
+		if n++; n == 1 {
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	if _, err := sp.guardedStop(ctx, []StopLib{e.lib(10), e.lib(30)}); err == nil {
+		t.Error("journal failure: no error")
+	}
+	if e.onlines() != "30" {
+		t.Errorf("journal failure: online %q", e.onlines())
+	}
+}
+
+func TestPersistPlacement(t *testing.T) {
+	// As save_config writes it: blank lines between element types, no
+	// VERSION line, barcodes padded, Drive lines empty.
+	p, err := persistPlacement([]byte("\nDrive 1:\nDrive 2:\n\nPicker 1: \n\nMAP 1: M00001L8  \n\nSlot 1: E01001L8    \nSlot 2: \nSlot 3: E01003L8\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(p.Slots) != "map[1:E01001L8 3:E01003L8]" || fmt.Sprint(p.MAPs) != "map[1:M00001L8]" || len(p.Drives) != 0 || len(p.Pickers) != 0 {
+		t.Errorf("%+v", p)
+	}
+}
