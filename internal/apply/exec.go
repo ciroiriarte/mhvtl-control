@@ -987,8 +987,9 @@ func (x *execution) rollback(ctx context.Context, cause error) Response {
 //
 // For each library the original configuration has, the placement source
 // is the apply's journaled one (the trusted .persist, else R1′) when the
-// apply stopped it and did not start it again; otherwise the latest
-// guardedStop's, with the apply's source and the forced unloads after it,
+// latest guardedStop did not find it running (not started again, or
+// started and never came up); otherwise the latest guardedStop's, with the
+// apply's source and the forced unloads after it,
 // so a cartridge a disposition shelved or a drive held is not lost. It is
 // mapped back to the original layout (mapBack) and written over the
 // restored library_contents, unless that file changed after the apply (a
@@ -1009,7 +1010,13 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 	}
 	home := h.defaultHome(conf)
 	applied, recent := stopsByID(ex.Stops), stopsByID(latest)
-	started := set(ex.Started)
+	// The cartridges make_vtl_media created for the apply are not placed
+	// into the original layout, which did not list them; their media is
+	// kept and reported as orphaned.
+	newMedia := map[string]bool{}
+	for _, p := range ex.NewMedia {
+		newMedia[filepath.Base(p)] = true
+	}
 	intentFiles := map[string]IntentFile{}
 	for _, f := range it.Files {
 		intentFiles[f.Name] = f
@@ -1022,8 +1029,11 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 			continue // added by the apply: nothing to bring back
 		}
 		a, l := applied[id], recent[id]
+		// The latest guardedStop's source holds only for a library that
+		// ran: one started that never came up has the new layout's file
+		// as its source.
 		src := l
-		if a != nil && (l == nil || !started[libraryUnit(id)]) {
+		if a != nil && (l == nil || !l.Active) {
 			src = a
 		}
 		var extra []validate.Placement
@@ -1053,7 +1063,10 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 		// A library whose stop failed before its verdict has no source:
 		// its restored file stays as it is.
 		if src.SourceKind != "" {
-			mapped, un := mapBack(lib, src.Source, extra, bayIn(homeOf(lib, home)))
+			for i := range extra {
+				extra[i] = withoutBarcodes(extra[i], newMedia)
+			}
+			mapped, un := mapBack(lib, withoutBarcodes(src.Source, newMedia), extra, bayIn(homeOf(lib, home)))
 			unplaced = append(unplaced, un...)
 			if err := h.writePlacement(id, mapped, intentFiles); err != nil {
 				return unplaced, err
@@ -1249,6 +1262,19 @@ func affected(p UnitPlan) []int {
 func startLibs(p UnitPlan) []int {
 	out := append(append([]int{}, p.Restart...), p.Start...)
 	sort.Ints(out)
+	return out
+}
+
+// withoutBarcodes is p without the cartridges in drop.
+func withoutBarcodes(p validate.Placement, drop map[string]bool) validate.Placement {
+	out := newPlacement()
+	for _, m := range []struct{ from, to map[int]string }{{p.Slots, out.Slots}, {p.MAPs, out.MAPs}, {p.Drives, out.Drives}, {p.Pickers, out.Pickers}} {
+		for n, b := range m.from {
+			if !drop[b] {
+				m.to[n] = b
+			}
+		}
+	}
 	return out
 }
 

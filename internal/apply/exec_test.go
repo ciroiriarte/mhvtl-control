@@ -2,6 +2,7 @@ package apply
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -963,4 +964,70 @@ func TestExecMediaWarnsMissing(t *testing.T) {
 		t.Fatalf("apply: %+v", resp)
 	}
 	check("apply", resp.Warnings)
+}
+
+// TestExecRollbackNewMedia: a rollback after media created a new
+// pre-filled cartridge restores the original layout without it, whether
+// library 10 never came up (the apply's source) or ran (its own R1′ lists
+// the cartridge), and reports its media as orphaned, in the response and
+// the audit alike.
+func TestExecRollbackNewMedia(t *testing.T) {
+	for _, fail := range []string{"library start", "drive dies after the library started"} {
+		t.Run(fail, func(t *testing.T) {
+			e, s := newExecEnv(t)
+			lc := e.read("library_contents.10")
+			s.onMedia = func() error { return os.Mkdir(filepath.Join(e.home, "E01024L8"), 0o755) }
+			if fail == "library start" {
+				s.failStart["vtllibrary@10.service"] = true
+			} else {
+				once := false
+				s.onStart = func(u string) {
+					if u == "vtllibrary@10.service" && !once {
+						once = true
+						s.state["vtltape@11.service"] = "failed"
+					}
+				}
+			}
+			req := compression(e)
+			req.Files = append(req.Files, e.edit("library_contents.10", "Slot 24:\n", "Slot 24: E01024L8\n"))
+			resp := e.do(req)
+			if resp.Result != ResultRolledBack {
+				t.Fatalf("apply: %+v", resp)
+			}
+			if got := string(e.read("library_contents.10")); got != string(lc) {
+				t.Errorf("library_contents.10:\n%s", diffLines(string(lc), got))
+			}
+			want := filepath.Join(e.home, "E01024L8")
+			if fmt.Sprint(resp.OrphanedMedia) != "["+want+"]" || len(resp.Unplaced) != 0 {
+				t.Errorf("orphaned %v, unplaced %v", resp.OrphanedMedia, resp.Unplaced)
+			}
+			if _, err := os.Stat(want); err != nil {
+				t.Errorf("media not kept: %v", err)
+			}
+			lines := e.auditLines()
+			var r AuditRecord
+			if len(lines) == 0 || json.Unmarshal([]byte(lines[len(lines)-1]), &r) != nil || fmt.Sprint(r.OrphanedMedia) != fmt.Sprint(resp.OrphanedMedia) {
+				t.Errorf("audit %v", lines)
+			}
+		})
+	}
+}
+
+// TestExecRollbackNeverCameUp: the request moves E01001L8 from slot 1 to
+// slot 25 and library 10 fails to start. Its file then is the new
+// layout's, so the rollback takes the apply's source: E01001L8 goes back
+// to slot 1, not to slot 25 of the original layout.
+func TestExecRollbackNeverCameUp(t *testing.T) {
+	e, s := newExecEnv(t)
+	lc := e.read("library_contents.10")
+	s.failStart["vtllibrary@10.service"] = true
+	f := e.edit("library_contents.10", "Slot 25:\n", "Slot 25: E01001L8\n")
+	f.Content = []byte(strings.Replace(string(f.Content), "Slot 1: E01001L8\n", "Slot 1:\n", 1))
+	resp := e.do(Request{Op: OpApply, Actor: "admin", Files: []File{f}, ExpectUnits: []string{"vtllibrary@10.service"}})
+	if resp.Result != ResultRolledBack {
+		t.Fatalf("apply: %+v", resp)
+	}
+	if got := string(e.read("library_contents.10")); got != string(lc) {
+		t.Errorf("library_contents.10:\n%s", diffLines(string(lc), got))
+	}
 }
