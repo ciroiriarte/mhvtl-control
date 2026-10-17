@@ -40,6 +40,7 @@
   var buildValidateBody = core.buildValidateBody;
   var writesEditable = core.writesEditable, stageFileRows = core.stageFileRows, planSummary = core.planSummary;
   var forceRemaining = core.forceRemaining, fmtCountdown = core.fmtCountdown, applyErrorAction = core.applyErrorAction;
+  var stageOutcome = core.stageOutcome;
   var libraryAttrFields = core.libraryAttrFields, driveAttrFields = core.driveAttrFields, buildAttrPatch = core.buildAttrPatch;
   var buildSlotPatch = core.buildSlotPatch, buildSlotDelete = core.buildSlotDelete, buildSlotsAdd = core.buildSlotsAdd;
 
@@ -1954,6 +1955,11 @@
         // The gate closed: the banner, re-read, says why.
         refreshConfig(NodeState.generation, currentAbort ? currentAbort.signal : undefined);
         return "Read-only now: " + e.message;
+      case "applied":
+        cfgStage = null;
+        renderStage();
+        refresh();
+        return "These changes were applied; make new ones on the configuration as it is now.";
       case "reload":
         if (e.code === "stage_not_found") {
           cfgStage = null;
@@ -2196,10 +2202,7 @@
     apply.className = "btn sm primary";
     apply.disabled = !editable || !plan || !(plan.canApply || plan.force);
     check.disabled = !editable || !files.length;
-    var discard = editButton("Discard", "Discard the pending changes", function () {
-      cfgStage = null;
-      renderStage();
-    });
+    var discard = editButton("Discard", "Discard the pending changes", function () { discardStage(); });
     box.appendChild(mk("div", { class: "drive-actions", children: [check, apply, discard] }));
     if (!editable) { box.appendChild(mk("p", { class: "muted", text: "Read-only now: see the banner above." })); }
     renderPlan(box, plan);
@@ -2297,9 +2300,76 @@
     if (dlg.showModal) { dlg.showModal(); }
   }
 
+  // discardStage drops the stage on the daemon (DELETE
+  // /config/stages/{id}) and here. One already gone is dropped here too;
+  // one an apply uses is kept.
+  function discardStage() {
+    if (!cfgStage) { return; }
+    var gen = NodeState.generation, st = cfgStage;
+    api(cfgPath("/stages/" + encodeURIComponent(st.id)), { method: "DELETE" }).then(function () {
+      if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      cfgStage = null;
+      renderStage();
+    }).catch(function (e) {
+      if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      var action = applyErrorAction(e);
+      if (action === "reload") {
+        cfgStage = null;
+        renderStage();
+      } else if (action === "applied") {
+        learnOutcome(st, gen);
+      } else {
+        stageStatus.error(cfgFailed(e));
+      }
+    });
+  }
+
+  // applied ends the stage after an apply that applied (res is its answer,
+  // or the tombstone's last_apply).
+  function applied(res) {
+    cfgStage = null;
+    renderStage();
+    var n = coerceArray(res && res.plan && res.plan.units).length;
+    toast("Applied" + (n ? ": " + n + (n === 1 ? " unit" : " units") + " restarted" : ""));
+    var warn = coerceArray(res && res.warnings).concat(coerceArray(res && res.placement_drift)).map(String);
+    if (warn.length) { configStatus.warn("Applied, with warnings: " + warn.join("; ")); }
+    refresh();
+  }
+
+  // learnOutcome asks the daemon what became of an apply whose answer did
+  // not arrive, or of a stage another request applied: the stage's state
+  // and last apply (GET /config/stages/{id}).
+  function learnOutcome(st, gen) {
+    stageStatus.loading();
+    api(cfgPath("/stages/" + encodeURIComponent(st.id))).then(function (dto) {
+      if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      var out = stageOutcome(dto);
+      if (out.state === "applied") {
+        applied(dto.last_apply);
+        return;
+      }
+      st.plan = null;
+      st.result = dto && dto.last_apply ? dto.last_apply : null;
+      renderStage();
+      if (out.state === "busy") {
+        stageStatus.error("The apply is still running.");
+        var region = $("stage-status");
+        if (region) { region.appendChild(editButton("Check again", "Ask whether the apply finished", function () { learnOutcome(st, gen); })); }
+      } else if (out.result) {
+        stageStatus.error("The last apply ended " + out.result + (out.message ? ": " + out.message : "") + ". Check again before applying.");
+      } else {
+        stageStatus.error("The apply did not run. Check again before applying.");
+      }
+    }).catch(function (e) {
+      if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      stageFailed(e);
+    });
+  }
+
   // doApply applies the stage, expecting the units of its dry run (the
   // daemon sends them). plan_required means the stage changed since: it is
-  // checked again for the user to confirm afresh.
+  // checked again for the user to confirm afresh. With no answer, the
+  // stage says how the apply ended.
   function doApply(token) {
     if (!cfgStage) { return; }
     var gen = NodeState.generation, st = cfgStage;
@@ -2308,18 +2378,17 @@
     stageStatus.loading();
     api(cfgPath("/apply"), { method: "POST", body: body }).then(function (res) {
       if (isStale(gen, NodeState.generation)) { return; }
-      cfgStage = null;
-      renderStage();
-      var n = coerceArray(res && res.plan && res.plan.units).length;
-      toast("Applied" + (n ? ": " + n + (n === 1 ? " unit" : " units") + " restarted" : ""));
-      var warn = coerceArray(res && res.warnings).concat(coerceArray(res && res.placement_drift)).map(String);
-      if (warn.length) { configStatus.warn("Applied, with warnings: " + warn.join("; ")); }
-      refresh();
+      applied(res);
     }).catch(function (e) {
       if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      var action = applyErrorAction(e);
+      if (action === "lost" || action === "applied") {
+        learnOutcome(st, gen);
+        return;
+      }
       st.plan = null;
       st.result = e.body && e.body.result ? e.body : null;
-      if (applyErrorAction(e) === "replan") {
+      if (action === "replan") {
         var why = e.message;
         checkStage(function () { stageStatus.error(why.replace(/\.?$/, ".") + " Checked again: review the plan and apply."); });
         return;
