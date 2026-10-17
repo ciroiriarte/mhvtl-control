@@ -115,7 +115,8 @@ func TestBarcodeDensity(t *testing.T) {
 }
 
 // The element windows of fact 11 of the plan, with the 03584 MAP moved to
-// 0x0301 by markh794/mhvtl#287: 03584 allows 512 drives and 255 MAP slots; the STK L-series 500 MAP slots between 0x000a and 0x01f4.
+// 0x0301 by markh794/mhvtl#287: 03584 allows 512 drives and 255 MAP slots;
+// the STK L-series 500 MAP slots between 0x000a and 0x01f4.
 func TestLimits(t *testing.T) {
 	for _, tc := range []struct {
 		init string
