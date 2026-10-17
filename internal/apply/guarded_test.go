@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/validate"
 )
@@ -242,14 +243,55 @@ func TestFileSource(t *testing.T) {
 			t.Errorf("%s: %+v %v", tc.name, got, err)
 		}
 	}
-	// A .persist that is not a regular file is not read through.
+	// A .persist that is not a regular file is not read through, even a
+	// link to a valid one that the mtime rule would pick.
 	e := newStopEnv(t)
 	e.write("library_contents.10", "VERSION: 2\nSlot 1: E01001L8\n", old)
-	if err := os.Symlink("/etc/passwd", filepath.Join(e.dir, "library_contents.10.persist")); err != nil {
+	e.write("valid.persist", "\nSlot 1: P00001L8\n", newer)
+	if err := os.Symlink(filepath.Join(e.dir, "valid.persist"), filepath.Join(e.dir, "library_contents.10.persist")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := FileSource(e.dir, lib, true); err == nil {
-		t.Error("a symlinked .persist was read")
+	if got, err := FileSource(e.dir, lib, true); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a symlinked .persist: %+v %v", got, err)
+	}
+}
+
+// TestFileSourceChangedAfterSnapshot: guardedStop's fileSource takes the
+// .persist only as snapshotted; one removed or rewritten since is an error,
+// not a quiet fall back to library_contents.N.
+func TestFileSourceChangedAfterSnapshot(t *testing.T) {
+	old := time.Unix(1_700_000_000, 0)
+	data := "\nSlot 1: P00001L8\n"
+	for _, tc := range []struct {
+		name   string
+		change func(e *stopEnv)
+	}{
+		{"removed", func(e *stopEnv) { os.Remove(filepath.Join(e.dir, "library_contents.10.persist")) }},
+		{"rewritten", func(e *stopEnv) { e.write("library_contents.10.persist", "\nSlot 1: P00002L8\n", old) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newStopEnv(t)
+			e.write("library_contents.10", "VERSION: 2\nSlot 1: E01001L8\n", old)
+			e.write("library_contents.10.persist", data, old)
+			sl := e.lib(10)
+			sl.Persist = true
+			ls := &LibStop{After: Snapshot{Exists: true, SHA256: conffile.Hash([]byte(data))}}
+			tc.change(e)
+			err := e.stopper(ModeApply).fileSource(sl, ls)
+			if err == nil || !strings.Contains(err.Error(), "changed after it was read") {
+				t.Errorf("fileSource: %v (source %+v, kind %s)", err, ls.Source, ls.SourceKind)
+			}
+		})
+	}
+	// Unchanged, it is the source.
+	e := newStopEnv(t)
+	e.write("library_contents.10", "VERSION: 2\nSlot 1: E01001L8\n", old)
+	e.write("library_contents.10.persist", data, old)
+	sl := e.lib(10)
+	sl.Persist = true
+	ls := &LibStop{After: Snapshot{Exists: true, SHA256: conffile.Hash([]byte(data))}}
+	if err := e.stopper(ModeApply).fileSource(sl, ls); err != nil || ls.SourceKind != SourcePersist || ls.Source.Slots[1] != "P00001L8" {
+		t.Errorf("unchanged: %v %+v", err, ls)
 	}
 }
 
