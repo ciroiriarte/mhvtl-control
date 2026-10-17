@@ -218,6 +218,9 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 	// an apply stops or starts meanwhile shows as deactivating or
 	// activating, which the daemon does not take as down.
 	if req.Op == OpUnits {
+		if len(req.Files)+len(req.Delete)+len(req.Dispositions)+len(req.ExpectUnits) > 0 || req.ForceToken != "" {
+			return Response{Result: ResultRefused, Error: ErrBadRequest, Message: "units takes no input but its name"}
+		}
 		states, err := h.libraryStates(ctx)
 		if err != nil {
 			return responseOf(err)

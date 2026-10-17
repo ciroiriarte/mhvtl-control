@@ -614,48 +614,94 @@ func (s *stopper) stop(ctx context.Context, sl StopLib, ls *LibStop) error {
 }
 
 // fileSource is the source of an inactive library: the file vtllibrary
-// would load at its next start, by the rule of __init_slot_info
-// ([usr/cmd/vtllibrary.c:958-991](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L958-L991)
-// at 852b78a):
-// .persist when PERSIST is on, it exists, and library_contents.N is not
-// newer by st_mtime in whole seconds; else library_contents.N.
+// would load at its next start (FileSource). A .persist is used only as
+// snapshotted: one that appeared, went or changed since is an error.
 func (s *stopper) fileSource(sl StopLib, ls *LibStop) error {
 	ls.SourceKind = SourceFile
-	if sl.Persist && ls.After.Exists {
-		lc, err := os.Stat(filepath.Join(s.configDir, contentsName(sl.Lib.ID)))
-		if err != nil {
-			return err
-		}
-		if lc.ModTime().Unix() <= ls.After.MtimeNS/1e9 {
-			data, err := os.ReadFile(filepath.Join(s.configDir, persistName(sl.Lib.ID)))
+	persist := sl.Persist && ls.After.Exists
+	src, err := FileSource(s.configDir, sl.Lib, persist)
+	if err != nil {
+		return err
+	}
+	if persist && (!src.PersistExists || src.Name == persistName(sl.Lib.ID) && conffile.Hash(src.Data) != ls.After.SHA256) {
+		return fmt.Errorf("library %d: %s changed after it was read", sl.Lib.ID, persistName(sl.Lib.ID))
+	}
+	ls.Source = src.Placement
+	if src.Name == persistName(sl.Lib.ID) {
+		ls.PersistData, ls.SourceKind = src.Data, SourcePersist
+	}
+	return nil
+}
+
+// FileSourced is the file a stopped library loads at its next start.
+type FileSourced struct {
+	// Name is library_contents.N or library_contents.N.persist; Data is
+	// the .persist's content when it is that.
+	Name string
+	Data []byte
+	// Placement is the file's placement.
+	Placement validate.Placement
+	// PersistExists says whether a .persist was there, when PERSIST is on.
+	PersistExists bool
+}
+
+// FileSource is the file vtllibrary loads for lib at its next start, by the
+// rule of __init_slot_info
+// ([usr/cmd/vtllibrary.c:958-991](https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/vtllibrary.c#L958-L991)
+// at 852b78a): .persist when PERSIST is on, it exists, and
+// library_contents.N is not newer by st_mtime in whole seconds; else
+// library_contents.N, whose placement lib holds as read from configDir.
+// save_config writes .persist at every clean exit (:1963). A .persist
+// that is not a regular file is an error. guardedStop and the daemon's
+// staging both use it, so they agree on a stopped library's placement.
+func FileSource(configDir string, lib config.Library, persist bool) (FileSourced, error) {
+	if persist {
+		pp := filepath.Join(configDir, persistName(lib.ID))
+		pst, err := os.Lstat(pp)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			return FileSourced{}, err
+		case !pst.Mode().IsRegular():
+			return FileSourced{}, fmt.Errorf("library %d: %s is not a regular file", lib.ID, pp)
+		default:
+			lc, err := os.Stat(filepath.Join(configDir, contentsName(lib.ID)))
 			if err != nil {
-				return err
+				return FileSourced{}, err
 			}
-			if conffile.Hash(data) != ls.After.SHA256 {
-				return fmt.Errorf("library %d: %s changed after it was read", sl.Lib.ID, persistName(sl.Lib.ID))
+			if lc.ModTime().Unix() > pst.ModTime().Unix() {
+				return contentsSource(lib, true), nil
 			}
-			ls.PersistData = data
-			ls.Source, err = persistPlacement(data)
-			ls.SourceKind = SourcePersist
-			return err
+			data, err := os.ReadFile(pp)
+			if err != nil {
+				return FileSourced{}, err
+			}
+			p, err := persistPlacement(data)
+			if err != nil {
+				return FileSourced{}, fmt.Errorf("library %d: %s: %w", lib.ID, persistName(lib.ID), err)
+			}
+			return FileSourced{Name: persistName(lib.ID), Data: data, Placement: p, PersistExists: true}, nil
 		}
 	}
+	return contentsSource(lib, false), nil
+}
+
+func contentsSource(lib config.Library, persistExists bool) FileSourced {
 	p := newPlacement()
-	for _, slot := range sl.Lib.Slots {
+	for _, slot := range lib.Slots {
 		if slot.Barcode != "" {
 			p.Slots[slot.Number] = slot.Barcode
 		}
 	}
-	for _, m := range sl.Lib.MAPs {
+	for _, m := range lib.MAPs {
 		if m.Barcode != "" {
 			p.MAPs[m.Number] = m.Barcode
 		}
 	}
-	for _, pk := range sl.Lib.PickerMedia {
+	for _, pk := range lib.PickerMedia {
 		p.Pickers[pk.Number] = pk.Barcode
 	}
-	ls.Source = p
-	return nil
+	return FileSourced{Name: contentsName(lib.ID), Placement: p, PersistExists: persistExists}
 }
 
 // snapshot records .persist: existence, size, st_mtim in nanoseconds and

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"mhvtl-control/internal/conffile"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -431,5 +434,83 @@ func TestConfigStageDownLibrary(t *testing.T) {
 	}
 	if got := decodeBody[stageDTO](t, e.call(http.MethodGet, "/api/v1/config/stages/"+st.Stage, nil)); len(got.Notes) != 0 {
 		t.Errorf("refused edit left notes %q", got.Notes)
+	}
+}
+
+// A stopped PERSIST library starts from the file vtllibrary loads at its
+// next start: library_contents.N.persist when it exists and
+// library_contents.N is not newer (apply.FileSource), so an unrelated edit
+// keeps the moves .persist recorded (#61 review M1).
+func TestConfigStageDownPersist(t *testing.T) {
+	setup := func(persist bool, contentsNewer bool) *writeEnv {
+		e := newWriteEnv(t, nil)
+		e.h.setLib(30, "inactive")
+		if persist {
+			p := filepath.Join(e.dir, "device.conf")
+			dc := conffile.ParseDeviceConf([]byte(e.disk("device.conf")))
+			if err := dc.SetAttr("Library", 30, "PERSIST", "True"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, dc.Render(), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		lc := e.disk("library_contents.30")
+		moved := strings.Replace(strings.Replace(lc, "Slot 1: G03001TA\n", "Slot 1: G03002TA\n", 1), "Slot 2: G03002TA\n", "Slot 2: G03001TA\n", 1)
+		if moved == lc {
+			t.Fatal("fixture: no move")
+		}
+		pp := filepath.Join(e.dir, "library_contents.30.persist")
+		if err := os.WriteFile(pp, []byte(moved), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		old, newer := time.Now().Add(-time.Hour), time.Now().Add(-time.Minute)
+		lcTime, pTime := old, newer
+		if contentsNewer {
+			lcTime, pTime = newer, old
+		}
+		if err := os.Chtimes(filepath.Join(e.dir, "library_contents.30"), lcTime, lcTime); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(pp, pTime, pTime); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	edit := map[string]any{"attrs": map[string]any{"Backoff": "500"}}
+
+	e := setup(true, false)
+	st := e.edit(http.MethodPatch, "/api/v1/config/libraries/30", edit)
+	got := file(t, st, "library_contents.30")
+	if !strings.Contains(got, "\nSlot 1: G03002TA\n") || !strings.Contains(got, "\nSlot 2: G03001TA\n") {
+		t.Errorf("the moves .persist recorded are undone:\n%s", got)
+	}
+	if want := []string{"library 30 is not running; its placement comes from library_contents.30.persist"}; !reflect.DeepEqual(st.Notes, want) {
+		t.Errorf("notes %q", st.Notes)
+	}
+
+	for name, e := range map[string]*writeEnv{"library_contents newer": setup(true, true), "PERSIST off": setup(false, false)} {
+		st := e.edit(http.MethodPatch, "/api/v1/config/libraries/30", edit)
+		if _, ok := st.Files["library_contents.30"]; ok {
+			t.Errorf("%s: library_contents.30 staged, not the file as it is", name)
+		}
+		if want := []string{"library 30 is not running; its placement comes from library_contents.30"}; !reflect.DeepEqual(st.Notes, want) {
+			t.Errorf("%s: notes %q", name, st.Notes)
+		}
+	}
+}
+
+// Deleting a library drops its note (#61 review L2).
+func TestConfigStageDeleteDropsNote(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	e.h.setLib(30, "failed")
+	st := e.edit(http.MethodPatch, "/api/v1/config/libraries/30", map[string]any{"attrs": map[string]any{"Backoff": "500"}})
+	if len(st.Notes) != 1 {
+		t.Fatalf("notes %q", st.Notes)
+	}
+	st = e.edit(http.MethodDelete, "/api/v1/config/libraries/30", map[string]any{
+		"stage": st.Stage, "dispositions": []map[string]any{{"barcode": "G03001TA", "to": "shelf"}}})
+	if len(st.Notes) != 0 {
+		t.Errorf("notes after the library's delete: %q", st.Notes)
 	}
 }
