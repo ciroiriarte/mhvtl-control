@@ -23,7 +23,7 @@ const (
 	intentFile = "intent.json"
 	lockFile   = "exclusive.lock"
 	// maxIntent bounds intent.json: MaxFiles originals in base64, and room
-	// for what PR 3b journals.
+	// for what the exec sequence journals (ExecJournal).
 	maxIntent = 32 << 20
 )
 
@@ -46,12 +46,13 @@ type Intent struct {
 	// RollbackDir is the apply's directory under StateDir/rollback.
 	RollbackDir string       `json:"rollback_dir"`
 	Files       []IntentFile `json:"files"`
-	// Libraries are the libraries whose units the apply took offline,
-	// stopped or started. Recovery hands them to Lifecycle before it
-	// restores files. Set by PR 3b's exec sequence; 3a's writes leave it
-	// empty.
-	Libraries []int     `json:"libraries,omitempty"`
-	Recovery  *Recovery `json:"recovery,omitempty"`
+	// Libraries are the libraries whose units the apply takes offline,
+	// stops or starts, set before the first of them is touched. Recovery
+	// hands them to Lifecycle before it restores files.
+	Libraries []int `json:"libraries,omitempty"`
+	// Exec is the progress of the apply sequence (exec.go).
+	Exec     *ExecJournal `json:"exec,omitempty"`
+	Recovery *Recovery    `json:"recovery,omitempty"`
 }
 
 // IntentFile is one file the apply changes, with what it was and what it

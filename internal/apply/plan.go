@@ -482,7 +482,16 @@ func confChanged(a, b *conffile.MhvtlConf, key string) bool {
 	return av != bv || aok != bok
 }
 
-func newBarcodes(cur, next config.Inventory) int {
+func newBarcodes(cur, next config.Inventory) int { return len(newSlotBarcodes(cur, next)) }
+
+type newBarcode struct {
+	lib     int
+	barcode string
+}
+
+// newSlotBarcodes are the Slot barcodes of next that cur lists nowhere:
+// the cartridges make_vtl_media is to create.
+func newSlotBarcodes(cur, next config.Inventory) []newBarcode {
 	have := map[string]bool{}
 	for _, l := range cur.Libraries {
 		for _, s := range l.Slots {
@@ -495,16 +504,16 @@ func newBarcodes(cur, next config.Inventory) int {
 			have[s.Barcode] = true
 		}
 	}
-	n := 0
+	var out []newBarcode
 	for _, l := range next.Libraries {
 		for _, s := range l.Slots {
 			if s.Barcode != "" && !have[s.Barcode] {
 				have[s.Barcode] = true
-				n++
+				out = append(out, newBarcode{l.ID, s.Barcode})
 			}
 		}
 	}
-	return n
+	return out
 }
 
 // homesOf maps each library ID to its Home directory, "" for none.

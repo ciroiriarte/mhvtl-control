@@ -7,11 +7,10 @@
 // before replacing it, and keeps the state it reads back (intent, lock,
 // rollback copies, audit) in directories the daemon cannot see.
 //
-// This is PR 3a: the request checks, validation, durable writes with an
-// intent journal, recovery of the files of an apply that died, and boot
-// recovery. Stopping and starting mhVTL's units (guardedStop, the exec
-// sequence, force tokens) is PR 3b; until then an apply is refused with
-// not_implemented, and a plan stops after validation.
+// An apply stops the units the change affects through guardedStop,
+// writes the files behind an intent journal, starts the units again, and
+// rolls back on failure (exec.go); an apply that died is recovered by the
+// next request, or at boot.
 package apply
 
 import (
@@ -19,11 +18,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"mhvtl-control/internal/changer"
@@ -69,9 +70,21 @@ type Config struct {
 	Queue   Queue
 	Devices Devices
 	// Lifecycle stops and restarts the units an interrupted apply had
-	// touched (PR 3b). Nil until then: an intent naming libraries is then
-	// left for a helper that has it.
+	// touched; New sets the exec sequence's when it is nil.
 	Lifecycle Lifecycle
+	// ApplyLockDir holds the cooperative apply.lock (ApplyLockDir).
+	ApplyLockDir string
+	// MoveHomeDir holds mhvtl-move-home's journals (MoveHomeDir).
+	MoveHomeDir string
+	// Generators are where mhVTL's systemd generator may be installed:
+	// with it, daemon-reload derives the instances from device.conf.
+	Generators []string
+	// MakeVTLMedia is make_vtl_media, a path or a name looked up in PATH,
+	// read for its --per-library-home option.
+	MakeVTLMedia string
+	// JournalTail returns the last journal lines of a unit, for the
+	// response of a rollback.
+	JournalTail func(ctx context.Context, unit string) ([]byte, error)
 	// ReadTimeout bounds reading the request.
 	ReadTimeout time.Duration
 }
@@ -99,15 +112,28 @@ func DefaultConfig(configDir, version string) Config {
 				logf("%s", fields["MESSAGE"])
 			}
 		},
-		Queue:       ipc.NewIPCController(),
-		Devices:     SCSIAccess{SysRoot: "/sys", DevRoot: "/dev", Open: changer.OpenSG},
+		Queue:        ipc.NewIPCController(),
+		Devices:      SCSIAccess{SysRoot: "/sys", DevRoot: "/dev", Open: changer.OpenSG},
+		ApplyLockDir: ApplyLockDir,
+		MoveHomeDir:  MoveHomeDir,
+		// SYSTEMD_GENERATOR_DIR, /usr/lib/systemd/system-generators by
+		// default (mhvtl config.mk at d65d25f), under /lib before the
+		// /usr merge.
+		Generators: []string{
+			"/usr/lib/systemd/system-generators/mhvtl-device-conf-generator",
+			"/lib/systemd/system-generators/mhvtl-device-conf-generator",
+		},
+		MakeVTLMedia: "make_vtl_media",
+		JournalTail: func(ctx context.Context, unit string) ([]byte, error) {
+			return exec.CommandContext(ctx, "journalctl", "--no-pager", "-o", "cat", "-n", "20", "-u", unit).Output()
+		},
 		Logf:        logf,
 		ReadTimeout: 30 * time.Second,
 	}
 }
 
-// Lifecycle is the unit side of recovery, PR 3b's guardedStop (plan 3.3)
-// in recover mode and the start sequence. Runtime recovery calls Stop
+// Lifecycle is the unit side of recovery: guardedStop (plan 3.3) in
+// recover mode, and the start sequence. Runtime recovery calls Stop
 // before it restores the files of an intent that names libraries, and
 // Start after; boot recovery calls neither, as nothing runs yet.
 type Lifecycle interface {
@@ -124,11 +150,17 @@ type Helper struct {
 	killPoint      func(step string) bool
 	beforeWrite    func(name string)
 	beforeBootLock func()
+	// poll is the interval of the waits for a started unit.
+	poll time.Duration
 }
 
 // New returns a helper.
 func New(cfg Config) *Helper {
-	return &Helper{cfg: cfg, killPoint: func(string) bool { return false }, beforeWrite: func(string) {}, beforeBootLock: func() {}}
+	h := &Helper{cfg: cfg, killPoint: func(string) bool { return false }, beforeWrite: func(string) {}, beforeBootLock: func() {}, poll: 200 * time.Millisecond}
+	if h.cfg.Lifecycle == nil {
+		h.cfg.Lifecycle = lifecycle{h}
+	}
+	return h
 }
 
 // Serve answers the one request on conn, the socket systemd passed as
@@ -200,7 +232,7 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 	if it != nil {
 		return h.recover(ctx, it, false, req.Actor, peer)
 	}
-	resp := h.handle(req, &rec)
+	resp := h.handle(ctx, req, &rec)
 	if req.Op != OpPlan || resp.Result != ResultValidated {
 		h.auditResponse(rec, resp)
 	}
@@ -209,36 +241,105 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 
 func (h *Helper) auditResponse(rec AuditRecord, resp Response) {
 	rec.Result, rec.Error, rec.Message, rec.Conflicts = resp.Result, resp.Error, resp.Message, resp.Conflicts
+	rec.OrphanedMedia, rec.ForcedUnloads, rec.Unplaced = resp.OrphanedMedia, resp.ForcedUnloads, resp.Unplaced
 	h.audit(rec)
 }
 
-// handle checks a plan or apply; the caller holds the lock and found no
-// intent.
-func (h *Helper) handle(req *Request, rec *AuditRecord) Response {
+// handle checks a plan or apply, and carries out an apply; the caller
+// holds exclusive.lock and found no intent.
+func (h *Helper) handle(ctx context.Context, req *Request, rec *AuditRecord) Response {
 	if req.Op == OpRecover {
 		return Response{Result: ResultOK, Message: "nothing to recover"}
 	}
-	if req.ForceToken != "" {
-		return Response{Result: ResultRefused, Error: ErrNotImplemented, Message: "force tokens come with the apply sequence (PR 3b)"}
+	if req.Op == OpPlan && req.ForceToken != "" {
+		return Response{Result: ResultRefused, Error: ErrBadRequest, Message: "a force token goes with an apply"}
+	}
+	// Exec step 1, after exclusive.lock: the daemon's cooperative lock,
+	// then no media home move half done.
+	if req.Op == OpApply {
+		l, err := h.applyLock()
+		if err != nil {
+			return responseOf(err)
+		}
+		if l != nil {
+			defer l.Close()
+		}
+		if err := checkMoveHome(h.cfg.MoveHomeDir); err != nil {
+			return responseOf(err)
+		}
 	}
 
 	files := newFileSet(h.cfg.ConfigDir)
-	findings, plan, err := h.check(req, files, rec)
+	c, err := h.check(ctx, req, files, rec)
 	var resp Response
-	switch {
-	case err != nil:
-		resp = responseOf(err)
-	case req.Op == OpPlan:
-		resp = Response{Result: ResultValidated}
-	default:
-		resp = Response{Result: ResultRefused, Error: ErrNotImplemented,
-			Message: "the request passed every check; applying needs the apply sequence of PR 3b-2"}
+	if err == nil {
+		var forced map[int][]changer.DriveState
+		forced, resp, err = h.planChecks(req, c)
+		if err == nil && resp.Result == "" {
+			if req.Op == OpPlan {
+				resp = Response{Result: ResultValidated}
+			} else {
+				resp = h.execute(ctx, req, c, forced, rec)
+			}
+		}
 	}
-	resp.Findings = findings
-	if plan != nil {
-		resp.Units, resp.Notes = plan.Units(), plan.Notes
+	if err != nil {
+		resp = responseOf(err)
+	}
+	if c != nil {
+		resp.Findings = c.res
+		if c.plan != nil && resp.Units == nil {
+			resp.Units, resp.Notes = c.plan.Units(), c.plan.Notes
+		}
 	}
 	return resp
+}
+
+// planChecks are plan 3.3 exec step 2 after the budget, which check ran:
+// the media refusals, then drive_loaded. A plan refused only for
+// drive_loaded gets a force token; an apply with a valid one goes on with
+// those drives forced, and returns them. A non-empty response ends the
+// request with it.
+func (h *Helper) planChecks(req *Request, c *checked) (map[int][]changer.DriveState, Response, error) {
+	if err := h.checkMediaPlan(c); err != nil {
+		return nil, Response{}, err
+	}
+	forced, standalone, err := h.loadedDrives(c)
+	if err != nil {
+		return nil, Response{}, err
+	}
+	var loaded []string
+	for _, id := range sortedInts(forced) {
+		for _, d := range forced[id] {
+			loaded = append(loaded, fmt.Sprintf("library %d drive slot %d (%s)", id, d.Number, d.Barcode))
+		}
+	}
+	for _, id := range standalone {
+		loaded = append(loaded, fmt.Sprintf("drive %d", id))
+	}
+	if len(loaded) == 0 {
+		return nil, Response{}, nil
+	}
+	binding := bindingOf(req, c.plan.Units(), c.live)
+	if req.Op == OpApply && req.ForceToken != "" {
+		if err := h.checkForce(req.ForceToken, binding); err != nil {
+			return nil, Response{}, err
+		}
+		if err := checkBudget(withForced(*c.plan, c, forced)); err != nil {
+			return nil, Response{}, err
+		}
+		return forced, Response{}, nil
+	}
+	resp := Response{Result: ResultRefused, Error: ErrDriveLoaded,
+		Message: "loaded drives the apply would stop: " + strings.Join(loaded, ", ") + "; unload them, or apply with the force token to put each cartridge back in its slot"}
+	if req.Op == OpPlan {
+		tok, exp, err := h.mintForce(binding)
+		if err != nil {
+			return nil, Response{}, err
+		}
+		resp.ForceToken, resp.ForceExpires = tok, &exp
+	}
+	return nil, resp, nil
 }
 
 func deviceConfOf(get func(string) (fileState, error)) (*conffile.DeviceConf, error) {
@@ -277,20 +378,21 @@ func changedContents(req *Request, files *fileSet) (map[int]bool, error) {
 // check runs every refusal of plan 3.2 on the request, in order: names and
 // units, the legacy options file, the base hashes, the configuration path,
 // mhvtl.conf keys and homes, then the full validation of the new files
-// against the current ones and the host. It returns the validation
-// findings when it got that far.
-func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validate.Result, *UnitPlan, error) {
+// against the current ones, the live placement (R1) and the host, then the
+// unit plan and its budget. It returns what it found when it got as far
+// as the validation.
+func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *AuditRecord) (*checked, error) {
 	if err := checkNames(req); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := checkUnits(req.ExpectUnits); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := h.checkLegacyEnv(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := checkBases(req, files); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	next := files.withChanges(req)
 	// The hashes go in every record from here; the diff only once the
@@ -300,25 +402,25 @@ func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validat
 
 	curConf, err := mhvtlConfOf(files.current)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	nextConf, err := mhvtlConfOf(next.next)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := h.checkConfigPath(curConf, nextConf); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	curRaw, err := files.current(mhvtlConf)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	nextRaw, err := next.next(mhvtlConf)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := deriveMhvtlConf(curRaw.data, nextRaw.data); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Every file written must be one mhVTL reads as written.
@@ -333,69 +435,70 @@ func (h *Helper) check(req *Request, files *fileSet, rec *AuditRecord) (*validat
 			werr = conffile.ParseLibContents(f.Content).Writable()
 		}
 		if werr != nil {
-			return nil, nil, refuse(ErrNotWritable, "%s: %v", f.Name, werr)
+			return nil, refuse(ErrNotWritable, "%s: %v", f.Name, werr)
 		}
 	}
 
 	cur, err := config.ReadInventory(h.cfg.ConfigDir, reader(files.current))
 	if err != nil && !missingDeviceConf(err) {
-		return nil, nil, err
+		return nil, err
 	}
 	nextInv, err := config.ReadInventory(h.cfg.ConfigDir, reader(next.next))
 	if err != nil && !missingDeviceConf(err) {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := checkLibraries(req, libraryIDs(cur), libraryIDs(nextInv)); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	curHome, nextHome := h.defaultHome(curConf), h.defaultHome(nextConf)
 	if err := checkHomes(cur, nextInv, curHome, nextHome); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	rec.Diff, rec.DiffTruncated = diff, truncated
 
-	// Validation runs without the live placement: reading it needs the
-	// SG_IO guard of PR 3b, which then passes R1 here.
+	live, invs, err := h.readLive(ctx, cur)
+	if err != nil {
+		return nil, err
+	}
 	host, hostErr := hostids.Read(h.cfg.SysRoot)
-	res := validate.Validate(cur, nextInv, nil, host, validate.Options{
+	res := validate.Validate(cur, nextInv, live, host, validate.Options{
 		Dispositions:   req.Dispositions,
 		ConfigDir:      h.cfg.ConfigDir,
 		DefaultHome:    nextHome,
 		CurDefaultHome: curHome,
 		HostErr:        hostErr,
 	})
+	c := &checked{res: &res, cur: cur, next: nextInv, curHome: curHome, nextHome: nextHome, nextFiles: next, live: live, inv: invs}
 	if !res.OK() {
-		return &res, nil, refuse(ErrInvalid, "%d blocking finding(s), first: %s", len(res.Errors), res.Errors[0].Message)
+		return c, refuse(ErrInvalid, "%d blocking finding(s), first: %s", len(res.Errors), res.Errors[0].Message)
 	}
 
 	// The units the change affects, which expect_units must name exactly,
 	// and the time stopping and starting them may take.
-	curDC, err := deviceConfOf(files.current)
-	if err != nil {
-		return &res, nil, err
+	if c.curDC, err = deviceConfOf(files.current); err != nil {
+		return c, err
 	}
-	nextDC, err := deviceConfOf(next.next)
-	if err != nil {
-		return &res, nil, err
+	if c.nextDC, err = deviceConfOf(next.next); err != nil {
+		return c, err
 	}
 	contents, err := changedContents(req, files)
 	if err != nil {
-		return &res, nil, err
+		return c, err
 	}
-	plan := derivePlan(curDC, nextDC, cur, nextInv, contents, curConf, nextConf)
+	plan := derivePlan(c.curDC, c.nextDC, cur, nextInv, contents, curConf, nextConf)
+	c.plan = &plan
 	// A plan reports the units; the daemon echoes them in expect_units on
 	// the apply, which alone must name them exactly.
 	if req.Op == OpApply {
 		if err := checkExpectUnits(req.ExpectUnits, plan); err != nil {
-			return &res, &plan, err
+			return c, err
 		}
 	}
 	if err := checkBudget(plan); err != nil {
-		return &res, &plan, err
+		return c, err
 	}
-
-	return &res, &plan, nil
+	return c, nil
 }
 
 func mhvtlConfOf(get func(string) (fileState, error)) (*conffile.MhvtlConf, error) {

@@ -12,11 +12,10 @@ ExecStart=/usr/libexec/mhvtl-control/mhvtl-control-apply --config-dir=/etc/mhvtl
 StandardInput=socket
 StandardOutput=journal
 StandardError=journal
-# An apply will stop and start mhVTL units, each stop allowed its
-# TimeoutStopSec=10, and must have time to roll back too: the apply sequence
-# (PR 3b) is to refuse a plan whose forward and rollback budget exceeds
-# 1700 s, and to put libraries back online on SIGTERM. This version only
-# checks plans and recovers files. TimeoutStartSec= does not bound a
+# An apply stops and starts mhVTL units, each stop allowed its
+# TimeoutStopSec=10, and must have time to roll back too: the helper refuses
+# a plan whose forward and rollback budget exceeds 1700 s, and on SIGTERM
+# puts libraries back online and rolls back. TimeoutStartSec= does not bound a
 # Type=simple service, so RuntimeMaxSec= is the bound. See systemd.service(5):
 # https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#RuntimeMaxSec=
 RuntimeMaxSec=1800

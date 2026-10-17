@@ -16,7 +16,7 @@ import (
 
 // The files the helper may write (plan 3.2, allow.go). Nothing else in the
 // configuration directory is ever opened for writing; library_contents.<N>
-// .persist is vtllibrary's, and the helper alone moves it (PR 3b).
+// .persist is vtllibrary's, and the helper only moves it aside (guardedStop).
 const (
 	deviceConf = "device.conf"
 	mhvtlConf  = "mhvtl.conf"

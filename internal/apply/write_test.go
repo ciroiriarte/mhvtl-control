@@ -170,7 +170,7 @@ func TestWriteRollbackCopies(t *testing.T) {
 // and cgroup), when, what (file hashes before and after, a diff), the
 // units, the result, and that it reaches the journal.
 func TestAuditFields(t *testing.T) {
-	e := newEnv(t)
+	e, _ := newExecEnv(t)
 	dc := e.edit("device.conf", "Compression type: lzo", "Compression type: zlib")
 	e.do(Request{Op: OpApply, Actor: "admin@203.0.113.7", Files: []File{dc}, ExpectUnits: []string{"vtllibrary@10.service", "vtltape@11.service"}})
 	lines := e.auditLines()
@@ -191,10 +191,10 @@ func TestAuditFields(t *testing.T) {
 	if r.Actor != "admin@203.0.113.7" || r.Peer != e.peer || r.Op != OpApply || r.TS.IsZero() ||
 		len(r.Files) != 1 || r.Files[0] != (AuditFile{Name: "device.conf", Before: dc.BaseSHA256, After: conffile.Hash(dc.Content)}) ||
 		!strings.Contains(r.Diff, "- Compression type: lzo") || !strings.Contains(r.Diff, "+ Compression type: zlib") ||
-		fmt.Sprint(r.Units) != "[vtllibrary@10.service vtltape@11.service]" || r.Result != ResultRefused {
+		fmt.Sprint(r.Units) != "[vtllibrary@10.service vtltape@11.service]" || r.Result != ResultApplied {
 		t.Errorf("audit record %+v", r)
 	}
-	if len(e.journal) != 1 || e.journal[0]["MESSAGE_ID"] != msgRefused || e.journal[0]["MHVTL_APPLY_ACTOR"] != r.Actor ||
+	if len(e.journal) != 1 || e.journal[0]["MESSAGE_ID"] != msgApplied || e.journal[0]["MHVTL_APPLY_ACTOR"] != r.Actor ||
 		e.journal[0]["MHVTL_APPLY_PEER_PID"] != "4242" {
 		t.Errorf("journal %v", e.journal)
 	}
