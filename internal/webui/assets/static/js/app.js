@@ -2355,6 +2355,8 @@
         stageStatus.error("The apply is still running.");
         var region = $("stage-status");
         if (region) { region.appendChild(editButton("Check again", "Ask whether the apply finished", function () { learnOutcome(st, gen); })); }
+      } else if (out.result === "unknown") {
+        stageStatus.error("The apply helper did not answer the last apply" + (out.message ? " (" + out.message + ")" : "") + "; it may have run. Check the plan again before applying.");
       } else if (out.result) {
         stageStatus.error("The last apply ended " + out.result + (out.message ? ": " + out.message : "") + ". Check again before applying.");
       } else {
@@ -2381,7 +2383,7 @@
       applied(res);
     }).catch(function (e) {
       if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
-      var action = applyErrorAction(e);
+      var action = applyErrorAction(e, true);
       if (action === "lost" || action === "applied") {
         learnOutcome(st, gen);
         return;

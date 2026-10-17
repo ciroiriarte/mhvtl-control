@@ -118,6 +118,13 @@ test("applyErrorAction maps an apply or staging error to what the UI does", () =
   assert.strictEqual(act(409, "stage_busy"), "show");
   assert.strictEqual(act(413, "stage_too_large"), "show");
   assert.strictEqual(act(422, "slots_out_of_range"), "show");
+  assert.strictEqual(act(503, "live_unreadable"), "show");
+  // The helper gave an apply no answer: it may have run, and the stage
+  // records the attempt. A dry run or an edit without the helper turns
+  // the view read-only.
+  assert.strictEqual(core.applyErrorAction({ status: 502, code: "helper_unreachable" }, true), "lost");
+  assert.strictEqual(core.applyErrorAction({ status: 409, code: "helper_absent" }, true), "readonly");
+  assert.strictEqual(act(502, "helper_unreachable"), "readonly");
   // No answer (the connection dropped): the stage says what happened.
   assert.strictEqual(core.applyErrorAction(new Error("Failed to fetch")), "lost");
   assert.strictEqual(core.applyErrorAction({ name: "AbortError" }), "show");
