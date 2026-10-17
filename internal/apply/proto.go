@@ -216,7 +216,7 @@ const (
 	ErrMhvtlConfKey   = "mhvtl_conf_key"
 	ErrMhvtlConfValue = "mhvtl_conf_value"
 	// ErrMhvtlConfDerived: the new mhvtl.conf is not the current one with
-	// only editable values changed (deriveMhvtlConf).
+	// only editable values changed (DeriveMhvtlConf).
 	ErrMhvtlConfDerived = "mhvtl_conf_not_derived"
 	ErrHomeForbidden    = "home_forbidden"
 	ErrHomeInUse        = "home_in_use"
@@ -263,6 +263,16 @@ func (r *refusal) Error() string { return r.code + ": " + r.msg }
 
 func refuse(code, format string, a ...any) error {
 	return &refusal{code: code, msg: fmt.Sprintf(format, a...)}
+}
+
+// Refused returns the code and message of a refusal, for callers outside
+// the helper that run its checks (DeriveMhvtlConf, CheckHomes).
+func Refused(err error) (code, msg string, ok bool) {
+	var r *refusal
+	if !errors.As(err, &r) {
+		return "", "", false
+	}
+	return r.code, r.msg, true
 }
 
 // DecodeRequest reads one request from r: at most MaxRequest bytes, no
