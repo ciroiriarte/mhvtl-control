@@ -514,3 +514,23 @@ func TestKilledMidPrepare(t *testing.T) {
 		}
 	}
 }
+
+// TestRecoverCrashedDrive: recovery of an apply killed once started, with
+// drive 11 crashed since: it is not asked, and recovery completes.
+func TestRecoverCrashedDrive(t *testing.T) {
+	e, s, req := compressionEnv(t)
+	lc := e.read("library_contents.10")
+	e.h.killPoint = func(st string) bool { return st == "started" }
+	if resp := e.do(req); resp.Result != ResultError {
+		t.Fatalf("killed apply: %+v", resp)
+	}
+	s.state["vtltape@11.service"] = "failed"
+	s.calls = nil
+	e.rebuild()
+	if resp := e.do(Request{Op: OpRecover}); resp.Result != ResultRecovered {
+		t.Fatalf("recover: %+v", resp)
+	}
+	if string(e.read("library_contents.10")) != string(lc) || s.unitState("vtltape@11.service") != "active" {
+		t.Errorf("recovery: %v", s.calls)
+	}
+}
