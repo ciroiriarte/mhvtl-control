@@ -327,7 +327,7 @@ func (h *Helper) planChecks(ctx context.Context, req *Request, c *checked) (map[
 	if len(loaded) == 0 {
 		return nil, Response{}, nil
 	}
-	binding := bindingOf(req, c.plan.Units(), c.live)
+	binding := bindingOf(req, c.plan.Units(), c.live, loaded)
 	if req.Op == OpApply && req.ForceToken != "" {
 		if err := h.checkForce(req.ForceToken, binding); err != nil {
 			return nil, Response{}, err

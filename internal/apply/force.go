@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -47,10 +48,15 @@ type forceBinding struct {
 	Units []string
 	// R1 hashes the live placement validation read.
 	R1 string
+	// Loaded is the sorted set of loaded drives the token overrides, as
+	// READ ELEMENT STATUS and TEST UNIT READY found them (idle and
+	// standalone drives included): a drive loaded since voids it.
+	Loaded []string
 }
 
-// bindingOf computes the binding of req with units and live.
-func bindingOf(req *Request, units []string, live *validate.Live) forceBinding {
+// bindingOf computes the binding of req with units, live and the loaded
+// drives.
+func bindingOf(req *Request, units []string, live *validate.Live, loaded []string) forceBinding {
 	d := sha256.New()
 	var b forceBinding
 	for _, c := range changesOf(req) {
@@ -67,6 +73,8 @@ func bindingOf(req *Request, units []string, live *validate.Live) forceBinding {
 	b.Units = units
 	r1, _ := json.Marshal(live) // map keys marshal sorted
 	b.R1 = conffile.Hash(r1)
+	b.Loaded = append([]string{}, loaded...)
+	sort.Strings(b.Loaded)
 	return b
 }
 
@@ -89,6 +97,7 @@ func (b forceBinding) mac(key, nonce []byte, expiry uint64) []byte {
 	writeField(m, b.Bases...)
 	writeField(m, strings.Join(b.Units, " "))
 	writeField(m, b.R1)
+	writeField(m, b.Loaded...)
 	return m.Sum(nil)
 }
 
