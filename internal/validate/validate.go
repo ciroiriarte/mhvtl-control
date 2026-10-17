@@ -296,12 +296,16 @@ func check(cur, next config.Inventory, live *Live, host []hostids.Device, opts O
 }
 
 // forbiddenHomes are the directories a media home may not be, nor lie
-// under: system trees, pseudo-filesystems, and the state of mhvtl-control
-// and its apply helper. mktape and make_vtl_media create directories and
-// files in the home as root, so a home there would let a configuration
-// change write into them.
+// under: system trees, pseudo-filesystems, logs and spools, systemd's and
+// mhvtl-control's own state. mktape and make_vtl_media create directories
+// and files in the home as root, so a home there would let a configuration
+// change write into them. /home and /root are also hidden from
+// mhvtl-control by its unit's ProtectHome=yes.
 var forbiddenHomes = []string{
 	"/etc", "/proc", "/sys", "/dev", "/run", "/boot", "/usr",
+	"/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32",
+	"/root", "/home",
+	"/var/lib/systemd", "/var/spool", "/var/log",
 	"/var/lib/mhvtl-control-apply", "/var/lib/mhvtl-control",
 }
 
