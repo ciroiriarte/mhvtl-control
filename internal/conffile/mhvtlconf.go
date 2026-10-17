@@ -174,6 +174,20 @@ func (c *MhvtlConf) Get(key string) (string, bool) {
 	return "", false
 }
 
+// Keys returns every key the file assigns, each once, in order of first
+// assignment.
+func (c *MhvtlConf) Keys() []string {
+	var keys []string
+	seen := map[string]bool{}
+	for _, a := range c.assigns {
+		if !seen[a.key] {
+			seen[a.key] = true
+			keys = append(keys, a.key)
+		}
+	}
+	return keys
+}
+
 // Render returns the file's bytes.
 func (c *MhvtlConf) Render() []byte { return renderLines(c.lines) }
 
