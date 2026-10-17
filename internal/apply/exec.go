@@ -836,8 +836,8 @@ func (h *Helper) sleep(ctx context.Context) error {
 // them back whatever else went wrong.
 func (h *Helper) online(libs []int) {
 	for _, id := range libs {
-		if err := h.cfg.Queue.Online(int64(id)); err != nil {
-			h.cfg.Logf("library %d: online: %v", id, err)
+		if err := onlineBarrier(h.cfg.Queue, int64(id)); err != nil {
+			h.cfg.Logf("library %d: %v", id, err)
 		}
 	}
 }

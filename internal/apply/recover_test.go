@@ -437,7 +437,7 @@ func TestSIGTERMMidApply(t *testing.T) {
 	if resp.Result != ResultRolledBack || e.intentExists() {
 		t.Fatalf("apply: %+v", resp)
 	}
-	if s.unitState("vtllibrary@10.service") != "active" || !strings.HasPrefix(s.calls[len(s.calls)-1], "online 10") {
+	if s.unitState("vtllibrary@10.service") != "active" || s.offline[10] || s.index("online 10", 0) < 0 {
 		t.Errorf("library 10 not back online: %v", s.calls)
 	}
 }

@@ -316,7 +316,9 @@ const barrierRetries = 3
 // answers READ ELEMENT STATUS with NOT READY / OFFLINE (02/04/12) while
 // offline
 // ([usr/cmd/vtllibrary.c:213-225](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L213-L225)),
-// so it is put online first; a changed MAP there reads R1′ again, up to
+// so it is put online first, and READ ELEMENT STATUS waits for the
+// online to take effect (onlineBarrier); a changed MAP there reads R1′
+// again, up to
 // barrierRetries times, then goes on with the last R1′ and records the
 // drift, since a rollback or recovery that gave up would leave the
 // library offline.
@@ -324,8 +326,8 @@ func (s *stopper) readOffline(ctx context.Context, sl StopLib, ls *LibStop) (cha
 	id := int64(sl.Lib.ID)
 	for attempt := 0; ; attempt++ {
 		if s.mode != ModeApply {
-			if err := s.cfg.Queue.Online(id); err != nil {
-				return changer.Inventory{}, fmt.Errorf("library %d: online: %w", sl.Lib.ID, err)
+			if err := onlineBarrier(s.cfg.Queue, id); err != nil {
+				return changer.Inventory{}, fmt.Errorf("library %d: %w", sl.Lib.ID, err)
 			}
 			ls.Offline = false
 		}
@@ -381,6 +383,24 @@ func (s *stopper) readOffline(ctx context.Context, sl StopLib, ls *LibStop) (cha
 			return inv, nil
 		}
 	}
+}
+
+// onlineBarrier puts library id online and waits until the online took
+// effect. vtllibrary takes one queue message per pass of its loop and
+// serves SCSI commands in the same loop
+// ([usr/cmd/vtllibrary.c:1865-1912](https://github.com/markh794/mhvtl/blob/d65d25f350f66bbb8e9d572a0cb718f3052ec7da/usr/cmd/vtllibrary.c#L1865-L1912)),
+// so a READ ELEMENT STATUS sent right after "online" can be served before
+// it and fail NOT READY / OFFLINE. Messages are taken in order: a reply to
+// a "list map" sent after "online" means the online was handled, the same
+// barrier the offline uses.
+func onlineBarrier(q Queue, id int64) error {
+	if err := q.Online(id); err != nil {
+		return fmt.Errorf("online: %w", err)
+	}
+	if _, err := q.ListMap(id); err != nil {
+		return fmt.Errorf("list map after online: %w", err)
+	}
+	return nil
 }
 
 // idleDrives checks the drives of an inactive library whose vtltape@ still
