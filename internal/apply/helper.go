@@ -90,6 +90,14 @@ type Config struct {
 	ReadTimeout time.Duration
 }
 
+// DefaultHome is the installed helper's media home of a library when
+// neither device.conf nor mhvtl.conf names one: mhVTL's compiled-in
+// MHVTL_HOME_PATH (markh794/mhvtl config.mk:27 at 852b78a,
+// https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/config.mk#L27).
+// No flag changes it, so the daemon stages with this
+// constant rather than asking the helper.
+const DefaultHome = "/var/lib/mhvtl"
+
 // DefaultConfig is the installed helper's configuration.
 func DefaultConfig(configDir, version string) Config {
 	logf := log.Printf
@@ -98,7 +106,7 @@ func DefaultConfig(configDir, version string) Config {
 		StateDir:    "/var/lib/mhvtl-control-apply",
 		RuntimeDir:  "/run/mhvtl-control-apply",
 		LegacyEnv:   "/etc/mhvtl/mhvtl-control.env",
-		DefaultHome: "/var/lib/mhvtl",
+		DefaultHome: DefaultHome,
 		SysRoot:     "/sys",
 		BootIDPath:  "/proc/sys/kernel/random/boot_id",
 		Version:     version,
@@ -488,7 +496,7 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 	if err != nil {
 		return nil, err
 	}
-	if err := deriveMhvtlConf(curRaw.data, nextRaw.data); err != nil {
+	if err := DeriveMhvtlConf(curRaw.data, nextRaw.data); err != nil {
 		return nil, err
 	}
 
@@ -520,7 +528,7 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 		return nil, err
 	}
 	curHome, nextHome := h.defaultHome(curConf), h.defaultHome(nextConf)
-	if err := checkHomes(cur, nextInv, curHome, nextHome); err != nil {
+	if err := CheckHomes(cur, nextInv, curHome, nextHome); err != nil {
 		return nil, err
 	}
 

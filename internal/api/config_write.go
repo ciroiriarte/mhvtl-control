@@ -158,7 +158,8 @@ func writeStageError(w http.ResponseWriter, err error) {
 
 // stageEdit runs edit on the stage stageID names, or on a new one, and
 // answers with the stage. edit changes the stage only when it succeeds and
-// leaves the stage within its bounds (checkBounds).
+// leaves the stage within its bounds (checkBounds) and the home rules
+// (checkHomes).
 func (s *Server) stageEdit(w http.ResponseWriter, r *http.Request, stageID string, edit func(context.Context, *stage) error) {
 	st, expires, err := s.openStage(stageID)
 	if err != nil {
@@ -173,6 +174,9 @@ func (s *Server) stageEdit(w http.ResponseWriter, r *http.Request, stageID strin
 	}
 	if err == nil {
 		err = s.checkBounds(st)
+	}
+	if err == nil {
+		err = s.checkHomes(st)
 	}
 	if err = confErr(err); err != nil {
 		st.next, st.dispositions, st.notes = next, disp, notes

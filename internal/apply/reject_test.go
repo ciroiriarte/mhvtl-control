@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"mhvtl-control/internal/conffile"
+	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/validate"
 )
 
@@ -418,7 +419,131 @@ func TestMhvtlConfDerived(t *testing.T) {
 	}
 }
 
+// The refusal of a mhvtl.conf the helper did not derive names mhvtl-move-home
+// for MHVTL_HOME_PATH, not a hand edit (#62 review M1).
+func TestMhvtlConfDerivedMessage(t *testing.T) {
+	err := DeriveMhvtlConf([]byte("CAPACITY=500\n"), []byte("CAPACITY=500\nDAEMON_DEBUG=-d\n"))
+	code, msg, ok := Refused(err)
+	if !ok || code != ErrMhvtlConfDerived || !strings.Contains(msg, "MHVTL_HOME_PATH through mhvtl-move-home") || strings.Contains(msg, "MHVTL_HOME_PATH; edit") {
+		t.Errorf("%s: %s", code, msg)
+	}
+}
+
+// BuildMhvtlConf sets the values in one order whatever the request's, so
+// an edit staged in several requests is what the helper derives.
+func TestBuildMhvtlConf(t *testing.T) {
+	for _, cur := range []string{"", "MHVTL_HOME_PATH=/var/lib/mhvtl\n"} {
+		got, err := BuildMhvtlConf([]byte(cur), map[string]string{"VTL_DEBUG": "1", "VERBOSE": "2", "CAPACITY": "600"})
+		if want := cur + "CAPACITY=600\nVERBOSE=2\nVTL_DEBUG=1\n"; err != nil || string(got) != want {
+			t.Errorf("%q: %q %v, want %q", cur, got, err, want)
+		}
+		if err := DeriveMhvtlConf([]byte(cur), got); err != nil {
+			t.Errorf("%q: the helper refuses its own build: %v", cur, err)
+		}
+	}
+	// A value as on disk changes nothing; a bad one or another key is refused.
+	if got, err := BuildMhvtlConf([]byte("VERBOSE=1\n"), map[string]string{"VERBOSE": "1"}); err != nil || string(got) != "VERBOSE=1\n" {
+		t.Errorf("same value: %q %v", got, err)
+	}
+	for values, want := range map[string]string{"VERBOSE=9": ErrMhvtlConfValue, "DAEMON_DEBUG=-d": ErrMhvtlConfKey} {
+		k, v, _ := strings.Cut(values, "=")
+		if _, err := BuildMhvtlConf(nil, map[string]string{k: v}); refusedCode(err) != want {
+			t.Errorf("%s: %v, want %s", values, err, want)
+		}
+	}
+}
+
+func refusedCode(err error) string {
+	code, _, _ := Refused(err)
+	return code
+}
+
+// A home under /tmp or /var/tmp is not judged empty: the services'
+// PrivateTmp= shows them an empty /tmp whatever the real one holds
+// (#62 review L1). It may still be set as a new home.
+func TestHomeEmptySandboxedTmp(t *testing.T) {
+	lib := func(home string) config.Inventory {
+		return config.Inventory{Libraries: []config.Library{{ID: 10, HomeDir: home}}}
+	}
+	for _, old := range []string{"/tmp/mhvtl-no-such-home", "/var/tmp/mhvtl-no-such-home", "/tmp", "/var/tmp/../tmp/x"} {
+		err := CheckHomes(lib(old), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl")
+		code, msg, _ := Refused(err)
+		if code != ErrHomeInUse || !strings.Contains(msg, "the service sandbox hides /") || !strings.Contains(msg, "mhvtl-move-home") {
+			t.Errorf("%s: %v", old, err)
+		}
+	}
+	for _, old := range []string{"/tmpx/mhvtl-no-such-home", "/srv/mhvtl-no-such-home"} {
+		if err := CheckHomes(lib(old), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl"); err != nil {
+			t.Errorf("%s: %v", old, err)
+		}
+	}
+	if err := CheckHomes(lib("/srv/mhvtl-no-such-home"), lib("/tmp/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl"); err != nil {
+		t.Errorf("new home under /tmp: %v", err)
+	}
+
+	// A home that resolves into a sandboxed directory, through a link in
+	// it or in an ancestor, is hidden too (#62 review N2). The written
+	// path is outside the sandboxed root, as /srv/x linked to /tmp/y is.
+	defer func(s []string) { SandboxedTmp = s }(SandboxedTmp)
+	links, hidden := t.TempDir(), t.TempDir()
+	SandboxedTmp = []string{hidden}
+	if err := os.Symlink(filepath.Join(hidden, "y"), filepath.Join(links, "x")); err != nil {
+		t.Fatal(err)
+	}
+	for _, old := range []string{filepath.Join(links, "x"), filepath.Join(links, "x", "sub")} {
+		code, msg, _ := Refused(CheckHomes(lib(old), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl"))
+		if code != ErrHomeInUse || !strings.Contains(msg, "the service sandbox hides "+hidden) {
+			t.Errorf("%s: %s %s", old, code, msg)
+		}
+	}
+	// Seen from outside the sandbox, where the target exists.
+	if err := os.Mkdir(filepath.Join(hidden, "y"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := Refused(CheckHomes(lib(filepath.Join(links, "x")), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl")); code != ErrHomeInUse {
+		t.Errorf("link to an existing hidden dir: %s", code)
+	}
+	// A relative target is resolved against the link's real directory, as
+	// the kernel does: srv/a -> data/a, data/a/l -> ../t, data/t ->
+	// <hidden>/z (dangling). Joined to the written srv/a it would land in
+	// srv/t, outside (#62 review N2-L1).
+	root := t.TempDir()
+	for _, d := range []string{"srv", "data/a"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{
+		"srv/a":    filepath.Join(root, "data/a"),
+		"data/a/l": "../t",
+		"data/t":   filepath.Join(hidden, "z"),
+		"rel":      "relhop",
+		"relhop":   filepath.Join(hidden, "w"),
+		"loop":     "loop",
+	} {
+		if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, old := range []string{filepath.Join(root, "srv/a/l"), filepath.Join(root, "rel")} {
+		code, msg, _ := Refused(CheckHomes(lib(old), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl"))
+		if code != ErrHomeInUse || !strings.Contains(msg, "the service sandbox hides "+hidden) {
+			t.Errorf("%s: %s %s", old, code, msg)
+		}
+	}
+	// A loop cannot be seen through, so it is not judged empty either.
+	if code, msg, _ := Refused(CheckHomes(lib(filepath.Join(root, "loop")), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl")); code != ErrHomeInUse {
+		t.Errorf("loop: %s %s", code, msg)
+	}
+	if err := CheckHomes(lib(filepath.Join(links, "plain")), lib("/srv/mhvtl-new"), "/var/lib/mhvtl", "/var/lib/mhvtl"); err != nil {
+		t.Errorf("home outside the sandboxed root: %v", err)
+	}
+}
+
 func TestRejectHomeChange(t *testing.T) {
+	// The test's homes are under t.TempDir(), in /tmp.
+	defer func(s []string) { SandboxedTmp = s }(SandboxedTmp)
+	SandboxedTmp = nil
 	e := newEnv(t)
 	// Both shipped libraries share the home.
 	e.refused("shared home", Request{Op: OpPlan, Files: []File{e.edit("device.conf", " Home directory: "+e.home+"\n PERSIST: False\n Backoff: 400", " Home directory: /srv/new10\n PERSIST: False\n Backoff: 400")}}, ErrHomeInUse)

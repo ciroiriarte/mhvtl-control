@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
@@ -16,7 +17,7 @@ import (
 
 // mhvtl.conf keys a change may set (plan 3.2, guard.go; AC 30), each with
 // the pattern a new value must match. MHVTL_HOME_PATH also goes through
-// the home rules (checkHomes, validate.HomeProblem).
+// the home rules (CheckHomes, validate.HomeProblem).
 var editableKeys = []struct {
 	key   string
 	valid func(string) bool
@@ -89,18 +90,18 @@ func (h *Helper) checkConfigPath(cur, next *conffile.MhvtlConf) error {
 	return nil
 }
 
-// deriveMhvtlConf refuses a new mhvtl.conf unless it is the current one
-// with only the values of the editable keys changed, each through
-// conffile's round-trip setter and each matching its pattern.
+// DeriveMhvtlConf refuses a new mhvtl.conf unless it is the current one
+// with only the values of the editable keys changed: what BuildMhvtlConf
+// makes of the current one and the new values.
 // make_vtl_media sources mhvtl.conf as bash, as root, from
 // mhvtl-media.service (markh794/mhvtl usr/cmd/make_vtl_media.in:307 at
 // 852b78a,
 // https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/cmd/make_vtl_media.in#L307),
 // so any other line or value would be code run as root: the request's
 // bytes are never trusted, only compared with the helper's derivation.
-func deriveMhvtlConf(cur, next []byte) error {
+func DeriveMhvtlConf(cur, next []byte) error {
 	c, n := conffile.ParseMhvtlConf(cur), conffile.ParseMhvtlConf(next)
-	derived := conffile.ParseMhvtlConf(cur)
+	values := map[string]string{}
 	for _, k := range editableKeys {
 		cv, cok := c.Get(k.key)
 		nv, nok := n.Get(k.key)
@@ -110,17 +111,47 @@ func deriveMhvtlConf(cur, next []byte) error {
 		if !nok {
 			return refuse(ErrMhvtlConfKey, "mhvtl.conf: %s cannot be removed here", k.key)
 		}
-		if !k.valid(nv) {
-			return refuse(ErrMhvtlConfValue, "mhvtl.conf: %s=%q is not a valid value", k.key, nv)
-		}
-		if err := derived.Set(k.key, nv); err != nil {
-			return refuse(ErrMhvtlConfValue, "%v", err)
-		}
+		values[k.key] = nv
 	}
-	if !bytes.Equal(derived.Render(), next) {
-		return refuse(ErrMhvtlConfDerived, "the new mhvtl.conf may differ from the current one only in the values of CAPACITY, VERBOSE, VTL_DEBUG and MHVTL_HOME_PATH; edit anything else by hand")
+	derived, err := BuildMhvtlConf(cur, values)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(derived, next) {
+		return refuse(ErrMhvtlConfDerived, "the new mhvtl.conf may differ from the current one only in the values of CAPACITY, VERBOSE and VTL_DEBUG, and of MHVTL_HOME_PATH through mhvtl-move-home; change other lines by hand")
 	}
 	return nil
+}
+
+// BuildMhvtlConf is cur with the editable keys of values set, each through
+// conffile's round-trip setter and each matching its pattern. The keys are
+// set in editableKeys order, so the result does not depend on how an edit
+// was split into requests: a key cur lacks is appended. A value cur
+// already has changes nothing.
+func BuildMhvtlConf(cur []byte, values map[string]string) ([]byte, error) {
+	for k := range values {
+		known := false
+		for _, e := range editableKeys {
+			known = known || e.key == k
+		}
+		if !known {
+			return nil, refuse(ErrMhvtlConfKey, "mhvtl.conf: %s cannot be set here", k)
+		}
+	}
+	c := conffile.ParseMhvtlConf(cur)
+	for _, k := range editableKeys {
+		v, ok := values[k.key]
+		if cv, cok := c.Get(k.key); !ok || cok && cv == v {
+			continue
+		}
+		if !k.valid(v) {
+			return nil, refuse(ErrMhvtlConfValue, "mhvtl.conf: %s=%q is not a valid value", k.key, v)
+		}
+		if err := c.Set(k.key, v); err != nil {
+			return nil, refuse(ErrMhvtlConfValue, "%v", err)
+		}
+	}
+	return c.Render(), nil
 }
 
 // homeProblem is validate.HomeProblem on home as written and as it
@@ -133,30 +164,40 @@ func homeProblem(home string) string {
 	if p := validate.HomeProblem(home); p != "" {
 		return p
 	}
-	dir, rest := home, ""
-	for dir != "/" {
-		_, err := os.Lstat(dir)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return "cannot resolve " + dir + ": " + err.Error()
-		}
-		rest = filepath.Join(filepath.Base(dir), rest)
-		dir = filepath.Dir(dir)
-	}
-	resolved, err := filepath.EvalSymlinks(dir)
+	resolved, err := resolveHome(home)
 	if err != nil {
-		return "cannot resolve " + dir + ": " + err.Error()
+		return err.Error()
 	}
-	resolved = filepath.Join(resolved, rest)
 	if p := validate.HomeProblem(resolved); p != "" {
 		return "resolves to " + resolved + ", " + p
 	}
 	return ""
 }
 
-// checkHomes applies the home rules of plan 4.3 (AC 30): a library that
+// resolveHome is home with the symbolic links of its longest existing
+// ancestor followed, and the rest appended. Only an ancestor that does not
+// exist is climbed past; one that cannot be looked at is an error.
+func resolveHome(home string) (string, error) {
+	dir, rest := filepath.Clean(home), ""
+	for dir != "/" {
+		_, err := os.Lstat(dir)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", errors.New("cannot resolve " + dir + ": " + err.Error())
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = filepath.Dir(dir)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", errors.New("cannot resolve " + dir + ": " + err.Error())
+	}
+	return filepath.Join(resolved, rest), nil
+}
+
+// CheckHomes applies the home rules of plan 4.3 (AC 30): a library that
 // stays in device.conf may change its media home, through its own "Home
 // directory" or MHVTL_HOME_PATH, only when the old home holds no cartridge
 // and no other library uses it. Otherwise the move is mhvtl-move-home's. A
@@ -164,7 +205,7 @@ func homeProblem(home string) string {
 // checks its barcodes against the cartridges already there. A "Home
 // directory" the change sets, for a new library or an old one, must pass
 // validate.HomeProblem: mktape and make_vtl_media create the home as root.
-func checkHomes(cur, next config.Inventory, curDefault, nextDefault string) error {
+func CheckHomes(cur, next config.Inventory, curDefault, nextDefault string) error {
 	homeOf := func(l config.Library, def string) string {
 		if l.HomeDir != "" {
 			return l.HomeDir
@@ -206,8 +247,17 @@ func checkHomes(cur, next config.Inventory, curDefault, nextDefault string) erro
 // link (a raw-disk cartridge, ensure_symlink in markh794/mhvtl
 // usr/raw_bay_ops.c:96-132 at 852b78a,
 // https://github.com/markh794/mhvtl/blob/852b78a7ae3add53ffdc418add5f14999762d788/usr/raw_bay_ops.c#L96-L132),
-// or cannot be listed. A missing dir is empty.
+// or cannot be listed. A missing dir is empty. A dir under /tmp or
+// /var/tmp, as written or as its links resolve (resolveHome), is never
+// judged empty: both services run with PrivateTmp=yes
+// (dist/mhvtl-control.service, dist/mhvtl-control-apply@.service), so they
+// see an empty /tmp whatever the real one holds.
 func homeEmpty(dir string) error {
+	if t, err := sandboxedRoot(dir); err != nil {
+		return err
+	} else if t != "" {
+		return errors.New("the service sandbox hides " + t + ", so the old home " + dir + " cannot be seen empty")
+	}
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -222,6 +272,63 @@ func homeEmpty(dir string) error {
 	}
 	return nil
 }
+
+// sandboxedRoot is the SandboxedTmp directory dir is in, as written or
+// through its links, or "". A link into the real /tmp dangles inside the
+// sandbox, so a link whose target is missing is followed as written
+// (os.Readlink), a relative target from the link's real directory, at most
+// 40 times as the kernel's ELOOP limit.
+func sandboxedRoot(dir string) (string, error) {
+	p := filepath.Clean(dir)
+	for hop := 0; ; hop++ {
+		for _, t := range SandboxedTmp {
+			if p == t || strings.HasPrefix(p, t+"/") {
+				return t, nil
+			}
+		}
+		if hop == 40 {
+			return "", errors.New("cannot resolve " + dir + ": too many links")
+		}
+		resolved, err := resolveHome(p)
+		if err == nil {
+			if resolved == p {
+				return "", nil
+			}
+			p = resolved
+			continue
+		}
+		// The longest existing ancestor dangles: follow it as written.
+		a, rest := p, ""
+		for a != "/" {
+			if _, err := os.Lstat(a); err == nil {
+				break
+			}
+			rest = filepath.Join(filepath.Base(a), rest)
+			a = filepath.Dir(a)
+		}
+		target, lerr := os.Readlink(a)
+		if lerr != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			// The kernel resolves it against the link's real directory,
+			// which differs from the written one when a parent is a link.
+			parent, err := filepath.EvalSymlinks(filepath.Dir(a))
+			if err != nil {
+				return "", errors.New("cannot resolve " + dir + ": " + err.Error())
+			}
+			target = filepath.Join(parent, target)
+		}
+		p = filepath.Join(target, rest)
+	}
+}
+
+// SandboxedTmp are the directories PrivateTmp=yes replaces with the
+// service's own (systemd.exec(5),
+// https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#PrivateTmp=).
+// Tests whose homes are under t.TempDir() clear it: tests only; never
+// assign in production.
+var SandboxedTmp = []string{"/tmp", "/var/tmp"}
 
 // defaultHome is the home of a library without a "Home directory":
 // MHVTL_HOME_PATH from mhvtl.conf, else the compiled-in default.

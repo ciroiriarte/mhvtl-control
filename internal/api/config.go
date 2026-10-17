@@ -519,18 +519,61 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	for _, d := range snap.inv.Standalone {
 		standalone = append(standalone, toDriveDTO(d))
 	}
+	sys := s.systemValues()
+	var conf []byte
+	if sys.File != nil {
+		conf = []byte(sys.File.Content)
+	}
+	// An unreadable mhvtl.conf leaves the home unknown (system.file_error).
+	effective := ""
+	if sys.FileError == "" {
+		effective = effectiveDefaultHome(conf)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"config_dir":        s.cfg.ConfigDir,
-		"default_home":      s.homeFor(config.Library{}),
-		"files":             files,
-		"libraries":         s.configLibraries(snap.inv),
-		"standalone_drives": standalone,
-		"problems":          toProblems(snap.inv.Problems),
-		"live_errors":       liveErrs,
+		"config_dir": s.cfg.ConfigDir,
+		// default_home is where the dashboard looks for media (--home-dir);
+		// default_home_effective is what mhVTL and the apply helper use.
+		"default_home":           s.homeFor(config.Library{}),
+		"default_home_effective": effective,
+		"files":                  files,
+		"libraries":              s.configLibraries(snap.inv),
+		"standalone_drives":      standalone,
+		"problems":               toProblems(snap.inv.Problems),
+		"live_errors":            liveErrs,
 		// The slots of each library, as GET /config/libraries/{id}/slots
 		// gives them, so a client reads every changer once.
-		"slots": slots,
+		"slots":  slots,
+		"system": sys,
 	})
+}
+
+// systemDTO is mhvtl.conf's values of the keys PATCH /config/system sets
+// (a key the file lacks gives none), and the file, which a client diffs a
+// staged one against; none when it does not exist, and FileError says why
+// when it exists but cannot be read.
+type systemDTO struct {
+	Values    map[string]string `json:"values"`
+	File      *configFileDTO    `json:"file,omitempty"`
+	FileError string            `json:"file_error,omitempty"`
+}
+
+func (s *Server) systemValues() systemDTO {
+	d := systemDTO{Values: map[string]string{}}
+	data, err := os.ReadFile(filepath.Join(s.cfg.ConfigDir, mhvtlConf))
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			d.FileError = err.Error()
+		}
+		return d
+	}
+	d.File = &configFileDTO{Name: mhvtlConf, SHA256: conffile.Hash(data), Content: string(data)}
+	c := conffile.ParseMhvtlConf(data)
+	for k := range systemKeys {
+		if v, ok := c.Get(k); ok {
+			d.Values[k] = v
+		}
+	}
+	return d
 }
 
 // contentsLibrary returns the library whose library_contents file name is.
@@ -697,6 +740,9 @@ type ruleDTO struct {
 	Vendor        string `json:"vendor"`
 	ProductPrefix string `json:"product_prefix"`
 	Source        string `json:"source"`
+	// Order is the rule's place in vtllibrary's evaluation, across
+	// personalities: the first that matches wins.
+	Order int `json:"order"`
 }
 
 type mediaDTO struct {
@@ -727,14 +773,14 @@ func (s *Server) handleConfigPersonalities(w http.ResponseWriter, _ *http.Reques
 	}
 	var libs []libraryPersonality
 	at := map[string]int{}
-	for _, r := range personality.Rules {
+	for n, r := range personality.Rules {
 		i, ok := at[r.InitFn]
 		if !ok {
 			i = len(libs)
 			at[r.InitFn] = i
 			libs = append(libs, libraryPersonality{personalityDTO: toPersonality(personality.Models[r.InitFn])})
 		}
-		libs[i].Rules = append(libs[i].Rules, ruleDTO{r.Vendor, r.ProductPrefix, r.Source})
+		libs[i].Rules = append(libs[i].Rules, ruleDTO{r.Vendor, r.ProductPrefix, r.Source, n})
 	}
 	drives := make([]driveModelDTO, 0, len(personality.DriveProducts))
 	for _, d := range personality.DriveProducts {

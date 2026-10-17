@@ -382,9 +382,9 @@ func (s *Server) libraryState(ctx context.Context, id int) (string, error) {
 	return state, nil
 }
 
-// adopt reads the base of a library_contents the stage has not read: that
-// of a library device.conf does not have, which mhVTL would read whatever
-// file of that name is there.
+// adopt reads the base of a file the stage has not read: mhvtl.conf, or the
+// library_contents of a library device.conf does not have, which mhVTL
+// would read whatever file of that name is there.
 func (s *Server) adopt(st *stage, name string) error {
 	if _, known := st.base[name]; known {
 		return nil
@@ -412,6 +412,8 @@ func (st *stage) writable() error {
 		case data == nil:
 		case name == "device.conf":
 			err = conffile.ParseDeviceConf(data).Writable()
+		case name == mhvtlConf:
+			err = conffile.ParseMhvtlConf(data).Writable()
 		default:
 			err = conffile.ParseLibContents(data).Writable()
 		}
@@ -420,6 +422,55 @@ func (st *stage) writable() error {
 		}
 	}
 	return nil
+}
+
+// mhvtlConf is the file PATCH /config/system edits.
+const mhvtlConf = "mhvtl.conf"
+
+// defaultHomes are the media home of a library without a "Home directory"
+// on disk and in the stage: MHVTL_HOME_PATH, else the helper's compiled-in
+// default (apply.DefaultHome), as the helper judges the stage. --home-dir
+// (s.cfg.DefaultHome) tells only the dashboard where to look for media.
+func (s *Server) defaultHomes(st *stage) (cur, next string, err error) {
+	if err := s.adopt(st, mhvtlConf); err != nil {
+		return "", "", err
+	}
+	nextData, _ := st.file(mhvtlConf)
+	return effectiveDefaultHome(st.disk[mhvtlConf]), effectiveDefaultHome(nextData), nil
+}
+
+// effectiveDefaultHome is the media home of a library without a "Home
+// directory" under the mhvtl.conf data: MHVTL_HOME_PATH, else the helper's
+// compiled-in default.
+func effectiveDefaultHome(data []byte) string {
+	if v, ok := conffile.ParseMhvtlConf(data).Get("MHVTL_HOME_PATH"); ok && v != "" {
+		return v
+	}
+	return apply.DefaultHome
+}
+
+// checkHomes applies the home rules of plan 4.3 to the stage, as the
+// helper does (apply.CheckHomes): a library's home changes only when the
+// old one holds no cartridge and no other library uses it, else that is
+// mhvtl-move-home's; a home set must be one a media home may be.
+func (s *Server) checkHomes(st *stage) error {
+	next, err := st.inventory(s.cfg.ConfigDir)
+	if err != nil {
+		return err
+	}
+	curHome, nextHome, err := s.defaultHomes(st)
+	if err != nil {
+		return err
+	}
+	err = apply.CheckHomes(st.cur, next, curHome, nextHome)
+	if code, msg, ok := apply.Refused(err); ok {
+		status := http.StatusUnprocessableEntity
+		if code == apply.ErrHomeInUse {
+			status = http.StatusConflict
+		}
+		return &editError{status, code, msg}
+	}
+	return err
 }
 
 // edited records an edit: the plan, if any, no longer stands.
@@ -495,6 +546,10 @@ type stageDTO struct {
 	// Notes say where the stage took a library's placement from when its
 	// changer was not read: a library that is not running.
 	Notes []string `json:"notes,omitempty"`
+	// DefaultHomeEffective is, when the stage has mhvtl.conf, the media
+	// home of a library without its own as the staged file sets it (GET
+	// /config's default_home_effective).
+	DefaultHomeEffective string `json:"default_home_effective,omitempty"`
 }
 
 func (st *stage) dto(expires time.Time) stageDTO {
@@ -504,6 +559,9 @@ func (st *stage) dto(expires time.Time) stageDTO {
 		d.Notes = append(d.Notes, n)
 	}
 	sort.Strings(d.Notes)
+	if data, ok := st.next[mhvtlConf]; ok {
+		d.DefaultHomeEffective = effectiveDefaultHome(data)
+	}
 	files, del := st.changes()
 	for _, f := range files {
 		c := string(f.Content)
