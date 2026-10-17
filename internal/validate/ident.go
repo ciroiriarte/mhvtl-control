@@ -21,11 +21,14 @@ import (
 //     default, HP EML and the documented MSLs, IBM, Overland, Spectra Gator)
 //     cut it there. A drive can move to any library by its Library ID, so
 //     the limit holds for every drive.
-//   - a library's own serial: only the HP EML/MSL and Overland changers copy
+//   - a library's own serial: the HP EML/MSL and Overland changers copy
 //     exactly 10 bytes of it into VPD page 83h (usr/pm/hp_smc_pm.c:79,
-//     usr/pm/overland_pm.c:63), and into page 80h too (hp_smc_pm.c:44,
-//     overland_pm.c:24). A library does not move, so for the other
-//     personalities a longer serial is only warned about.
+//     usr/pm/overland_pm.c:63). Page 80h, which the host and mhvtl-control
+//     find the changer by, carries 10 to 15 characters depending on the
+//     personality (personality.Model.UnitSerialWidth); a serial longer than
+//     that is refused, since two libraries could then report the same. A
+//     library does not move, so a serial longer than 10 that its
+//     personality reports whole is only warned about.
 //
 // A drive the change does not touch keeps a longer serial it already has: the
 // error is reported as pre-existing (Validate), so an unrelated edit is not
@@ -124,6 +127,14 @@ func derivedNAA(d device) []byte {
 	return b
 }
 
+// unitSerial is the serial d reports in VPD page 80h, as the host reads it.
+func unitSerial(d device) string {
+	if d.kind == "library" {
+		return personality.ChangerUnitSerial(d.vendor, d.product, d.serial)
+	}
+	return personality.DriveUnitSerial(d.vendor, d.product, d.serial)
+}
+
 // naaText names the NAA a device reports, for messages.
 func naaText(d device, b []byte) string {
 	if d.naa != "" {
@@ -165,6 +176,7 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 	ids := map[int]device{}
 	ctl := map[[3]int]device{}
 	serials := map[string]device{}
+	reported := map[string]device{} // by the serial in VPD page 80h
 	type naaOwner struct {
 		b []byte
 		d device
@@ -202,9 +214,13 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 		case len(d.serial) > MaxSerialLen && cutsLibrarySerial[personality.Lookup(d.vendor, d.product).InitFn]:
 			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; the %s personality reports only the first %d in VPD pages 80h and 83h (usr/pm/hp_smc_pm.c:44, :79; usr/pm/overland_pm.c:24, :63)",
 				d, d.serial, len(d.serial), personality.Lookup(d.vendor, d.product).Name, MaxSerialLen)
+		case len(d.serial) > personality.Lookup(d.vendor, d.product).UnitSerialWidth():
+			p := personality.Lookup(d.vendor, d.product)
+			r.errorf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; the %s personality reports only the first %d in VPD page 80h (personality.UnitSerialPage), so another library can report the same",
+				d, d.serial, len(d.serial), p.Name, p.UnitSerialWidth())
 		case len(d.serial) > MaxSerialLen:
-			r.warnf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; this personality reports it whole, but mhvtl-control's policy (not an mhVTL limit) and generate_device_conf keep serials to %d, and the HP and Overland personalities would cut it",
-				d, d.serial, len(d.serial), MaxSerialLen)
+			r.warnf(CodeIdentSerialLength, d.lib, []ElementRef{d.key()}, "%s: serial %q is %d characters; the %s personality reports it whole in VPD page 80h, but mhvtl-control's policy (not an mhVTL limit) and generate_device_conf keep serials to %d, and other personalities would cut it",
+				d, d.serial, len(d.serial), personality.Lookup(d.vendor, d.product).Name, MaxSerialLen)
 		}
 		if len(d.vendor) > MaxVendorLen {
 			r.errorf(CodeIdentVendorLength, d.lib, []ElementRef{d.key()}, "%s: vendor %q is %d characters; INQUIRY has room for %d and mhVTL cuts the rest", d, d.vendor, len(d.vendor), MaxVendorLen)
@@ -217,6 +233,15 @@ func checkIdentities(r *Result, cur, next config.Inventory, host []hostids.Devic
 				r.errorf(CodeIdentSerialDup, d.lib, []ElementRef{o.key(), d.key()}, "%s and %s share serial %q", o, d, d.serial)
 			} else {
 				serials[d.serial] = d
+				// Two serials can still come out the same in VPD page 80h,
+				// which is what the host and the helper go by: a changer
+				// that cuts them, an IBM LTO drive that zero-fills them.
+				u := unitSerial(d)
+				if o, dup := reported[u]; dup {
+					r.errorf(CodeIdentSerialDup, d.lib, []ElementRef{o.key(), d.key()}, "%s and %s both report serial %q in VPD page 80h", o, d, u)
+				} else {
+					reported[u] = d
+				}
 			}
 		}
 
