@@ -622,11 +622,13 @@
   // refused for drive_loaded, which carries the token), applied (the stage
   // was applied, maybe by a request whose answer was lost), lost (no
   // answer: GET /config/stages/{id} says what happened) or show the
-  // message.
-  function applyErrorAction(err) {
+  // message. applying is true for an apply that is not a dry run: the
+  // helper may have run it without answering (helper_unreachable).
+  function applyErrorAction(err, applying) {
     if (!err) { return "show"; }
     var code = err.code ? String(err.code) : "";
     if (!err.status) { return err.name === "AbortError" ? "show" : "lost"; }
+    if (applying && code === "helper_unreachable") { return "lost"; }
     if (code === "conflict" || code === "stage_not_found") { return "reload"; }
     if (code === "plan_required" || code === "recovered") { return "replan"; }
     if (code === "stage_applied") { return "applied"; }
