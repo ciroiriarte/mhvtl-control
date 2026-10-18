@@ -113,6 +113,27 @@ test("stagedDevices reads the stage's device.conf headers, serials and NAAs", ()
   assert.strictEqual(core.wizardDefaults(config, ibm, stage).id, 30);
 });
 
+test("devices: a staged edit of an existing device's serial, NAA or address is what is taken", () => {
+  const config = { libraries: [{ id: 10, channel: 0, target: 0, lun: 0, serial: "OLD10", naa: "10:22:33:44:ab:00:00:00",
+    drives: [{ id: 11, channel: 0, target: 1, lun: 0, serial: "OLD11", naa: "10:22:33:44:ab:00:01:00" }] }] };
+  // The stage changes library 10's serial and NAA, moves drive 11 to
+  // target 4 and drops its NAA, and adds library 20.
+  const stage = { files: { "device.conf": "VERSION: 5\n\nLibrary: 10 CHANNEL: 00 TARGET: 00 LUN: 00\n Unit serial number: NEW10\n" +
+    " NAA: 40:22:33:44:ab:00:13:00\n\nDrive: 11 CHANNEL: 00 TARGET: 04 LUN: 00\n Library ID: 10 Slot: 01\n Unit serial number: OLD11\n" +
+    "\nLibrary: 20 CHANNEL: 00 TARGET: 02 LUN: 00\n Unit serial number: MHV0020\n" } };
+  assert.deepStrictEqual(core.usedIDs(config, stage), [10, 11, 20]);
+  assert.deepStrictEqual(core.usedSerials(config, stage), ["NEW10", "OLD11", "MHV0020"]);
+  assert.deepStrictEqual(core.usedNAAs(config, stage), ["40:22:33:44:ab:00:13:00"]);
+  assert.deepStrictEqual(core.usedAddresses(config, stage).map((a) => a.target), [0, 4, 2]);
+  // GET /config's objects are left as they are.
+  assert.strictEqual(config.libraries[0].serial, "OLD10");
+  // The wizard does not default to a NAA or target a staged edit takes.
+  const naas = { naas: core.usedNAAs(config, stage), ids: [], serials: [] };
+  const w = { id: 40, vendor: "IBM", product: "03584", serial: "MHV0040", slots: 10, maps: 1, drives: 0, targets: [13] };
+  assert.deepStrictEqual(core.wizardErrors(w, { slots: 100, maps: 10, drives: 10 }, naas), ["NAA 40:22:33:44:ab:00:13:00, for the library, is taken."]);
+  assert.deepStrictEqual(core.freeTargets(core.usedAddresses(config, stage), 2, 0), [1, 3]);
+});
+
 test("dropsPartialStage: only a current stage the failed sequence made itself", () => {
   assert.strictEqual(core.dropsPartialStage(true, 1, "s1"), true);
   assert.strictEqual(core.dropsPartialStage(true, 3, "s1"), true);

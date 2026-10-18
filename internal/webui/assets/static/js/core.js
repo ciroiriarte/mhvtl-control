@@ -922,7 +922,8 @@
   }
 
   // devices are config's devices, then those the stage's device.conf has:
-  // what the wizard must not reuse.
+  // what the wizard must not reuse. A device in both takes the stage's
+  // address, serial and NAA, which an edit in the stage may have changed.
   function devices(config, stageData) {
     var out = [];
     coerceArray(config && config.libraries).forEach(function (l) {
@@ -931,9 +932,15 @@
       coerceArray(l.drives).forEach(function (d) { if (d) { out.push(d); } });
     });
     coerceArray(config && config.standalone_drives).forEach(function (d) { if (d) { out.push(d); } });
-    var seen = {};
-    out.forEach(function (d) { seen[coerceNumber(d.id)] = true; });
-    stagedDevices(stageData).forEach(function (d) { if (!seen[d.id]) { out.push(d); } });
+    var staged = {};
+    stagedDevices(stageData).forEach(function (d) { staged[d.id] = d; });
+    out = out.map(function (d) {
+      var s = staged[coerceNumber(d.id)];
+      if (!s) { return d; }
+      delete staged[s.id];
+      return Object.assign({}, d, s);
+    });
+    stagedDevices(stageData).forEach(function (d) { if (staged[d.id]) { out.push(d); } });
     return out;
   }
 
