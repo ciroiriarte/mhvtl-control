@@ -883,6 +883,22 @@
     return !!fresh && sent > 0 && !!stage;
   }
 
+  // validateFiles are the stage's files POST /config/validate takes:
+  // device.conf, and library_contents.<id> with the ID written as mhVTL
+  // names the file (validContentsName in internal/api/config.go). The
+  // validation refuses any other, such as a staged mhvtl.conf.
+  function validateFiles(files) {
+    var out = {};
+    if (!files || typeof files !== "object") { return out; }
+    Object.keys(files).forEach(function (name) {
+      var m = /^library_contents\.([0-9]{1,5})$/.exec(name);
+      if (name === "device.conf" ? files[name] != null : !!m && name === "library_contents." + Number(m[1])) {
+        out[name] = files[name];
+      }
+    });
+    return out;
+  }
+
   // devices lists every library and drive of GET /config.
   // stagedDevices are the devices of the stage's device.conf (stageData is
   // its GET /config/stages answer): each Library or Drive header's ID and
@@ -1112,6 +1128,7 @@
     wizardHomeHint: wizardHomeHint,
     stagedDevices: stagedDevices,
     dropsPartialStage: dropsPartialStage,
+    validateFiles: validateFiles,
     usedNAAs: usedNAAs,
     stageOutcome: stageOutcome,
     outcomeUnread: outcomeUnread,

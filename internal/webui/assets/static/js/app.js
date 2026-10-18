@@ -46,7 +46,7 @@
   var stageOutcome = core.stageOutcome, outcomeUnread = core.outcomeUnread;
   var resolvePersonality = core.resolvePersonality, modelPresets = core.modelPresets, createLimits = core.createLimits;
   var freeTargets = core.freeTargets, usedIDs = core.usedIDs, usedAddresses = core.usedAddresses, usedSerials = core.usedSerials;
-  var usedNAAs = core.usedNAAs, dropsPartialStage = core.dropsPartialStage;
+  var usedNAAs = core.usedNAAs, dropsPartialStage = core.dropsPartialStage, validateFiles = core.validateFiles;
   var wizardDefaults = core.wizardDefaults, librarySerial = core.librarySerial, driveVendorFor = core.driveVendorFor;
   var wizardErrors = core.wizardErrors, wizardRequests = core.wizardRequests;
   var systemFields = core.systemFields, buildSystemPatch = core.buildSystemPatch, intField = core.intField;
@@ -2172,7 +2172,7 @@
     var name = app;
     apps.forEach(function (a) { if (a && a.id === app) { name = String(a.name || a.id); } });
     api(cfgPath("/validate"), { method: "POST", body: {
-      files: st.data.files, dispositions: coerceArray(st.data.dispositions), target_apps: buildValidateBody(libID, app).target_apps,
+      files: validateFiles(st.data.files), dispositions: coerceArray(st.data.dispositions), target_apps: buildValidateBody(libID, app).target_apps,
     } }).then(function (res) {
       if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
       st.appCheck = { name: name, library: libID, rows: findingRows(res).filter(function (r) { return r.code.indexOf("preset.") === 0 && r.library === libID; }) };

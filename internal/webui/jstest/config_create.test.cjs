@@ -124,6 +124,16 @@ test("dropsPartialStage: only a current stage the failed sequence made itself", 
   assert.strictEqual(core.dropsPartialStage(true, 2, ""), false);
 });
 
+test("validateFiles keeps the files POST /config/validate takes", () => {
+  const files = { "device.conf": "VERSION: 5\n", "mhvtl.conf": "VERBOSE=2\n", "library_contents.10": "Drive 1:\n",
+    "library_contents.20": null, "library_contents.010": "x", "library_contents.123456": "x", "library_contents.": "x" };
+  assert.deepStrictEqual(core.validateFiles(files), { "device.conf": "VERSION: 5\n", "library_contents.10": "Drive 1:\n", "library_contents.20": null });
+  // A stage of system settings alone proposes nothing to validate.
+  assert.deepStrictEqual(core.validateFiles({ "mhvtl.conf": "CAPACITY=500\n" }), {});
+  assert.deepStrictEqual(core.validateFiles({ "device.conf": null }), {});
+  assert.deepStrictEqual(core.validateFiles(null), {});
+});
+
 test("wizardDefaults clamp to the personality and avoid what is taken", () => {
   const config = { libraries: [{ id: 10, channel: 0, target: 0, lun: 0, serial: "XYZZY_A", drives: [{ id: 11, channel: 0, target: 1, lun: 0 }] }] };
   const ibm = pers.libraries.find((l) => l.init_fn === "init_ibm3584");
