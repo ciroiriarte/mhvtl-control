@@ -113,6 +113,17 @@ test("stagedDevices reads the stage's device.conf headers, serials and NAAs", ()
   assert.strictEqual(core.wizardDefaults(config, ibm, stage).id, 30);
 });
 
+test("dropsPartialStage: only a current stage the failed sequence made itself", () => {
+  assert.strictEqual(core.dropsPartialStage(true, 1, "s1"), true);
+  assert.strictEqual(core.dropsPartialStage(true, 3, "s1"), true);
+  // Nothing staged yet: there is no stage of the sequence's to drop.
+  assert.strictEqual(core.dropsPartialStage(true, 0, "s1"), false);
+  // A stage that held other edits keeps the parts staged.
+  assert.strictEqual(core.dropsPartialStage(false, 2, "s1"), false);
+  // No current stage (gone, or of another node).
+  assert.strictEqual(core.dropsPartialStage(true, 2, ""), false);
+});
+
 test("wizardDefaults clamp to the personality and avoid what is taken", () => {
   const config = { libraries: [{ id: 10, channel: 0, target: 0, lun: 0, serial: "XYZZY_A", drives: [{ id: 11, channel: 0, target: 1, lun: 0 }] }] };
   const ibm = pers.libraries.find((l) => l.init_fn === "init_ibm3584");

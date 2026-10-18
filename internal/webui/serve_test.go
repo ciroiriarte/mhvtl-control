@@ -342,7 +342,7 @@ func TestConfigView(t *testing.T) {
 		"writesEditable(lastCfg.caps)", `if (!cfgEditable()) { done(new Error("Editing is not available now.")); return; }`, `cfgPath("/apply")`, "dry_run: true",
 		`api(cfgPath("/stages/" + encodeURIComponent(st.id)), { method: "DELETE" })`, "cfgStage.data.notes",
 		"setApplying(st, true)", "discard.disabled = !editable",
-		`editButton("New library…"`, `stageEdit("PATCH", cfgPath("/system"), body, done)`, "wizardRequests(v.w)", "usedNAAs(config, staged)", "if (fresh && i > 0 && cfgStage) {"} {
+		`editButton("New library…"`, `stageEdit("PATCH", cfgPath("/system"), body, done)`, "wizardRequests(v.w)", "usedNAAs(config, staged)"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js missing marker %q", want)
 		}
@@ -357,6 +357,10 @@ func TestConfigView(t *testing.T) {
 		{"if (outcomeUnread(e)) {", "setApplying(st, true);"},
 		{"if (outcomeUnread(e)) {", "offerCheckAgain(st, gen);"},
 		{"function offerCheckAgain(st, gen) {", "learnOutcome(st, gen);"},
+		// A create sequence that fails part way through a stage it made
+		// drops that stage on the daemon too.
+		{"if (dropsPartialStage(fresh, i, stageId())) {", "dropServerStage(cfgStage);"},
+		{"if (dropsPartialStage(fresh, i, stageId())) {", "cfgStage = null;"},
 	} {
 		if body, ok := jsBody(app, c.head); !ok {
 			t.Errorf("app.js missing %q", c.head)
