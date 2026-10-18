@@ -41,7 +41,7 @@
   var writesEditable = core.writesEditable, stageFileRows = core.stageFileRows, planSummary = core.planSummary;
   var forceRemaining = core.forceRemaining, fmtCountdown = core.fmtCountdown, applyErrorAction = core.applyErrorAction;
   var stageEditable = core.stageEditable;
-  var stageOutcome = core.stageOutcome;
+  var stageOutcome = core.stageOutcome, outcomeUnread = core.outcomeUnread;
   var libraryAttrFields = core.libraryAttrFields, driveAttrFields = core.driveAttrFields, buildAttrPatch = core.buildAttrPatch;
   var buildSlotPatch = core.buildSlotPatch, buildSlotDelete = core.buildSlotDelete, buildSlotsAdd = core.buildSlotsAdd;
 
@@ -2378,8 +2378,7 @@
       renderConfig();
       if (out.state === "busy") {
         stageStatus.error("The apply is still running.");
-        var region = $("stage-status");
-        if (region) { region.appendChild(editButton("Check again", "Ask whether the apply finished", function () { learnOutcome(st, gen); })); }
+        offerCheckAgain(st, gen);
       } else if (out.result === "unknown") {
         stageStatus.error("The apply helper did not answer the last apply" + (out.message ? " (" + out.message + ")" : "") + "; it may have run. Check the plan again before applying.");
       } else if (out.result) {
@@ -2389,9 +2388,23 @@
       }
     }).catch(function (e) {
       if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
+      // Not read: the outcome is still unknown, so edits stay held.
+      if (outcomeUnread(e)) {
+        setApplying(st, true);
+        stageStatus.error("What became of the apply could not be read (" + e.message + "); it may have run.");
+        offerCheckAgain(st, gen);
+        return;
+      }
       setApplying(st, false);
       stageFailed(e);
     });
+  }
+
+  // offerCheckAgain adds a button to the stage status that reads the
+  // apply's outcome again.
+  function offerCheckAgain(st, gen) {
+    var region = $("stage-status");
+    if (region) { region.appendChild(editButton("Check again", "Ask whether the apply finished", function () { learnOutcome(st, gen); })); }
   }
 
   // doApply applies the stage, expecting the units of its dry run (the

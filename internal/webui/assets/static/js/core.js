@@ -659,6 +659,13 @@
     };
   }
 
+  // outcomeUnread is whether GET /config/stages/{id}, read to learn a lost
+  // apply's outcome, failed without saying anything of the stage: no answer
+  // or a 5xx. The outcome is still unknown, so edits stay held.
+  function outcomeUnread(err) {
+    return !!err && (!err.status || err.status >= 500);
+  }
+
   // libraryAttrFields and driveAttrFields are the device.conf keys the edit
   // dialogs offer, with the values GET /config reports.
   function libraryAttrFields(lib) {
@@ -750,6 +757,7 @@
     applyErrorAction: applyErrorAction,
     stageEditable: stageEditable,
     stageOutcome: stageOutcome,
+    outcomeUnread: outcomeUnread,
     libraryAttrFields: libraryAttrFields,
     driveAttrFields: driveAttrFields,
     buildAttrPatch: buildAttrPatch,
