@@ -875,6 +875,14 @@
     return out;
   }
 
+  // dropsPartialStage is whether a create sequence that failed after
+  // staging sent of its parts drops the stage, on the daemon too: only a
+  // stage the sequence made itself (fresh) and still current (stage, its
+  // ID), which holds nothing but those parts.
+  function dropsPartialStage(fresh, sent, stage) {
+    return !!fresh && sent > 0 && !!stage;
+  }
+
   // devices lists every library and drive of GET /config.
   // stagedDevices are the devices of the stage's device.conf (stageData is
   // its GET /config/stages answer): each Library or Drive header's ID and
@@ -1103,6 +1111,7 @@
     stageEditable: stageEditable,
     wizardHomeHint: wizardHomeHint,
     stagedDevices: stagedDevices,
+    dropsPartialStage: dropsPartialStage,
     usedNAAs: usedNAAs,
     stageOutcome: stageOutcome,
     outcomeUnread: outcomeUnread,

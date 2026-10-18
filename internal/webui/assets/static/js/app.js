@@ -46,7 +46,7 @@
   var stageOutcome = core.stageOutcome, outcomeUnread = core.outcomeUnread;
   var resolvePersonality = core.resolvePersonality, modelPresets = core.modelPresets, createLimits = core.createLimits;
   var freeTargets = core.freeTargets, usedIDs = core.usedIDs, usedAddresses = core.usedAddresses, usedSerials = core.usedSerials;
-  var usedNAAs = core.usedNAAs;
+  var usedNAAs = core.usedNAAs, dropsPartialStage = core.dropsPartialStage;
   var wizardDefaults = core.wizardDefaults, librarySerial = core.librarySerial, driveVendorFor = core.driveVendorFor;
   var wizardErrors = core.wizardErrors, wizardRequests = core.wizardRequests;
   var systemFields = core.systemFields, buildSystemPatch = core.buildSystemPatch, intField = core.intField;
@@ -2145,7 +2145,7 @@
       if (stageId()) { body.stage = stageId(); }
       stageEdit(r.method, r.path, body, function (e) {
         if (e) {
-          if (fresh && i > 0 && cfgStage) {
+          if (dropsPartialStage(fresh, i, stageId())) {
             dropServerStage(cfgStage);
             cfgStage = null;
             renderStage();
