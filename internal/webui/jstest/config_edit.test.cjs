@@ -146,6 +146,16 @@ test("stageOutcome reads GET /config/stages/{id}", () => {
   assert.strictEqual(core.stageOutcome({ state: "<b>" }).state, "unknown");
 });
 
+test("outcomeUnread: a lost apply's outcome stays unknown without an answer about the stage", () => {
+  assert.strictEqual(core.outcomeUnread(new Error("Failed to fetch")), true);
+  assert.strictEqual(core.outcomeUnread({ status: 502, code: "helper_unreachable" }), true);
+  assert.strictEqual(core.outcomeUnread({ status: 500 }), true);
+  // The daemon answered about the stage: gone, or refused.
+  assert.strictEqual(core.outcomeUnread({ status: 404, code: "stage_not_found" }), false);
+  assert.strictEqual(core.outcomeUnread({ status: 403, code: "token_required" }), false);
+  assert.strictEqual(core.outcomeUnread(null), false);
+});
+
 test("writesEditable and the notice when edits are open", () => {
   assert.strictEqual(core.writesEditable({ helper: "present", writes: "ok" }), true);
   ["helper_absent", "tls_required", "token_required", "helper_blocked", undefined].forEach((w) => {

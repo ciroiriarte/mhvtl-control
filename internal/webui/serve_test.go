@@ -351,6 +351,11 @@ func TestConfigView(t *testing.T) {
 	for _, c := range []struct{ head, want string }{
 		{`function dropServerStage(st) {`, `api(cfgPath("/stages/" + encodeURIComponent(st.id)), { method: "DELETE" })`},
 		{`editButton("Reload", "Reload the configuration and drop the pending changes", function () {`, "dropServerStage(st);"},
+		// A lost apply whose outcome could not be read keeps edits held
+		// and offers Check again.
+		{"if (outcomeUnread(e)) {", "setApplying(st, true);"},
+		{"if (outcomeUnread(e)) {", "offerCheckAgain(st, gen);"},
+		{"function offerCheckAgain(st, gen) {", "learnOutcome(st, gen);"},
 	} {
 		if body, ok := jsBody(app, c.head); !ok {
 			t.Errorf("app.js missing %q", c.head)
