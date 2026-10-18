@@ -2008,12 +2008,12 @@
     if (cfgStage && cfgStage.applying) { done(new Error("An apply is running; wait for its outcome.")); return; }
     if (!cfgEditable()) { done(new Error("Editing is not available now.")); return; }
     api(path, { method: method, body: body }).then(function (res) {
-      if (isStale(gen, NodeState.generation)) { return; }
+      if (isStale(gen, NodeState.generation)) { done(new Error("The node changed.")); return; }
       cfgStage = { id: String(res && res.stage || ""), data: res || {}, gen: gen, plan: null, result: null };
       done(null);
       renderStage();
     }).catch(function (e) {
-      if (isStale(gen, NodeState.generation)) { return; }
+      if (isStale(gen, NodeState.generation)) { done(new Error("The node changed.")); return; }
       done(new Error(cfgFailed(e)));
     });
   }

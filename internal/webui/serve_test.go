@@ -386,9 +386,14 @@ func TestConfigView(t *testing.T) {
 			t.Errorf("app.js sends a configuration request outside stageEdit and the apply flow: %s", strings.TrimSpace(line))
 		}
 	}
-	if body, _ := jsBody(app, "function stageEdit(method, path, body, done) {"); strings.Count(app, "api(path, {") != 1 ||
-		!strings.Contains(body, "api(path, { method: method, body: body })") {
+	body, _ := jsBody(app, "function stageEdit(method, path, body, done) {")
+	if strings.Count(app, "api(path, {") != 1 || !strings.Contains(body, "api(path, { method: method, body: body })") {
 		t.Error("app.js sends api(path, ...) outside stageEdit")
+	}
+	// An answer for another node still ends the edit, so the dialog that
+	// sent it takes input again.
+	if n := strings.Count(body, `if (isStale(gen, NodeState.generation)) { done(new Error("The node changed.")); return; }`); n != 2 {
+		t.Errorf("stageEdit calls done on a node change in %d of its 2 handlers", n)
 	}
 	for _, p := range []string{"path: cfgPath(", "path: libCfgPath(", `path: "/api/v1/config`} {
 		if strings.Contains(app, p) {
