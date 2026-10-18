@@ -341,21 +341,101 @@ func TestConfigView(t *testing.T) {
 	for _, want := range []string{"/api/v1/config/capabilities", "/api/v1/config/personalities", "/api/v1/config/validate", "config.slots", "capabilityNotice",
 		"writesEditable(lastCfg.caps)", `if (!cfgEditable()) { done(new Error("Editing is not available now.")); return; }`, `cfgPath("/apply")`, "dry_run: true",
 		`api(cfgPath("/stages/" + encodeURIComponent(st.id)), { method: "DELETE" })`, "cfgStage.data.notes",
-		"setApplying(st, true)", "dropServerStage(st)", "discard.disabled = !editable"} {
+		"setApplying(st, true)", "discard.disabled = !editable"} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js missing marker %q", want)
 		}
 	}
-	// A configuration request other than a GET is the validation, a dry run
-	// or apply of the stage, or an edit sent through stageEdit.
+	// Reload after a conflict drops the stage on the daemon too (DELETE
+	// /config/stages/{id}), not only here.
+	for _, c := range []struct{ head, want string }{
+		{`function dropServerStage(st) {`, `api(cfgPath("/stages/" + encodeURIComponent(st.id)), { method: "DELETE" })`},
+		{`editButton("Reload", "Reload the configuration and drop the pending changes", function () {`, "dropServerStage(st);"},
+	} {
+		if body, ok := jsBody(app, c.head); !ok {
+			t.Errorf("app.js missing %q", c.head)
+		} else if !strings.Contains(body, c.want) {
+			t.Errorf("app.js %q does not run %q", c.head, c.want)
+		}
+	}
+	// Every configuration request other than a GET is the validation, a dry
+	// run or apply of the stage, a stage delete, or an edit sent through
+	// stageEdit, which refuses unless cfgEditable. The other requests that
+	// send a method go to the library and storage routes.
+	sends := map[string]bool{`cfgPath("/apply")`: true, `cfgPath("/stages/" + encodeURIComponent(st.id))`: true,
+		`"/api/v1/config/validate"`: true, "path": true, "o.path": true}
 	for _, line := range strings.Split(app, "\n") {
-		if strings.Contains(line, `api("/api/v1/config`) && strings.Contains(line, "method:") &&
-			!strings.Contains(line, `api("/api/v1/config/validate", { method: "POST"`) {
+		i := strings.Index(line, "api(")
+		if i < 0 || !strings.Contains(line, "method:") {
+			continue
+		}
+		arg := jsFirstArg(line[i+len("api("):])
+		if !sends[arg] && !strings.HasPrefix(arg, `"/api/v1/libraries/`) && !strings.HasPrefix(arg, `"/api/v1/storage/`) {
 			t.Errorf("app.js sends a configuration request outside stageEdit and the apply flow: %s", strings.TrimSpace(line))
+		}
+	}
+	if body, _ := jsBody(app, "function stageEdit(method, path, body, done) {"); strings.Count(app, "api(path, {") != 1 ||
+		!strings.Contains(body, "api(path, { method: method, body: body })") {
+		t.Error("app.js sends api(path, ...) outside stageEdit")
+	}
+	for _, p := range []string{"path: cfgPath(", "path: libCfgPath(", `path: "/api/v1/config`} {
+		if strings.Contains(app, p) {
+			t.Errorf("app.js sends a configuration request through mutate: %q", p)
 		}
 	}
 	_, core := get(t, h, "/static/js/core.js")
 	if !strings.Contains(core, "systemctl enable --now mhvtl-control-apply.socket") {
 		t.Error("core.js does not say how to enable the apply helper")
 	}
+}
+
+// jsBody returns the code between the brace that ends head and the brace
+// that closes it, without its whole-line comments, so a commented-out
+// statement does not count.
+func jsBody(src, head string) (string, bool) {
+	i := strings.Index(src, head)
+	if i < 0 || !strings.HasSuffix(head, "{") {
+		return "", false
+	}
+	start, depth := i+len(head), 1
+	for j := start; j < len(src); j++ {
+		switch src[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				var keep []string
+				for _, l := range strings.Split(src[start:j], "\n") {
+					if !strings.HasPrefix(strings.TrimSpace(l), "//") {
+						keep = append(keep, l)
+					}
+				}
+				return strings.Join(keep, "\n"), true
+			}
+		}
+	}
+	return "", false
+}
+
+// jsFirstArg returns a call's first argument, given the text after its
+// opening parenthesis.
+func jsFirstArg(s string) string {
+	depth := 0
+	for j := 0; j < len(s); j++ {
+		switch s[j] {
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				return strings.TrimSpace(s[:j])
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				return strings.TrimSpace(s[:j])
+			}
+		}
+	}
+	return strings.TrimSpace(s)
 }
