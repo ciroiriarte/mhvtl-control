@@ -361,6 +361,8 @@ func TestConfigView(t *testing.T) {
 		// drops that stage on the daemon too.
 		{"if (dropsPartialStage(fresh, i, stageId())) {", "dropServerStage(cfgStage);"},
 		{"if (dropsPartialStage(fresh, i, stageId())) {", "cfgStage = null;"},
+		// The target app's check sends validation only the files it takes.
+		{"function checkForApp(libID, app) {", "files: validateFiles(st.data.files)"},
 	} {
 		if body, ok := jsBody(app, c.head); !ok {
 			t.Errorf("app.js missing %q", c.head)
