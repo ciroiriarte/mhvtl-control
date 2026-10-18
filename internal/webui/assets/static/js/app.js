@@ -2226,8 +2226,9 @@
     grid.appendChild(persLine);
 
     // What the stage already adds is taken too: a second run in one stage.
-    var staged = cfgStage && cfgStage.data;
-    var defaults = wizardDefaults(config, resolvePersonality(pers, first.vendor, first.product), staged);
+    // It is read when used, as a failed run may have added to it.
+    function staged() { return cfgStage && cfgStage.data; }
+    var defaults = wizardDefaults(config, resolvePersonality(pers, first.vendor, first.product), staged());
     var idHint = hint();
     var libID = field("Library ID", input("number", defaults.id == null ? "" : defaults.id), idHint);
     var serial = field("Unit serial number", input("text", librarySerial(defaults.id)));
@@ -2278,7 +2279,7 @@
           id: intField(libID.value), vendor: vendor.value, product: product.value, serial: serial.value, home: home.value,
           slots: intField(slots.value), maps: intField(maps.value), drives: n,
           driveProduct: driveModel.value, driveVendor: driveVendor.value.trim(),
-          targets: freeTargets(usedAddresses(config, staged), 1 + (n > 0 ? n : 0), 0),
+          targets: freeTargets(usedAddresses(config, staged()), 1 + (n > 0 ? n : 0), 0),
         },
       };
     }
@@ -2310,7 +2311,8 @@
     form.addEventListener("input", update);
     ok.addEventListener("click", function () {
       var v = update();
-      var problems = wizardErrors(v.w, v.lim, { ids: usedIDs(config, staged), serials: usedSerials(config, staged), naas: usedNAAs(config, staged) });
+      var st = staged();
+      var problems = wizardErrors(v.w, v.lim, { ids: usedIDs(config, st), serials: usedSerials(config, st), naas: usedNAAs(config, st) });
       problems.forEach(function (m) { errs.appendChild(mk("li", { text: m })); });
       if (problems.length) { return; }
       ok.disabled = true;
