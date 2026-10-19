@@ -12,9 +12,38 @@ the Go standard library.
 
 ## Install
 
+### From the OBS repositories
+
+mhvtl-control is built on the openSUSE Build Service in
+[`home:ciriarte:mhvtl`](https://build.opensuse.org/project/show/home:ciriarte:mhvtl),
+the same repositories that carry mhVTL itself, for openSUSE Tumbleweed, Slowroll
+and Leap 16.0, Rocky Linux and AlmaLinux 9 and 10, Debian 12 and 13 (Proxmox VE 8
+and 9) and Ubuntu 24.04 and 26.04, x86_64 only. These are personal builds, not
+packages the mhVTL project supports. With the repository added, `zypper update`,
+`dnf upgrade` and `apt upgrade` keep mhVTL and mhvtl-control current.
+
+Add the repository and install mhVTL as described in mhVTL's
+[OBS install guide](https://github.com/ciroiriarte/mhvtl/blob/fe28eb2/docs/packaging/install-from-obs.md),
+which covers the repository path for each release, the kernel module (KMP or DKMS)
+and the Slowroll repository priority. Then, as root:
+
+```sh
+zypper install mhvtl-control    # openSUSE
+dnf install mhvtl-control       # Rocky, AlmaLinux
+apt-get install mhvtl-control   # Debian, Ubuntu, Proxmox VE
+```
+
+The package recommends mhVTL, so installing it on its own also pulls in mhVTL's
+user-space package, but not the kernel module; follow the guide for that. If dnf
+pulled mhVTL in this way, `dnf remove mhvtl-control` removes it again. Install
+mhVTL explicitly first, or keep it with `dnf mark install mhvtl-utils mhvtl-dkms`.
+
+### From the release files
+
 Packages for Debian/Ubuntu (`.deb`) and RHEL/Rocky/Alma and openSUSE (`.rpm`),
 and static binaries, all for amd64 and arm64, are attached to each
-[release](https://github.com/ciroiriarte/mhvtl-control/releases).
+[release](https://github.com/ciroiriarte/mhvtl-control/releases). Use them for
+arm64, air-gapped hosts, or a release older than what the repositories carry.
 
 ```sh
 # Debian, Ubuntu
