@@ -39,6 +39,9 @@ type Device struct {
 	// State is the device's sysfs state, e.g. "running", "offline" or
 	// "deleted" (SCSI midlayer sdev_state); empty when it could not be read.
 	State string
+	// Bound is the upper-level driver bound to the device, e.g. "st", "ch"
+	// or "sd"; empty when none is.
+	Bound string
 }
 
 // HCTL formats the device's address as H:C:T:L.
@@ -98,6 +101,11 @@ func Read(sysRoot string) ([]Device, error) {
 		}
 		if b, ok := read(filepath.Join(devDir, "state")); ok {
 			d.State = strings.TrimSpace(string(b))
+		}
+		if target, err := os.Readlink(filepath.Join(devDir, "driver")); err == nil {
+			d.Bound = filepath.Base(target)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
 		}
 		if b, ok := read(filepath.Join(sysRoot, "class", "scsi_host", "host"+strconv.Itoa(d.Host), "proc_name")); ok {
 			d.Driver = strings.TrimSpace(string(b))

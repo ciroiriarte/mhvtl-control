@@ -58,6 +58,10 @@ func TestRead(t *testing.T) {
 	write(t, filepath.Join(dev, "model"), []byte("ULT3580-TD8     \n"))
 	write(t, filepath.Join(dev, "state"), []byte("running\n"))
 	write(t, filepath.Join(root, "class", "scsi_device", "0:0:0:0", "device", "state"), []byte("offline\n"))
+	// The bound driver is the device's driver link, as sysfs has it.
+	if err := os.Symlink("../../../../bus/scsi/drivers/st", filepath.Join(dev, "driver")); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, "class", "scsi_device", "not-an-hctl"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +73,7 @@ func TestRead(t *testing.T) {
 	want := []Device{
 		{Host: 0, Driver: "ahci", Serial: "WD-123", NAAs: []string{"60:01:02:03:04:05:06:07:08:09:0a:0b:0c:0d:0e:0f"}, State: "offline"},
 		{Host: 1, Driver: "usb-storage"},
-		{Host: 3, Target: 1, Driver: "mhvtl", Serial: "XYZZY_A1", NAAs: []string{"50:22:33:44:ab:00:01:00"}, Vendor: "IBM", Model: "ULT3580-TD8", State: "running"},
+		{Host: 3, Target: 1, Driver: "mhvtl", Serial: "XYZZY_A1", NAAs: []string{"50:22:33:44:ab:00:01:00"}, Vendor: "IBM", Model: "ULT3580-TD8", State: "running", Bound: "st"},
 	}
 	if !reflect.DeepEqual(devs, want) {
 		t.Errorf("Read =\n%+v\nwant\n%+v", devs, want)

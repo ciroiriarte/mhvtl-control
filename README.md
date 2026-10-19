@@ -305,6 +305,39 @@ LOG SENSE and never read the TapeAlert page, which would clear the flags for
 the backup application. Example alert rules are in
 `dist/prometheus/mhvtl-control.rules.yml`.
 
+## The kernel ch driver
+
+Linux's `ch` driver (`/dev/sch*`) leaks references. Each time it attaches to a
+changer, which happens whenever mhVTL starts a library with `ch` loaded, it
+takes a reference to every drive the changer reports and never releases it.
+A drive mhVTL later removes (on the kernel-module backend, `vtltape` removes
+its device at exit) then stays allocated until a reboot:
+
+- `mhvtl.ko` can't be unloaded (`rmmod`: in use);
+- `target_core_pscsi` refuses a new device at that address.
+
+Linux 7.3-rc7 fixes it
+([27c0f718d3b3](https://git.kernel.org/torvalds/c/27c0f718d3b3)). Older
+kernels may carry a backport, which mhvtl-control can't tell from the version.
+mhVTL's changers work through `/dev/sg*`, as PBS and Bareos use them, so the
+simplest fix is not to load `ch`:
+
+```sh
+echo "blacklist ch" | sudo tee /etc/modprobe.d/mhvtl-no-ch.conf
+sudo rmmod ch   # or reboot
+```
+
+`GET /api/v1/system` reports it in `kernel_ch`: whether `ch` is loaded
+(`ch_loaded`), the libraries whose changer it is bound to (`changers`),
+whether the kernel release is 7.3-rc7 or later (`kernel_fixed`), and
+`mhvtl.ko`'s reference count next to the number of mhVTL devices. A count
+with no device left (`leaked`) is what leaked references look like; an
+application that still holds a `/dev/sg*` of a removed drive open shows the
+same until it closes it. The dashboard's system panel shows a warning for
+these, and a configuration check or apply that starts, stops or restarts a
+library while `ch` is loaded warns about it. The TCMU backend never removes
+a device, so none of this applies to it.
+
 ## Upgrade and roll back
 
 Upgrade by installing the newer package. The .deb restarts mhvtl-control if it is

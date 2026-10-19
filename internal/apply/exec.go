@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/chleak"
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/hostids"
 	"mhvtl-control/internal/media"
 	"mhvtl-control/internal/validate"
 )
@@ -74,9 +76,12 @@ type checked struct {
 	curDC, nextDC     *conffile.DeviceConf
 	curHome, nextHome string
 	nextFiles         *fileSet
-	// warnings are the missing cartridges (missingCartridges), found
-	// before anything runs.
+	// warnings are the missing cartridges (missingCartridges) and the
+	// libraries exposed to the ch driver leak (chWarnings), found before
+	// anything runs.
 	warnings []string
+	// host are the host's SCSI devices, as validation read them.
+	host []hostids.Device
 	// live is R1, READ ELEMENT STATUS of every running library, and inv
 	// the inventories it came from; nil when the helper has no device
 	// access (tests of the request checks).
@@ -751,6 +756,32 @@ func missingCartridges(c *checked) []string {
 			if b := sl.Barcode; b != "" && !created[b] && !media.Exists(home, b) {
 				out = append(out, fmt.Sprintf("library %d slot %d: %s is not in %s; mhvtl-media.service creates it blank when the library starts", id, sl.Number, b, home))
 			}
+		}
+	}
+	return out
+}
+
+// chWarnings warns about each library the plan starts, stops or restarts,
+// or stops drives of, while the kernel ch driver is loaded or bound to its
+// changer on a kernel not known to have the fix for its reference leak
+// (chleak, mhvtl-control#42). Each time ch attaches to a changer it takes a
+// reference to every drive the changer reports and never releases it; a
+// drive mhVTL then removes stays allocated until a reboot.
+func (h *Helper) chWarnings(c *checked) []string {
+	st, _ := chleak.Check(h.cfg.SysRoot, h.cfg.KernelRelease, append(append([]config.Library{}, c.cur.Libraries...), c.next.Libraries...), c.host)
+	ids := map[int]bool{}
+	for _, id := range append(append(append([]int{}, c.plan.Restart...), c.plan.Stop...), c.plan.Start...) {
+		ids[id] = true
+	}
+	for id, drives := range c.plan.StopDrives {
+		if len(drives) > 0 {
+			ids[id] = true
+		}
+	}
+	var out []string
+	for _, id := range sortedInts(ids) {
+		if st.Exposed(id) {
+			out = append(out, fmt.Sprintf("library %d: the kernel ch driver is loaded, and kernel %s is not known to have the fix for its reference leak (Linux 27c0f718d3b3, in 7.3-rc7): each time ch attaches to this library's changer it takes a reference to every drive the changer reports and never releases it, so a drive mhVTL removes stays allocated until a reboot, mhvtl.ko cannot be unloaded and target_core_pscsi refuses the drive's address; blacklist ch in /etc/modprobe.d to avoid it", id, h.cfg.KernelRelease))
 		}
 	}
 	return out

@@ -1396,3 +1396,67 @@ func TestExecBayCartridgeInSlot(t *testing.T) {
 		t.Errorf("ran: %v", s.calls)
 	}
 }
+
+// TestPlanWarnsChLeak: a plan that restarts a library whose changer the
+// ch driver is bound to warns about the reference leak, unless the
+// kernel has the fix (mhvtl-control#42).
+func TestPlanWarnsChLeak(t *testing.T) {
+	e, _ := newExecEnv(t)
+	// Library 10's changer reports unit serial XYZZY_A; ch is bound to it.
+	dev := filepath.Join(e.cfg.SysRoot, "class", "scsi_device", "3:0:0:0", "device")
+	if err := os.MkdirAll(dev, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dev, "vpd_pg80"), append([]byte{0x01, 0x80, 0, 7}, "XYZZY_A"...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../../bus/scsi/drivers/ch", filepath.Join(dev, "driver")); err != nil {
+		t.Fatal(err)
+	}
+	hostDir := filepath.Join(e.cfg.SysRoot, "class", "scsi_host", "host3")
+	if err := os.MkdirAll(hostDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostDir, "proc_name"), []byte("mhvtl\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The kernel module backend: mhvtl.ko loaded.
+	mod := filepath.Join(e.cfg.SysRoot, "module", "mhvtl")
+	if err := os.MkdirAll(mod, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mod, "refcnt"), []byte("12\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := Request{Op: OpPlan, Files: []File{e.edit("library_contents.10", "Slot 24:\n", "Slot 24: E01024L8\n")}}
+	check := func(what, release string, want bool) {
+		t.Helper()
+		e.cfg.KernelRelease = release
+		e.rebuild()
+		resp := e.do(req)
+		if resp.Result != ResultValidated {
+			t.Fatalf("%s: %+v", what, resp)
+		}
+		var ch []string
+		for _, w := range resp.Warnings {
+			if strings.Contains(w, "ch driver") {
+				ch = append(ch, w)
+			}
+		}
+		if got := len(ch) == 1 && strings.HasPrefix(ch[0], "library 10: ") && strings.Contains(ch[0], release); got != want || len(ch) > 1 {
+			t.Errorf("%s: ch warnings %q", what, ch)
+		}
+	}
+	check("bound, unfixed kernel", "6.12.111+deb13-amd64", true)
+	check("bound, fixed kernel", "7.3.0", false)
+	// Neither bound nor loaded.
+	if err := os.Remove(filepath.Join(dev, "driver")); err != nil {
+		t.Fatal(err)
+	}
+	check("ch absent", "6.12.111+deb13-amd64", false)
+	// Loaded but not bound: library 10 restarts, so ch binds to it.
+	if err := os.MkdirAll(filepath.Join(e.cfg.SysRoot, "bus", "scsi", "drivers", "ch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	check("ch loaded", "6.12.111+deb13-amd64", true)
+}

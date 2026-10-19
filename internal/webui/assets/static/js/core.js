@@ -1122,6 +1122,28 @@
     return any ? out : null;
   }
 
+  // kernelChNote explains the kernel ch driver's reference leak when this
+  // host shows it (GET /api/v1/system kernel_ch), or returns "".
+  function kernelChNote(ch) {
+    // Without mhvtl.ko (the TCMU backend) mhVTL never removes a device.
+    if (!ch || ch.kernel_fixed || ch.mhvtl_module_refcount == null) { return ""; }
+    var libs = coerceArray(ch.changers).map(function (c) {
+      return c.library ? "library " + coerceNumber(c.library) + "'s changer" : "the changer at " + String(c.hctl);
+    });
+    var refs = ch.mhvtl_module_refcount != null ? coerceNumber(ch.mhvtl_module_refcount) : null;
+    var msg = "";
+    if (ch.leaked) {
+      msg = "⚠ mhvtl.ko holds " + refs + " references with no mhVTL device left, which is what the kernel ch driver's leak looks like: unless an application still holds a /dev/sg* open, only a reboot releases them.";
+    }
+    var where = libs.length ? "is bound to " + libs.join(", ")
+      : ch.ch_loaded ? "is loaded and binds to every changer mhVTL adds" : "";
+    if (where) {
+      msg += (msg ? " " : "⚠ ") + "The kernel ch driver " + where +
+        ", and this kernel is not known to have the fix for its reference leak (Linux 7.3-rc7): each time ch attaches to a changer it keeps a reference to every drive the changer reports, so drives mhVTL removes stay allocated until a reboot. Blacklist ch in /etc/modprobe.d; mhVTL's changers work through /dev/sg* without it.";
+    }
+    return msg;
+  }
+
   var API = {
     writesEditable: writesEditable,
     lineDiff: lineDiff,
@@ -1193,6 +1215,7 @@
     findingRows: findingRows,
     problemText: problemText,
     buildValidateBody: buildValidateBody,
+    kernelChNote: kernelChNote,
   };
 
   /* ---- UMD tail ------------------------------------------------------- */
