@@ -73,6 +73,19 @@ groups:
         annotations:
           summary: "{{ $value }} cartridge(s) in {{ $labels.home }} have unreadable metadata"
 
+      # A running library holds a file-backed cartridge with no media, or
+      # without one of the files vtltape opens: a drive cannot load it, or
+      # cannot read one of its partitions. One with no directory that
+      # library_contents lists in a slot is created blank at the next
+      # library start, so restore it before restarting the library.
+      - alert: MhvtlMissingMedia
+        expr: mhvtl_media_missing_cartridges{reason=~"directory_absent|file_absent"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Library {{ $labels.library }} on {{ $labels.instance }} holds {{ $value }} cartridge(s) with missing or incomplete media ({{ $labels.reason }})"
+
       - alert: MhvtlNoFreeSlots
         expr: mhvtl_library_slots_full == mhvtl_library_slots and mhvtl_library_slots > 0
         for: 30m

@@ -200,10 +200,66 @@ func (s *Server) collect(set *promtext.Set) []readyCheck {
 		homes[s.homeFor(lib)] = true
 	}
 	// Libraries may share a home directory; count its media once.
+	listed := map[string]map[string]media.Cartridge{}
 	for _, home := range sortedKeys(homes) {
-		checks = append(checks, collectHome(set, home))
+		check, carts, ok := collectHome(set, home)
+		checks = append(checks, check)
+		if ok {
+			listed[home] = carts
+		}
+	}
+	missing := set.Family("mhvtl_media_missing_cartridges",
+		"Cartridges a running library holds whose media is missing or incomplete, by reason: directory_absent and file_absent (file-backed), disk_absent and superblock_unreadable (raw).",
+		promtext.Gauge)
+	for _, lib := range inv.Libraries {
+		home := s.homeFor(lib)
+		carts, ok := listed[home]
+		if !ok {
+			continue // the home check already fails
+		}
+		// Only what the changer reports, or last reported while busy, is
+		// held. A stopped library's files also list the Slot barcodes
+		// make_vtl_media is about to create, which are not lost media;
+		// its changer check fails anyway.
+		live, ok := s.metrics.live[lib.ID]
+		if !ok {
+			checks = append(checks, readyCheck{Name: "cartridges:" + strconv.Itoa(lib.ID), OK: true,
+				Note: "changer not read; cartridges not checked"})
+			continue
+		}
+		checks = append(checks, missingCheck(missing, lib.ID, home, carts, heldBarcodes(&live)))
 	}
 	return checks
+}
+
+// missingCheck adds lib's missing cartridges to f and returns its
+// readiness check, which fails on a file-backed cartridge the library
+// holds whose media is missing or incomplete (mhvtl-control#43). A raw
+// cartridge's detached disk is not a failure (bays are removable), and an
+// unreadable superblock already fails the home's check.
+func missingCheck(f *promtext.Family, lib int, home string, carts map[string]media.Cartridge, held []string) readyCheck {
+	id := strconv.Itoa(lib)
+	for _, r := range media.MissingReasons {
+		f.Add(0, "library", id, "reason", r)
+	}
+	var bad []string
+	for _, bc := range held {
+		c, ok := carts[bc]
+		if !ok {
+			c = absentCartridge(bc, home)
+		}
+		if c.Missing == "" {
+			continue
+		}
+		f.Add(1, "library", id, "reason", c.Missing)
+		if media.FileBacked(c.Missing) {
+			bad = append(bad, bc+": "+c.MissingWhy)
+		}
+	}
+	if len(bad) > 0 {
+		return readyCheck{Name: "cartridges:" + id, Error: "missing or incomplete media: " + joinMax(bad, 5)}
+	}
+	return readyCheck{Name: "cartridges:" + id, OK: true}
 }
 
 // collectLibrary adds lib's metrics and returns its changer check, or nil
@@ -339,15 +395,17 @@ func collectDrive(set *promtext.Set, lib string, d config.Drive, r DriveStatsSer
 }
 
 // collectHome adds the media and filesystem metrics of one home directory
-// and returns its readiness check: the home can be listed, and no raw
-// cartridge whose disk is attached has an unreadable superblock or MAM. A
-// detached disk is not a failure: bays are removable.
-func collectHome(set *promtext.Set, home string) readyCheck {
+// and returns its readiness check, its cartridges by barcode, and whether
+// it could be listed (a home that does not exist yet holds none). The
+// check: the home can be listed, and no raw cartridge whose disk is
+// attached has an unreadable superblock or MAM. A detached disk is not a
+// failure: bays are removable.
+func collectHome(set *promtext.Set, home string) (readyCheck, map[string]media.Cartridge, bool) {
 	ok := set.Family("mhvtl_home_ok", "Whether the media home directory could be listed.", promtext.Gauge)
 	carts, err := media.List(home)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		ok.Set(0, "home", home)
-		return newCheck("media:"+home, err)
+		return newCheck("media:"+home, err), nil, false
 	}
 	ok.Set(1, "home", home)
 	if err == nil {
@@ -385,7 +443,11 @@ func collectHome(set *promtext.Set, home string) readyCheck {
 		absent.Add(float64(boolInt(c.MediaAbsent)), "home", home)
 		errs.Add(float64(boolInt(c.Error != "")), "home", home)
 	}
-	return newCheck("media:"+home, rawMediaError(carts))
+	byBarcode := make(map[string]media.Cartridge, len(carts))
+	for _, c := range carts {
+		byBarcode[c.Barcode] = c
+	}
+	return newCheck("media:"+home, rawMediaError(carts)), byBarcode, true
 }
 
 // readyCheck is one check of GET /readyz.
@@ -406,7 +468,9 @@ func newCheck(name string, err error) readyCheck {
 // handleReadyz serves GET /readyz from the latest collection, so a probe
 // causes at most one collection per TTL and never waits behind a cartridge
 // move: 200 when device.conf parses, every library's changer answers (or
-// is busy with a move) and no attached raw cartridge is unreadable; 503
+// is busy with a move), no attached raw cartridge is unreadable and no
+// running library holds a file-backed cartridge whose media is missing or
+// incomplete; 503
 // otherwise, and while no collection has finished. The body lists each
 // check and the collection's age. The message queue is not checked: the
 // queue client has no request that is free of side effects.

@@ -142,7 +142,7 @@ func TestRawDanglingSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c != (Cartridge{Barcode: "R00003", Backend: BackendRaw, MediaAbsent: true}) {
+	if c != (Cartridge{Barcode: "R00003", Backend: BackendRaw, MediaAbsent: true, Missing: MissingDisk, MissingWhy: "disk not attached"}) {
 		t.Fatalf("got %+v", c)
 	}
 }
@@ -170,7 +170,7 @@ func TestRawNotFormatted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c.Error, "no MVTL superblock") {
+	if !strings.Contains(c.Error, "no MVTL superblock") || c.Missing != MissingSuperblock || c.MissingWhy != c.Error {
 		t.Fatalf("got %+v", c)
 	}
 }
@@ -204,7 +204,7 @@ func TestRawBrokenTargetPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c != (Cartridge{Barcode: "R00007", Backend: BackendRaw, MediaAbsent: true}) {
+	if c != (Cartridge{Barcode: "R00007", Backend: BackendRaw, MediaAbsent: true, Missing: MissingDisk, MissingWhy: "disk not attached"}) {
 		t.Fatalf("got %+v", c)
 	}
 }

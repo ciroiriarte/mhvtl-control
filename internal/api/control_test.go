@@ -233,6 +233,12 @@ func writeConfigDirWithMedia(t *testing.T, barcodes ...string) string {
 		if err := os.Mkdir(filepath.Join(home, bc), 0o755); err != nil {
 			t.Fatalf("create media %s: %v", bc, err)
 		}
+		// The files vtltape opens on load, so the cartridge is not missing.
+		for _, f := range []string{"data.0", "indx.0", "meta.0"} {
+			if err := os.WriteFile(filepath.Join(home, bc, f), nil, 0o644); err != nil {
+				t.Fatalf("create media %s: %v", bc, err)
+			}
+		}
 	}
 	conf := filepath.Join(dir, "device.conf")
 	b, err := os.ReadFile(conf)
