@@ -14,3 +14,14 @@ token.
 mhvtl-control finds mhVTL's libraries in /etc/mhvtl/device.conf and talks to the
 running mhVTL daemons, so it is useful once the mhvtl package is set up.
 It tolerates mhVTL starting after it, and mhVTL restarts.
+
+The configuration editor is read-only until you turn writes on. That needs
+an API token, TLS on a non-loopback listen address, and the configuration
+helper's units:
+
+  systemctl enable --now mhvtl-control-apply.socket
+  systemctl enable mhvtl-control-apply-recover.service
+
+mhvtl-control(8) and
+https://github.com/ciroiriarte/mhvtl-control#configuration-editor explain
+what an apply does to running libraries and how to turn writes off again.

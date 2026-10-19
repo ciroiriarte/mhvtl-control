@@ -1,4 +1,4 @@
-.TH MHVTL-CONTROL 8 "2026-10-16" "mhvtl-control 0.3.1" "System Administration"
+.TH MHVTL-CONTROL 8 "2026-10-19" "mhvtl-control 0.4.0" "System Administration"
 .SH NAME
 mhvtl-control \- management daemon and web dashboard for the mhVTL virtual tape library
 .SH SYNOPSIS
@@ -90,6 +90,70 @@ Also inspect this disk or image path. Repeatable.
 .TP
 .B \-version
 Print the version and exit.
+.SH CONFIGURATION EDITOR
+The routes under
+.I /api/v1/config
+show and check device.conf, library_contents.<id> and mhvtl.conf. With
+writes turned on they also change them: edits are staged in memory, checked
+by a dry run of
+.B POST /api/v1/config/apply
+(with
+.BR dry_run ),
+then applied.
+.B mhvtl-control
+does not write the files itself:
+.BR mhvtl-control-apply ,
+started per request by
+.BR mhvtl-control-apply.socket ,
+writes them as root and restarts the affected
+.B vtllibrary@
+and
+.B vtltape@
+units. It accepts requests only from root processes of
+.BR mhvtl-control.service .
+.PP
+Writes are off by default. They need an API token, TLS on a non-loopback
+.BR \-listen ,
+and the helper's socket:
+.PP
+.RS
+.nf
+systemctl enable \-\-now mhvtl\-control\-apply.socket
+systemctl enable mhvtl\-control\-apply\-recover.service
+.fi
+.RE
+.PP
+.B GET /api/v1/config/capabilities
+reports
+.B writes
+as the first that holds of
+.B helper_absent
+(no helper socket),
+.B tls_required
+(non-loopback listen without TLS),
+.B token_required
+(no token),
+.B helper_blocked
+(/etc/mhvtl/mhvtl-control.env still exists, or an interrupted apply left an
+unreadable intent), else
+.BR ok .
+.PP
+During an apply, each affected library is offline to hosts. A cartridge in a
+drive the apply stops makes the dry run answer
+.B drive_loaded
+with a force token, valid 120 seconds, with which the apply puts the
+cartridge back in its slot. A failed apply is rolled back. An apply
+interrupted by a crash is recovered by the next request, or at boot by
+.BR mhvtl-control-apply-recover.service ,
+which runs before mhVTL's units.
+.PP
+To turn writes off, first check that
+.B helper
+in the capabilities is neither
+.B incomplete_apply
+nor
+.BR intent_unreadable ,
+then disable both units again.
 .SH NOTES
 Under
 .BR mhvtl-control.service ,
@@ -114,10 +178,15 @@ reads this file itself and logs a warning.
 .TP
 .I /etc/mhvtl/device.conf
 mhVTL's library and drive configuration.
+.TP
+.I /var/lib/mhvtl-control-apply
+The configuration helper's state: intent.json for an apply under way,
+rollback/ with the files each apply replaced, and the audit log audit.jsonl.
 .SH SEE ALSO
 .BR vtllibrary (1),
 .BR vtltape (1),
 .BR vtlcmd (1),
+.BR systemctl (1),
 .BR mktape (1),
 .BR edit_tape (1)
 .PP
