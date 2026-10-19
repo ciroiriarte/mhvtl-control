@@ -4,6 +4,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
 	"os"
@@ -17,7 +18,9 @@ import (
 	"mhvtl-control/internal/apply"
 	"mhvtl-control/internal/applyclient"
 	"mhvtl-control/internal/changer"
+	"mhvtl-control/internal/chleak"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/hostids"
 	"mhvtl-control/internal/ipc"
 	"mhvtl-control/internal/media"
 	"mhvtl-control/internal/rawdisk"
@@ -60,8 +63,8 @@ type Config struct {
 	StaticFS fs.FS
 	// Version is the daemon's version, reported by GET /system.
 	Version string
-	// SysRoot is the sysfs mount point POST /config/validate reads the
-	// host's SCSI identities from; empty means /sys.
+	// SysRoot is the sysfs mount point POST /config/validate and GET
+	// /system read the host's SCSI devices from; empty means /sys.
 	SysRoot string
 	// Capabilities are the host paths GET /config/capabilities inspects.
 	Capabilities CapabilityPaths
@@ -295,6 +298,12 @@ type System struct {
 	UptimeSeconds    float64    `json:"uptime_seconds"`
 	ActiveTransports []string   `json:"active_transports"`
 	Version          string     `json:"version"`
+	// KernelCh is the Linux ch driver's reference leak on this host
+	// (chleak), read from device.conf and sysfs on each request;
+	// KernelChError says why it is incomplete or absent (an unreadable
+	// device.conf, for one), without failing the request.
+	KernelCh      *chleak.Status `json:"kernel_ch,omitempty"`
+	KernelChError string         `json:"kernel_ch_error,omitempty"`
 }
 
 func (s *Server) handleSystem(w http.ResponseWriter, _ *http.Request) {
@@ -302,7 +311,28 @@ func (s *Server) handleSystem(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	sys := collectSystem()
 	sys.Version = s.cfg.Version
+	sys.KernelCh, sys.KernelChError = s.kernelCh(sys.KernelVersion)
 	_ = json.NewEncoder(w).Encode(sys)
+}
+
+// kernelCh checks the ch driver leak's conditions for the libraries of
+// device.conf. A host or module read that fails still reports what was
+// read, with the error.
+func (s *Server) kernelCh(release string) (*chleak.Status, string) {
+	inv, err := config.LoadInventory(s.cfg.ConfigDir)
+	if err != nil {
+		return nil, err.Error()
+	}
+	sysRoot := s.cfg.SysRoot
+	if sysRoot == "" {
+		sysRoot = "/sys"
+	}
+	host, hostErr := hostids.Read(sysRoot)
+	st, err := chleak.Check(sysRoot, release, inv.Libraries, host)
+	if err = errors.Join(hostErr, err); err != nil {
+		return &st, err.Error()
+	}
+	return &st, ""
 }
 
 func collectSystem() System {

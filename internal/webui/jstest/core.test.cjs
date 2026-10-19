@@ -468,3 +468,24 @@ test("problemText and buildValidateBody", () => {
   assert.deepStrictEqual(core.buildValidateBody(null, "pbs"), {});
   assert.deepStrictEqual(core.buildValidateBody(1.5, "pbs"), {});
 });
+
+test("kernelChNote warns only when the kernel is not known to have the ch fix", () => {
+  assert.strictEqual(core.kernelChNote(null), "");
+  assert.strictEqual(core.kernelChNote({ kernel_fixed: false, changers: [], mhvtl_module_refcount: 4, mhvtl_devices: 4, leaked: false }), "");
+  assert.strictEqual(core.kernelChNote({ kernel_fixed: true, changers: [{ library: 10, hctl: "3:0:0:0" }], leaked: false }), "");
+
+  assert.strictEqual(core.kernelChNote({ kernel_fixed: false, ch_loaded: true, changers: [], leaked: false }), "", "TCMU: no mhvtl.ko");
+
+  const bound = core.kernelChNote({ kernel_fixed: false, mhvtl_module_refcount: 39, changers: [{ library: 10, hctl: "3:0:0:0" }, { library: 30, hctl: "3:0:8:0" }], leaked: false });
+  assert.match(bound, /^⚠ The kernel ch driver is bound to library 10's changer, library 30's changer,/);
+  assert.match(bound, /Blacklist ch/);
+  assert.match(core.kernelChNote({ kernel_fixed: false, mhvtl_module_refcount: 9, changers: [{ hctl: "3:0:16:0" }] }),
+    /bound to the changer at 3:0:16:0,/);
+
+  const loaded = core.kernelChNote({ kernel_fixed: false, ch_loaded: true, mhvtl_module_refcount: 0, changers: [], leaked: false });
+  assert.match(loaded, /^⚠ The kernel ch driver is loaded and binds to every changer mhVTL adds,/);
+
+  const leaked = core.kernelChNote({ kernel_fixed: false, changers: [], mhvtl_module_refcount: 142, mhvtl_devices: 0, leaked: true });
+  assert.match(leaked, /^⚠ mhvtl.ko holds 142 references with no mhVTL device left, which is what/);
+  assert.doesNotMatch(leaked, /bound/);
+});

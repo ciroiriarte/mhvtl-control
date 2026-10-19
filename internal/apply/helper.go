@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"mhvtl-control/internal/changer"
@@ -53,6 +54,9 @@ type Config struct {
 	DefaultHome string
 	// SysRoot is sysfs, for the host's SCSI identities.
 	SysRoot string
+	// KernelRelease is the running kernel's release (uname -r), for the
+	// ch driver leak warning (chWarnings).
+	KernelRelease string
 	// BootIDPath is /proc/sys/kernel/random/boot_id.
 	BootIDPath string
 	Version    string
@@ -102,16 +106,17 @@ const DefaultHome = "/var/lib/mhvtl"
 func DefaultConfig(configDir, version string) Config {
 	logf := log.Printf
 	return Config{
-		ConfigDir:   configDir,
-		StateDir:    "/var/lib/mhvtl-control-apply",
-		RuntimeDir:  "/run/mhvtl-control-apply",
-		LegacyEnv:   "/etc/mhvtl/mhvtl-control.env",
-		DefaultHome: DefaultHome,
-		SysRoot:     "/sys",
-		BootIDPath:  "/proc/sys/kernel/random/boot_id",
-		Version:     version,
-		Getenv:      os.Getenv,
-		Now:         time.Now,
+		ConfigDir:     configDir,
+		StateDir:      "/var/lib/mhvtl-control-apply",
+		RuntimeDir:    "/run/mhvtl-control-apply",
+		LegacyEnv:     "/etc/mhvtl/mhvtl-control.env",
+		DefaultHome:   DefaultHome,
+		SysRoot:       "/sys",
+		KernelRelease: kernelRelease(),
+		BootIDPath:    "/proc/sys/kernel/random/boot_id",
+		Version:       version,
+		Getenv:        os.Getenv,
+		Now:           time.Now,
 		Systemctl: func(ctx context.Context, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, "systemctl", args...).Output()
 		},
@@ -546,7 +551,7 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 		CurDefaultHome: curHome,
 		HostErr:        hostErr,
 	})
-	c := &checked{res: &res, cur: cur, next: nextInv, curHome: curHome, nextHome: nextHome, nextFiles: next, live: live, inv: invs}
+	c := &checked{res: &res, cur: cur, next: nextInv, curHome: curHome, nextHome: nextHome, nextFiles: next, live: live, inv: invs, host: host}
 	if !res.OK() {
 		return c, refuse(ErrInvalid, "%d blocking finding(s), first: %s", len(res.Errors), res.Errors[0].Message)
 	}
@@ -576,8 +581,24 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 	if err := checkBudget(plan); err != nil {
 		return c, err
 	}
-	c.warnings = missingCartridges(c)
+	c.warnings = append(missingCartridges(c), h.chWarnings(c)...)
 	return c, nil
+}
+
+// kernelRelease is uname -r, or "" when uname fails.
+func kernelRelease() string {
+	var u syscall.Utsname
+	if syscall.Uname(&u) != nil {
+		return ""
+	}
+	b := make([]byte, 0, len(u.Release))
+	for _, c := range u.Release {
+		if c == 0 {
+			break
+		}
+		b = append(b, byte(c))
+	}
+	return string(b)
 }
 
 func mhvtlConfOf(get func(string) (fileState, error)) (*conffile.MhvtlConf, error) {

@@ -305,6 +305,8 @@
       kvRow("Transports", transports.length ? transports.join(", ") : "—"),
     ] });
     body.appendChild(mk("table", { children: [tbody] }));
+    var chNote = core.kernelChNote(s.kernel_ch);
+    if (chNote) { body.appendChild(mk("p", { class: "warn", text: chNote })); }
   }
 
   // scsiAddr returns a drive's own SCSI address and NAA. It never borrows the
