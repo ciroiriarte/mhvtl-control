@@ -285,7 +285,8 @@ func TestReadyzMissingMedia(t *testing.T) {
 				{Number: 2, Full: true, Barcode: "NOMEDIA1"},
 				{Number: 3, Full: true, Barcode: "R00001L8"},
 			},
-			MAPs: []changer.SlotState{{Number: 1, Full: true, Barcode: "R00002L8"}},
+			MAPs:    []changer.SlotState{{Number: 1, Full: true, Barcode: "R00002L8"}},
+			Pickers: []changer.SlotState{{Number: 1, Full: true, Barcode: "PICKER1L"}},
 		}},
 	}
 	code, r := readyz(t, Config{ConfigDir: dir, Changers: fc})
@@ -299,7 +300,7 @@ func TestReadyzMissingMedia(t *testing.T) {
 		if !strings.HasPrefix(c.Error, "missing or incomplete media: ") {
 			t.Errorf("check error %q", c.Error)
 		}
-		for _, want := range []string{"A00002L8: no data.0 file", "NOMEDIA1: no media in " + home} {
+		for _, want := range []string{"A00002L8: no data.0 file", "NOMEDIA1: no media in " + home, "PICKER1L: no media in " + home} {
 			if !strings.Contains(c.Error, want) {
 				t.Errorf("check error %q lacks %q", c.Error, want)
 			}
@@ -313,7 +314,7 @@ func TestReadyzMissingMedia(t *testing.T) {
 
 	body := get(NewServer(Config{ConfigDir: dir, Changers: fc}).Handler(), "/metrics", "").Body.String()
 	for _, want := range []string{
-		`mhvtl_media_missing_cartridges{library="10",reason="directory_absent"} 1`,
+		`mhvtl_media_missing_cartridges{library="10",reason="directory_absent"} 2`,
 		`mhvtl_media_missing_cartridges{library="10",reason="file_absent"} 1`,
 		`mhvtl_media_missing_cartridges{library="10",reason="disk_absent"} 1`,
 		`mhvtl_media_missing_cartridges{library="10",reason="superblock_unreadable"} 1`,

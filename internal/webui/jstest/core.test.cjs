@@ -489,3 +489,9 @@ test("kernelChNote warns only when the kernel is not known to have the ch fix", 
   assert.match(leaked, /^⚠ mhvtl.ko holds 142 references with no mhVTL device left, which is what/);
   assert.doesNotMatch(leaked, /bound/);
 });
+
+test("mediaLocText and filterMedia know the picker", () => {
+  assert.strictEqual(core.mediaLocText({ kind: "picker", number: 1 }, []), "picker 1");
+  const carts = [{ barcode: "P1", location: { kind: "picker", number: 1 } }, { barcode: "S1", location: { kind: "shelf" } }];
+  assert.deepStrictEqual(core.filterMedia(carts, { where: "library" }).map((c) => c.barcode), ["P1"]);
+});

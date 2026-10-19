@@ -312,9 +312,8 @@ func (s *Server) readConfigOrFail(w http.ResponseWriter) (configSnapshot, bool) 
 // (plan, amendment "Phase 4 client contract for next"): the live cartridge on
 // each Slot and MAP line, a Slot line for each slot the Slot lines skip that
 // holds a cartridge live, and no barcode on a Picker line whose cartridge the
-// live view places elsewhere: the live view has no picker to say where it
-// is, as changer.Inventory keeps no medium transport elements (mhVTL's READ
-// ELEMENT STATUS does report them).
+// live view places elsewhere. validate.Placement has no pickers, so a
+// cartridge still in a picker keeps its Picker line, as the file has it.
 func liveContents(data []byte, lib config.Library, live validate.Placement) ([]byte, error) {
 	c := conffile.ParseLibContents(data)
 	base := validate.Baseline(lib, &live, nil)

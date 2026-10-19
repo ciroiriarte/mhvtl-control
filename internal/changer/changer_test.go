@@ -27,6 +27,9 @@ type sim struct {
 	uaLeft int
 	// noModeSense6 rejects MODE SENSE(6) with ILLEGAL REQUEST.
 	noModeSense6 bool
+	// noTransportStatus rejects READ ELEMENT STATUS of medium transport
+	// elements with ILLEGAL REQUEST.
+	noTransportStatus bool
 	// mapOpen models an open MAP: its slots lose the access bit and moves
 	// into or out of them fail NOT READY, as in mhvtl's smc.c.
 	mapOpen bool
@@ -76,6 +79,9 @@ func (s *sim) respond(cdb, buf []byte) (int, error) {
 	case 0x5a:
 		return copy(buf, append([]byte{0, 26, 0, 0, 0, 0, 0, 0}, s.page1D()...)), nil
 	case 0xb8:
+		if s.noTransportStatus && cdb[1]&0x0f == scsi.ElementTransport {
+			return 0, illegal(0x24, 0x00)
+		}
 		return s.readElementStatus(cdb, buf), nil
 	case 0xa5:
 		return 0, s.moveMedium(cdb)
@@ -393,12 +399,19 @@ func TestInventory(t *testing.T) {
 	s.full[0x0104] = "IMPORT01"
 	s.source[0x0104] = 0x0302
 	s.full[0x0301] = "IMPORT02"
+	s.full[0x0001] = "PICKED1L"
 	s.uaLeft = 1 // first command after a "reset"
 	m, _ := managerFor(s)
 
 	inv, err := m.Inventory(testLib())
 	if err != nil {
 		t.Fatalf("Inventory: %v", err)
+	}
+	if len(inv.Pickers) != 1 || inv.Pickers[0] != (SlotState{Number: 1, Address: 0x0001, Full: true, Barcode: "PICKED1L"}) {
+		t.Errorf("pickers = %+v", inv.Pickers)
+	}
+	if loc, ok := inv.Locate("PICKED1L"); !ok || loc != (Location{Kind: "picker", Number: 1}) {
+		t.Errorf("Locate(PICKED1L) = %+v, %v", loc, ok)
 	}
 	if len(inv.Drives) != 4 || len(inv.Slots) != 20 || len(inv.MAPs) != 4 {
 		t.Fatalf("sizes = %d/%d/%d", len(inv.Drives), len(inv.Slots), len(inv.MAPs))
@@ -673,5 +686,33 @@ func TestLocatorFindPrefersMhvtlHBA(t *testing.T) {
 		if p, err := loc.FindBySerial(serial, typ); !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "cannot tell which") {
 			t.Errorf("%s: %q, %v; want ambiguous", serial, p, err)
 		}
+	}
+}
+
+// A changer that rejects READ ELEMENT STATUS of its pickers still has an
+// inventory, with every picker reported empty.
+func TestInventoryPickerRejected(t *testing.T) {
+	s := newSim(ibmMap)
+	s.full[0x0001] = "PICKED1L"
+	s.full[0x0401] = "A00001L8"
+	s.noTransportStatus = true
+	m, _ := managerFor(s)
+	inv, err := m.Inventory(testLib())
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if len(inv.Pickers) != 1 || inv.Pickers[0].Full || !inv.Slots[0].Full {
+		t.Errorf("pickers %+v, slot 1 %+v", inv.Pickers, inv.Slots[0])
+	}
+}
+
+// A changer whose element map has no medium transport element.
+func TestInventoryNoPicker(t *testing.T) {
+	emap := ibmMap
+	emap.Transport = scsi.ElementRange{}
+	m, _ := managerFor(newSim(emap))
+	inv, err := m.Inventory(testLib())
+	if err != nil || len(inv.Pickers) != 0 {
+		t.Errorf("Inventory: %+v, %v", inv.Pickers, err)
 	}
 }

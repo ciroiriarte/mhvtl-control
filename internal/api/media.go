@@ -47,8 +47,8 @@ func (s *Server) homeFor(lib config.Library) string {
 	return defaultHome
 }
 
-// locationDTO is where a cartridge is: a storage slot, MAP slot or drive
-// position, or "shelf" when it is not in the library.
+// locationDTO is where a cartridge is: a storage slot, MAP slot, drive
+// position or picker, or "shelf" when it is not in the library.
 type locationDTO struct {
 	Kind   string `json:"kind"`
 	Number int    `json:"number,omitempty"`
@@ -118,8 +118,8 @@ func locate(inv *changer.Inventory, barcode string) *locationDTO {
 	return &locationDTO{Kind: "shelf"}
 }
 
-// heldBarcodes returns the barcodes in inv's drives, storage slots and
-// MAP, each once.
+// heldBarcodes returns the barcodes in inv's drives, storage slots, MAP
+// and pickers, each once.
 func heldBarcodes(inv *changer.Inventory) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -134,9 +134,11 @@ func heldBarcodes(inv *changer.Inventory) []string {
 			add(d.Barcode)
 		}
 	}
-	for _, sl := range append(append([]changer.SlotState{}, inv.Slots...), inv.MAPs...) {
-		if sl.Full {
-			add(sl.Barcode)
+	for _, els := range [][]changer.SlotState{inv.Slots, inv.MAPs, inv.Pickers} {
+		for _, sl := range els {
+			if sl.Full {
+				add(sl.Barcode)
+			}
 		}
 	}
 	return out

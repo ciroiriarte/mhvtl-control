@@ -310,6 +310,7 @@
     switch (loc.kind) {
       case "slot": return "slot " + n;
       case "map": return "MAP " + n;
+      case "picker": return "picker " + n;
       case "shelf": return "shelf";
       case "drive":
         var id = null;
@@ -322,7 +323,7 @@
   }
 
   // filterMedia narrows cartridges by a barcode substring (case-insensitive)
-  // and where: "all" | "library" (slot, MAP or drive) | "shelf".
+  // and where: "all" | "library" (slot, MAP, drive or picker) | "shelf".
   function filterMedia(carts, opts) {
     opts = opts || {};
     var query = String(opts.query == null ? "" : opts.query).trim().toLowerCase();
@@ -330,7 +331,7 @@
     return coerceArray(carts).filter(function (c) {
       var kind = c && c.location ? c.location.kind : "";
       if (where === "shelf" && kind !== "shelf") { return false; }
-      if (where === "library" && kind !== "slot" && kind !== "map" && kind !== "drive") { return false; }
+      if (where === "library" && kind !== "slot" && kind !== "map" && kind !== "drive" && kind !== "picker") { return false; }
       if (query && String(c && c.barcode || "").toLowerCase().indexOf(query) < 0) { return false; }
       return true;
     });
