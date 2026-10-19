@@ -1,4 +1,4 @@
-mhvtl-control (0.3.0-1) UNRELEASED; urgency=medium
+mhvtl-control (0.3.0-1) unstable; urgency=medium
 
   The options file moved from /etc/mhvtl/mhvtl-control.env to
   /etc/mhvtl-control/mhvtl-control.env, so that mhVTL's /etc/mhvtl holds only

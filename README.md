@@ -18,19 +18,19 @@ and static binaries, all for amd64 and arm64, are attached to each
 
 ```sh
 # Debian, Ubuntu
-sudo apt install ./mhvtl-control_0.3.1-1_amd64.deb
+sudo apt install ./mhvtl-control_0.4.0-1_amd64.deb
 # RHEL, Rocky, Alma
-sudo dnf install ./mhvtl-control-0.3.1-1.el9.x86_64.rpm
+sudo dnf install ./mhvtl-control-0.4.0-1.el9.x86_64.rpm
 # openSUSE
-sudo zypper install ./mhvtl-control-0.3.1-1.x86_64.rpm
+sudo zypper install ./mhvtl-control-0.4.0-1.x86_64.rpm
 ```
 
 The package installs `/usr/bin/mhvtl-control`, `mhvtl-control.service` and
-`/etc/mhvtl-control/mhvtl-control.env`. It also installs the configuration
-helper `/usr/libexec/mhvtl-control/mhvtl-control-apply` with
-`mhvtl-control-apply.socket` and its units, all disabled; the configuration
-editor cannot write yet, so leave them disabled. The service is not enabled on
-install:
+`/etc/mhvtl-control/mhvtl-control.env`, and the configuration helper
+`/usr/libexec/mhvtl-control/mhvtl-control-apply` with
+`mhvtl-control-apply.socket` and its units. Nothing is enabled on install. The
+helper's units stay disabled until you turn configuration writes on (see
+[Configuration editor](#configuration-editor)). To start mhvtl-control:
 
 ```sh
 sudo systemctl enable --now mhvtl-control
@@ -45,9 +45,15 @@ To install the static binary instead, copy it to `/usr/bin/mhvtl-control`,
 mode 0600), and `dist/mhvtl-control.tmpfiles` to
 `/usr/lib/tmpfiles.d/mhvtl-control.conf`; then create `/var/lib/mhvtl-control-apply`
 mode 0700 and run `systemd-tmpfiles --create mhvtl-control.conf`. The unit
-refuses to start without those two directories. `make install` does the same
-from a source tree, except the `systemd-tmpfiles` run, and keeps an existing
-`mhvtl-control.env`.
+refuses to start without those two directories. The static archive holds only
+the daemon, not the configuration helper, so the configuration editor stays
+read-only with it; for writes, install a package or use `make install`.
+
+`make install` does the same from a source tree, except the `systemd-tmpfiles`
+run, and keeps an existing `mhvtl-control.env`. It also installs the
+configuration helper and its units, disabled. It does not install
+`dist/mhvtl-control.preset`, which the RPM installs, so a later
+`systemctl preset-all` may enable them where the preset policy enables by default.
 
 ## Configure
 
@@ -69,6 +75,142 @@ the disks it formats are root's. It drops every capability except
 `CAP_DAC_OVERRIDE` and runs with systemd's sandboxing; `dist/mhvtl-control.service`
 explains each exception. The sandbox hides `/home`, so media homes there aren't
 supported.
+
+## Configuration editor
+
+The dashboard's Configuration view and the `/api/v1/config` routes show
+mhVTL's configuration (`device.conf`, `library_contents.<id>` and
+`mhvtl.conf`) and check it against the device personalities and the live
+state of the libraries. With writes turned on, they also change it: add, edit
+and delete libraries, drives, storage slots and MAP slots, and set `CAPACITY`,
+`VERBOSE` and `VTL_DEBUG` in `mhvtl.conf`. A change takes three steps:
+
+1. Stage: edits collect in a stage that mhvtl-control keeps in memory. A stage
+   expires 30 minutes after its last use, and is lost when mhvtl-control
+   restarts.
+2. Check: a dry run sends the stage to the helper, which validates it and
+   answers with the plan, the `vtllibrary@` and `vtltape@` units it would
+   restart. Nothing changes yet.
+3. Apply: the helper applies the stage as checked. An edit after the check
+   needs a new check.
+
+mhvtl-control itself cannot write `/etc/mhvtl` or restart units. The helper,
+`mhvtl-control-apply`, does that: `mhvtl-control-apply.socket` starts one
+instance per request, as root, and the helper accepts only root processes of
+`mhvtl-control.service`. It logs each change to the journal and to
+`/var/lib/mhvtl-control-apply/audit.jsonl`.
+
+### Turn writes on
+
+Writes are off by default. To turn them on:
+
+1. Set `MHVTL_CONTROL_API_TOKEN` in `/etc/mhvtl-control/mhvtl-control.env` and
+   restart mhvtl-control. Writes need a token, on loopback too.
+2. If mhvtl-control listens on a non-loopback address, give it `--tls-cert`
+   and `--tls-key`. Writes are refused there without TLS, `--insecure` or not.
+3. Enable the helper's socket and its boot recovery:
+
+   ```sh
+   sudo systemctl enable --now mhvtl-control-apply.socket
+   sudo systemctl enable mhvtl-control-apply-recover.service
+   ```
+
+`GET /api/v1/config/capabilities` reports in `writes` whether writes are
+accepted. The first condition that holds wins:
+
+| `writes`         | Condition |
+|------------------|-----------|
+| `helper_absent`  | No helper listens on `/run/mhvtl-control-apply.sock`: the socket unit is not running. |
+| `tls_required`   | mhvtl-control listens on a non-loopback address without `--tls-cert` and `--tls-key`. |
+| `token_required` | No API token is set. |
+| `helper_blocked` | The helper refuses every change until you act: `/etc/mhvtl/mhvtl-control.env`, the 0.2.0 options file, still exists (`helper` is `legacy_env_blocks`; merge its settings into `/etc/mhvtl-control/mhvtl-control.env` and remove it), or an interrupted apply left an intent it cannot read (`intent_unreadable`, below). |
+| `ok`             | Writes are accepted, and the dashboard offers edits. |
+
+`helper` is `in_progress` while an apply runs and `incomplete_apply` after one
+died; neither stops writes. It is `unreachable` when the socket exists but the
+helper gave no usable answer; `writes` can still say `ok`, but the write routes
+then answer `502 helper_unreachable`.
+
+### What an apply does to running libraries
+
+The check lists the units an apply restarts (`plan.units`) and the libraries
+that go offline (`plan.offline_libraries`). For each, the helper takes the
+library offline, reads where every cartridge is, stops the library's units,
+writes the files, and starts the units again. Each library stays offline until
+every restarted unit is active, then comes back online. Hosts cannot use an
+affected library during the apply, so let its backup jobs finish first.
+
+A check that finds a cartridge in a drive the apply would stop answers
+`drive_loaded`, with a force token valid for 120 seconds. Unload the drive and
+check again, or apply with that `force_token`: the helper then puts each
+cartridge back in the slot or MAP slot it came from and restarts that drive's
+`vtltape@` too. A standalone drive is stopped and its cartridge unloaded. The token
+is bound to the change and to the cartridge positions, and works once.
+
+The helper also refuses an apply while mhvtl-control is moving cartridges or
+writing media (`busy`), while a media-home move journal under
+`/var/lib/mhvtl-move-home` is planned or unfinished, and when the apply's
+worst-case time, including a rollback, would exceed 1700 seconds (`budget`). If a step fails after a unit was stopped, it rolls back: it puts
+the old files back and restarts the units that were running.
+
+### Interrupted applies
+
+The helper keeps its state in `/var/lib/mhvtl-control-apply`: `intent.json`,
+the record of an apply under way; `rollback/`, the files each apply replaced,
+for the last 50 applies; and `audit.jsonl`, rotated at 16 MiB.
+`mhvtl-control.service` cannot read it.
+
+If an apply dies, for instance with the host, `intent.json` stays behind:
+
+- At boot, `mhvtl-control-apply-recover.service` puts the old files back
+  before mhVTL starts. The drop-ins
+  `vtllibrary@.service.d/50-mhvtl-control-apply-recover.conf` and
+  `vtltape@.service.d/50-mhvtl-control-apply-recover.conf` order mhVTL's
+  instances after it. It acts only on an apply from an earlier boot, and only
+  while no `vtllibrary@` or `vtltape@` instance is active.
+- Otherwise, the next check or apply recovers first, does nothing else, and
+  answers `recovered`; check again.
+- If `intent.json` cannot be read, `helper` is `intent_unreadable` and the
+  helper refuses every change. Boot recovery fails too, and mhVTL may already be
+  running on the partly written files: stop `mhvtl.target`, restore the files
+  from `rollback/` by hand, then remove `intent.json`.
+
+### Turn writes off
+
+First check that `helper` in `GET /api/v1/config/capabilities` is neither
+`incomplete_apply` nor `intent_unreadable`: with both units off, nothing
+recovers an interrupted apply.
+
+```sh
+sudo systemctl disable --now mhvtl-control-apply.socket
+sudo systemctl disable mhvtl-control-apply-recover.service
+```
+
+Stopping the socket removes `/run/mhvtl-control-apply.sock`; `writes` then
+reports `helper_absent` and the Configuration view is read-only again.
+Removing the Debian package keeps `/var/lib/mhvtl-control-apply`; purging it
+deletes it. Removing the RPM package keeps it and its contents; delete it by
+hand if you don't need the audit log or the rollback copies.
+
+### Routes
+
+All under `/api/v1`, with the API token when one is set (writes always need
+one):
+
+- Read and check, never write: `GET /config`, `GET /config/capabilities`,
+  `GET /config/personalities`, `GET /config/libraries`,
+  `GET /config/libraries/{id}`, `GET /config/libraries/{id}/drives`,
+  `GET /config/libraries/{id}/slots`, `POST /config/validate`.
+- Stage an edit (`stage` in the body names the stage; empty starts one):
+  `POST /config/libraries`, `PATCH` and `DELETE /config/libraries/{id}`,
+  `POST /config/libraries/{id}/drives`, `PATCH` and
+  `DELETE /config/libraries/{id}/drives/{drive}`,
+  `POST /config/libraries/{id}/slots`, `PATCH` and
+  `DELETE /config/libraries/{id}/slots/{n}`, `PATCH /config/system`.
+- `POST /config/apply`: `{"stage": "...", "dry_run": true}` checks; without
+  `dry_run` it applies, with `force_token` after a `drive_loaded` check.
+- `GET /config/stages/{id}` shows a stage and its last apply;
+  `DELETE /config/stages/{id}` discards it.
 
 ## Monitoring
 
@@ -122,7 +264,11 @@ or `mhvtl-control.env.rpmnew`. An unedited old file is simply replaced by the
 new default.
 
 mhvtl-control keeps no state of its own: libraries, media and configuration belong to
-mhVTL. Rolling back is therefore just installing the older package. 0.2.0
+mhVTL. Rolling back is therefore just installing the older package. 0.3.1 and
+earlier have no configuration helper: before rolling back to them, turn writes
+off (see [Configuration editor](#turn-writes-off)) and check that `helper` in
+`GET /api/v1/config/capabilities` is neither `incomplete_apply` nor
+`intent_unreadable`. 0.2.0
 reads its options from `/etc/mhvtl/mhvtl-control.env`, so before rolling back
 to it, copy `/etc/mhvtl-control/mhvtl-control.env` there (mode 0600):
 

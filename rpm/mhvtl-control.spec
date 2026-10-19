@@ -4,7 +4,7 @@
 %global debug_package %{nil}
 
 Name:           mhvtl-control
-Version:        0.3.1
+Version:        0.4.0
 Release:        1%{?dist}
 Summary:        Management daemon and web dashboard for the mhVTL virtual tape library
 License:        Apache-2.0
@@ -153,6 +153,14 @@ fi
 %dir %attr(0700,root,root) %{_sharedstatedir}/mhvtl-control-apply
 
 %changelog
+* Mon Oct 19 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.4.0-1
+- Configuration editor (#3): show, check and change device.conf, library_contents and mhvtl.conf from the API and the dashboard (#46, #60-#64). Changes are staged, checked by a dry run and applied by a privileged helper, mhvtl-control-apply, which restarts the affected mhVTL units, rolls back a failed apply and recovers an interrupted one, also at boot (#47-#49, #57-#59).
+- Configuration writes are off by default. They need an API token, TLS on a non-loopback listen address, and mhvtl-control-apply.socket enabled; the README says how. A vendor preset keeps the helper's units disabled.
+- Locate changers and drives by the VPD page 80h serial mhVTL reports, preferring the mhvtl HBA when a device is also exported elsewhere (#52, #56).
+- Word the 04/04/03 hint for a failed load or unload (#51).
+- Follow upstream mhVTL 852b78a in citations, personality tables and CI (#50).
+- Upgrade from 0.2.0: reload systemd before restarting on the migrated options file, so mhvtl-control no longer runs without its options and API token until the next restart.
+
 * Fri Oct 16 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.3.1-1
 - Release workflow: install pkgconf and systemd-dev for the deb build. v0.3.0's release run failed there, so 0.3.0 has no GitHub release; 0.3.1 is otherwise the same as 0.3.0.
 

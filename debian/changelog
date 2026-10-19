@@ -1,3 +1,25 @@
+mhvtl-control (0.4.0-1) unstable; urgency=medium
+
+  * Configuration editor (#3): show, check and change device.conf,
+    library_contents and mhvtl.conf from the API and the dashboard (#46,
+    #60-#64). Changes are staged, checked by a dry run and applied by a
+    privileged helper, mhvtl-control-apply, which restarts the affected
+    mhVTL units, rolls back a failed apply and recovers an interrupted one,
+    also at boot (#47-#49, #57-#59).
+  * Configuration writes are off by default. They need an API token, TLS
+    on a non-loopback listen address, and mhvtl-control-apply.socket
+    enabled; the README says how.
+  * Locate changers and drives by the VPD page 80h serial mhVTL reports,
+    preferring the mhvtl HBA when a device is also exported elsewhere
+    (#52, #56).
+  * Word the 04/04/03 hint for a failed load or unload (#51).
+  * Follow upstream mhVTL 852b78a in citations, personality tables and CI
+    (#50).
+  * Remove the helper's state, /var/lib/mhvtl-control-apply, when the
+    package is purged.
+
+ -- Ciro Iriarte <ciro.iriarte@gmail.com>  Mon, 19 Oct 2026 08:38:40 -0300
+
 mhvtl-control (0.3.1-1) unstable; urgency=medium
 
   * Release workflow: install pkgconf and systemd-dev for the deb build.
