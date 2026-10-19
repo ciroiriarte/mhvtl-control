@@ -350,23 +350,33 @@ func TestConfigView(t *testing.T) {
 		}
 	}
 	// Reload after a conflict drops the stage on the daemon too (DELETE
-	// /config/stages/{id}), not only here.
-	for _, c := range []struct{ head, want string }{
-		{`function dropServerStage(st) {`, `api(cfgPath("/stages/" + encodeURIComponent(st.id)), { method: "DELETE" })`},
-		{`editButton("Reload", "Reload the configuration and drop the pending changes", function () {`, "dropServerStage(st);"},
+	// /config/stages/{id}), not only here. A pin with in is looked for in
+	// that block's body.
+	for _, c := range []struct{ in, head, want string }{
+		{"", `function dropServerStage(st) {`, `api(cfgPath("/stages/" + encodeURIComponent(st.id)), { method: "DELETE" })`},
+		{"", `editButton("Reload", "Reload the configuration and drop the pending changes", function () {`, "dropServerStage(st);"},
 		// A lost apply whose outcome could not be read keeps edits held
 		// and offers Check again.
-		{"if (outcomeUnread(e)) {", "setApplying(st, true);"},
-		{"if (outcomeUnread(e)) {", "offerCheckAgain(st, gen);"},
-		{"function offerCheckAgain(st, gen) {", "learnOutcome(st, gen);"},
+		{"", "if (outcomeUnread(e)) {", "setApplying(st, true);"},
+		{"", "if (outcomeUnread(e)) {", "offerCheckAgain(st, gen);"},
+		{"", "function offerCheckAgain(st, gen) {", "learnOutcome(st, gen);"},
 		// A create sequence that fails part way through a stage it made
 		// drops that stage on the daemon too.
-		{"if (dropsPartialStage(fresh, i, stageId())) {", "dropServerStage(cfgStage);"},
-		{"if (dropsPartialStage(fresh, i, stageId())) {", "cfgStage = null;"},
+		{"", "if (dropsPartialStage(fresh, i, stageId())) {", "dropServerStage(cfgStage);"},
+		{"", "if (dropsPartialStage(fresh, i, stageId())) {", "cfgStage = null;"},
 		// The target app's check sends validation only the files it takes.
-		{"function checkForApp(libID, app) {", "files: validateFiles(st.data.files)"},
+		{"", "function checkForApp(libID, app) {", "files: validateFiles(st.data.files)"},
+		// The wizard reads the stage when its OK is clicked.
+		{"function wizardDialog() {", `ok.addEventListener("click", function () {`, "var st = staged();"},
 	} {
-		if body, ok := jsBody(app, c.head); !ok {
+		src, ok := app, true
+		if c.in != "" {
+			if src, ok = jsBody(app, c.in); !ok {
+				t.Errorf("app.js missing %q", c.in)
+				continue
+			}
+		}
+		if body, ok := jsBody(src, c.head); !ok {
 			t.Errorf("app.js missing %q", c.head)
 		} else if !strings.Contains(body, c.want) {
 			t.Errorf("app.js %q does not run %q", c.head, c.want)
@@ -375,21 +385,24 @@ func TestConfigView(t *testing.T) {
 	// Every configuration request other than a GET is the validation, a dry
 	// run or apply of the stage, a stage delete, or an edit sent through
 	// stageEdit, which refuses unless cfgEditable. The other requests that
-	// send a method go to the library and storage routes.
+	// send a method go to the library and storage routes. A call with a
+	// second argument other than { signal: signal } may send one.
 	sends := map[string]bool{`cfgPath("/apply")`: true, `cfgPath("/stages/" + encodeURIComponent(st.id))`: true,
 		`"/api/v1/config/validate"`: true, `cfgPath("/validate")`: true, "path": true, "o.path": true}
-	for _, line := range strings.Split(app, "\n") {
-		i := strings.Index(line, "api(")
-		if i < 0 || !strings.Contains(line, "method:") {
+	pathCalls := 0
+	for _, args := range jsCalls(app, "api") {
+		if args[0] == "path" {
+			pathCalls++
+		}
+		if len(args) < 2 || args[1] == "{ signal: signal }" {
 			continue
 		}
-		arg := jsFirstArg(line[i+len("api("):])
-		if !sends[arg] && !strings.HasPrefix(arg, `"/api/v1/libraries/`) && !strings.HasPrefix(arg, `"/api/v1/storage/`) {
-			t.Errorf("app.js sends a configuration request outside stageEdit and the apply flow: %s", strings.TrimSpace(line))
+		if !sends[args[0]] && !strings.HasPrefix(args[0], `"/api/v1/libraries/`) && !strings.HasPrefix(args[0], `"/api/v1/storage/`) {
+			t.Errorf("app.js sends a configuration request outside stageEdit and the apply flow: api(%s)", strings.Join(strings.Fields(strings.Join(args, ", ")), " "))
 		}
 	}
 	body, _ := jsBody(app, "function stageEdit(method, path, body, done) {")
-	if strings.Count(app, "api(path, {") != 1 || !strings.Contains(body, "api(path, { method: method, body: body })") {
+	if pathCalls != 1 || !strings.Contains(body, "api(path, { method: method, body: body })") {
 		t.Error("app.js sends api(path, ...) outside stageEdit")
 	}
 	// An answer for another node still ends the edit, so the dialog that
@@ -408,53 +421,221 @@ func TestConfigView(t *testing.T) {
 	}
 }
 
-// jsBody returns the code between the brace that ends head and the brace
-// that closes it, without its whole-line comments, so a commented-out
-// statement does not count.
+// jsBody and jsCalls read past comments, strings and regexes, and leave
+// out a function the block only defines.
+func TestJSBody(t *testing.T) {
+	src := `function f(st) {
+  var a = "}", b = "//", c = "http://x", d = '{', e = /[}\/]/g, g = 4 / 2 / 1;
+  /* drop(st); */ keep(a); // drop(st);
+  function unused() { drop(st); }
+  var h = function () { drop(st); };
+  api(cfgPath("/libraries/1"),
+    { method: "DELETE" }).then(function () { done(st); });
+  tail(st);
+}`
+	body, ok := jsBody(src, "function f(st) {")
+	if !ok {
+		t.Fatal("jsBody did not find f")
+	}
+	for _, want := range []string{`c = "http://x"`, "keep(a);", "done(st);", "tail(st);"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "drop(st)") {
+		t.Errorf("body runs a commented or uncalled drop(st):\n%s", body)
+	}
+	calls := jsCalls(src, "api")
+	if len(calls) != 1 || len(calls[0]) != 2 || calls[0][0] != `cfgPath("/libraries/1")` || calls[0][1] != `{ method: "DELETE" }` {
+		t.Errorf("jsCalls = %q", calls)
+	}
+}
+
+// jsBody returns the code a block runs: what lies between the brace that
+// ends head and the brace that closes it, without comments and without the
+// functions it only defines. A function there that follows "(" or "," is
+// an argument, a callback such as the ones api().then and editButton run,
+// and stays. Any other, a declaration or one assigned to a name, runs only
+// when called, so a statement pinned inside it does not count.
 func jsBody(src, head string) (string, bool) {
-	i := strings.Index(src, head)
+	code, shape := jsLex(src)
+	i := strings.Index(code, head)
 	if i < 0 || !strings.HasSuffix(head, "{") {
 		return "", false
 	}
-	start, depth := i+len(head), 1
-	for j := start; j < len(src); j++ {
-		switch src[j] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				var keep []string
-				for _, l := range strings.Split(src[start:j], "\n") {
-					if !strings.HasPrefix(strings.TrimSpace(l), "//") {
-						keep = append(keep, l)
-					}
-				}
-				return strings.Join(keep, "\n"), true
-			}
-		}
+	start := i + len(head)
+	end := jsClose(shape, start, '{', '}')
+	if end < 0 {
+		return "", false
 	}
-	return "", false
+	var b strings.Builder
+	from := start
+	for k := start; k < end; k++ {
+		if !jsWord(shape, k, "function") {
+			continue
+		}
+		if p := strings.TrimRight(shape[:k], " \t\r\n"); strings.HasSuffix(p, "(") || strings.HasSuffix(p, ",") {
+			continue
+		}
+		open := strings.IndexByte(shape[k:end], '{')
+		if open < 0 {
+			break
+		}
+		close := jsClose(shape, k+open+1, '{', '}')
+		if close < 0 || close >= end {
+			break
+		}
+		b.WriteString(code[from:k])
+		from, k = close+1, close
+	}
+	b.WriteString(code[from:end])
+	return b.String(), true
 }
 
-// jsFirstArg returns a call's first argument, given the text after its
-// opening parenthesis.
-func jsFirstArg(s string) string {
-	depth := 0
-	for j := 0; j < len(s); j++ {
-		switch s[j] {
-		case '(':
-			depth++
-		case ')':
-			if depth == 0 {
-				return strings.TrimSpace(s[:j])
+// jsCalls returns the arguments of every call to name in src, as code,
+// split at the commas outside brackets, so a call split over lines is one
+// call. The function's own definition is not a call.
+func jsCalls(src, name string) [][]string {
+	code, shape := jsLex(src)
+	var calls [][]string
+	for k := 0; k < len(shape); k++ {
+		if !jsWord(shape, k, name) || !strings.HasPrefix(shape[k+len(name):], "(") ||
+			strings.HasSuffix(strings.TrimRight(shape[:k], " \t\r\n"), "function") {
+			continue
+		}
+		open := k + len(name) + 1
+		end := jsClose(shape, open, '(', ')')
+		if end < 0 {
+			break
+		}
+		var args []string
+		depth, from := 0, open
+		for j := open; j < end; j++ {
+			switch shape[j] {
+			case '(', '[', '{':
+				depth++
+			case ')', ']', '}':
+				depth--
+			case ',':
+				if depth == 0 {
+					args = append(args, strings.TrimSpace(code[from:j]))
+					from = j + 1
+				}
 			}
-			depth--
-		case ',':
-			if depth == 0 {
-				return strings.TrimSpace(s[:j])
+		}
+		calls = append(calls, append(args, strings.TrimSpace(code[from:end])))
+	}
+	return calls
+}
+
+// jsLex returns two copies of src, each as long as it: code, with its
+// comments blanked, and shape, which also blanks what string, template and
+// regex literals hold. Brackets and words are found in shape and the text
+// between them read from code, so a commented-out statement does not count
+// and a "}" or "//" in a string does not end a block or start a comment. A
+// slash after an operator, an opening bracket, a comma or return starts a
+// regex; elsewhere it divides. A template literal is taken whole, ${}
+// included. It is a lexer for app.js, not a JavaScript parser.
+func jsLex(src string) (code, shape string) {
+	c, s := []byte(src), []byte(src)
+	blank := func(b []byte, from, to int) {
+		for k := from; k < to; k++ {
+			if b[k] != '\n' {
+				b[k] = ' '
 			}
 		}
 	}
-	return strings.TrimSpace(s)
+	var last byte // the last character that is not space or comment
+	word := ""    // the word last ends, if any
+	for j := 0; j < len(src); {
+		ch, end := src[j], j+1
+		switch {
+		case strings.HasPrefix(src[j:], "//"):
+			if end = strings.IndexByte(src[j:], '\n'); end < 0 {
+				end = len(src)
+			} else {
+				end += j
+			}
+			blank(c, j, end)
+			blank(s, j, end)
+			j = end
+			continue
+		case strings.HasPrefix(src[j:], "/*"):
+			if end = strings.Index(src[j+2:], "*/"); end < 0 {
+				end = len(src)
+			} else {
+				end += j + 4
+			}
+			blank(c, j, end)
+			blank(s, j, end)
+			j = end
+			continue
+		case ch == '"' || ch == '\'' || ch == '`' ||
+			ch == '/' && (last == 0 || strings.IndexByte("(,=:[!&|?{};+-*%<>~^", last) >= 0 || word == "return" || word == "typeof"):
+			end = jsLitEnd(src, j)
+			blank(s, j+1, end-1)
+			word = ""
+		case jsIdent(ch):
+			for end < len(src) && jsIdent(src[end]) {
+				end++
+			}
+			word = src[j:end]
+		case ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n':
+			j++
+			continue
+		default:
+			word = ""
+		}
+		last = src[end-1]
+		j = end
+	}
+	return string(c), string(s)
+}
+
+// jsLitEnd returns the index just past the string, template or regex
+// literal that starts at j. A string ends at a line end if not closed.
+func jsLitEnd(src string, j int) int {
+	q, class := src[j], false
+	for k := j + 1; k < len(src); k++ {
+		switch ch := src[k]; {
+		case ch == '\\':
+			k++
+		case q == '/' && ch == '[':
+			class = true
+		case q == '/' && ch == ']':
+			class = false
+		case ch == q && !class:
+			return k + 1
+		case ch == '\n' && q != '`':
+			return k
+		}
+	}
+	return len(src)
+}
+
+// jsClose returns the index of the close that ends the bracket opened just
+// before from, or -1.
+func jsClose(shape string, from int, open, close byte) int {
+	depth := 1
+	for j := from; j < len(shape); j++ {
+		switch shape[j] {
+		case open:
+			depth++
+		case close:
+			if depth--; depth == 0 {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// jsWord reports whether the word w stands alone at k in s.
+func jsWord(s string, k int, w string) bool {
+	return strings.HasPrefix(s[k:], w) && (k == 0 || !jsIdent(s[k-1])) &&
+		(k+len(w) == len(s) || !jsIdent(s[k+len(w)]))
+}
+
+func jsIdent(ch byte) bool {
+	return ch == '_' || ch == '$' || ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z'
 }
