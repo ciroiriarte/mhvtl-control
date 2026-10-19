@@ -254,8 +254,9 @@ mhvtl-control serves three endpoints for monitoring:
   collection is still running the previous one is served, its age in
   `mhvtl_control_metrics_age_seconds`.
 - `GET /readyz`: `200` when `device.conf` parses, every library's changer
-  answers (or is busy with a move), and every attached raw-disk cartridge has
-  a readable superblock; `503` otherwise. It reads the same cached collection,
+  answers (or is busy with a move), every attached raw-disk cartridge has
+  a readable superblock, and no running library holds a file-backed cartridge
+  whose media is missing or incomplete; `503` otherwise. It reads the same cached collection,
   so probes add no SCSI or disk I/O of their own. The JSON body lists each
   check and why it failed. The message queue is not checked.
 - `GET /healthz`: `200` while mhvtl-control is running, without checking
@@ -274,7 +275,32 @@ scrape_configs:
 ```
 
 Media metrics are labelled by home directory, since libraries can share one;
-`mhvtl_library_info` maps each library to its home. Drive statistics come from
+`mhvtl_library_info` maps each library to its home.
+
+`mhvtl_media_missing_cartridges{library,reason}` counts the cartridges a
+running library holds whose media is missing or incomplete; a library holds
+what its changer reports. The media list marks each such cartridge with
+`missing` and `missing_why`. When the changer can't be read, the list goes by
+the file the library loads at its next start (`library_contents.<id>`, or its
+`.persist`), and the metric and `/readyz` skip that library. The reasons:
+
+- `directory_absent`: nothing at `<home>/<barcode>`. A drive cannot load it,
+  and if `library_contents.<id>` lists the barcode in a slot, `make_vtl_media`
+  creates it **blank** when the library next starts, so the backup
+  application finds an empty tape where its catalog expects data. Restore the
+  directory before restarting the library.
+- `file_absent`: the directory lacks `data.0`, or the `indx` or `meta` file
+  of a partition it has. Without `data.0`, `indx.0` or `meta.0` a drive
+  cannot load it; with a later partition's file gone it loads, but that
+  partition can't be read.
+- `disk_absent`: a raw-disk cartridge whose disk is not attached, normal for
+  a removable bay.
+- `superblock_unreadable`: a raw-disk cartridge whose disk has no readable
+  MVTL superblock.
+
+The first two fail `/readyz` (check `cartridges:<id>`). The raw-disk reasons
+don't fail that check: a detached disk is normal, and an unreadable
+superblock already fails the home's `media:<home>` check. Drive statistics come from
 LOG SENSE and never read the TapeAlert page, which would clear the flags for
 the backup application. Example alert rules are in
 `dist/prometheus/mhvtl-control.rules.yml`.

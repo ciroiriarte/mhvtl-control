@@ -77,6 +77,9 @@ func TestMetrics(t *testing.T) {
 		`mhvtl_home_ok{home="` + home + `"} 1`,
 		`mhvtl_media_cartridges{home="` + home + `",backend="file",type="unknown"} 2`,
 		`mhvtl_media_unreadable_cartridges{home="` + home + `"} 2`,
+		`mhvtl_media_missing_cartridges{library="10",reason="directory_absent"} 0`,
+		`mhvtl_media_missing_cartridges{library="10",reason="file_absent"} 0`,
+		`mhvtl_media_missing_cartridges{library="30",reason="disk_absent"} 0`,
 		`mhvtl_home_filesystem_size_bytes{home="` + home + `"} `,
 		`mhvtl_control_build_info{version="1.2.3"} 1`,
 		`mhvtl_control_http_requests_total{route="GET /api/v1/libraries",code="200"} 1`,
@@ -213,7 +216,7 @@ func TestReadyz(t *testing.T) {
 	for _, c := range r.Checks {
 		names[c.Name] = true
 	}
-	for _, n := range []string{"config", "changer:10", "changer:30", "media:" + home} {
+	for _, n := range []string{"config", "changer:10", "changer:30", "media:" + home, "cartridges:10", "cartridges:30"} {
 		if !names[n] {
 			t.Errorf("no %q check in %+v", n, r.Checks)
 		}
@@ -231,12 +234,93 @@ func TestReadyz(t *testing.T) {
 	if code != http.StatusServiceUnavailable || r.Status != "fail" {
 		t.Fatalf("status %d %+v", code, r)
 	}
+	// library_contents.10 places cartridges this home lacks, but with the
+	// changers down nothing says the libraries hold them: make_vtl_media
+	// creates them at the next start.
 	if got := strings.Join(failed(r), ","); got != "changer:10,changer:30,media:"+home {
 		t.Errorf("failed checks = %s", got)
 	}
 	for _, c := range r.Checks {
 		if c.Name == "media:"+home && !strings.Contains(c.Error, "R00002L8") {
 			t.Errorf("media check error %q does not name the cartridge", c.Error)
+		}
+		if c.Name == "cartridges:10" && c.Note != "changer not read; cartridges not checked" {
+			t.Errorf("cartridges check with the changer down: %+v", c)
+		}
+	}
+	body := get(NewServer(Config{ConfigDir: dir, Changers: &fakeChangers{invErr: errors.New("gone")}}).Handler(), "/metrics", "").Body.String()
+	if strings.Contains(body, "mhvtl_media_missing_cartridges{") {
+		t.Error("missing-media series for libraries whose changer was not read")
+	}
+}
+
+func TestReadyzMissingMedia(t *testing.T) {
+	dir := writeConfigDirWithMedia(t, "A00001L8", "A00002L8", "SHELF1L8")
+	home := homeOf(t, dir)
+	// A00002L8 lost its data file; SHELF1L8 lost one too but is not in
+	// the library; R00001L8's disk is detached; NOMEDIA1 has no media.
+	for _, f := range []string{"A00002L8/data.0", "SHELF1L8/indx.0"} {
+		if err := os.Remove(filepath.Join(home, f)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "gone"), filepath.Join(home, "R00001L8")); err != nil {
+		t.Fatal(err)
+	}
+	// R00002L8's disk has no superblock: the home's check reports it, the
+	// library's does not.
+	disk := filepath.Join(t.TempDir(), "disk")
+	if err := os.WriteFile(disk, make([]byte, 4<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(disk, filepath.Join(home, "R00002L8")); err != nil {
+		t.Fatal(err)
+	}
+	fc := &fakeChangers{
+		inv: changer.Inventory{Slots: []changer.SlotState{{Number: 1}}},
+		invByLib: map[int]changer.Inventory{10: {
+			Drives: []changer.DriveState{{Number: 1, Full: true, Barcode: "A00002L8"}},
+			Slots: []changer.SlotState{
+				{Number: 1, Full: true, Barcode: "A00001L8"},
+				{Number: 2, Full: true, Barcode: "NOMEDIA1"},
+				{Number: 3, Full: true, Barcode: "R00001L8"},
+			},
+			MAPs: []changer.SlotState{{Number: 1, Full: true, Barcode: "R00002L8"}},
+		}},
+	}
+	code, r := readyz(t, Config{ConfigDir: dir, Changers: fc})
+	if code != http.StatusServiceUnavailable || strings.Join(failed(r), ",") != "media:"+home+",cartridges:10" {
+		t.Fatalf("status %d %+v", code, r)
+	}
+	for _, c := range r.Checks {
+		if c.Name != "cartridges:10" {
+			continue
+		}
+		if !strings.HasPrefix(c.Error, "missing or incomplete media: ") {
+			t.Errorf("check error %q", c.Error)
+		}
+		for _, want := range []string{"A00002L8: no data.0 file", "NOMEDIA1: no media in " + home} {
+			if !strings.Contains(c.Error, want) {
+				t.Errorf("check error %q lacks %q", c.Error, want)
+			}
+		}
+		for _, not := range []string{"SHELF1L8", "R00001L8", "R00002L8"} {
+			if strings.Contains(c.Error, not) {
+				t.Errorf("check error %q names %s", c.Error, not)
+			}
+		}
+	}
+
+	body := get(NewServer(Config{ConfigDir: dir, Changers: fc}).Handler(), "/metrics", "").Body.String()
+	for _, want := range []string{
+		`mhvtl_media_missing_cartridges{library="10",reason="directory_absent"} 1`,
+		`mhvtl_media_missing_cartridges{library="10",reason="file_absent"} 1`,
+		`mhvtl_media_missing_cartridges{library="10",reason="disk_absent"} 1`,
+		`mhvtl_media_missing_cartridges{library="10",reason="superblock_unreadable"} 1`,
+		`mhvtl_media_missing_cartridges{library="30",reason="file_absent"} 0`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics lack %q", want)
 		}
 	}
 }

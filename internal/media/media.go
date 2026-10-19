@@ -84,6 +84,36 @@ type Cartridge struct {
 	MediaAbsent  bool   `json:"media_absent,omitempty"` // the symlink's disk is not attached
 
 	Error string `json:"error,omitempty"` // metadata unreadable; other fields best effort
+
+	// Missing says why a drive cannot load the cartridge (one of the
+	// Missing* reasons), MissingWhy in words; both empty when it can.
+	Missing    string `json:"missing,omitempty"`
+	MissingWhy string `json:"missing_why,omitempty"`
+}
+
+// Reasons a cartridge cannot be loaded (Cartridge.Missing,
+// mhvtl-control#43).
+const (
+	// MissingDirectory: no <home>/<barcode> at all. Only a caller that
+	// knows the library holds the barcode reports it.
+	MissingDirectory = "directory_absent"
+	// MissingFile: the directory lacks a data, indx or meta file that
+	// vtltape opens on load.
+	MissingFile = "file_absent"
+	// MissingDisk: the raw cartridge's disk is not attached.
+	MissingDisk = "disk_absent"
+	// MissingSuperblock: the raw cartridge's disk has no readable MVTL
+	// superblock.
+	MissingSuperblock = "superblock_unreadable"
+)
+
+// MissingReasons lists every Missing* reason.
+var MissingReasons = []string{MissingDirectory, MissingFile, MissingDisk, MissingSuperblock}
+
+// FileBacked reports whether a Missing* reason concerns a file-backed
+// cartridge, as opposed to a raw disk.
+func FileBacked(reason string) bool {
+	return reason == MissingDirectory || reason == MissingFile
 }
 
 // Exists reports whether <home>/<barcode> is a cartridge directory or a raw
@@ -163,17 +193,55 @@ func read(home string, fi os.FileInfo) Cartridge {
 		return c
 	}
 	dir := filepath.Join(home, fi.Name())
+	readFileMeta(&c, dir)
+	if name := absentStream(dir); name != "" {
+		c.Missing, c.MissingWhy = MissingFile, "no "+name+" file"
+	}
+	return c
+}
 
+// absentStream returns the first file of the cartridge directory dir that
+// vtltape needs on load and does not find, or "". vtltape takes the
+// partitions to be data.0, data.1, ... up to the first missing one,
+// whatever the MAM records (file_be_num_partitions, usr/vtlcart.c:1255 at
+// d65d25f,
+// https://github.com/markh794/mhvtl/blob/d65d25f/usr/vtlcart.c#L1255-L1272),
+// and opens the data, indx and meta file of each (open_partition,
+// usr/vtlcart.c:965,
+// https://github.com/markh794/mhvtl/blob/d65d25f/usr/vtlcart.c#L965-L997);
+// without data.0 it has no partition to read from.
+func absentStream(dir string) string {
+	// Stat, as vtltape's access and open follow a symlink.
+	exists := func(name string) bool {
+		_, err := os.Stat(filepath.Join(dir, name))
+		return !errors.Is(err, os.ErrNotExist)
+	}
+	if !exists("data.0") {
+		return "data.0"
+	}
+	for n := 0; exists(fmt.Sprintf("data.%d", n)); n++ {
+		for _, f := range []string{"indx", "meta"} {
+			if name := fmt.Sprintf("%s.%d", f, n); !exists(name) {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+// readFileMeta fills c from the mam and mhvtl_data files of the cartridge
+// directory dir.
+func readFileMeta(c *Cartridge, dir string) {
 	mam, err := readFile(filepath.Join(dir, "mam"))
 	if errors.Is(err, os.ErrNotExist) {
 		c.Error = "no mam file"
-		return c
+		return
 	}
 	if err != nil {
 		c.Error = err.Error()
-		return c
+		return
 	}
-	if err := parseMAM(&c, mam); err != nil {
+	if err := parseMAM(c, mam); err != nil {
 		c.Error = fmt.Sprintf("mam: %v", err)
 	}
 
@@ -182,14 +250,13 @@ func read(home string, fi os.FileInfo) Cartridge {
 	case errors.Is(err, os.ErrNotExist):
 		err = errors.New("no mhvtl_data file")
 	case err == nil:
-		if err = parseMhvtl(&c, vtl); err != nil {
+		if err = parseMhvtl(c, vtl); err != nil {
 			err = fmt.Errorf("mhvtl_data: %w", err)
 		}
 	}
 	if err != nil && c.Error == "" {
 		c.Error = err.Error()
 	}
-	return c
 }
 
 // readRaw fills c from the superblock and MAM region of the disk the raw
@@ -203,6 +270,7 @@ func read(home string, fi os.FileInfo) Cartridge {
 func readRaw(c *Cartridge, link string) {
 	if _, err := os.Stat(link); errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
 		c.MediaAbsent = true
+		c.Missing, c.MissingWhy = MissingDisk, "disk not attached"
 		return
 	}
 	base := *c
@@ -218,6 +286,7 @@ func readRawOnce(c *Cartridge, link string) error {
 	sb, err := rawdisk.ReadSuperblock(link)
 	if err != nil {
 		c.Error = "superblock: " + errText(err)
+		c.Missing, c.MissingWhy = MissingSuperblock, c.Error
 		return err
 	}
 	c.UUID = uuidString(sb.CartridgeUUID)

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
@@ -92,9 +94,10 @@ func TestMediaListLocations(t *testing.T) {
 		Densities  []string `json:"densities"`
 		Live       bool     `json:"live"`
 		Cartridges []struct {
-			Barcode  string       `json:"barcode"`
-			Error    string       `json:"error"`
-			Location *locationDTO `json:"location"`
+			Barcode    string       `json:"barcode"`
+			Missing    string       `json:"missing"`
+			MissingWhy string       `json:"missing_why"`
+			Location   *locationDTO `json:"location"`
 		} `json:"cartridges"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
@@ -116,8 +119,9 @@ func TestMediaListLocations(t *testing.T) {
 		if c.Location == nil || *c.Location != want[c.Barcode] {
 			t.Errorf("%s: location = %+v, want %+v", c.Barcode, c.Location, want[c.Barcode])
 		}
-		if c.Barcode == "NOMEDIA1" && !strings.Contains(c.Error, "no media") {
-			t.Errorf("NOMEDIA1: error = %q", c.Error)
+		wantMissing := map[string]string{"NOMEDIA1": media.MissingDirectory}[c.Barcode]
+		if c.Missing != wantMissing || (wantMissing != "") != strings.Contains(c.MissingWhy, "no media in "+resp.HomeDir) {
+			t.Errorf("%s: missing = %q (%q), want %q", c.Barcode, c.Missing, c.MissingWhy, wantMissing)
 		}
 	}
 
@@ -127,6 +131,38 @@ func TestMediaListLocations(t *testing.T) {
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"location"`) ||
 		!strings.Contains(rec.Body.String(), `"live_error":"no changer"`) {
 		t.Errorf("not live: %d %s", rec.Code, rec.Body.String())
+	}
+	// It still lists what library_contents.10 places without media.
+	if !strings.Contains(rec.Body.String(), `"missing":"directory_absent"`) {
+		t.Errorf("not live: no missing cartridge from library_contents: %s", rec.Body.String())
+	}
+}
+
+func TestMediaListPersistFallback(t *testing.T) {
+	dir := writeConfigDirWithMedia(t)
+	conf := filepath.Join(dir, "device.conf")
+	b, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PERSIST on for library 10 only (its stanza comes first).
+	if err := os.WriteFile(conf, bytes.Replace(b, []byte("PERSIST: False"), []byte("PERSIST: True"), 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The .persist vtllibrary saved at its last exit holds a cartridge
+	// imported at run time, which library_contents.10 does not list.
+	persist := filepath.Join(dir, "library_contents.10.persist")
+	if err := os.WriteFile(persist, []byte("Slot 1: IMPORT1L8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(persist, later, later); err != nil {
+		t.Fatal(err)
+	}
+	h := NewServer(Config{ConfigDir: dir, Changers: &fakeChangers{invErr: errors.New("no changer")}}).Handler()
+	body := doJSON(t, h, http.MethodGet, "/api/v1/libraries/10/media", "").Body.String()
+	if !strings.Contains(body, `"barcode":"IMPORT1L8"`) || strings.Contains(body, `"barcode":"E01001L8"`) {
+		t.Errorf("not the .persist placement: %s", body)
 	}
 }
 

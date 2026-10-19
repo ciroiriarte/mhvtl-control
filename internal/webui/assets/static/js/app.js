@@ -1009,11 +1009,13 @@
       var editWhy = !live ? "changer not reachable: cannot confirm the cartridge is not in a drive"
         : kind === "drive" ? "in a drive: unload it first"
           : !c.backend ? "no media on disk"
-            : c.media_absent ? "its disk is not attached" : "";
+            : c.media_absent ? "its disk is not attached"
+              : c.missing === "file_absent" ? "its media files are incomplete" : "";
       acts.appendChild(mediaButton("Edit", "Edit " + bc, editWhy || "Change write protect, type, density or size",
         !mutationsEnabled || !!editWhy, function () { openEditDialog(libId, c, renderGen); }));
       if (kind === "shelf") {
-        var importWhy = !c.backend ? "no media on disk" : c.media_absent ? "its disk is not attached" : "";
+        var importWhy = !c.backend ? "no media on disk" : c.media_absent ? "its disk is not attached"
+          : c.missing === "file_absent" ? "its media files are incomplete" : "";
         acts.appendChild(mediaButton("Import", "Import " + bc + " into the library", importWhy || "Put it into the MAP",
           !mutationsEnabled || !!importWhy, function () { openImportDialog(libId, renderGen, bc); }));
       } else if (kind === "slot" || kind === "drive") {
@@ -1029,8 +1031,11 @@
       }
 
       var locBadge = mk("span", { class: "badge loc-" + (kind || "unknown"), text: mediaLocText(loc, drives) });
-      var note = c.error ? "⚠ " + String(c.error)
-        : c.media_absent ? "Disk not attached: the bay is empty or the disk was removed." : "";
+      var note = c.missing === "directory_absent"
+        ? "⚠ Missing: " + String(c.missing_why || "") + ". A drive cannot load it, and if library_contents lists it in a slot, the next library start creates it blank."
+        : c.missing === "file_absent" ? "⚠ Incomplete: " + String(c.missing_why || "") + ". A drive cannot load it, or cannot read one of its partitions." + (c.error ? " " + String(c.error) + "." : "")
+          : c.error ? "⚠ " + String(c.error)
+            : c.media_absent ? "Disk not attached: the bay is empty or the disk was removed." : "";
       var tr = mk("tr", { class: note ? "has-note" : "", children: [
         mk("td", { class: "mono", text: bc }),
         mk("td", { text: c.type || "—" }),

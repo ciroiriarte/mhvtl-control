@@ -3,8 +3,10 @@ package media
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -62,6 +64,20 @@ func writeCart(t *testing.T, home, pcl string, mam, vtl []byte) {
 	if vtl != nil {
 		if err := os.WriteFile(filepath.Join(dir, "mhvtl_data"), vtl, 0o644); err != nil {
 			t.Fatal(err)
+		}
+	}
+	writeStreams(t, dir, 2)
+}
+
+// writeStreams creates the data, indx and meta files of partitions
+// 0..n-1 in the cartridge directory dir.
+func writeStreams(t *testing.T, dir string, n int) {
+	t.Helper()
+	for p := range n {
+		for _, f := range []string{"data", "indx", "meta"} {
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%d", f, p)), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 }
@@ -211,6 +227,46 @@ func TestShortMAMHeader(t *testing.T) {
 	c, _ := Read(home, "S00001")
 	if c.Error == "" {
 		t.Fatalf("no error for short header: %+v", c)
+	}
+}
+
+func TestMissingStream(t *testing.T) {
+	home := t.TempDir()
+	for _, tc := range []struct {
+		pcl, remove, want string
+	}{
+		// vtltape loads the partitions up to the first missing data file,
+		// so a cartridge whose MAM records two but has one is complete.
+		{"P00001", "data.1", ""},
+		{"P00002", "", ""},
+		{"P00003", "indx.1", "indx.1"},
+		{"P00004", "meta.0", "meta.0"},
+		{"P00005", "data.0", "data.0"},
+		// A dangling link is no file to vtltape.
+		{"P00006", "dangle:indx.0", "indx.0"},
+	} {
+		writeCart(t, home, tc.pcl, mamFile(nil), encode([]rec{{0x04, []byte{2}}}))
+		if name, ok := strings.CutPrefix(tc.remove, "dangle:"); ok {
+			p := filepath.Join(home, tc.pcl, name)
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(home, "gone"), p); err != nil {
+				t.Fatal(err)
+			}
+		} else if tc.remove != "" {
+			if err := os.Remove(filepath.Join(home, tc.pcl, tc.remove)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		c, _ := Read(home, tc.pcl)
+		want, why := "", ""
+		if tc.want != "" {
+			want, why = MissingFile, "no "+tc.want+" file"
+		}
+		if c.Missing != want || c.MissingWhy != why || c.Error != "" {
+			t.Errorf("%s without %s: got %+v", tc.pcl, tc.remove, c)
+		}
 	}
 }
 

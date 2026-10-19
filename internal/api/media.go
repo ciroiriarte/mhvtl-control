@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"mhvtl-control/internal/apply"
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
@@ -88,17 +89,19 @@ func (s *Server) handleMediaList(w http.ResponseWriter, r *http.Request) {
 		seen[c.Barcode] = true
 		out = append(out, cartridgeDTO{Cartridge: c, Location: locate(inv, c.Barcode)})
 	}
-	// A barcode the library holds without media (library_contents names it,
-	// mktape never ran) fails on load; list it so the operator sees why.
+	// A barcode the library holds without media fails on load; list it so
+	// the operator sees why. Without the changer, the file vtllibrary
+	// loads at its next start says what the library holds.
+	var held []string
 	if inv != nil {
-		for _, bc := range inventoryBarcodes(*inv) {
-			if !seen[bc] {
-				seen[bc] = true
-				out = append(out, cartridgeDTO{
-					Cartridge: media.Cartridge{Barcode: bc, Error: "in the library but has no media in " + home},
-					Location:  locate(inv, bc),
-				})
-			}
+		held = heldBarcodes(inv)
+	} else {
+		held = s.placedBarcodes(lib)
+	}
+	for _, bc := range held {
+		if !seen[bc] {
+			seen[bc] = true
+			out = append(out, cartridgeDTO{Cartridge: absentCartridge(bc, home), Location: locate(inv, bc)})
 		}
 	}
 	resp["cartridges"] = out
@@ -115,19 +118,61 @@ func locate(inv *changer.Inventory, barcode string) *locationDTO {
 	return &locationDTO{Kind: "shelf"}
 }
 
-func inventoryBarcodes(inv changer.Inventory) []string {
+// heldBarcodes returns the barcodes in inv's drives, storage slots and
+// MAP, each once.
+func heldBarcodes(inv *changer.Inventory) []string {
 	var out []string
+	seen := map[string]bool{}
+	add := func(bc string) {
+		if bc != "" && !seen[bc] {
+			seen[bc] = true
+			out = append(out, bc)
+		}
+	}
 	for _, d := range inv.Drives {
-		if d.Full && d.Barcode != "" {
-			out = append(out, d.Barcode)
+		if d.Full {
+			add(d.Barcode)
 		}
 	}
 	for _, sl := range append(append([]changer.SlotState{}, inv.Slots...), inv.MAPs...) {
-		if sl.Full && sl.Barcode != "" {
-			out = append(out, sl.Barcode)
+		if sl.Full {
+			add(sl.Barcode)
 		}
 	}
 	return out
+}
+
+// placedBarcodes returns the barcodes the file vtllibrary loads for lib at
+// its next start places, library_contents.<id> or its .persist
+// (apply.FileSource), each once; none when that file cannot be read.
+func (s *Server) placedBarcodes(lib config.Library) []string {
+	persist := false
+	if data, err := os.ReadFile(filepath.Join(s.cfg.ConfigDir, "device.conf")); err == nil {
+		persist = apply.PersistOn(conffile.ParseDeviceConf(data), lib.ID)
+	}
+	src, err := apply.FileSource(s.cfg.ConfigDir, lib, persist)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range []map[int]string{src.Placement.Drives, src.Placement.Slots, src.Placement.MAPs, src.Placement.Pickers} {
+		for _, n := range sortedInts(m) {
+			if bc := m[n]; bc != "" && !seen[bc] {
+				seen[bc] = true
+				out = append(out, bc)
+			}
+		}
+	}
+	return out
+}
+
+// absentCartridge is a barcode a library holds with nothing at
+// <home>/<barcode>. A Slot barcode of library_contents.<id> in that state
+// is created blank by make_vtl_media when the library next starts
+// (mhvtl-media.service).
+func absentCartridge(barcode, home string) media.Cartridge {
+	return media.Cartridge{Barcode: barcode, Missing: media.MissingDirectory, MissingWhy: "no media in " + home}
 }
 
 // mediaCreateRequest names one barcode, or a range prefix + number + suffix
