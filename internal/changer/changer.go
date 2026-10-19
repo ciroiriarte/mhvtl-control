@@ -129,10 +129,13 @@ type DriveState struct {
 // Inventory is a live READ ELEMENT STATUS snapshot, indexed by 1-based number
 // (element i+1 at index i). MAPOpen is nil when the library has no MAP; mhVTL
 // reports MAP slots accessible to the changer only while the MAP is closed.
+// Pickers are the medium transport elements: a cartridge is there mid-move,
+// or when a "Picker N:" line of library_contents placed it there.
 type Inventory struct {
 	Drives  []DriveState
 	Slots   []SlotState
 	MAPs    []SlotState
+	Pickers []SlotState
 	MAPOpen *bool
 }
 
@@ -202,7 +205,8 @@ func (m *Manager) run(lib config.Library, fn func(s *session) error) error {
 	return fn(s)
 }
 
-// Inventory reads the live state of lib's drives, storage slots and MAP.
+// Inventory reads the live state of lib's drives, storage slots, MAP and
+// pickers.
 func (m *Manager) Inventory(lib config.Library) (Inventory, error) {
 	var inv Inventory
 	err := m.with(lib, func(s *session) error {
@@ -436,11 +440,18 @@ func (inv Inventory) find(barcode string) (Location, uint16, bool) {
 	return Location{}, 0, false
 }
 
-// Locate returns where barcode is in the inventory: a storage slot, MAP slot
-// or drive position.
+// Locate returns where barcode is in the inventory: a storage slot, MAP slot,
+// drive position or picker. Moves never start from a picker (find).
 func (inv Inventory) Locate(barcode string) (Location, bool) {
-	loc, _, ok := inv.find(barcode)
-	return loc, ok
+	if loc, _, ok := inv.find(barcode); ok {
+		return loc, true
+	}
+	for _, p := range inv.Pickers {
+		if barcode != "" && p.Full && p.Barcode == barcode {
+			return Location{Kind: "picker", Number: p.Number}, true
+		}
+	}
+	return Location{}, false
 }
 
 // driveOrdinal maps a drive id (the vtltape queue id) to its 1-based data
@@ -521,15 +532,22 @@ func (s *session) elements(typ uint8, rng scsi.ElementRange) ([]scsi.Element, er
 
 func (s *session) inventory() (Inventory, error) {
 	inv := Inventory{
-		Drives: make([]DriveState, s.emap.DTE.Count),
-		Slots:  slotStates(s.emap.Storage),
-		MAPs:   slotStates(s.emap.IE),
+		Drives:  make([]DriveState, s.emap.DTE.Count),
+		Slots:   slotStates(s.emap.Storage),
+		MAPs:    slotStates(s.emap.IE),
+		Pickers: slotStates(s.emap.Transport),
 	}
 	for i := range inv.Drives {
 		inv.Drives[i] = DriveState{Number: i + 1, Address: s.emap.DTE.First + uint16(i)}
 	}
-	for _, typ := range []uint8{scsi.ElementDTE, scsi.ElementStorage, scsi.ElementIE} {
+	for _, typ := range []uint8{scsi.ElementDTE, scsi.ElementStorage, scsi.ElementIE, scsi.ElementTransport} {
 		els, err := s.elements(typ, s.rangeOf(typ))
+		var se *scsi.SenseError
+		if typ == scsi.ElementTransport && errors.As(err, &se) && se.Key == scsi.KeyIllegalRequest {
+			// The pickers are only reported (Locate); a changer that
+			// will not report them still serves the rest.
+			continue
+		}
 		if err != nil {
 			return Inventory{}, err
 		}
@@ -551,6 +569,8 @@ func (s *session) inventory() (Inventory, error) {
 				}
 			case kind == scsi.ElementStorage:
 				inv.Slots[n-1].Full, inv.Slots[n-1].Barcode = e.Full, e.Barcode
+			case kind == scsi.ElementTransport:
+				inv.Pickers[n-1].Full, inv.Pickers[n-1].Barcode = e.Full, e.Barcode
 			default:
 				inv.MAPs[n-1].Full, inv.MAPs[n-1].Barcode = e.Full, e.Barcode
 				if inv.MAPOpen == nil {
@@ -577,6 +597,8 @@ func (s *session) rangeOf(typ uint8) scsi.ElementRange {
 		return s.emap.DTE
 	case scsi.ElementStorage:
 		return s.emap.Storage
+	case scsi.ElementTransport:
+		return s.emap.Transport
 	default:
 		return s.emap.IE
 	}
