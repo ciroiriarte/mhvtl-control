@@ -46,8 +46,8 @@ var cutsLibrarySerial = map[string]bool{"init_hp_eml_smc": true, "init_hp_msl_sm
 
 // MaxID is the highest library or drive ID. vtltape and vtllibrary exit on
 // a -q queue ID outside 0..MAXPRIOR-1 (mhvtl include/utils/q.h:51, MAXPRIOR
-// 1024; usr/cmd/vtltape.c:2470, usr/cmd/vtllibrary.c:1684, upstream master
-// 852b78a), and the kernel module refuses a minor of DEF_MAX_MINOR_NO (1024)
+// 1024; usr/cmd/vtltape.c:2560, usr/cmd/vtllibrary.c:1712, upstream master
+// ebbda22), and the kernel module refuses a minor of DEF_MAX_MINOR_NO (1024)
 // or more (kernel/mhvtl.c:186, :1246). ID 0 is out too: the ID is the
 // System V message type the daemon receives on, and msgsnd(2) fails with
 // EINVAL on a type below 1; the daemons' own message says [1..1023].

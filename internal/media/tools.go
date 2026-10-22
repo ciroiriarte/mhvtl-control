@@ -15,7 +15,7 @@ import (
 // Densities are the density names mktape and edit_tape accept (mhvtl
 // set_media_params in usr/vtllib.c).
 var Densities = []string{
-	"LTO1", "LTO2", "LTO3", "LTO4", "LTO5", "LTO6", "LTO7", "LTO8", "LTO9", "LTO10", "LTO10P",
+	"LTO1", "LTO2", "LTO3", "LTO4", "LTO5", "LTO6", "LTO7", "LTO8", "LTO8M8", "LTO9", "LTO10", "LTO10P",
 	"AIT1", "AIT2", "AIT3", "AIT4",
 	"DDS1", "DDS2", "DDS3", "DDS4",
 	"DLT3", "DLT4", "SDLT1", "SDLT220", "SDLT320", "SDLT600",
@@ -32,6 +32,16 @@ func ValidDensity(d string) bool { return slices.Contains(Densities, d) }
 
 // ValidType reports whether t is one of Types.
 func ValidType(t string) bool { return slices.Contains(Types, t) }
+
+// DataOnlyDensities exist only as data cartridges. LTO-8 Type M (M8) has no
+// WORM or cleaning form (IBM LTO SCSI Reference GA32-0928-07, Table 5, p.21),
+// and mktape and edit_tape refuse any other type with it (mhvtl
+// usr/cmd/mktape.c:223-228, usr/cmd/edit_tape.c:262-269, upstream master
+// ebbda22).
+var DataOnlyDensities = []string{"LTO8M8"}
+
+// DataOnly reports whether d is one of DataOnlyDensities.
+func DataOnly(d string) bool { return slices.Contains(DataOnlyDensities, d) }
 
 // ValidBarcode reports whether s is a barcode mhVTL can carry: 1-16 letters or
 // digits.

@@ -64,6 +64,13 @@ func checkMedia(r *Result, cur, next config.Inventory, live *Live, opts Options)
 				r.errorf(CodeMediaDensity, lib.ID, els, "library %d %s: make_vtl_media cannot create %s: its barcode gives density %s, which mktape does not accept", lib.ID, where, barcode, density)
 				return
 			}
+			// make_vtl_media asks mktape for the type the barcode gives
+			// (set_media_type), and mktape makes M8 only as data.
+			if typ := personality.BarcodeMediaType(barcode); created && typ != "data" && media.DataOnly(density) &&
+				!(home != "" && media.Exists(home, barcode)) {
+				r.errorf(CodeMediaDensity, lib.ID, els, "library %d %s: make_vtl_media cannot create %s: its barcode makes it a %s cartridge of density %s, which mktape makes only as a data cartridge", lib.ID, where, barcode, typ, density)
+				return
+			}
 			if len(models) == 0 {
 				r.warnf(CodeMediaNoDrives, lib.ID, els, "library %d %s: %s is %s media, but the library has no drives", lib.ID, where, barcode, name)
 				return

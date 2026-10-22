@@ -34,6 +34,7 @@
   var driveState = core.driveState, firstEmptyDrive = core.firstEmptyDrive, mountCandidates = core.mountCandidates;
   var emptyLocations = core.emptyLocations, fmtRatio = core.fmtRatio, validBarcode = core.validBarcode;
   var expandBarcodes = core.expandBarcodes, parseSizeMB = core.parseSizeMB, buildMediaPatch = core.buildMediaPatch;
+  var dataOnlyError = core.dataOnlyError;
   var mediaLocText = core.mediaLocText, filterMedia = core.filterMedia;
   var nodeRows = core.nodeRows;
   var capabilityNotice = core.capabilityNotice, findingRows = core.findingRows, problemText = core.problemText;
@@ -1117,6 +1118,8 @@
     if (!res.error && !$("mc-density").value) { res = { barcodes: [], error: "choose a density" }; }
     body.type = $("mc-type").value || "data";
     body.density = $("mc-density").value;
+    var typeErr = dataOnlyError(body.type, body.density, lastMedia && lastMedia.data && lastMedia.data.data_only_densities);
+    if (!res.error && typeErr) { res = { barcodes: [], error: typeErr }; }
     body.size_mb = size.value || 0;
     body.place = $("mc-place").checked && !$("mc-place").disabled;
     return { barcodes: res.barcodes, error: res.error, body: body };
@@ -1199,6 +1202,9 @@
       return;
     }
     if (!body) { $("me-error").textContent = "Nothing changed."; return; }
+    // A density change keeps the cartridge's type unless the form changes it.
+    var typeErr = dataOnlyError(body.type || ctx.cart.type, body.density, lastMedia && lastMedia.data && lastMedia.data.data_only_densities);
+    if (typeErr) { $("me-error").textContent = typeErr; return; }
     var bc = String(ctx.cart.barcode || "");
     mutate({
       renderGen: ctx.renderGen, btn: $("me-submit"), what: "edit " + bc, status: mediaStatus,

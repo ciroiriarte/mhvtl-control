@@ -330,6 +330,19 @@ test("buildMediaPatch sends only changed fields", () => {
   assert.deepStrictEqual(core.buildMediaPatch(orig, { size_mb: "1024" }), { size_mb: 1024 });
 });
 
+test("dataOnlyError refuses a non-data type with a data-only density", () => {
+  const only = ["LTO8M8"];
+  assert.strictEqual(core.dataOnlyError("WORM", "LTO8M8", only), "LTO8M8 media exists only as a data cartridge");
+  assert.strictEqual(core.dataOnlyError("clean", "LTO8M8", only), "LTO8M8 media exists only as a data cartridge");
+  assert.strictEqual(core.dataOnlyError("data", "LTO8M8", only), null);
+  assert.strictEqual(core.dataOnlyError("WORM", "LTO8", only), null);
+  // "keep current" on edit: edit_tape checks against the cartridge itself
+  assert.strictEqual(core.dataOnlyError("", "LTO8M8", only), null);
+  assert.strictEqual(core.dataOnlyError("WORM", "", only), null);
+  // an older server without data_only_densities
+  assert.strictEqual(core.dataOnlyError("WORM", "LTO8M8", undefined), null);
+});
+
 test("buildMediaPatch throws on an invalid size", () => {
   assert.throws(() => core.buildMediaPatch({}, { size_mb: "-5" }), RangeError);
 });

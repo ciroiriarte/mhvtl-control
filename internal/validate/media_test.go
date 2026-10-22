@@ -109,6 +109,21 @@ func TestMedia(t *testing.T) {
 		{"WORM media in a drive with WORM support", func(l *config.Library) {
 			l.Slots[0].Barcode = "W00001L6"
 		}, nil, nil},
+		{"M8 media with an LTO-9 drive only", func(l *config.Library) {
+			l.Drives = l.Drives[:1]
+			l.Drives[0].Product = "ULT3580-TD9"
+			l.Slots = []config.Slot{{Number: 1, Barcode: "E01001M8"}}
+			l.MAPs = nil
+		}, []string{"library 10 slot 1: E01001M8 is LTO8 M8 media (from its barcode), which none of the library's drives (ULT3580-TD9) loads"}, nil},
+		{"M8 media in an LTO-8 drive", func(l *config.Library) {
+			l.Slots[0].Barcode = "E01001M8"
+		}, nil, nil},
+		{"WORM M8 media", func(l *config.Library) {
+			l.Slots[0].Barcode = "W00001M8"
+		}, []string{"library 10 slot 1: make_vtl_media cannot create W00001M8: its barcode makes it a WORM cartridge of density LTO8M8, which mktape makes only as a data cartridge"}, nil},
+		{"cleaning M8 media", func(l *config.Library) {
+			l.Slots[0].Barcode = "CLN001M8"
+		}, []string{"library 10 slot 1: make_vtl_media cannot create CLN001M8: its barcode makes it a clean cartridge of density LTO8M8"}, nil},
 		{"no drives", func(l *config.Library) {
 			l.Drives = nil
 			l.Slots = l.Slots[:1]

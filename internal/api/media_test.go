@@ -92,6 +92,7 @@ func TestMediaListLocations(t *testing.T) {
 	var resp struct {
 		HomeDir    string   `json:"home_dir"`
 		Densities  []string `json:"densities"`
+		DataOnly   []string `json:"data_only_densities"`
 		Live       bool     `json:"live"`
 		Cartridges []struct {
 			Barcode    string       `json:"barcode"`
@@ -103,7 +104,7 @@ func TestMediaListLocations(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.HomeDir != homeOf(t, dir) || !resp.Live || len(resp.Densities) == 0 {
+	if resp.HomeDir != homeOf(t, dir) || !resp.Live || len(resp.Densities) == 0 || strings.Join(resp.DataOnly, ",") != "LTO8M8" {
 		t.Errorf("resp = %+v", resp)
 	}
 	want := map[string]locationDTO{
@@ -230,6 +231,9 @@ func TestMediaCreateValidation(t *testing.T) {
 		`{"prefix":"A","count":1,"start":-1,"density":"LTO8"}`,
 		`{"prefix":"ABCDEFGHIJKLMN","count":200,"suffix":"L8","density":"LTO8"}`,
 		`{"prefix":"A-","count":1,"density":"LTO8"}`,
+		`{"barcode":"A1M8","density":"LTO8M8","type":"WORM"}`,
+		`{"barcode":"A1M8","density":"LTO8M8","type":"clean"}`,
+		`{"barcode":"A1M8","density":"LTO8M8","type":"NULL"}`,
 		`{`,
 	}
 	for _, body := range cases {
@@ -242,7 +246,15 @@ func TestMediaCreateValidation(t *testing.T) {
 			t.Errorf("%s: tool ran: %q", body, fm.calls)
 		}
 	}
-	h := NewServer(Config{ConfigDir: writeConfigDirWithMedia(t)}).Handler()
+	fm := &fakeMedia{}
+	h := NewServer(Config{ConfigDir: writeConfigDirWithMedia(t), Media: fm}).Handler()
+	if rec := postJSON(t, h, "/api/v1/libraries/10/media", `{"barcode":"A1M8","density":"LTO8M8"}`); rec.Code != http.StatusCreated {
+		t.Errorf("data M8: status = %d, want 201 (%s)", rec.Code, rec.Body.String())
+	}
+	if strings.Join(fm.calls, "|") != "Create lib=10 A1M8 data LTO8M8 0" {
+		t.Errorf("data M8: calls = %q", fm.calls)
+	}
+	h = NewServer(Config{ConfigDir: writeConfigDirWithMedia(t)}).Handler()
 	if rec := postJSON(t, h, "/api/v1/libraries/10/media", `{"barcode":"A1","density":"LTO8"}`); rec.Code != 503 {
 		t.Errorf("no media tools: status = %d, want 503", rec.Code)
 	}
@@ -342,6 +354,8 @@ func TestMediaEdit(t *testing.T) {
 		{"/api/v1/libraries/10/media/A00001L8", `{}`, 400},
 		{"/api/v1/libraries/10/media/A00001L8", `{"density":"LTO99"}`, 400},
 		{"/api/v1/libraries/10/media/A00001L8", `{"type":"tape"}`, 400},
+		{"/api/v1/libraries/10/media/A00001L8", `{"density":"LTO8M8","type":"WORM"}`, 400},
+		{"/api/v1/libraries/10/media/A00001L8", `{"density":"LTO8M8","type":"clean"}`, 400},
 	}
 	for _, c := range cases {
 		fm.calls = nil

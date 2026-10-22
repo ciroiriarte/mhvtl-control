@@ -34,8 +34,8 @@ type DriveModel struct {
 	Source string // the init function's definition
 	// WORM is whether the personality sets ssc_pm.set_WORM. vtltape refuses
 	// to load a WORM cartridge in a drive whose personality does not
-	// ("drive doesn't support WORM", usr/cmd/vtltape.c:1401-1405, upstream
-	// master 852b78a), whatever its media list says.
+	// ("drive doesn't support WORM", usr/cmd/vtltape.c:1484-1488, upstream
+	// master ebbda22), whatever its media list says.
 	WORM  bool
 	Media []Media
 }
@@ -142,6 +142,7 @@ var DriveModels = []DriveModel{
 		{"LTO6", RW},
 		{"LTO7", RW},
 		{"LTO8", RW},
+		{"LTO8 M8", RW},
 		{"LTO9", RW},
 		{"LTO10", RW},
 		{"LTO10P", RW},
@@ -209,7 +210,7 @@ var DriveModels = []DriveModel{
 	}},
 	{InitFn: "init_hp_ult_8", Source: "usr/pm/hp_ultrium_pm.c:865", WORM: true, Media: []Media{
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
-		{"LTO8", RW}, {"LTO8 Clean", RO}, {"LTO8 WORM", RW}, {"LTO8 ENCR", RW},
+		{"LTO8", RW}, {"LTO8 Clean", RO}, {"LTO8 WORM", RW}, {"LTO8 ENCR", RW}, {"LTO8 M8", RW},
 	}},
 	{InitFn: "init_3592_j1a", Source: "usr/pm/ibm_03592_pm.c:364", WORM: true, Media: []Media{
 		{"03592 JA", RW}, {"03592 JA Clean", RO}, {"03592 JA WORM", RW},
@@ -367,9 +368,11 @@ func (m DriveModel) Reads(name string) bool {
 	return false
 }
 
-// mediaFamily strips the cartridge form from a media_handling name.
+// mediaFamily strips the cartridge form from a media_handling name. "LTO8 M8"
+// is not a form of LTO8 but a media type of its own (Media_LTO8_M8, mhvtl
+// markh794/mhvtl#307): an LTO-9 drive loads LTO-8 cartridges but not M8 ones.
 func mediaFamily(name string) string {
-	for _, s := range []string{" Clean", " WORM", " ENCR", " M8"} {
+	for _, s := range []string{" Clean", " WORM", " ENCR"} {
 		if f, ok := strings.CutSuffix(name, s); ok {
 			return f
 		}
@@ -383,8 +386,8 @@ func mediaFamily(name string) string {
 var DensityMedia = map[string]string{
 	"LTO1": "LTO1", "LTO2": "LTO2", "LTO3": "LTO3", "LTO4": "LTO4", "LTO5": "LTO5",
 	"LTO6": "LTO6", "LTO7": "LTO7", "LTO8": "LTO8", "LTO9": "LTO9", "LTO10": "LTO10",
-	"LTO10P": "LTO10P",
-	"AIT1":   "AIT1", "AIT2": "AIT2", "AIT3": "AIT3", "AIT4": "AIT4",
+	"LTO10P": "LTO10P", "LTO8M8": "LTO8 M8",
+	"AIT1": "AIT1", "AIT2": "AIT2", "AIT3": "AIT3", "AIT4": "AIT4",
 	"DLT3": "DLT3", "DLT4": "DLT4",
 	"SDLT1": "SDLT", "SDLT220": "SDLT 220", "SDLT320": "SDLT 320", "SDLT600": "SDLT 600",
 	"9840A": "9840A", "9840B": "9840B", "9840C": "9840C", "9840D": "9840D",
@@ -395,10 +398,10 @@ var DensityMedia = map[string]string{
 }
 
 // barcodeRe is set_density's regex in mhvtl usr/cmd/make_vtl_media.in
-// (:120, upstream master 852b78a). Like it, it is not anchored at the start:
+// (:120, upstream master ebbda22). Like it, it is not anchored at the start:
 // a longer barcode takes its media type from its tail, as make_vtl_media
 // creates it. vtllibrary's 16-character barcode limit is checked elsewhere.
-var barcodeRe = regexp.MustCompile(`[A-Z0-9]{6,8}([SLXTJDP])([123456789ABCHKTUVWXYZ])$`)
+var barcodeRe = regexp.MustCompile(`[A-Z0-9]{6,8}([SLXTJDPM])([123456789ABCHKTUVWXYZ])$`)
 
 // BarcodeDensity is set_density from make_vtl_media: the density
 // make_vtl_media passes to mktape for a pre-filled barcode, or "UNKNOWN".
@@ -429,6 +432,11 @@ func BarcodeDensity(barcode string) string {
 			return "LTO10"
 		}
 		return "LTO" + c
+	case "M":
+		// LTO-7 media initialized in the LTO-8 Type M format (M8)
+		if c == "8" {
+			return "LTO8M8"
+		}
 	case "P":
 		if c == "A" {
 			return "LTO10P"

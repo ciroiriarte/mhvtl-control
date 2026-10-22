@@ -280,6 +280,16 @@
     return { value: Number(t), error: null };
   }
 
+  // dataOnlyError returns why a cartridge of this type cannot have this
+  // density, or null. dataOnly is GET /media's data_only_densities: mktape and
+  // edit_tape make those (M8) only as data cartridges. An empty type or
+  // density is "keep current" in the edit dialog, which edit_tape checks.
+  function dataOnlyError(type, density, dataOnly) {
+    if (!type || !density || type === "data") { return null; }
+    if (coerceArray(dataOnly).map(String).indexOf(String(density)) < 0) { return null; }
+    return String(density) + " media exists only as a data cartridge";
+  }
+
   // buildMediaPatch returns the PATCH body for a cartridge edit holding only
   // the fields that change, or null when nothing does. form is
   // {write_protect: bool, type: "" (keep) | name, density: "" (keep) | mktape
@@ -1194,6 +1204,7 @@
     expandBarcodes: expandBarcodes,
     parseSizeMB: parseSizeMB,
     buildMediaPatch: buildMediaPatch,
+    dataOnlyError: dataOnlyError,
     mediaLocText: mediaLocText,
     filterMedia: filterMedia,
     attr: attr,

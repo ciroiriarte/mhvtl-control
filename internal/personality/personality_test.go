@@ -87,6 +87,22 @@ func TestReads(t *testing.T) {
 	if !DriveFor("03592E06").Reads("03592 JC") {
 		t.Error("03592E06 does not read 03592 JC")
 	}
+	// M8 is a media type of its own: the LTO-8 drives load it, the LTO-9
+	// drive loads LTO-8 cartridges but not M8 ones (markh794/mhvtl#307).
+	for _, tc := range []struct {
+		product, name string
+		want          bool
+	}{
+		{"ULT3580-TD8", "LTO8 M8", true},
+		{"Ultrium 8-SCSI", "LTO8 M8", true},
+		{"ULT3580-TD9", "LTO8", true},
+		{"ULT3580-TD9", "LTO8 M8", false},
+		{"ULT3580-TD7", "LTO8 M8", false},
+	} {
+		if got := DriveFor(tc.product).Reads(tc.name); got != tc.want {
+			t.Errorf("%s Reads(%s) = %v; want %v", tc.product, tc.name, got, tc.want)
+		}
+	}
 }
 
 func TestBarcodeDensity(t *testing.T) {
@@ -96,6 +112,9 @@ func TestBarcodeDensity(t *testing.T) {
 		{"CLN001L6", "LTO6", "clean"},
 		{"E01001LA", "LTO10", "data"},
 		{"E01001PA", "LTO10P", "data"},
+		{"E01001M8", "LTO8M8", "data"},
+		{"E01001M7", "UNKNOWN", "data"},
+		{"W00001M8", "LTO8M8", "WORM"},
 		{"E01001JC", "E06", "data"},
 		{"E01001JW", "E05", "WORM"},
 		{"E01001TB", "T10KB", "data"},

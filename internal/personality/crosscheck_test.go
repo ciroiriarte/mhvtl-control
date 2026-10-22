@@ -700,13 +700,13 @@ func TestCrossCheckBarcodeRules(t *testing.T) {
 
 	var corpus []string
 	const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-	for _, k := range "SLXTJDPQ" {
+	for _, k := range "SLXTJDPMQ" {
 		for _, c := range chars {
 			corpus = append(corpus, "E01001"+string(k)+string(c))
 		}
 	}
 	corpus = append(corpus, "CLN001L4", "CLN101L8", "W00001L6", "WORM01JA", "A1L6", "E01001L", "e01001l6",
-		"ABCDEFGHL8", "ABCDEFGHIL8", "TAPE01LA", "TAPE01LH", "TAPE01PA", "TAPE01PB", "E01001JW")
+		"ABCDEFGHL8", "ABCDEFGHIL8", "TAPE01LA", "TAPE01LH", "TAPE01PA", "TAPE01PB", "E01001JW", "W00001M8", "CLN001M8")
 	script += "for b in " + strings.Join(corpus, " ") + "; do set_density $b; set_media_type $b; echo \"$b $DENSITY $MEDIA_TYPE\"; done\n"
 	cmd := exec.Command(bash, "-c", script)
 	var stderr bytes.Buffer
@@ -800,7 +800,8 @@ func abs(n int) int {
 
 // commentCitations are lines of mhVTL that comments of this module cite
 // (packages personality, ident and validate), with text the cited line
-// holds at upstream master 852b78a. TestCommentCitations fails when the text
+// holds at upstream master 852b78a, or at ebbda22 where the comment says so.
+// TestCommentCitations fails when the text
 // moves more than maxCitationDrift lines away, and logs any smaller move.
 var commentCitations = []struct{ cite, text string }{
 	{"usr/vtllib.c:2423", "void update_vpd_83("},
@@ -810,7 +811,7 @@ var commentCitations = []struct{ cite, text string }{
 	{"usr/vtllib.c:1673", "void find_media_home_directory("},
 	{"usr/vtllib.c:1723", `" Home directory: %s"`},
 	{"usr/vtllib.c:1150", "void conf_clamp_string("},
-	{"usr/cmd/make_vtl_media.in:120", "regex='[A-Z0-9]{6,8}([SLXTJDP])"},
+	{"usr/cmd/make_vtl_media.in:120", "regex='[A-Z0-9]{6,8}([SLXTJDPM])"},
 	{"usr/cmd/make_vtl_media.in:77", "set_media_type()"},
 	{"usr/cmd/make_vtl_media.in:58", "library_home()"},
 	{"usr/cmd/make_vtl_media.in:364", "awk '/^Slot/ {print $3}'"},
@@ -818,9 +819,9 @@ var commentCitations = []struct{ cite, text string }{
 	{"usr/cmd/vtllibrary.c:874", "smc_p->num_drives++;"},
 	{"usr/cmd/vtllibrary.c:1074", "Linked list data needs to be built in slot order"},
 	{"usr/cmd/vtllibrary.c:324", "if (strlen(barcode) > MAX_BARCODE_LEN)"},
-	{"usr/cmd/vtltape.c:1401", "if (!lu_ssc.pm->set_WORM)"},
-	{"usr/cmd/vtltape.c:2470", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
-	{"usr/cmd/vtllibrary.c:1684", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
+	{"usr/cmd/vtltape.c:1484", "if (!lu_ssc.pm->set_WORM)"},
+	{"usr/cmd/vtltape.c:2560", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
+	{"usr/cmd/vtllibrary.c:1712", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
 	{"kernel/mhvtl.c:126", "#define DEF_MAX_LUNS 32"},
 	{"kernel/mhvtl.c:602", "if (SCpnt->device->lun >= mhvtl_max_luns)"},
 	{"include/utils/q.h:51", "#define MAXPRIOR 1024"},

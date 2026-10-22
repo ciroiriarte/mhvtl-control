@@ -72,10 +72,11 @@ func (s *Server) handleMediaList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{
-		"home_dir":  home,
-		"densities": media.Densities,
-		"types":     media.Types,
-		"live":      false,
+		"home_dir":            home,
+		"densities":           media.Densities,
+		"data_only_densities": media.DataOnlyDensities,
+		"types":               media.Types,
+		"live":                false,
 	}
 	var inv *changer.Inventory
 	if live, err := s.liveInventory(r.Context(), lib); err != nil {
@@ -256,6 +257,9 @@ func (s *Server) handleMediaCreate(w http.ResponseWriter, r *http.Request) {
 	case !media.ValidDensity(req.Density):
 		writeError(w, http.StatusBadRequest, "bad_request", "density must be one of "+strings.Join(media.Densities, ", "))
 		return
+	case media.DataOnly(req.Density) && req.Type != "data":
+		writeError(w, http.StatusBadRequest, "bad_request", req.Density+" media exists only as a data cartridge")
+		return
 	case req.SizeMB > maxSizeMB:
 		writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("size_mb must be at most %d", uint64(maxSizeMB)))
 		return
@@ -355,6 +359,9 @@ func (s *Server) handleMediaEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	case change.Density != nil && !media.ValidDensity(*change.Density):
 		writeError(w, http.StatusBadRequest, "bad_request", "density must be one of "+strings.Join(media.Densities, ", "))
+		return
+	case change.Density != nil && media.DataOnly(*change.Density) && change.Type != nil && *change.Type != "data":
+		writeError(w, http.StatusBadRequest, "bad_request", *change.Density+" media exists only as a data cartridge")
 		return
 	case change.SizeMB != nil && *change.SizeMB > maxSizeMB:
 		writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("size_mb must be at most %d", uint64(maxSizeMB)))
