@@ -59,6 +59,8 @@ func TestConfigSystem(t *testing.T) {
 		{map[string]string{"CAPACITY": "0600"}, apply.ErrMhvtlConfValue},
 		{map[string]string{"VERBOSE": "4"}, apply.ErrMhvtlConfValue},
 		{map[string]string{"VTL_DEBUG": "1; rm -rf /"}, apply.ErrMhvtlConfValue},
+		{map[string]string{"MHVTL_BACKEND": "userland"}, apply.ErrMhvtlConfValue},
+		{map[string]string{"MHVTL_BACKEND": "foo; rm -rf /"}, apply.ErrMhvtlConfValue},
 		{map[string]string{"MHVTL_HOME_PATH": "/srv/tapes"}, "bad_request"},
 		{map[string]string{"DAEMON_DEBUG": "-d"}, "bad_request"},
 		{map[string]string{}, "bad_request"},
@@ -75,6 +77,23 @@ func TestConfigSystem(t *testing.T) {
 
 // GET /config reports the mhvtl.conf values PATCH /config/system sets, as
 // the file has them; a key it lacks is left out.
+// PATCH /config/system accepts MHVTL_BACKEND=mhvtl|tcmu and the helper would
+// derive the result; an unsupported backend is refused as a bad value.
+func TestConfigSystemBackend(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	if err := os.WriteFile(filepath.Join(e.dir, "mhvtl.conf"), []byte(shippedMhvtlConf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := e.edit(http.MethodPatch, "/api/v1/config/system", map[string]any{"values": map[string]string{"MHVTL_BACKEND": "tcmu"}})
+	got := file(t, st, "mhvtl.conf")
+	if !strings.Contains(got, "MHVTL_BACKEND=tcmu") {
+		t.Errorf("mhvtl.conf missing MHVTL_BACKEND=tcmu:\n%s", got)
+	}
+	if err := apply.DeriveMhvtlConf([]byte(shippedMhvtlConf), []byte(got)); err != nil {
+		t.Errorf("the helper would refuse it: %v", err)
+	}
+}
+
 func TestConfigSystemRead(t *testing.T) {
 	e := newWriteEnv(t, nil)
 	conf := strings.Replace(shippedMhvtlConf, "VTL_DEBUG=0\n", "", 1)
