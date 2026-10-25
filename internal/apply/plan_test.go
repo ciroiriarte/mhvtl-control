@@ -113,6 +113,7 @@ func TestDerivePlan(t *testing.T) {
 		{"a library deleted", planConf, strings.Replace(strings.Replace(planConf, stanza("Library: 30 "), "", 1), stanza("Drive: 31 "), "", 1), planMhvtlConf, nil, "L30 T31", "", 0},
 		{"a standalone drive", planConf, strings.Replace(planConf, "DRV50", "DRV50X", 1), planMhvtlConf, nil, "T50", "T50", 0},
 		{"VERBOSE restarts every instance", planConf, planConf, strings.Replace(planMhvtlConf, "VERBOSE=1", "VERBOSE=2", 1), nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
+		{"MHVTL_BACKEND restarts every instance", planConf, planConf, planMhvtlConf + "MHVTL_BACKEND=tcmu\n", nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
 		{"a library's home directory takes its drives", planConf, strings.Replace(planConf, " Unit serial number: LIB10\n", " Unit serial number: LIB10\n Home directory: /opt/a\n", 1), planMhvtlConf, nil, "L10 T11 T12", "T11 T12 L10", 0},
 		{"MHVTL_HOME_PATH restarts libraries without a home, and standalone drives", planConf, planConf, strings.Replace(planMhvtlConf, "/opt/mhvtl", "/opt/other", 1), nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},
 		{"MHVTL_HOME_PATH and a library given its own home", planConf, home30, otherHome, nil, "L10 T11 T12 L30 T31 T50", "T11 T12 L10 T31 L30 T50", 0},

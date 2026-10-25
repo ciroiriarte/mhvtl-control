@@ -246,15 +246,19 @@ test("wizardRequests: the library, then each drive, as the write routes take the
   assert.deepStrictEqual(homed[0].body.attrs[4], { key: "Home directory", value: "/srv/vtl20" });
 });
 
-test("systemFields and buildSystemPatch: only CAPACITY, VERBOSE and VTL_DEBUG, changed values only", () => {
+test("systemFields and buildSystemPatch: CAPACITY, VERBOSE, VTL_DEBUG and MHVTL_BACKEND, changed values only", () => {
   assert.deepStrictEqual(core.systemFields({ values: { CAPACITY: "600", VERBOSE: "2" } }), [
     { key: "CAPACITY", value: "600", set: true, shipped: "500" },
     { key: "VERBOSE", value: "2", set: true, shipped: "1" },
     { key: "VTL_DEBUG", value: "", set: false, shipped: "0" },
+    { key: "MHVTL_BACKEND", value: "", set: false, shipped: "mhvtl", choices: ["mhvtl", "tcmu"] },
   ]);
-  assert.deepStrictEqual(core.systemFields(undefined).map((f) => f.value), ["", "", ""]);
+  assert.deepStrictEqual(core.systemFields(undefined).map((f) => f.value), ["", "", "", ""]);
   const fields = core.systemFields({ values: { CAPACITY: "500", VERBOSE: "1", VTL_DEBUG: "0" } });
   assert.deepStrictEqual(core.buildSystemPatch(fields, { CAPACITY: " 1024 ", VERBOSE: "1", VTL_DEBUG: "1", MHVTL_HOME_PATH: "/x" }), { CAPACITY: "1024", VTL_DEBUG: "1" });
+  // MHVTL_BACKEND accepts mhvtl|tcmu and rejects anything else.
+  assert.deepStrictEqual(core.buildSystemPatch(fields, { MHVTL_BACKEND: "tcmu" }), { MHVTL_BACKEND: "tcmu" });
+  assert.throws(() => core.buildSystemPatch(fields, { MHVTL_BACKEND: "userland" }), /MHVTL_BACKEND must be/);
   assert.strictEqual(core.buildSystemPatch(fields, { CAPACITY: "500" }), null);
   // A key the file lacks stays out until given a value.
   const none = core.systemFields({ values: {} });

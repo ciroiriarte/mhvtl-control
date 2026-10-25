@@ -2356,11 +2356,17 @@
   // moves with mhvtl-move-home.
   function systemDialog() {
     var fields = systemFields(lastCfg && lastCfg.config && lastCfg.config.system);
-    var labels = { CAPACITY: "CAPACITY (MiB of new media)", VERBOSE: "VERBOSE (0-3)", VTL_DEBUG: "VTL_DEBUG (0 or 1)" };
+    var labels = { CAPACITY: "CAPACITY (MiB of new media)", VERBOSE: "VERBOSE (0-3)", VTL_DEBUG: "VTL_DEBUG (0 or 1)", MHVTL_BACKEND: "MHVTL_BACKEND (transport)" };
     formDialog({
       title: "System settings (mhvtl.conf)",
-      intro: "A VERBOSE change restarts every library and drive. A blank field is not in mhvtl.conf; mhVTL ships the value shown.",
-      fields: fields.map(function (f) { return { name: f.key, label: labels[f.key], value: f.value, placeholder: f.shipped }; }),
+      intro: "A VERBOSE or MHVTL_BACKEND change restarts every library and drive. A blank field is not in mhvtl.conf; mhVTL ships the value shown.",
+      fields: fields.map(function (f) {
+        if (f.choices) {
+          var options = [["", "(unset — ships " + f.shipped + ")"]].concat(f.choices.map(function (c) { return [c, c]; }));
+          return { name: f.key, label: labels[f.key], type: "select", value: f.value, options: options };
+        }
+        return { name: f.key, label: labels[f.key], value: f.value, placeholder: f.shipped };
+      }),
       onSubmit: function (form, done) {
         var values;
         try { values = buildSystemPatch(fields, form); } catch (e) { done(e); return; }

@@ -6,7 +6,7 @@ import (
 )
 
 // ModelledKeys are the mhvtl.conf keys MhvtlConf.Set accepts.
-var ModelledKeys = []string{"CAPACITY", "VERBOSE", "VTL_DEBUG", "MHVTL_HOME_PATH", "MHVTL_CONFIG_PATH"}
+var ModelledKeys = []string{"CAPACITY", "VERBOSE", "VTL_DEBUG", "MHVTL_BACKEND", "MHVTL_HOME_PATH", "MHVTL_CONFIG_PATH"}
 
 // cReadKeys are the keys mhVTL's C code reads from mhvtl.conf itself
 // (mhvtl usr/vtllib.c:288-301); the rest only reach it through the shell or

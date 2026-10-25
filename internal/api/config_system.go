@@ -9,11 +9,11 @@ import (
 )
 
 // systemKeys are the mhvtl.conf keys PATCH /config/system sets (plan 4.3).
-var systemKeys = map[string]bool{"CAPACITY": true, "VERBOSE": true, "VTL_DEBUG": true}
+var systemKeys = map[string]bool{"CAPACITY": true, "VERBOSE": true, "VTL_DEBUG": true, "MHVTL_BACKEND": true}
 
 type systemPatchRequest struct {
 	Stage string `json:"stage"`
-	// Values maps CAPACITY, VERBOSE or VTL_DEBUG to its new value.
+	// Values maps CAPACITY, VERBOSE, VTL_DEBUG or MHVTL_BACKEND to its new value.
 	Values map[string]string `json:"values"`
 }
 
@@ -38,7 +38,7 @@ func (s *Server) handleConfigSystemPatch(w http.ResponseWriter, r *http.Request)
 			case k == "MHVTL_HOME_PATH":
 				return badEdit("MHVTL_HOME_PATH moves the media home of every library without its own: use mhvtl-move-home")
 			case !systemKeys[k]:
-				return badEdit("%s cannot be set here: only CAPACITY, VERBOSE and VTL_DEBUG", k)
+				return badEdit("%s cannot be set here: only CAPACITY, VERBOSE, VTL_DEBUG and MHVTL_BACKEND", k)
 			}
 		}
 		if err := s.adopt(st, mhvtlConf); err != nil {

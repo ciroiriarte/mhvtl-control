@@ -28,6 +28,9 @@ var editableKeys = []struct {
 	}},
 	{"VERBOSE", regexp.MustCompile(`^[0-3]$`).MatchString},
 	{"VTL_DEBUG", regexp.MustCompile(`^[01]$`).MatchString},
+	// mhvtl and tcmu are the production transports (usr/transport.c); userland
+	// is a build/test-only backend and is not offered here.
+	{"MHVTL_BACKEND", regexp.MustCompile(`^(mhvtl|tcmu)$`).MatchString},
 	{homeKey, func(v string) bool { return homeProblem(v) == "" }},
 }
 
@@ -118,7 +121,7 @@ func DeriveMhvtlConf(cur, next []byte) error {
 		return err
 	}
 	if !bytes.Equal(derived, next) {
-		return refuse(ErrMhvtlConfDerived, "the new mhvtl.conf may differ from the current one only in the values of CAPACITY, VERBOSE and VTL_DEBUG, and of MHVTL_HOME_PATH through mhvtl-move-home; change other lines by hand")
+		return refuse(ErrMhvtlConfDerived, "the new mhvtl.conf may differ from the current one only in the values of CAPACITY, VERBOSE, VTL_DEBUG and MHVTL_BACKEND, and of MHVTL_HOME_PATH through mhvtl-move-home; change other lines by hand")
 	}
 	return nil
 }

@@ -72,7 +72,8 @@ func driveUnit(id int) string   { return fmt.Sprintf("vtltape@%d.service", id) }
 //   - a drive added or removed: start or stop vtltape@D, and restart its
 //     library;
 //   - a library added or deleted: start or stop all of its units;
-//   - VERBOSE changed: every instance;
+//   - VERBOSE or MHVTL_BACKEND changed: every instance (MHVTL_BACKEND
+//     selects the transport each daemon binds at startup);
 //   - VTL_DEBUG and CAPACITY: no restart.
 //
 // A drive in both configurations that goes down comes back up, and one
@@ -144,7 +145,8 @@ func derivePlan(curDC, nextDC *conffile.DeviceConf, cur, next config.Inventory, 
 			}
 		}
 	}
-	verbose := confChanged(curConf, nextConf, "VERBOSE")
+	verbose := confChanged(curConf, nextConf, "VERBOSE") ||
+		confChanged(curConf, nextConf, "MHVTL_BACKEND")
 	if verbose {
 		for id := range curLibs {
 			if nextLibs[id] {

@@ -1102,6 +1102,7 @@
     { key: "CAPACITY", shipped: "500", valid: function (v) { return /^[1-9][0-9]*$/.test(v) && Number(v) <= 4294967296; }, says: "a size in MiB, 1 to 4294967296" },
     { key: "VERBOSE", shipped: "1", valid: function (v) { return /^[0-3]$/.test(v); }, says: "0 to 3" },
     { key: "VTL_DEBUG", shipped: "0", valid: function (v) { return /^[01]$/.test(v); }, says: "0 or 1" },
+    { key: "MHVTL_BACKEND", shipped: "mhvtl", valid: function (v) { return v === "mhvtl" || v === "tcmu"; }, says: "mhvtl or tcmu", choices: ["mhvtl", "tcmu"] },
   ];
 
   // systemFields are the settings form's fields from GET /config's system:
@@ -1110,7 +1111,9 @@
     var vals = (system && system.values) || {};
     return SYSTEM_KEYS.map(function (k) {
       var set = Object.prototype.hasOwnProperty.call(vals, k.key);
-      return { key: k.key, value: set ? String(vals[k.key]) : "", set: set, shipped: k.shipped };
+      var f = { key: k.key, value: set ? String(vals[k.key]) : "", set: set, shipped: k.shipped };
+      if (k.choices) { f.choices = k.choices; }
+      return f;
     });
   }
 
