@@ -1158,7 +1158,76 @@
     return msg;
   }
 
+  /* ---- view state across re-renders (#77) ------------------------------ *
+   * Panels are rebuilt from scratch, each control bound to the data it was
+   * drawn from. These keep what the operator was doing across a rebuild:
+   * elements carry a data-view-key, captureView reads their scroll offsets,
+   * <details> state and the focused key before the panel is cleared, and
+   * restoreView puts them back on the rebuilt elements with the same keys.
+   * They only touch the element interface below, so tests pass plain
+   * objects.                                                               */
+
+  // stableJSON is JSON.stringify with object keys sorted, so two payloads
+  // that differ only in key order give the same string.
+  function stableJSON(v) {
+    if (v === null || typeof v !== "object") {
+      return v === undefined ? "null" : JSON.stringify(v);
+    }
+    if (Array.isArray(v)) { return "[" + v.map(stableJSON).join(",") + "]"; }
+    return "{" + Object.keys(v).sort().filter(function (k) { return v[k] !== undefined; }).map(function (k) {
+      return JSON.stringify(k) + ":" + stableJSON(v[k]);
+    }).join(",") + "}";
+  }
+
+  // viewSignature identifies what a panel was drawn from: its payload and
+  // the other state the render reads (extras). Equal signatures draw the
+  // same panel, so a refresh can skip the rebuild.
+  function viewSignature(payload, extras) {
+    return stableJSON([payload, extras === undefined ? null : extras]);
+  }
+
+  function keyedElements(root) {
+    return root && root.querySelectorAll ? Array.prototype.slice.call(root.querySelectorAll("[data-view-key]")) : [];
+  }
+
+  // captureView records, for every keyed element under root, its scroll
+  // offsets and (for <details>) whether it is open, and the key of active
+  // (document.activeElement) when it is a keyed element inside root.
+  function captureView(root, active) {
+    var saved = { scroll: {}, open: {}, focus: null };
+    keyedElements(root).forEach(function (el) {
+      var key = el.getAttribute("data-view-key");
+      if (el.scrollTop || el.scrollLeft) { saved.scroll[key] = { top: el.scrollTop || 0, left: el.scrollLeft || 0 }; }
+      if (String(el.tagName).toUpperCase() === "DETAILS") { saved.open[key] = !!el.open; }
+    });
+    if (active && active !== root && root && root.contains && root.contains(active) && active.getAttribute) {
+      saved.focus = active.getAttribute("data-view-key");
+    }
+    return saved;
+  }
+
+  // restoreView applies saved to the keyed elements of the rebuilt root.
+  // Keys that are gone (the data changed) are skipped; focus moves only when
+  // it was inside root before the rebuild.
+  function restoreView(root, saved) {
+    if (!saved) { return; }
+    var focused = false;
+    keyedElements(root).forEach(function (el) {
+      var key = el.getAttribute("data-view-key");
+      if (Object.prototype.hasOwnProperty.call(saved.open, key)) { el.open = saved.open[key]; }
+      var s = saved.scroll[key];
+      if (s) { el.scrollTop = s.top; el.scrollLeft = s.left; }
+      if (!focused && saved.focus && key === saved.focus && el.focus) {
+        el.focus({ preventScroll: true });
+        focused = true;
+      }
+    });
+  }
+
   var API = {
+    viewSignature: viewSignature,
+    captureView: captureView,
+    restoreView: restoreView,
     writesEditable: writesEditable,
     lineDiff: lineDiff,
     diffHunks: diffHunks,

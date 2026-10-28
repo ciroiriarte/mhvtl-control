@@ -103,12 +103,19 @@
 
   var mutationsEnabled = false; // gated on a successful health probe
   var currentAbort = null;      // AbortController for the active refresh cycle
+  var writesInFlight = 0;       // POST/PATCH/DELETE requests not yet answered
+  var refreshesInFlight = 0;    // refresh() cycles not yet settled
+  // drawn holds, per panel, the viewSignature it was last drawn from, so a
+  // background refresh skips a rebuild that would draw the same thing.
+  var drawn = {};
 
   /* ---- small DOM builders ---------------------------------------------- */
   function mk(tag, opts) {
     opts = opts || {};
     var n = document.createElement(tag);
     if (opts.class) { n.className = opts.class; }
+    // key names the element across re-renders (see preserve).
+    if (opts.key) { n.setAttribute("data-view-key", String(opts.key)); }
     if (opts.text != null) { n.textContent = String(opts.text); }
     if (opts.attrs) {
       Object.keys(opts.attrs).forEach(function (k) {
@@ -122,6 +129,16 @@
   }
   function clear(node) { while (node && node.firstChild) { node.removeChild(node.firstChild); } }
   function $(id) { return document.getElementById(id); }
+
+  // preserve runs draw, which rebuilds root, and keeps the scroll offsets,
+  // open <details> and focus of root's keyed elements across it (#77).
+  // Controls are rebuilt rather than patched because each is bound to the
+  // data it was drawn from.
+  function preserve(root, draw) {
+    var saved = core.captureView(root, document.activeElement);
+    draw();
+    core.restoreView(root, saved);
+  }
 
   /* ---- theme ----------------------------------------------------------- */
   function applyTheme(t) {
@@ -155,6 +172,10 @@
     // would otherwise wipe it before it is read, until dismissed or the node
     // changes.
     var sticky = null;
+    // shown is the standing error box (not the sticky warning); its fromLoad
+    // is true when it came from reading the panel, which a later successful
+    // read replaces, and false for a failed action, which stays.
+    var shown = null;
     function errorBox(msg, onDismiss) {
       var box = mk("div", { class: "panel-error" });
       box.appendChild(mk("span", { class: "msg", text: String(msg) }));
@@ -178,6 +199,7 @@
       },
       ok: function () {
         if (!region) { return; }
+        shown = null;
         clear(region);
         var now = new Date();
         region.appendChild(mk("span", {
@@ -186,16 +208,34 @@
         }));
         keepSticky();
       },
+      // quietOk follows a background refresh. The region is an alert, so
+      // rewriting "Updated …" on every poll would be announced each time; it
+      // only changes when the refresh clears an error from reading the panel.
+      // A failed action's error and the sticky warning stay.
+      quietOk: function () {
+        if (shown && shown.parentNode === region && shown.fromLoad) { this.ok(); }
+      },
       grey: function () {
         if (!region) { return; }
         sticky = null;
+        shown = null;
         clear(region);
         region.appendChild(mk("span", { class: "status-line loading", text: "Switching node…" }));
       },
-      error: function (msg) {
+      // error shows msg. src is "load" for a failed read of the panel,
+      // "poll" for one in a background refresh, and absent for a failed
+      // action. A poll that keeps failing the same way says it once rather
+      // than on every tick.
+      error: function (msg, src) {
         if (!region) { return; }
+        msg = String(msg);
+        if (src === "poll" && shown && shown.parentNode === region && shown.msg === msg) { return; }
         clear(region);
-        region.appendChild(errorBox(msg, function () { clear(region); keepSticky(); }));
+        var box = errorBox(msg, function () { if (shown === box) { shown = null; } clear(region); keepSticky(); });
+        box.msg = msg;
+        box.fromLoad = src === "load" || src === "poll";
+        shown = box;
+        region.appendChild(box);
         keepSticky();
       },
       warn: function (msg) {
@@ -234,7 +274,15 @@
       body = JSON.stringify(opts.body);
     }
     var base = NodeState.origin ? NodeState.origin.replace(/\/+$/, "") : "";
-    return fetch(base + path, {
+    // opts.read marks a POST that changes nothing (the validation).
+    var write = (opts.method || "GET") !== "GET" && !opts.read;
+    if (write) {
+      writesInFlight++;
+      // A background refresh still reading could redraw this change's
+      // button enabled while it runs.
+      if (bgAbort) { bgAbort.abort(); }
+    }
+    var p = fetch(base + path, {
       method: opts.method || "GET",
       headers: headers,
       body: body,
@@ -257,6 +305,10 @@
       if (r.status === 204) { return null; }
       return isJSON ? r.json() : r.text();
     });
+    if (write) {
+      p.then(function () { writesInFlight--; }, function () { writesInFlight--; });
+    }
+    return p;
   }
 
   /* ---- node badge ------------------------------------------------------ */
@@ -280,6 +332,9 @@
   }
 
   function renderSystem(s) {
+    preserve($("system-status"), function () { drawSystem(s); });
+  }
+  function drawSystem(s) {
     s = s || {};
     // Topbar host summary (textContent only).
     var stat = $("sys-stat");
@@ -370,7 +425,7 @@
   // nodeRow shows one node path (shortened to `shown` when given) with a
   // button that copies the full path.
   function nodeRow(label, path, shown) {
-    var btn = mk("button", { class: "btn xs ghost copy", text: "copy", attrs: { type: "button", "aria-label": "Copy " + path } });
+    var btn = mk("button", { class: "btn xs ghost copy", text: "copy", key: "copy/" + path, attrs: { type: "button", "aria-label": "Copy " + path } });
     btn.addEventListener("click", function () { copyText(path); });
     return mk("div", { class: "node-row", children: [
       mk("span", { class: "node-k", text: label }),
@@ -389,10 +444,10 @@
     var box = mk("div", { class: "nodes", attrs: { role: "group", "aria-label": what + " device nodes" } });
     nr.rows.forEach(function (r) { box.appendChild(nodeRow(r.label, r.path)); });
     if (nr.links.length) {
-      var det = mk("details", { class: "node-links" });
+      var det = mk("details", { class: "node-links", key: "links/" + key });
       det.open = openNodeLinks[key] === true;
       det.addEventListener("toggle", function () { openNodeLinks[key] = det.open; });
-      det.appendChild(mk("summary", { text: "/dev/tape links (" + nr.links.length + ")" }));
+      det.appendChild(mk("summary", { key: "links/" + key + "/summary", text: "/dev/tape links (" + nr.links.length + ")" }));
       nr.links.forEach(function (l) {
         det.appendChild(nodeRow(l.label, l.path, l.path.replace(/^.*\//, "")));
       });
@@ -416,6 +471,9 @@
     var renderGen = NodeState.generation;
     var driveId = coerceNumber(d.id);
     var st = driveState(lib, d);
+    // Mount and Unmount share one key, so focus stays on the button a load
+    // or unload turns into.
+    var kp = "lib" + coerceNumber(lib.id) + "/drive" + driveId;
     var card = mk("div", { class: "drive" + (st.state === "loaded" ? " loaded" : "") });
 
     card.appendChild(mk("span", { class: "id", text: "drive " + driveId }));
@@ -452,11 +510,11 @@
 
     var actions = mk("div", { class: "drive-actions" });
     if (st.state === "loaded") {
-      var unmountBtn = mk("button", { class: "btn sm", text: "Unmount", attrs: { type: "button", "aria-label": "Unmount drive " + driveId } });
+      var unmountBtn = mk("button", { class: "btn sm", text: "Unmount", key: kp + "/load", attrs: { type: "button", "aria-label": "Unmount drive " + driveId } });
       unmountBtn.disabled = !mutationsEnabled;
       unmountBtn.addEventListener("click", function () { doUnmount(lib.id, driveId, unmountBtn, renderGen); });
       actions.appendChild(unmountBtn);
-      var expBtn = mk("button", { class: "btn sm", text: "Export", attrs: { type: "button", "aria-label": "Export the cartridge in drive " + driveId + " to the MAP" } });
+      var expBtn = mk("button", { class: "btn sm", text: "Export", key: kp + "/export", attrs: { type: "button", "aria-label": "Export the cartridge in drive " + driveId + " to the MAP" } });
       expBtn.disabled = !mutationsEnabled || lib.map_open === true;
       expBtn.title = lib.map_open === true ? "the MAP is open: close it first" : "Unload and move the cartridge to the first empty MAP slot";
       expBtn.addEventListener("click", function () {
@@ -468,13 +526,13 @@
       });
       actions.appendChild(expBtn);
     } else {
-      var mountBtn = mk("button", { class: "btn sm", text: "Mount", attrs: { type: "button", "aria-label": "Mount a cartridge into drive " + driveId } });
+      var mountBtn = mk("button", { class: "btn sm", text: "Mount", key: kp + "/load", attrs: { type: "button", "aria-label": "Mount a cartridge into drive " + driveId } });
       mountBtn.disabled = !mutationsEnabled || st.state !== "empty";
       if (st.state !== "empty") { mountBtn.title = "drive state unknown: changer not reachable"; }
       mountBtn.addEventListener("click", function () { openMountPicker(lib, driveId, renderGen); });
       actions.appendChild(mountBtn);
     }
-    var statsBtn = mk("button", { class: "btn sm ghost", text: "Stats", attrs: { type: "button", "aria-label": "Show statistics for drive " + driveId } });
+    var statsBtn = mk("button", { class: "btn sm ghost", text: "Stats", key: kp + "/stats", attrs: { type: "button", "aria-label": "Show statistics for drive " + driveId } });
     statsBtn.addEventListener("click", function () { openStats(lib, d); });
     actions.appendChild(statsBtn);
     card.appendChild(actions);
@@ -512,7 +570,7 @@
 
     var mapCounts = countSlots(maps);
     var libId = coerceNumber(lib.id);
-    var doorBtn = mk("button", { class: "btn sm", text: isOpen ? "Close" : "Open", attrs: { type: "button", "aria-label": (isOpen ? "Close" : "Open") + " the MAP" } });
+    var doorBtn = mk("button", { class: "btn sm", text: isOpen ? "Close" : "Open", key: "lib" + libId + "/map/door", attrs: { type: "button", "aria-label": (isOpen ? "Close" : "Open") + " the MAP" } });
     doorBtn.disabled = !mutationsEnabled || !live;
     doorBtn.title = !live ? "changer not reachable"
       : isOpen ? "Close the MAP so the robot can reach its slots again"
@@ -526,7 +584,7 @@
     });
     top.appendChild(doorBtn);
 
-    var ejectBtn = mk("button", { class: "btn sm", text: "Eject all to shelf", attrs: { type: "button" } });
+    var ejectBtn = mk("button", { class: "btn sm", text: "Eject all to shelf", key: "lib" + libId + "/map/eject", attrs: { type: "button" } });
     ejectBtn.disabled = !mutationsEnabled || !live || mapCounts.occupied === 0;
     ejectBtn.title = !live ? "changer not reachable"
       : mapCounts.occupied === 0 ? "the MAP is empty"
@@ -550,7 +608,7 @@
     });
     top.appendChild(ejectBtn);
 
-    var importBtn = mk("button", { class: "btn sm", text: "Import…", attrs: { type: "button", "aria-label": "Import a shelf cartridge through the MAP" } });
+    var importBtn = mk("button", { class: "btn sm", text: "Import…", key: "lib" + libId + "/map/import", attrs: { type: "button", "aria-label": "Import a shelf cartridge through the MAP" } });
     importBtn.disabled = !mutationsEnabled || !live || mapCounts.empty === 0;
     importBtn.title = !live ? "changer not reachable"
       : mapCounts.empty === 0 ? "the MAP is full" : "Put a shelf cartridge into the MAP";
@@ -569,7 +627,7 @@
       cell.appendChild(mk("span", { class: "bc mono", text: occ ? String(m.barcode || "(no barcode)") : "—" }));
 
       var acts = mk("div", { class: "map-actions" });
-      var imp = mk("button", { class: "btn sm", text: "Load from MAP", attrs: { type: "button", "aria-label": "Import (load) the cartridge in MAP " + num + " into a drive" } });
+      var imp = mk("button", { class: "btn sm", text: "Load from MAP", key: "lib" + libId + "/map" + num + "/load", attrs: { type: "button", "aria-label": "Import (load) the cartridge in MAP " + num + " into a drive" } });
       imp.disabled = !mutationsEnabled || !live || !occ || emptyDrive === null || isOpen;
       imp.title = !live ? "changer not reachable"
         : !occ ? "MAP slot is empty"
@@ -582,7 +640,7 @@
       acts.appendChild(imp);
 
       if (occ) {
-        var mv = mk("button", { class: "btn sm ghost", text: "Move to slot", attrs: { type: "button", "aria-label": "Move the cartridge in MAP " + num + " to the first empty storage slot" } });
+        var mv = mk("button", { class: "btn sm ghost", text: "Move to slot", key: "lib" + libId + "/map" + num + "/move", attrs: { type: "button", "aria-label": "Move the cartridge in MAP " + num + " to the first empty storage slot" } });
         mv.disabled = !mutationsEnabled || !live || isOpen || freeSlot === null;
         mv.title = !live ? "changer not reachable"
           : isOpen ? "the MAP is open: close it first"
@@ -632,14 +690,14 @@
       var bc = full ? String(sl.barcode || "") : "";
       var actionCell = mk("td", { class: "acts" });
       if (full) {
-        var b = mk("button", { class: "btn sm", text: "Mount", attrs: { type: "button", "aria-label": "Mount slot " + num + " into a drive" } });
+        var b = mk("button", { class: "btn sm", text: "Mount", key: "lib" + libId + "/slot" + num + "/mount", attrs: { type: "button", "aria-label": "Mount slot " + num + " into a drive" } });
         b.disabled = !mutationsEnabled || emptyDrive === null;
         b.title = !live ? "changer not reachable"
           : (emptyDrive === null ? "no empty drive available" : "Mount this slot into drive " + emptyDrive);
         b.addEventListener("click", function () { doMount({ libId: libId, drive: emptyDrive }, { kind: "slot", number: num }, b, renderGen); });
         actionCell.appendChild(b);
 
-        var ex = mk("button", { class: "btn sm", text: "Export", attrs: { type: "button", "aria-label": "Export slot " + num + " to the MAP" } });
+        var ex = mk("button", { class: "btn sm", text: "Export", key: "lib" + libId + "/slot" + num + "/export", attrs: { type: "button", "aria-label": "Export slot " + num + " to the MAP" } });
         ex.disabled = !mutationsEnabled || !live || lib.map_open === true;
         ex.title = !live ? "changer not reachable"
           : lib.map_open === true ? "the MAP is open: close it first" : "Move to the first empty MAP slot";
@@ -652,7 +710,7 @@
         });
         actionCell.appendChild(ex);
 
-        var mv = mk("button", { class: "btn sm ghost", text: "Move…", attrs: { type: "button", "aria-label": "Move slot " + num + " to another slot" } });
+        var mv = mk("button", { class: "btn sm ghost", text: "Move…", key: "lib" + libId + "/slot" + num + "/move", attrs: { type: "button", "aria-label": "Move slot " + num + " to another slot" } });
         mv.disabled = !mutationsEnabled || !live;
         if (!live) { mv.title = "changer not reachable"; }
         mv.addEventListener("click", function () { openMoveDialog(lib, { kind: "slot", number: num, barcode: bc }, renderGen); });
@@ -709,7 +767,7 @@
     if (shown.length !== counts.total) { summaryText += " · showing " + shown.length; }
     block.appendChild(mk("div", { class: "slot-summary muted", text: summaryText }));
 
-    var scroll = mk("div", { class: "slot-scroll" });
+    var scroll = mk("div", { class: "slot-scroll", key: "lib" + coerceNumber(lib.id) + "/slots" });
     if (!slots.length) {
       scroll.appendChild(mk("p", { class: "muted", text: "No storage slots." }));
     } else if (!shown.length) {
@@ -724,6 +782,9 @@
   }
 
   function renderLibraries(data) {
+    preserve($("library-rack"), function () { drawLibraries(data); });
+  }
+  function drawLibraries(data) {
     lastLibData = data; // cache so toolbar controls can re-render without refetch
     var libs = coerceArray(data && data.libraries);
     $("lib-count").textContent = libs.length ? "(" + libs.length + ")" : "";
@@ -797,6 +858,9 @@
   }
 
   function renderDisks(data) {
+    preserve($("disk-dock"), function () { drawDisks(data); });
+  }
+  function drawDisks(data) {
     var renderGen = NodeState.generation;
     var disks = coerceArray(data && data.disks);
     $("disk-count").textContent = disks.length ? "(" + disks.length + ")" : "";
@@ -809,6 +873,7 @@
     disks.forEach(function (d) {
       var mvtl = d.mvtl_formatted && d.mvtl ? d.mvtl : null;
       var info = diskStatusInfo(d);
+      var fmtKey = "disk/" + String(d.path || d.name || "") + "/format";
       var row = mk("div", { class: "disk" });
 
       var head = mk("div", { class: "head" });
@@ -826,15 +891,15 @@
       // Format action: offered only for eligible media (US-F8).
       var fmtBtn;
       if (info.action === "format") {
-        fmtBtn = mk("button", { class: "btn sm", text: "Format…", attrs: { type: "button", "aria-label": "Format " + (d.path || d.name || "disk") } });
+        fmtBtn = mk("button", { class: "btn sm", text: "Format…", key: fmtKey, attrs: { type: "button", "aria-label": "Format " + (d.path || d.name || "disk") } });
         fmtBtn.disabled = !mutationsEnabled;
         fmtBtn.addEventListener("click", function () { openFormatDialog(d, renderGen); });
       } else if (info.action === "reformat") {
-        fmtBtn = mk("button", { class: "btn sm", text: "Reformat…", attrs: { type: "button", "aria-label": "Reformat (erase) " + (d.path || d.name || "disk") } });
+        fmtBtn = mk("button", { class: "btn sm", text: "Reformat…", key: fmtKey, attrs: { type: "button", "aria-label": "Reformat (erase) " + (d.path || d.name || "disk") } });
         fmtBtn.disabled = !mutationsEnabled;
         fmtBtn.addEventListener("click", function () { openFormatDialog(d, renderGen); });
       } else {
-        fmtBtn = mk("button", { class: "btn sm", text: "Format…", attrs: { type: "button", title: info.reason, "aria-label": info.reason } });
+        fmtBtn = mk("button", { class: "btn sm", text: "Format…", key: fmtKey, attrs: { type: "button", title: info.reason, "aria-label": info.reason } });
         fmtBtn.disabled = true; // in_use / probe_failed: not formattable
       }
       head.appendChild(fmtBtn);
@@ -937,8 +1002,8 @@
     return found;
   }
 
-  function mediaButton(text, label, title, disabled, onClick) {
-    var b = mk("button", { class: "btn sm", text: text, attrs: { type: "button", "aria-label": label } });
+  function mediaButton(key, text, label, title, disabled, onClick) {
+    var b = mk("button", { class: "btn sm", text: text, key: key, attrs: { type: "button", "aria-label": label } });
     b.disabled = !!disabled;
     if (title) { b.title = title; }
     b.addEventListener("click", function () { onClick(b); });
@@ -947,6 +1012,9 @@
 
   // renderMedia draws the cached /media payload of the selected library.
   function renderMedia() {
+    preserve($("media-list"), drawMedia);
+  }
+  function drawMedia() {
     var box = $("media-list");
     clear(box);
     var newBtn = $("media-new-btn");
@@ -1014,15 +1082,15 @@
           : !c.backend ? "no media on disk"
             : c.media_absent ? "its disk is not attached"
               : c.missing === "file_absent" ? "its media files are incomplete" : "";
-      acts.appendChild(mediaButton("Edit", "Edit " + bc, editWhy || "Change write protect, type, density or size",
+      acts.appendChild(mediaButton("media/" + bc + "/edit", "Edit", "Edit " + bc, editWhy || "Change write protect, type, density or size",
         !mutationsEnabled || !!editWhy, function () { openEditDialog(libId, c, renderGen); }));
       if (kind === "shelf") {
         var importWhy = !c.backend ? "no media on disk" : c.media_absent ? "its disk is not attached"
           : c.missing === "file_absent" ? "its media files are incomplete" : "";
-        acts.appendChild(mediaButton("Import", "Import " + bc + " into the library", importWhy || "Put it into the MAP",
+        acts.appendChild(mediaButton("media/" + bc + "/import", "Import", "Import " + bc + " into the library", importWhy || "Put it into the MAP",
           !mutationsEnabled || !!importWhy, function () { openImportDialog(libId, renderGen, bc); }));
       } else if (kind === "slot" || kind === "drive") {
-        acts.appendChild(mediaButton("Export", "Export " + bc + " to the MAP",
+        acts.appendChild(mediaButton("media/" + bc + "/export", "Export", "Export " + bc + " to the MAP",
           mapOpen ? "the MAP is open: close it first" : "Move to the first empty MAP slot",
           !mutationsEnabled || !live || mapOpen, function (btn) {
             mutate({
@@ -1059,7 +1127,7 @@
       mk("th", { text: "Used / capacity" }), mk("th", { text: "WP" }), mk("th", { text: "Location" }),
       mk("th", { text: "Loads" }), mk("th", { text: "Actions" }),
     ] })] });
-    box.appendChild(mk("div", { class: "media-scroll", children: [
+    box.appendChild(mk("div", { class: "media-scroll", key: "media/" + libId, children: [
       mk("table", { class: "slot-table media-table", children: [thead, mk("tbody", { children: rows })] }),
     ] }));
   }
@@ -1778,8 +1846,8 @@
 
   function personalitiesBlock(pers) {
     var libs = coerceArray(pers && pers.libraries);
-    var det = mk("details", { class: "cfg-section" });
-    det.appendChild(mk("summary", { text: "Library personalities (" + libs.length + ")" }));
+    var det = mk("details", { class: "cfg-section", key: "cfg/personalities" });
+    det.appendChild(mk("summary", { key: "cfg/personalities/summary", text: "Library personalities (" + libs.length + ")" }));
     var head = mk("thead", { children: [mk("tr", { children: ["Personality", "Selected by vendor / product prefix", "VPD 83h", "Drives", "Storage", "MAP"].map(function (h) { return mk("th", { text: h }); }) })] });
     var rows = libs.map(function (p) {
       var rules = coerceArray(p.rules).map(function (r) {
@@ -1795,11 +1863,14 @@
         mk("td", { class: "mono", text: coerceNumber(lim.maps) }),
       ] });
     });
-    det.appendChild(mk("div", { class: "slot-scroll", children: [mk("table", { class: "slot-table", children: [head, mk("tbody", { children: rows })] })] }));
+    det.appendChild(mk("div", { class: "slot-scroll", key: "cfg/personalities/scroll", children: [mk("table", { class: "slot-table", children: [head, mk("tbody", { children: rows })] })] }));
     return det;
   }
 
   function renderConfig() {
+    preserve($("config-view"), drawConfig);
+  }
+  function drawConfig() {
     var view = $("config-view");
     if (!view || !lastCfg) { return; }
     clear(view);
@@ -2462,6 +2533,9 @@
   }
 
   function renderStage() {
+    preserve($("stage-view"), drawStage);
+  }
+  function drawStage() {
     var panel = $("stage-panel"), box = $("stage-view");
     if (!panel || !box) { return; }
     if (cfgStage && cfgStage.gen !== NodeState.generation) { cfgStage = null; }
@@ -2725,6 +2799,9 @@
   }
 
   function renderFindings(problems, result) {
+    preserve($("config-findings"), function () { drawFindings(problems, result); });
+  }
+  function drawFindings(problems, result) {
     var box = $("config-findings");
     if (!box) { return; }
     clear(box);
@@ -2757,111 +2834,167 @@
         mk("td", { class: "mono", text: r.where }),
       ] });
     });
-    box.appendChild(mk("div", { class: "media-scroll", children: [mk("table", { class: "slot-table findings-table", children: [head, mk("tbody", { children: trs })] })] }));
+    box.appendChild(mk("div", { class: "media-scroll", key: "findings", children: [mk("table", { class: "slot-table findings-table", children: [head, mk("tbody", { children: trs })] })] }));
   }
 
   // refreshConfigLibrary validates the configuration in force for the
   // application the selected library is checked for. Validation proposes no
   // file and never writes; it reuses the changer reads GET /config made.
-  function refreshConfigLibrary(gen, signal) {
+  function refreshConfigLibrary(gen, signal, bg) {
     if (gen === undefined) { gen = NodeState.generation; }
     if (!lastCfg || isStale(gen, NodeState.generation)) { return Promise.resolve(); }
     var libId = cfgView.selected;
     var problems = lastCfg.config && lastCfg.config.problems;
-    findingsStatus.loading();
-    busy("findings-panel", true);
-    return api("/api/v1/config/validate", { method: "POST", body: buildValidateBody(libId, cfgView.app), signal: signal }).then(function (res) {
-      busy("findings-panel", false);
+    if (!bg) {
+      findingsStatus.loading();
+      busy("findings-panel", true);
+    }
+    var app = cfgView.app;
+    return api("/api/v1/config/validate", { method: "POST", body: buildValidateBody(libId, app), signal: signal, read: true }).then(function (res) {
+      if (!bg) { busy("findings-panel", false); }
       if (isStale(gen, NodeState.generation)) { return; }
-      renderFindings(problems, res);
-      setPanelGrey("config-findings", false);
-      findingsStatus.ok();
+      if (drawPanel("findings", $("config-findings"), bg, res, [gen, problems, libId, app], function () { renderFindings(problems, res); })) {
+        setPanelGrey("config-findings", false);
+      }
+      (bg ? findingsStatus.quietOk() : findingsStatus.ok());
     }).catch(function (e) {
-      busy("findings-panel", false);
+      if (!bg) { busy("findings-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
-      findingsStatus.error("validate: " + e.message);
+      findingsStatus.error("validate: " + e.message, bg ? "poll" : "load");
     });
   }
 
-  function refreshConfig(gen, signal) {
-    configStatus.loading();
-    setPanelGrey("config-view", true);
-    setPanelGrey("config-findings", true);
-    busy("config-panel", true);
+  function refreshConfig(gen, signal, bg) {
+    if (!bg) {
+      configStatus.loading();
+      setPanelGrey("config-view", true);
+      setPanelGrey("config-findings", true);
+      busy("config-panel", true);
+    }
     return Promise.all([
       api("/api/v1/config/capabilities", { signal: signal }),
       api("/api/v1/config", { signal: signal }),
       api("/api/v1/config/personalities", { signal: signal }),
     ]).then(function (r) {
-      busy("config-panel", false);
+      if (!bg) { busy("config-panel", false); }
       if (isStale(gen, NodeState.generation)) { return; }
-      lastCfg = { caps: r[0] || {}, config: r[1] || {}, personalities: r[2] || {} };
-      renderConfig();
-      renderStage();
-      setPanelGrey("config-view", false);
-      configStatus.ok();
-      return refreshConfigLibrary(gen, signal);
+      var cfg = { caps: r[0] || {}, config: r[1] || {}, personalities: r[2] || {} };
+      if (drawPanel("config", $("config-view"), bg, cfg, [gen, mutationsEnabled], function () {
+        lastCfg = cfg;
+        renderConfig();
+        renderStage();
+      })) {
+        setPanelGrey("config-view", false);
+      }
+      (bg ? configStatus.quietOk() : configStatus.ok());
+      return refreshConfigLibrary(gen, signal, bg);
     }).catch(function (e) {
-      busy("config-panel", false);
+      if (!bg) { busy("config-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
-      configStatus.error("configuration: " + e.message);
+      configStatus.error("configuration: " + e.message, bg ? "poll" : "load");
     });
   }
 
-  /* ---- refresh cycle (generation-guarded, abortable) ------------------- */
-  function refreshSystem(gen, signal) {
-    sysStatus.loading();
-    setPanelGrey("system-status", true); // loading/greyed until THIS panel's data lands
-    busy("system-panel", true);
+  /* ---- refresh cycle (generation-guarded, abortable) ------------------- *
+   * A refresh draws every panel; a background refresh (bg, from the poll
+   * loop) leaves the panels interactive while it runs, never aborts another
+   * refresh, and skips a panel whose data is unchanged.                     */
+
+  // selectionIn reports whether the operator has text selected inside root,
+  // which a rebuild would drop.
+  function selectionIn(root) {
+    var sel = window.getSelection ? window.getSelection() : null;
+    if (!root || !sel || sel.isCollapsed || !sel.rangeCount) { return false; }
+    return root.contains(sel.anchorNode) || root.contains(sel.focusNode);
+  }
+
+  // drawPanel draws panel from payload unless a background refresh finds it
+  // already drawn from the same payload and extras (the other state the
+  // render reads), or would drop a text selection in root; the next refresh
+  // then tries again. It returns whether the panel shows this data, so a
+  // caller ungreys it only then (a deferred draw may leave the previous
+  // node's panel in place).
+  function drawPanel(panel, root, bg, payload, extras, draw) {
+    var sig = core.viewSignature(payload, extras);
+    if (bg && drawn[panel] === sig) { return true; }
+    if (bg && selectionIn(root)) { return false; }
+    draw();
+    drawn[panel] = sig;
+    return true;
+  }
+
+  function refreshSystem(gen, signal, bg) {
+    if (!bg) {
+      sysStatus.loading();
+      setPanelGrey("system-status", true); // loading/greyed until THIS panel's data lands
+      busy("system-panel", true);
+    }
     return api("/api/v1/system", { signal: signal }).then(function (s) {
-      busy("system-panel", false);
+      if (!bg) { busy("system-panel", false); }
       if (isStale(gen, NodeState.generation)) { return; }
-      renderSystem(s);
-      setPanelGrey("system-status", false); // new-node content rendered: interactive again
-      sysStatus.ok();
+      if (drawPanel("system", $("system-status"), bg, s, [gen], function () { renderSystem(s); })) {
+        setPanelGrey("system-status", false); // new-node content rendered: interactive again
+      }
+      (bg ? sysStatus.quietOk() : sysStatus.ok());
     }).catch(function (e) {
-      busy("system-panel", false);
+      if (!bg) { busy("system-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
-      sysStatus.error("system: " + e.message);
+      sysStatus.error("system: " + e.message, bg ? "poll" : "load");
     });
   }
-  function refreshLibraries(gen, signal) {
-    libStatus.loading();
-    setPanelGrey("library-rack", true); // loading/greyed until THIS panel's data lands
-    busy("library-panel", true);
+  function refreshLibraries(gen, signal, bg) {
+    if (!bg) {
+      libStatus.loading();
+      setPanelGrey("library-rack", true); // loading/greyed until THIS panel's data lands
+      busy("library-panel", true);
+    }
     return api("/api/v1/libraries", { signal: signal }).then(function (d) {
-      busy("library-panel", false);
+      if (!bg) { busy("library-panel", false); }
       if (isStale(gen, NodeState.generation)) { return; }
-      renderLibraries(d);
-      setPanelGrey("library-rack", false); // new-node content rendered: interactive again
-      libStatus.ok();
+      if (drawPanel("libraries", $("library-rack"), bg, d, [gen, mutationsEnabled], function () { renderLibraries(d); })) {
+        setPanelGrey("library-rack", false); // new-node content rendered: interactive again
+      }
+      (bg ? libStatus.quietOk() : libStatus.ok());
     }).catch(function (e) {
-      busy("library-panel", false);
+      if (!bg) { busy("library-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
-      libStatus.error("libraries: " + e.message);
+      libStatus.error("libraries: " + e.message, bg ? "poll" : "load");
     });
   }
-  function refreshDisks(gen, signal) {
+  function refreshDisks(gen, signal, bg) {
     if (gen === undefined) { gen = NodeState.generation; }
-    diskStatus.loading();
-    setPanelGrey("disk-dock", true); // loading/greyed until THIS panel's data lands
-    busy("disk-panel", true);
+    if (!bg) {
+      diskStatus.loading();
+      setPanelGrey("disk-dock", true); // loading/greyed until THIS panel's data lands
+      busy("disk-panel", true);
+    }
     return api("/api/v1/storage/disks", { signal: signal }).then(function (d) {
-      busy("disk-panel", false);
+      if (!bg) { busy("disk-panel", false); }
       if (isStale(gen, NodeState.generation)) { return; }
-      renderDisks(d);
-      setPanelGrey("disk-dock", false); // new-node content rendered: interactive again
-      diskStatus.ok();
+      if (drawPanel("disks", $("disk-dock"), bg, d, [gen, mutationsEnabled], function () { renderDisks(d); })) {
+        setPanelGrey("disk-dock", false); // new-node content rendered: interactive again
+      }
+      (bg ? diskStatus.quietOk() : diskStatus.ok());
     }).catch(function (e) {
-      busy("disk-panel", false);
+      if (!bg) { busy("disk-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
-      diskStatus.error("disks: " + e.message);
+      diskStatus.error("disks: " + e.message, bg ? "poll" : "load");
+    });
+  }
+
+  // drawMedia draws the media of libId (payload d) through drawPanel. The
+  // rows also read the library's drives and MAP state, so the cached
+  // libraries entry is part of the signature.
+  function drawMedia(bg, gen, libId, d) {
+    return drawPanel("media", $("media-list"), bg, d, [gen, mutationsEnabled, libId, activeLib()], function () {
+      lastMedia = { libId: libId, gen: gen, data: d };
+      renderMedia();
     });
   }
 
   // refreshMedia reads the media of the library selected in the rack. A
   // response for a library that is no longer selected is dropped.
-  function refreshMedia(gen, signal) {
+  function refreshMedia(gen, signal, bg) {
     if (gen === undefined) { gen = NodeState.generation; }
     if (isStale(gen, NodeState.generation) || (signal && signal.aborted)) { return Promise.resolve(); }
     var libId = libView.selected == null ? null : String(libView.selected);
@@ -2870,34 +3003,102 @@
       renderMedia();
       return Promise.resolve();
     }
-    mediaStatus.loading();
-    setPanelGrey("media-list", true);
-    busy("media-panel", true);
+    if (!bg) {
+      mediaStatus.loading();
+      setPanelGrey("media-list", true);
+      busy("media-panel", true);
+    }
     return api(libPath(libId, "/media"), { signal: signal }).then(function (d) {
-      busy("media-panel", false);
+      if (!bg) { busy("media-panel", false); }
       if (isStale(gen, NodeState.generation) || String(libView.selected) !== libId) { return; }
-      lastMedia = { libId: libId, gen: gen, data: d || {} };
-      renderMedia();
-      setPanelGrey("media-list", false);
-      mediaStatus.ok();
+      // The media rows also read the library's drives and MAP state.
+      if (drawMedia(bg, gen, libId, d || {})) { setPanelGrey("media-list", false); }
+      (bg ? mediaStatus.quietOk() : mediaStatus.ok());
     }).catch(function (e) {
-      busy("media-panel", false);
+      if (!bg) { busy("media-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
-      mediaStatus.error("media: " + e.message);
+      mediaStatus.error("media: " + e.message, bg ? "poll" : "load");
     });
   }
 
-  function refresh() {
+  // refresh reads and draws the panels. opts.background marks a poll tick:
+  // it reads only the panels in opts.panels (all when absent) under
+  // backgroundSignal, which a node switch still cancels.
+  // Anything else (the Refresh button, an action, a node switch) redraws
+  // every panel. Resolves when every panel has settled, with true when a
+  // background refresh was cut short.
+  function refresh(opts) {
+    var bg = !!(opts && opts.background === true);
+    var due = function (p) { return !bg || !opts.panels || opts.panels.indexOf(p) >= 0; };
     var gen = NodeState.generation;
-    if (currentAbort) { currentAbort.abort(); }
-    currentAbort = new AbortController();
-    var signal = currentAbort.signal;
+    var signal, tick = null;
+    if (!bg) {
+      if (currentAbort) { currentAbort.abort(); }
+      currentAbort = new AbortController();
+      signal = currentAbort.signal;
+    } else {
+      tick = backgroundSignal();
+      signal = tick.signal;
+    }
     // Concurrent, independently-reported refreshes. Media follows the
     // libraries because it is read for the library they resolve as selected.
-    refreshSystem(gen, signal);
-    refreshLibraries(gen, signal).then(function () { return refreshMedia(gen, signal); });
-    refreshDisks(gen, signal);
-    refreshConfig(gen, signal);
+    var all = [];
+    if (due("system")) { all.push(refreshSystem(gen, signal, bg)); }
+    if (due("libraries")) {
+      all.push(refreshLibraries(gen, signal, bg).then(function () {
+        if (due("media")) { return refreshMedia(gen, signal, bg); }
+        // Media is not read on this tick, but its rows show the library's
+        // drives and MAP state: redraw them from the cached media, or read
+        // it when another library is now selected.
+        if (!lastMedia || lastMedia.gen !== gen || isStale(gen, NodeState.generation)) { return null; }
+        if (lastMedia.libId !== String(libView.selected)) { return refreshMedia(gen, signal, bg); }
+        drawMedia(bg, gen, lastMedia.libId, lastMedia.data);
+        return null;
+      }));
+    } else if (due("media")) {
+      all.push(refreshMedia(gen, signal, bg));
+    }
+    if (due("disks")) { all.push(refreshDisks(gen, signal, bg)); }
+    if (due("config")) { all.push(refreshConfig(gen, signal, bg)); }
+    refreshesInFlight++;
+    var settled = function () {
+      refreshesInFlight--;
+      return tick ? tick.done() : false;
+    };
+    return Promise.all(all).then(settled, settled);
+  }
+
+  // backgroundSignal gives a background refresh its own AbortController: a
+  // node switch or a manual refresh (which abort the cycle's controller)
+  // cancels it, so does a change sent meanwhile (its rebuild could re-enable
+  // the button of that change), and so does BG_TIMEOUT_MS, so one hung read
+  // cannot stop the polling.
+  var BG_TIMEOUT_MS = 20000;
+  var bgAbort = null;
+  function backgroundSignal() {
+    var ctl = new AbortController();
+    var parent = currentAbort ? currentAbort.signal : null;
+    var onParent = function () { ctl.abort(); };
+    if (parent) {
+      if (parent.aborted) { ctl.abort(); } else { parent.addEventListener("abort", onParent); }
+    }
+    // A TimeoutError, unlike the AbortError of a cancel, reaches the panel's
+    // error line: the panel would otherwise go on showing old data.
+    var timer = setTimeout(function () {
+      ctl.abort(new DOMException("no answer in " + (BG_TIMEOUT_MS / 1000) + " s", "TimeoutError"));
+    }, BG_TIMEOUT_MS);
+    bgAbort = ctl;
+    return {
+      signal: ctl.signal,
+      // done releases the controller and reports whether the refresh was
+      // cut short (cancelled or timed out), when it read nothing reliable.
+      done: function () {
+        clearTimeout(timer);
+        if (parent) { parent.removeEventListener("abort", onParent); }
+        if (bgAbort === ctl) { bgAbort = null; }
+        return ctl.signal.aborted;
+      },
+    };
   }
 
   /* ---- node switching + health probe ----------------------------------- */
@@ -3019,7 +3220,7 @@
   document.addEventListener("DOMContentLoaded", function () {
     applyTheme(lsGet(LS_THEME) || "modern");
     $("theme-select").addEventListener("change", function (e) { applyTheme(e.target.value); });
-    $("refresh-btn").addEventListener("click", refresh);
+    $("refresh-btn").addEventListener("click", function () { refresh(); });
 
     // US-F6 library toolbar: search / state filter / table toggle / selector.
     // Each updates libView and re-renders from cached data (no refetch).
