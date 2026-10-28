@@ -99,6 +99,15 @@ mhvtl-control binds the loopback interface by default, and refuses a non-loopbac
 address without a token (`--insecure` overrides that). `mhvtl-control -h` and
 `man mhvtl-control` list every option.
 
+Browsers can't make changes from another site: POST, PATCH and DELETE requests
+whose `Sec-Fetch-Site` or `Origin` header names another origin get 403, unless
+that origin is the `--cors-origin`. Scripts and curl send neither header and are
+unaffected. `--cors-origin '*'` lets every origin through only when a token is
+set. On loopback without a token, requests must also address the daemon
+as `localhost` or a loopback IP, or they get 421; this stops DNS rebinding. Set a
+token to serve it under another name, for example behind a reverse proxy that
+passes the original `Host`, or have the proxy send `Host: localhost`.
+
 The service runs as root, as the mhVTL message queue, the `/dev/sg*` nodes and
 the disks it formats are root's. It drops every capability except
 `CAP_DAC_OVERRIDE` and runs with systemd's sandboxing; `dist/mhvtl-control.service`

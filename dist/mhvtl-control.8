@@ -41,6 +41,10 @@ Address to listen on. Default: 127.0.0.1:8080.
 .B mhvtl-control
 refuses a non-loopback address without a token, unless given
 .BR \-insecure .
+.IP
+On loopback without a token, requests must name the daemon as localhost or a
+loopback IP in Host, or get 421 Misdirected Request; this stops DNS rebinding. Behind a reverse proxy that passes the original
+Host, set a token or have the proxy send Host: localhost.
 .TP
 .BI \-api\-token " token"
 Bearer token required on
@@ -62,6 +66,12 @@ Serve HTTPS with this certificate and key.
 .TP
 .BI \-cors\-origin " origin"
 Send Access-Control-Allow-Origin with this value. Default: CORS disabled.
+.IP
+POST, PATCH and DELETE requests a browser sends from any other origin (by
+Sec-Fetch-Site or Origin) get 403; requests without those headers, as curl
+sends them, are unaffected.
+.B *
+lets every origin through only when a token is set.
 .TP
 .BI \-config\-dir " dir"
 Directory holding device.conf and library_contents.<id>. Default: /etc/mhvtl.

@@ -71,6 +71,9 @@ type Config struct {
 	// InsecureListen is whether the daemon listens on a non-loopback address
 	// without TLS, where configuration writes are refused (plan 4.1).
 	InsecureListen bool
+	// RequireLoopbackHost refuses requests whose Host is not localhost or a
+	// loopback IP. Set when the daemon listens on loopback with no token.
+	RequireLoopbackHost bool
 	// Helper talks to the apply helper, mhvtl-control-apply; implemented by
 	// *applyclient.Client. Nil means GET /config/capabilities only checks
 	// that its socket exists.
@@ -196,7 +199,8 @@ func NewServer(cfg Config) *Server {
 }
 
 // Handler builds the route mux and wraps it in the middleware chain
-// (recover -> log -> cors -> auth), returning the wrapped handler.
+// (recover -> log -> loopbackHost -> cors -> sameOrigin -> auth), returning
+// the wrapped handler.
 func (s *Server) Handler() http.Handler {
 	mux := &routeMux{ServeMux: http.NewServeMux()}
 
@@ -254,7 +258,9 @@ func (s *Server) Handler() http.Handler {
 
 	var h http.Handler = mux
 	h = s.auth(h)
+	h = s.sameOrigin(h)
 	h = s.cors(h)
+	h = s.loopbackHost(h)
 	h = logging(h, s.requests.add)
 	h = recoverMW(h)
 	return h

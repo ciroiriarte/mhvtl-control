@@ -122,8 +122,9 @@ func main() {
 		Version:     version,
 		// Configuration writes need TLS off loopback (plan 4.1); GET
 		// /config/capabilities reports it.
-		InsecureListen: !isLoopbackHost(host) && (*tlsCert == "" || *tlsKey == ""),
-		Helper:         &applyclient.Client{Socket: api.DefaultCapabilityPaths.HelperSocket},
+		InsecureListen:      !isLoopbackHost(host) && (*tlsCert == "" || *tlsKey == ""),
+		RequireLoopbackHost: requireLoopbackHost(host, token),
+		Helper:              &applyclient.Client{Socket: api.DefaultCapabilityPaths.HelperSocket},
 	}
 
 	srv := &http.Server{
@@ -183,6 +184,13 @@ func isLoopbackHost(host string) bool {
 // bind with no token and without the --insecure override.
 func bindRefused(host, token string, insecure bool) bool {
 	return !isLoopbackHost(host) && token == "" && !insecure
+}
+
+// requireLoopbackHost reports whether requests must name the daemon by a
+// loopback Host: on a loopback bind with no token, where only that keeps a
+// DNS-rebinding page off the API. A token or a non-loopback bind turns it off.
+func requireLoopbackHost(host, token string) bool {
+	return isLoopbackHost(host) && token == ""
 }
 
 // legacyOptions reads the options a 0.2.0 install kept in legacy, for a

@@ -3,7 +3,9 @@ package api
 import (
 	"crypto/subtle"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -74,6 +76,67 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// sameOrigin refuses state-changing requests a browser sent from another
+// site: without it any page the operator visits can POST mount, move or
+// format (as text/plain, which needs no preflight) to a daemon on loopback
+// with no token. Browsers send Sec-Fetch-Site and Origin on such requests
+// (Fetch Metadata, https://www.w3.org/TR/fetch-metadata/; Origin,
+// https://fetch.spec.whatwg.org/#origin-header); curl and scripts send
+// neither and pass. The configured CORS origin is allowed cross-site; "*"
+// only with a token, which a forged request cannot carry.
+func (s *Server) sameOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+		origin := r.Header.Get("Origin")
+		allowed := s.cfg.CORSOrigin != "" &&
+			(origin == s.cfg.CORSOrigin || (s.cfg.CORSOrigin == "*" && s.cfg.Token != ""))
+		ok := true
+		switch site := r.Header.Get("Sec-Fetch-Site"); {
+		case site == "same-origin" || site == "none":
+		case site != "":
+			ok = allowed
+		case origin != "":
+			u, err := url.Parse(origin)
+			ok = allowed || (err == nil && u.Host != "" && strings.EqualFold(u.Host, r.Host))
+		}
+		if !ok {
+			writeError(w, http.StatusForbidden, "cross_origin", "cross-origin request refused")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// loopbackHost refuses requests whose Host is not a loopback name when the
+// daemon listens on loopback with no token. A page on another site that
+// re-resolves its own name to 127.0.0.1 (DNS rebinding) is same-origin to the
+// browser, so sameOrigin cannot stop it and it could read and write the API;
+// its Host header still names that site. Off when RequireLoopbackHost is
+// false.
+func (s *Server) loopbackHost(next http.Handler) http.Handler {
+	if !s.cfg.RequireLoopbackHost {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+		ip := net.ParseIP(host)
+		if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
+			writeError(w, http.StatusMisdirectedRequest, "host_not_allowed",
+				"Host must be a loopback name without an API token; set --api-token to serve other names")
 			return
 		}
 		next.ServeHTTP(w, r)

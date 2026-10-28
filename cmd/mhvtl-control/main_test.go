@@ -25,6 +25,26 @@ func TestIsLoopbackHost(t *testing.T) {
 	}
 }
 
+func TestRequireLoopbackHost(t *testing.T) {
+	cases := []struct {
+		host, token string
+		want        bool
+	}{
+		{"127.0.0.1", "", true},
+		{"localhost", "", true},
+		{"::1", "", true},
+		{"127.0.0.1", "tok", false},
+		{"0.0.0.0", "", false},
+		{"", "", false},
+		{"192.168.1.10", "", false},
+	}
+	for _, c := range cases {
+		if got := requireLoopbackHost(c.host, c.token); got != c.want {
+			t.Errorf("requireLoopbackHost(%q,%q) = %v, want %v", c.host, c.token, got, c.want)
+		}
+	}
+}
+
 func TestBindRefused(t *testing.T) {
 	cases := []struct {
 		name     string
