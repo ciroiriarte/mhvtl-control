@@ -10,6 +10,14 @@ statistics and device nodes, and formats raw disks as cartridges.
 It is a single self-contained binary with the dashboard built in, and uses only
 the Go standard library.
 
+The dashboard refreshes itself while its tab is visible: libraries and system
+every 10 seconds, media and disks every 30, the configuration every minute. A
+cartridge an application loads or moves shows up without clicking Refresh.
+It skips a refresh while a dialog is open or a change is still running, keeps
+scroll position, focus and expanded lists across refreshes, and redraws a panel
+only when its data changed. The Auto-refresh button next to Refresh pauses it
+in that browser.
+
 ## Install
 
 ### From the OBS repositories

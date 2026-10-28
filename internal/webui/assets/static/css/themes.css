@@ -136,7 +136,8 @@
 :root[data-theme="classic"] .topbar .stat,
 :root[data-theme="classic"] .topbar .node-label,
 :root[data-theme="classic"] .topbar .node-health,
-:root[data-theme="classic"] .topbar .controls label { color: #eaf0ff; }
+:root[data-theme="classic"] .topbar .controls label,
+:root[data-theme="classic"] .topbar .auto-status { color: #eaf0ff; }
 :root[data-theme="classic"] .topbar .stat b { color: #fff; }
 
 /* Embossed MHVTL-style wordmark */
@@ -280,6 +281,11 @@ code, .mono, .num { font-family: var(--font-mono); }
 /* theme + target controls */
 .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .controls label { color: var(--text-dim); font-size: 12px; }
+.auto-status { color: var(--text-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* The dot only shows the state aria-pressed already announces; the empty
+   alternative text keeps it out of the button's name. */
+.auto-toggle[aria-pressed="true"]::before { content: "● " / ""; color: var(--ok); }
+.auto-toggle[aria-pressed="false"]::before { content: "○ " / ""; }
 select, input[type="text"], input[type="password"], input[type="number"], input[type="search"] {
   background: var(--bg-elev);
   color: var(--text);

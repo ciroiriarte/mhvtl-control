@@ -118,3 +118,19 @@ test("restoreView focuses only the first element of a duplicated key", () => {
   assert.strictEqual(a.focusCalls.length, 1);
   assert.strictEqual(b.focusCalls.length, 0);
 });
+
+test("pollPanels: system and libraries every tick, media and disks every third, config every sixth", () => {
+  assert.deepStrictEqual(core.pollPanels(1), ["system", "libraries"]);
+  assert.deepStrictEqual(core.pollPanels(2), ["system", "libraries"]);
+  assert.deepStrictEqual(core.pollPanels(3), ["system", "libraries", "media", "disks"]);
+  assert.deepStrictEqual(core.pollPanels(6), ["system", "libraries", "media", "disks", "config"]);
+  assert.deepStrictEqual(core.pollPanels(12), ["system", "libraries", "media", "disks", "config"]);
+  assert.strictEqual(core.POLL_SECONDS, 10);
+});
+
+test("autoRefreshText says paused, on, or when it last ran", () => {
+  assert.strictEqual(core.autoRefreshText(false, new Date()), "Auto-refresh paused");
+  assert.strictEqual(core.autoRefreshText(true, null), "Auto-refresh every 10 s");
+  const d = new Date(2026, 9, 28, 14, 5, 9);
+  assert.strictEqual(core.autoRefreshText(true, d), "Auto-refreshed " + d.toLocaleTimeString());
+});

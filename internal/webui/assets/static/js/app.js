@@ -83,6 +83,7 @@
   var LS_ORIGIN = "mhvtl-control.origin";
   var LS_TOKEN = "mhvtl-control.token";
   var LS_REMEMBER = "mhvtl-control.remember";
+  var LS_AUTO = "mhvtl-control.autorefresh"; // "0" when the viewer paused it
 
   function lsGet(k) {
     try { return localStorage.getItem(k); } catch (e) { return null; }
@@ -3101,6 +3102,56 @@
     };
   }
 
+  /* ---- auto-refresh (#76) ----------------------------------------------- *
+   * A background refresh every core.POLL_SECONDS while the tab is visible,
+   * the node answers and the viewer has not paused it. A tick is skipped
+   * while a dialog is open (the operator is in the middle of something),
+   * while a refresh or a change is still in flight, and while the tab is
+   * hidden; the first tick after the tab is shown again reads every panel.  */
+  var poll = { on: lsGet(LS_AUTO) !== "0", tick: 0, timer: null, missed: false, last: null };
+
+  function updateAutoStatus() {
+    var st = $("auto-status"), btn = $("auto-toggle");
+    if (st) { st.textContent = core.autoRefreshText(poll.on, poll.last); }
+    if (btn) { btn.setAttribute("aria-pressed", poll.on ? "true" : "false"); }
+  }
+
+  function pollSkipped() {
+    if (!poll.on || NodeState.health !== "ok") { return true; }
+    if (document.hidden) { poll.missed = true; return true; }
+    return !!document.querySelector("dialog[open]") || refreshesInFlight > 0 || writesInFlight > 0;
+  }
+
+  // pollNow runs one tick; all reads every panel (the catch-up after the tab
+  // was hidden).
+  function pollNow(all) {
+    if (pollSkipped()) { return; }
+    poll.tick++;
+    var gen = NodeState.generation;
+    refresh({ background: true, panels: all ? null : core.pollPanels(poll.tick) }).then(function (cut) {
+      if (cut || isStale(gen, NodeState.generation)) { return; }
+      poll.last = new Date();
+      updateAutoStatus();
+    });
+  }
+
+  // restartPoll starts the cadence over, as after a node switch: the switch
+  // itself reads every panel.
+  function restartPoll() {
+    if (poll.timer) { clearInterval(poll.timer); }
+    poll.tick = 0;
+    poll.last = null;
+    poll.timer = setInterval(function () { pollNow(false); }, core.POLL_SECONDS * 1000);
+    updateAutoStatus();
+  }
+
+  function toggleAuto() {
+    poll.on = !poll.on;
+    try { lsSet(LS_AUTO, poll.on ? "1" : "0"); } catch (e) { /* per-viewer convenience; works for this page anyway */ }
+    updateAutoStatus();
+    if (poll.on) { pollNow(true); }
+  }
+
   /* ---- node switching + health probe ----------------------------------- */
   // setPanelGrey toggles the greyed (pointer-events:none, dimmed) state on ONE
   // panel body. Fix A: a panel stays greyed — its mutating controls uninteractive
@@ -3158,6 +3209,7 @@
 
     greyPanels();
     updateBadge();
+    restartPoll();
 
     probe(origin, token, currentAbort.signal).then(function (ok) {
       if (isStale(gen, NodeState.generation)) { return; } // another switch superseded us
@@ -3221,6 +3273,13 @@
     applyTheme(lsGet(LS_THEME) || "modern");
     $("theme-select").addEventListener("change", function (e) { applyTheme(e.target.value); });
     $("refresh-btn").addEventListener("click", function () { refresh(); });
+    $("auto-toggle").addEventListener("click", toggleAuto);
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden && poll.missed) {
+        poll.missed = false;
+        pollNow(true);
+      }
+    });
 
     // US-F6 library toolbar: search / state filter / table toggle / selector.
     // Each updates libView and re-renders from cached data (no refetch).

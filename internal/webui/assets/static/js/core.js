@@ -1224,7 +1224,33 @@
     });
   }
 
+  /* ---- auto-refresh (#76) ---------------------------------------------- */
+  // POLL_SECONDS is the poll loop's tick. System and libraries are read on
+  // every tick, media and disks on every third (disks probes block devices),
+  // and the configuration, whose findings POST a validation, on every sixth.
+  var POLL_SECONDS = 10;
+
+  // pollPanels returns the panels due on tick n (1, 2, …).
+  function pollPanels(n) {
+    n = coerceNumber(n);
+    var p = ["system", "libraries"];
+    if (n % 3 === 0) { p.push("media", "disks"); }
+    if (n % 6 === 0) { p.push("config"); }
+    return p;
+  }
+
+  // autoRefreshText is the indicator next to Refresh: on, with the time of
+  // the last background refresh (a Date) when there was one, or paused.
+  function autoRefreshText(on, last) {
+    if (!on) { return "Auto-refresh paused"; }
+    if (!last) { return "Auto-refresh every " + POLL_SECONDS + " s"; }
+    return "Auto-refreshed " + last.toLocaleTimeString();
+  }
+
   var API = {
+    POLL_SECONDS: POLL_SECONDS,
+    pollPanels: pollPanels,
+    autoRefreshText: autoRefreshText,
     viewSignature: viewSignature,
     captureView: captureView,
     restoreView: restoreView,

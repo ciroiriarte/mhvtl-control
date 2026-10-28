@@ -24,6 +24,10 @@
         <option value="classic">Classic (mhvtl-gui)</option>
       </select>
       <button class="btn sm" id="target-btn" title="Configure the mhvtl-control node this dashboard manages">Target…</button>
+      <!-- Auto-refresh (#76): when the panels were last polled, and a toggle. -->
+      <span class="auto-status" id="auto-status"></span>
+      <button class="btn sm ghost auto-toggle" id="auto-toggle" type="button" aria-pressed="true"
+              title="Refresh the panels in the background while this tab is visible">Auto-refresh</button>
       <button class="btn sm" id="refresh-btn">Refresh</button>
     </div>
   </div>
