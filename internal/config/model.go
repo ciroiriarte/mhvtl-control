@@ -41,6 +41,9 @@ type Drive struct {
 	CompressionFactor    int
 	CompressionEnabled   bool
 	CompressionType      string
+	// Encryption is the kind of encryption the drive writes, "aes-gcm"
+	// or "simulated" (key stored in the clear in each block header).
+	Encryption string
 }
 
 // Slot is a storage slot. An empty Barcode means the slot is empty.

@@ -30,6 +30,8 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 		{"Compression without enabled", drv + " Compression: factor 1\n", 2, "partial or empty Compression"},
 		{"Compression ignored", drv + " Compression: bogus\n", 2, "vtltape ignores it"},
 		{"white space in a Drive", drv + "  \n", 2, "Compression sscanf"},
+		{"Encryption ignored", drv + " Encryption: aes\n", 2, "neither 'aes-gcm' nor 'simulated'"},
+		{"Encryption non-ASCII fold", drv + " Encryption: \u017fimulated\n", 2, "neither 'aes-gcm' nor 'simulated'"},
 		{"short NAA", lib + " NAA: 10:22\n", 2, "NAA has 2 of 8"},
 		{"Library ID without Slot", drv + " Library ID: 10\n", 2, "without 'Slot: N'"},
 		{"bare Library header", "Library: 10\n Vendor identification: STK\n", 1, "Library 10 has no CHANNEL"},

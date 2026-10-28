@@ -422,6 +422,9 @@ func (c *DeviceConf) index() {
 			if msg := scanfProblem(st.Kind, key, cText(l)); msg != "" {
 				problem(i, true, "%s", msg)
 			}
+			if st.Kind == "Drive" && key == "Encryption" && value != "" && EncryptionKind(value) == "" {
+				problem(i, true, "Encryption %q is neither 'aes-gcm' nor 'simulated': vtltape ignores it (vtltape.c:2391-2401 at 03c7d09)", value)
+			}
 			// mhVTL does not settle a repeated key one way: a string read
 			// by conf_value keeps its last non-empty value, PERSIST is
 			// true once any line says so (vtllibrary.c:1335-1340), and an
@@ -479,6 +482,32 @@ func (c *DeviceConf) index() {
 		first[k] = st.HeaderLine
 	}
 	sort.SliceStable(c.Problems, func(a, b int) bool { return c.Problems[a].Line < c.Problems[b].Line })
+}
+
+// EncryptionKind returns the kind of drive encryption a device.conf
+// Encryption value selects, "aes-gcm" or "simulated", matched as vtltape's
+// strcasecmp does (mhvtl usr/cmd/vtltape.c:2391-2401 at 03c7d09, from
+// markh794/mhvtl#328). It returns "" for any other value, which vtltape
+// logs and ignores.
+func EncryptionKind(value string) string {
+	for _, k := range []string{"aes-gcm", "simulated"} {
+		if len(value) == len(k) && asciiLower(value) == k {
+			return k
+		}
+	}
+	return ""
+}
+
+// asciiLower lowers A-Z only, as tolower does in the "C" locale; unlike
+// strings.ToLower it leaves other letters alone.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
 }
 
 // changerReads holds the drive attributes vtllibrary's update_drive_details

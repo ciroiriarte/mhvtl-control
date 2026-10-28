@@ -166,6 +166,22 @@ func TestWriteProtected(t *testing.T) {
 	}
 }
 
+// A cartridge at tape format 7 holds AES-GCM blocks; one below may hold
+// simulated-encryption ones, which the MAM does not record.
+func TestEncryptionFormat(t *testing.T) {
+	home := t.TempDir()
+	gcm := binary.NativeEndian.AppendUint32(nil, 7)
+	gcm = binary.NativeEndian.AppendUint32(gcm, 4)
+	writeCart(t, home, "GCM001", append(gcm, encode([]rec{{0x0408, []byte{0}}})...), encode(nil))
+	if c, _ := Read(home, "GCM001"); c.Encryption != "aes-gcm" || c.Type != "data" {
+		t.Errorf("format 7 = %+v, want aes-gcm data", c)
+	}
+	writeCart(t, home, "PLN001", typeMAM(0), encode(nil))
+	if c, _ := Read(home, "PLN001"); c.Encryption != "" {
+		t.Errorf("format 3 encryption = %q, want none", c.Encryption)
+	}
+}
+
 func TestUnknownAttributesSkipped(t *testing.T) {
 	home := t.TempDir()
 	mam := mamFile([]rec{

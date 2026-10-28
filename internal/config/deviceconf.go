@@ -39,7 +39,11 @@ func ParseDeviceConf(r io.Reader) (libraries []Library, drives []Drive, problems
 		case "Library":
 			lib = &Library{ID: st.ID, Channel: st.Channel, Target: st.Target, LUN: st.LUN}
 		case "Drive":
-			drv = &Drive{ID: st.ID, Channel: st.Channel, Target: st.Target, LUN: st.LUN}
+			// With no Encryption line a drive writes AES-GCM
+			// (lu_ssc.simulated_encryption starts at 0; mhvtl
+			// usr/cmd/vtltape.c:2053-2068 at 03c7d09). Built without
+			// OpenSSL, such a drive offers no encryption at all.
+			drv = &Drive{ID: st.ID, Channel: st.Channel, Target: st.Target, LUN: st.LUN, Encryption: "aes-gcm"}
 		}
 		for _, a := range st.Attrs {
 			// conf_value ignores a field with no value, and so do the sscanf
@@ -173,6 +177,15 @@ func applyAttr(lib *Library, drv *Drive, key, val string) error {
 		if drv != nil {
 			drv.CompressionType = val
 		}
+	case "Encryption":
+		if drv == nil {
+			return nil
+		}
+		k := conffile.EncryptionKind(val)
+		if k == "" {
+			return fmt.Errorf("bad Encryption %q", val)
+		}
+		drv.Encryption = k
 	}
 	return nil
 }

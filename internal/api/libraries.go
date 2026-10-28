@@ -40,10 +40,12 @@ type driveDTO struct {
 	CompressionEnabled bool   `json:"compression_enabled"`
 	CompressionType    string `json:"compression_type"`
 	CompressionFactor  int    `json:"compression_factor"`
-	Loaded             *bool  `json:"loaded,omitempty"`
-	Barcode            string `json:"barcode,omitempty"`
-	SourceSlot         int    `json:"source_slot,omitempty"`
-	SourceMAP          int    `json:"source_map,omitempty"`
+	// Encryption is "aes-gcm" or "simulated" (device.conf Encryption).
+	Encryption string `json:"encryption"`
+	Loaded     *bool  `json:"loaded,omitempty"`
+	Barcode    string `json:"barcode,omitempty"`
+	SourceSlot int    `json:"source_slot,omitempty"`
+	SourceMAP  int    `json:"source_map,omitempty"`
 	// Nodes are the drive's device nodes, when it is found on this host.
 	Nodes *changer.Nodes `json:"nodes,omitempty"`
 }
@@ -88,6 +90,7 @@ func toDriveDTO(d config.Drive) driveDTO {
 		CompressionEnabled: d.CompressionEnabled,
 		CompressionType:    d.CompressionType,
 		CompressionFactor:  d.CompressionFactor,
+		Encryption:         d.Encryption,
 	}
 }
 

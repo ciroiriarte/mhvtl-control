@@ -68,7 +68,7 @@ func TestParseDeviceConfScanfFields(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%q: %v", tc.in, err)
 		}
-		tc.want.ID, tc.want.Target = 11, 1
+		tc.want.ID, tc.want.Target, tc.want.Encryption = 11, 1, "aes-gcm"
 		if len(d) != 1 || d[0] != tc.want {
 			t.Errorf("%q: drives = %+v, want %+v", tc.in, d, tc.want)
 		}

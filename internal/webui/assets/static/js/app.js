@@ -377,7 +377,8 @@
     return { addr: addr, naa: naa };
   }
 
-  // telemetryBadges builds the compression + SCSI-addressing badges for a drive.
+  // telemetryBadges builds the compression, encryption and SCSI-addressing
+  // badges for a drive.
   // All values go through textContent (mk `text`), so API data is never HTML.
   function telemetryBadges(lib, d) {
     var wrap = mk("div", { class: "badges" });
@@ -391,6 +392,17 @@
       }));
     } else {
       wrap.appendChild(mk("span", { class: "badge comp off", text: "compression off" }));
+    }
+    if (d.encryption === "simulated") {
+      wrap.appendChild(mk("span", {
+        class: "badge enc simulated", text: "encryption simulated",
+        attrs: { title: "Simulated encryption: the key is stored in the clear in each block header, so the data is not protected" },
+      }));
+    } else if (d.encryption) {
+      wrap.appendChild(mk("span", {
+        class: "badge enc", text: "encryption " + String(d.encryption),
+        attrs: { title: "AES-256-GCM drive encryption, used when the backup application sets a key (mhVTL built without OpenSSL offers none)" },
+      }));
     }
     var sa = scsiAddr(d);
     if (sa.addr) {
@@ -1110,7 +1122,8 @@
             : c.media_absent ? "Disk not attached: the bay is empty or the disk was removed." : "";
       var tr = mk("tr", { class: note ? "has-note" : "", children: [
         mk("td", { class: "mono", text: bc }),
-        mk("td", { text: c.type || "—" }),
+        mk("td", { children: [document.createTextNode(c.type || "—")].concat(c.encryption ? [document.createTextNode(" "),
+          mk("span", { class: "badge enc", text: String(c.encryption), attrs: { title: "holds AES-256-GCM encrypted blocks" } })] : []) }),
         mk("td", { class: "mono", text: c.density || "—", attrs: c.description ? { title: String(c.description) } : null }),
         capCell,
         mk("td", { children: [c.write_protected ? mk("span", { class: "badge wp", text: "WP", attrs: { title: "write protected" } }) : document.createTextNode("—")] }),

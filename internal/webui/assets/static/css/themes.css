@@ -394,6 +394,8 @@ select, input[type="text"], input[type="password"], input[type="number"], input[
   background: var(--bg-elev-2); color: var(--text-dim); border: 1px solid var(--border-soft);
 }
 .badge.comp.on { background: var(--slot-full); color: var(--text); border-color: var(--slot-full-br); }
+.badge.enc { color: var(--accent-2); border-color: var(--accent-2); }
+.badge.enc.simulated { color: var(--warn); border-color: var(--warn); border-style: dashed; }
 .badge.unknown { color: var(--warn); border-color: var(--warn); }
 /* ---- Device nodes (st/nst/sg/sch, /dev/tape links) -------------------- */
 .nodes { margin-top: 6px; font-size: 11px; max-width: 260px; }

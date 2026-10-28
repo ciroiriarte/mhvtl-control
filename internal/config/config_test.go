@@ -41,13 +41,13 @@ func TestParseDeviceConf(t *testing.T) {
 	}{
 		{0, Drive{ID: 11, Target: 1, LibraryID: 10, Slot: 1, Vendor: "IBM", Product: "ULT3580-TD8",
 			Revision: "HB81", Serial: "XYZZY_A1", NAA: "10:22:33:44:ab:00:01:00",
-			CompressionFactor: 1, CompressionEnabled: true, CompressionType: "lzo"}},
+			CompressionFactor: 1, CompressionEnabled: true, CompressionType: "lzo", Encryption: "aes-gcm"}},
 		{2, Drive{ID: 13, Target: 3, LibraryID: 10, Slot: 3, Vendor: "IBM", Product: "ULT3580-TD6",
 			Revision: "2160", Serial: "XYZZY_A3", NAA: "10:22:33:44:ab:00:03:00",
-			CompressionFactor: 1, CompressionEnabled: true, CompressionType: "lzo"}},
+			CompressionFactor: 1, CompressionEnabled: true, CompressionType: "lzo", Encryption: "aes-gcm"}},
 		{7, Drive{ID: 34, Target: 12, LibraryID: 30, Slot: 4, Vendor: "STK", Product: "T10000B",
 			Revision: "550V", Serial: "XYZZY_B4", NAA: "30:22:33:44:ab:00:12:00",
-			CompressionFactor: 1, CompressionEnabled: true, CompressionType: "lzo"}},
+			CompressionFactor: 1, CompressionEnabled: true, CompressionType: "lzo", Encryption: "aes-gcm"}},
 	}
 	for _, tc := range tests {
 		if got := drives[tc.idx]; got != tc.want {
@@ -64,6 +64,37 @@ func TestParseDeviceConfCompressionDisabled(t *testing.T) {
 	}
 	if d[0].CompressionFactor != 9 || d[0].CompressionEnabled || d[0].Slot != 2 || d[0].LibraryID != 10 {
 		t.Errorf("got %+v", d[0])
+	}
+}
+
+// Encryption is aes-gcm unless the drive says simulated, matched without
+// case; an unknown value is a Problem and leaves the earlier one.
+func TestParseDeviceConfEncryption(t *testing.T) {
+	const drv = "Drive: 5 CHANNEL: 00 TARGET: 01 LUN: 00\n"
+	for _, tc := range []struct {
+		in, want string
+		problem  bool
+	}{
+		{drv, "aes-gcm", false},
+		{drv + " Encryption: simulated\n", "simulated", false},
+		{drv + " Encryption: AES-GCM\n", "aes-gcm", false},
+		{drv + " Encryption: Simulated # key in the clear\n", "simulated", false},
+		{drv + " Encryption: simulated\n Encryption: none\n", "simulated", true},
+	} {
+		_, d, problems, err := ParseDeviceConf(strings.NewReader(tc.in))
+		if err != nil || len(d) != 1 {
+			t.Fatalf("%q: err=%v drives=%d", tc.in, err, len(d))
+		}
+		if d[0].Encryption != tc.want {
+			t.Errorf("%q: Encryption = %q, want %q", tc.in, d[0].Encryption, tc.want)
+		}
+		found := false
+		for _, p := range problems {
+			found = found || strings.Contains(p.Msg, "Encryption \"none\"")
+		}
+		if found != tc.problem {
+			t.Errorf("%q: problems %v", tc.in, problems)
+		}
 	}
 }
 

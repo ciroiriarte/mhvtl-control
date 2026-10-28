@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"mhvtl-control/internal/changer"
@@ -215,6 +216,46 @@ func TestLibrariesDriveIdentity(t *testing.T) {
 	}
 	if d.NAA == lib.NAA {
 		t.Errorf("drive NAA equals the library's %q", lib.NAA)
+	}
+}
+
+// Each drive reports the encryption device.conf selects: aes-gcm unless it
+// says simulated.
+func TestLibrariesDriveEncryption(t *testing.T) {
+	dir := writeConfigDir(t)
+	p := filepath.Join(dir, "device.conf")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const hdr = "Drive: 12 CHANNEL: 00 TARGET: 02 LUN: 00\n Library ID: 10 Slot: 02\n"
+	if !strings.Contains(string(b), hdr) {
+		t.Fatal("fixture has no drive 12")
+	}
+	b = []byte(strings.Replace(string(b), hdr, hdr+" Encryption: simulated\n", 1))
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{ConfigDir: dir})
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/libraries", nil))
+	var body struct {
+		Libraries []struct {
+			Drives []struct {
+				ID         int    `json:"id"`
+				Encryption string `json:"encryption"`
+			} `json:"drives"`
+		} `json:"libraries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := map[int]string{}
+	for _, d := range body.Libraries[0].Drives {
+		got[d.ID] = d.Encryption
+	}
+	if got[11] != "aes-gcm" || got[12] != "simulated" {
+		t.Errorf("encryption by drive = %v, want 11 aes-gcm, 12 simulated", got)
 	}
 }
 

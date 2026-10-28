@@ -60,6 +60,11 @@ const flagWriteProtect = 0x0002
 // mamHeaderLen is the two u32 format versions ahead of the mam records.
 const mamHeaderLen = 8
 
+// tapeFmtVersionGCM is TAPE_FMT_VERSION_GCM: vtltape raises a cartridge's
+// tape format to it with its first AES-GCM block, and does not lower it
+// again (mhvtl include/vtlcart.h:51, usr/mhvtl_io.c:736 at 03c7d09).
+const tapeFmtVersionGCM = 7
+
 // Cartridge is one virtual cartridge as recorded on disk.
 type Cartridge struct {
 	Barcode        string `json:"barcode"`
@@ -75,6 +80,11 @@ type Cartridge struct {
 	ReadBytes      uint64 `json:"read_bytes"`
 	Partitions     int    `json:"partitions,omitempty"`
 	LastWritten    string `json:"last_written,omitempty"`
+	// Encryption is "aes-gcm" once the cartridge holds AES-GCM blocks
+	// (its tape format is TAPE_FMT_VERSION_GCM), else empty: it may then
+	// hold simulated-encryption blocks, which only a scan of its blocks
+	// would tell.
+	Encryption string `json:"encryption,omitempty"`
 
 	// Raw backend only, from the MVTL superblock.
 	UUID         string `json:"uuid,omitempty"`
@@ -393,6 +403,9 @@ func walkRecords(b []byte, fn func(id uint16, v []byte)) error {
 func parseMAM(c *Cartridge, b []byte) error {
 	if len(b) < mamHeaderLen {
 		return errors.New("short header")
+	}
+	if binary.NativeEndian.Uint32(b) >= tapeFmtVersionGCM {
+		c.Encryption = "aes-gcm"
 	}
 	return walkRecords(b[mamHeaderLen:], func(id uint16, v []byte) {
 		switch id {
