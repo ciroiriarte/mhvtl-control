@@ -1,3 +1,26 @@
+mhvtl-control (0.5.0-1) unstable; urgency=medium
+
+  * Refuse cross-site writes: a POST, PATCH, PUT or DELETE whose
+    Sec-Fetch-Site or Origin names another origin gets 403, so a web page
+    cannot change libraries through a token-less daemon on loopback. On
+    loopback without a token, a Host other than localhost or a loopback
+    address gets 421 (DNS rebinding). --cors-origin '*' now requires an API
+    token.
+  * Dashboard: keeps scroll positions, focus and open lists across redraws
+    (#77) and refreshes itself every 10 s while the tab is visible, with an
+    indicator and a pause button next to Refresh (#76).
+  * Report cartridges whose media is missing, in the media list, /readyz and
+    the mhvtl_media_missing_cartridges metric, including one held by a
+    picker (#43, #71).
+  * Warn in /api/v1/system and before an apply when the kernel ch driver is
+    loaded, as it pins mhVTL drives until a reboot (#42).
+  * Support LTO-8 Type M (M8) media, from upstream mhVTL ebbda22
+    (markh794/mhvtl#307) (#74).
+  * Edit MHVTL_BACKEND (mhvtl or tcmu) in the system settings (#3).
+  * README: install from the OBS repositories (#32).
+
+ -- Ciro Iriarte <ciro.iriarte@gmail.com>  Wed, 28 Oct 2026 17:30:00 -0300
+
 mhvtl-control (0.4.0-1) unstable; urgency=medium
 
   * Configuration editor (#3): show, check and change device.conf,

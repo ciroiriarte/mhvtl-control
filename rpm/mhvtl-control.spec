@@ -4,7 +4,7 @@
 %global debug_package %{nil}
 
 Name:           mhvtl-control
-Version:        0.4.0
+Version:        0.5.0
 Release:        1%{?dist}
 Summary:        Management daemon and web dashboard for the mhVTL virtual tape library
 License:        Apache-2.0
@@ -153,6 +153,15 @@ fi
 %dir %attr(0700,root,root) %{_sharedstatedir}/mhvtl-control-apply
 
 %changelog
+* Wed Oct 28 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.5.0-1
+- Refuse cross-site writes: a POST, PATCH, PUT or DELETE whose Sec-Fetch-Site or Origin names another origin gets 403, so a web page cannot change libraries through a token-less daemon on loopback. On loopback without a token, a Host other than localhost or a loopback address gets 421 (DNS rebinding). --cors-origin '*' now requires an API token.
+- Dashboard: keeps scroll positions, focus and open lists across redraws (#77) and refreshes itself every 10 s while the tab is visible, with an indicator and a pause button next to Refresh (#76).
+- Report cartridges whose media is missing, in the media list, /readyz and the mhvtl_media_missing_cartridges metric, including one held by a picker (#43, #71).
+- Warn in /api/v1/system and before an apply when the kernel ch driver is loaded, as it pins mhVTL drives until a reboot (#42).
+- Support LTO-8 Type M (M8) media, from upstream mhVTL ebbda22 (markh794/mhvtl#307) (#74).
+- Edit MHVTL_BACKEND (mhvtl or tcmu) in the system settings (#3).
+- README: install from the OBS repositories (#32).
+
 * Mon Oct 19 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.4.0-1
 - Configuration editor (#3): show, check and change device.conf, library_contents and mhvtl.conf from the API and the dashboard (#46, #60-#64). Changes are staged, checked by a dry run and applied by a privileged helper, mhvtl-control-apply, which restarts the affected mhVTL units, rolls back a failed apply and recovers an interrupted one, also at boot (#47-#49, #57-#59).
 - Configuration writes are off by default. They need an API token, TLS on a non-loopback listen address, and mhvtl-control-apply.socket enabled; the README says how. A vendor preset keeps the helper's units disabled.
