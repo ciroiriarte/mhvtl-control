@@ -2,7 +2,8 @@ name: release
 
 # Pushing a v<version> tag builds static binaries and packages and attaches
 # them to a GitHub release for that tag. The tag must match the version in
-# debian/changelog, rpm/mhvtl-control.spec and dist/mhvtl-control.8.
+# debian/changelog, rpm/mhvtl-control.spec and dist/mhvtl-control.8. Once the
+# release is published, the obs job rebuilds the OBS packages from the tag.
 on:
   push:
     tags: ['v*']
@@ -128,3 +129,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "mhvtl-control ${GITHUB_REF_NAME#v}" --generate-notes
+
+  # The OBS package home:ciriarte:mhvtl/mhvtl-control runs its services on the
+  # server: tar_scm fetches branch obs-release and versions it from the tag it
+  # points at. This job moves obs-release to the released commit and triggers
+  # those services with OBS_TOKEN, a token that can only run this package's
+  # services (osc token --create --operation runservice home:ciriarte:mhvtl
+  # mhvtl-control). Without the secret (a fork) the job does nothing.
+  obs:
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: move obs-release to the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OBS_TOKEN: ${{ secrets.OBS_TOKEN }}
+        run: |
+          [ -n "$OBS_TOKEN" ] || { echo "::notice::OBS_TOKEN is not set: OBS not updated"; exit 0; }
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/obs-release" -f sha="$GITHUB_SHA" -F force=true >/dev/null ||
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref=refs/heads/obs-release -f sha="$GITHUB_SHA" >/dev/null
+      - name: trigger the OBS services
+        env:
+          OBS_TOKEN: ${{ secrets.OBS_TOKEN }}
+        run: |
+          [ -n "$OBS_TOKEN" ] || exit 0
+          # A token created for one package names it, so the request does not
+          # ("Authorization token", OBS User Guide:
+          # https://openbuildservice.org/help/manuals/obs-user-guide/cha-obs-authorization-token).
+          curl -fsS -X POST -H "Authorization: Token $OBS_TOKEN" https://api.opensuse.org/trigger/runservice
