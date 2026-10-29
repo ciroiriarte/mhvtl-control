@@ -359,7 +359,7 @@ func (s *Server) contents(ctx context.Context, st *stage, id int) (*conffile.Lib
 }
 
 // unitsWait bounds the wait for the helper's units answer: its own
-// systemctl calls stop after 5 s (apply.unitsTimeout).
+// systemctl call stops after 5 s (apply.unitsTimeout).
 const unitsWait = 10 * time.Second
 
 // libraryState is the ActiveState of vtllibrary@id, which the daemon asks

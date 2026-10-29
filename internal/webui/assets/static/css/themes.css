@@ -397,6 +397,15 @@ select, input[type="text"], input[type="password"], input[type="number"], input[
 .badge.enc { color: var(--accent-2); border-color: var(--accent-2); }
 .badge.enc.simulated { color: var(--warn); border-color: var(--warn); border-style: dashed; }
 .badge.unknown { color: var(--warn); border-color: var(--warn); }
+/* ---- Service table (System panel, mhvtl-control#14) ------------------- */
+.svc-head { font-size: 12px; margin: 12px 0 4px; }
+.svc-scroll { overflow-x: auto; }
+.svc-table { width: 100%; }
+.svc-table th, .svc-table td { font-size: 12px; vertical-align: top; }
+.svc-table td.mono { font-family: var(--font-mono); }
+.badge.st-active { color: var(--ok); border-color: var(--ok); }
+.badge.st-failed { color: var(--err); border-color: var(--err-border); background: var(--err-bg); }
+.badge.st-transition { color: var(--warn); border-color: var(--warn); }
 /* ---- Device nodes (st/nst/sg/sch, /dev/tape links) -------------------- */
 .nodes { margin-top: 6px; font-size: 11px; max-width: 260px; }
 .node-row { display: flex; align-items: center; gap: 6px; min-height: 26px; }

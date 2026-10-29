@@ -1158,6 +1158,88 @@
     return msg;
   }
 
+  // fmtUptime formats a unit's uptime in microseconds (GET /api/v1/service
+  // uptime_us) to its two largest units, or "" when there is none.
+  function fmtUptime(us) {
+    var s = Math.floor(coerceNumber(us) / 1e6);
+    if (s <= 0) { return ""; }
+    var d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    if (d) { return d + " d" + (h ? " " + h + " h" : ""); }
+    if (h) { return h + " h" + (m ? " " + m + " min" : ""); }
+    if (m) { return m + " min"; }
+    return s + " s";
+  }
+
+  // unitRow is a row of the Service table for a unit of GET
+  // /api/v1/service: its state as systemd reports it, with the badge class
+  // that colours it. A unit systemd does not know is "not installed".
+  function unitRow(key, name, u) {
+    if (!u) { return { key: key, name: name, state: "unknown", cls: "", pid: "", uptime: "", notes: [] }; }
+    var active = String(u.active_state || ""), sub = String(u.sub_state || "");
+    var state = u.load_state === "not-found" ? "not installed"
+      : active + (sub && sub !== active ? " (" + sub + ")" : "");
+    var cls = active === "active" ? "st-active"
+      : active === "failed" ? "st-failed"
+      : /^(activating|deactivating|reloading)$/.test(active) ? "st-transition" : "";
+    return {
+      key: key, name: name, state: state, cls: cls,
+      pid: coerceNumber(u.main_pid) > 0 ? String(coerceNumber(u.main_pid)) : "",
+      uptime: fmtUptime(u.uptime_us), notes: [],
+    };
+  }
+
+  // serviceRows is the Service table of the System panel for GET
+  // /api/v1/service: mhvtl.target, its support units, each library with
+  // how many of its drives are active, PERSIST and the ch leak exposure,
+  // then the standalone drives. Without a service manager (no apply
+  // helper) the units are unknown and only the libraries are listed.
+  function serviceRows(svc) {
+    svc = svc || {};
+    var rows = [];
+    if (svc.manager === "systemd") {
+      rows.push(unitRow("svc-target", "mhvtl.target", svc.target));
+      coerceArray(svc.support).forEach(function (u) {
+        rows.push(unitRow("svc-" + String(u.name), String(u.name).replace(/\.service$/, ""), u));
+      });
+    }
+    coerceArray(svc.libraries).forEach(function (l) {
+      var id = coerceNumber(l.id);
+      var r = unitRow("svc-lib-" + id, "library " + id, l.unit);
+      var drives = coerceArray(l.drives);
+      if (svc.manager === "systemd") {
+        var up = drives.filter(function (d) { return d.unit && d.unit.active_state === "active"; }).length;
+        r.notes.push("drives " + up + "/" + drives.length + " active");
+      } else {
+        r.notes.push(drives.length + (drives.length === 1 ? " drive" : " drives"));
+      }
+      if (l.persist) { r.notes.push("PERSIST"); }
+      if (l.ch_exposed) { r.notes.push("ch exposed"); }
+      rows.push(r);
+    });
+    coerceArray(svc.standalone_drives).forEach(function (d) {
+      var id = coerceNumber(d.id);
+      var r = unitRow("svc-drive-" + id, "drive " + id, d.unit);
+      r.notes.push("standalone");
+      rows.push(r);
+    });
+    return rows;
+  }
+
+  // serviceBackendText is the backend line under the Service table: the
+  // backend mhvtl.conf configures, what the kernel has loaded, and the
+  // message queue.
+  function serviceBackendText(svc) {
+    var b = (svc && svc.backend) || {}, km = b.kernel_module || {};
+    var loaded = [];
+    if (km.loaded) {
+      loaded.push("mhvtl.ko" + (km.refcount != null ? " (" + coerceNumber(km.refcount) + " refs)" : ""));
+    }
+    if (b.tcmu && b.tcmu.target_core_user) { loaded.push("target_core_user"); }
+    return "Backend " + String(b.configured || "mhvtl") + "; loaded: " +
+      (loaded.length ? loaded.join(", ") : "none") +
+      "; queue " + (svc && svc.queue && svc.queue.exists ? "present" : "absent");
+  }
+
   // encryptionBadge is the drive card's encryption badge for a drive of GET
   // /api/v1/libraries ({cls, text, title}), or null: a drive whose
   // personality cannot encrypt ("none") or that reports nothing gets none.
@@ -1354,6 +1436,9 @@
     problemText: problemText,
     buildValidateBody: buildValidateBody,
     kernelChNote: kernelChNote,
+    fmtUptime: fmtUptime,
+    serviceRows: serviceRows,
+    serviceBackendText: serviceBackendText,
     encryptionBadge: encryptionBadge,
   };
 

@@ -31,6 +31,20 @@ raw-disk cartridge is readable (503 otherwise, with the failed checks), and
 .I /healthz
 answers 200 while the daemon runs.
 .PP
+.I /api/v1/service
+reports the state of mhvtl.target, its support units and each
+.B vtllibrary@
+and
+.B vtltape@
+unit, the backend mhvtl.conf configures next to the modules loaded, and
+whether the message queue exists. The unit states come from
+.BR mhvtl-control-apply ;
+without it,
+.B manager
+is
+.B unavailable
+and they are left out.
+.PP
 mhVTL may start after
 .BR mhvtl-control ,
 and may restart while it runs.

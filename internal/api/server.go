@@ -156,6 +156,8 @@ type Server struct {
 	// hello caches the helper's state for GET /config/capabilities and the
 	// write routes.
 	hello helloCache
+	// service caches the last GET /service answer.
+	service serviceCache
 	// stages are the change sets the write routes build.
 	stages stages
 	// now is the clock; time.Now unless a test sets it.
@@ -217,6 +219,7 @@ func (s *Server) Handler() http.Handler {
 	mux := &routeMux{ServeMux: http.NewServeMux()}
 
 	mux.HandleFunc("GET /api/v1/system", s.handleSystem)
+	mux.HandleFunc("GET /api/v1/service", s.handleService)
 	mux.HandleFunc("GET /api/v1/libraries", s.handleLibraries)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/mount", s.handleMount)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/unmount", s.handleUnmount)

@@ -322,6 +322,32 @@ LOG SENSE and never read the TapeAlert page, which would clear the flags for
 the backup application. Example alert rules are in
 `dist/prometheus/mhvtl-control.rules.yml`.
 
+## Service status
+
+`GET /api/v1/service` reports mhVTL's units and backend, read-only:
+
+- `target` and `support`: `mhvtl.target` and the units besides the
+  instances that are part of it (`mhvtl-load-modules`, `mhvtl-tcmu-handler`,
+  `mhvtl-media`, `mhvtl-bay-monitor`), each with its load, active and sub
+  state, result, main PID and uptime. A unit that is not installed shows
+  `load_state: not-found`.
+- `libraries`: each library of `device.conf` with its `vtllibrary@` unit,
+  its drives' `vtltape@` units, `persist` (`PERSIST` in `device.conf`) and
+  `ch_exposed` (whether starting it may leak drive references, see
+  [The kernel ch driver](#the-kernel-ch-driver)); `standalone_drives` the
+  drives of no library.
+- `backend`: `MHVTL_BACKEND` from `mhvtl.conf` (`configured`, `mhvtl` when
+  unset), whether `mhvtl.ko` is loaded and its reference count, and whether
+  `target_core_user` is loaded. Both modules may be loaded after a backend
+  change without a reboot.
+- `queue.exists`: whether mhVTL's message queue exists.
+
+mhvtl-control's own unit can't reach systemd, so it asks the apply helper
+for the unit states (the helper's `units` request, which takes no lock and
+isn't audited). Without the helper, `manager` is `unavailable` and the
+units are left out; the rest is still reported. An answer is reused for 2
+seconds. The dashboard shows it as the Service table of the System panel.
+
 ## The kernel ch driver
 
 Linux's `ch` driver (`/dev/sch*`) leaks references. Each time it attaches to a

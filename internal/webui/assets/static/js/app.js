@@ -332,10 +332,12 @@
     ] });
   }
 
-  function renderSystem(s) {
-    preserve($("system-status"), function () { drawSystem(s); });
+  // renderSystem draws GET /system and, below it, the Service table from
+  // GET /service (svc), or the reason it could not be read.
+  function renderSystem(s, svc) {
+    preserve($("system-status"), function () { drawSystem(s, svc); });
   }
-  function drawSystem(s) {
+  function drawSystem(s, svc) {
     s = s || {};
     // Topbar host summary (textContent only).
     var stat = $("sys-stat");
@@ -364,6 +366,47 @@
     body.appendChild(mk("table", { children: [tbody] }));
     var chNote = core.kernelChNote(s.kernel_ch);
     if (chNote) { body.appendChild(mk("p", { class: "warn", text: chNote })); }
+    drawService(body, svc);
+  }
+
+  // drawService appends the read-only Service table (mhvtl-control#14).
+  function drawService(body, svc) {
+    body.appendChild(mk("h3", { class: "svc-head", text: "Service" }));
+    if (!svc || svc.error) {
+      body.appendChild(mk("p", { class: "muted", text: "Service status unavailable" + (svc && svc.error ? ": " + svc.error : "") }));
+      return;
+    }
+    var rows = core.serviceRows(svc).map(function (r) {
+      var unit = mk("td", { children: [mk("span", { text: r.name })] });
+      if (r.notes.length) {
+        unit.appendChild(mk("div", { class: "badges", children: r.notes.map(function (n) {
+          return mk("span", { class: "badge" + (n === "ch exposed" ? " unknown" : ""), text: n });
+        }) }));
+      }
+      return mk("tr", { key: r.key, children: [
+        unit,
+        mk("td", { children: [mk("span", { class: "badge " + r.cls, text: r.state })] }),
+        mk("td", { class: "mono", text: r.pid || "—" }),
+        mk("td", { text: r.uptime || "—" }),
+      ] });
+    });
+    if (rows.length) {
+      body.appendChild(mk("div", { class: "svc-scroll", key: "svc-scroll", children: [
+        mk("table", { class: "svc-table", children: [
+          mk("thead", { children: [mk("tr", { children: [
+            mk("th", { text: "Unit" }), mk("th", { text: "State" }), mk("th", { text: "PID" }), mk("th", { text: "Up" }),
+          ] })] }),
+          mk("tbody", { children: rows }),
+        ] }),
+      ] }));
+    }
+    if (svc.manager !== "systemd") {
+      body.appendChild(mk("p", { class: "muted", text: "Unit states need the apply helper (mhvtl-control-apply.socket)." }));
+    }
+    body.appendChild(mk("p", { class: "muted", text: core.serviceBackendText(svc) }));
+    coerceArray(svc.errors).forEach(function (e) {
+      body.appendChild(mk("p", { class: "warn", text: String(e) }));
+    });
   }
 
   // scsiAddr returns a drive's own SCSI address and NAA. It never borrows the
@@ -2937,10 +2980,17 @@
       setPanelGrey("system-status", true); // loading/greyed until THIS panel's data lands
       busy("system-panel", true);
     }
-    return api("/api/v1/system", { signal: signal }).then(function (s) {
+    // A daemon without GET /service (older than mhvtl-control#14) or a
+    // failed read still draws the system table.
+    var svcReq = api("/api/v1/service", { signal: signal }).catch(function (e) {
+      if (e.name === "AbortError") { throw e; }
+      return { error: e.message };
+    });
+    return Promise.all([api("/api/v1/system", { signal: signal }), svcReq]).then(function (r) {
+      var s = r[0], svc = r[1];
       if (!bg) { busy("system-panel", false); }
       if (isStale(gen, NodeState.generation)) { return; }
-      if (drawPanel("system", $("system-status"), bg, s, [gen], function () { renderSystem(s); })) {
+      if (drawPanel("system", $("system-status"), bg, { system: s, service: svc }, [gen], function () { renderSystem(s, svc); })) {
         setPanelGrey("system-status", false); // new-node content rendered: interactive again
       }
       (bg ? sysStatus.quietOk() : sysStatus.ok());

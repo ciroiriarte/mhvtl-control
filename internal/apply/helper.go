@@ -24,7 +24,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -65,6 +64,10 @@ type Config struct {
 	Now    func() time.Time
 	// Systemctl runs systemctl with args and returns its stdout.
 	Systemctl func(ctx context.Context, args ...string) ([]byte, error)
+	// Monotonic reads CLOCK_MONOTONIC, the clock of systemd's
+	// ActiveEnterTimestampMonotonic, for the uptime units reports; nil
+	// leaves the uptime out.
+	Monotonic func() (time.Duration, error)
 	// CheckPeer authenticates the caller.
 	CheckPeer func(*net.UnixConn) (Peer, error)
 	// Journal sends structured fields to the journal.
@@ -120,6 +123,7 @@ func DefaultConfig(configDir, version string) Config {
 		Systemctl: func(ctx context.Context, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, "systemctl", args...).Output()
 		},
+		Monotonic: monotonic,
 		CheckPeer: CheckPeer,
 		Journal: func(fields map[string]string) {
 			if err := SendJournal(JournalSocket, fields); err != nil {
@@ -234,11 +238,11 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 		if len(req.Files)+len(req.Delete)+len(req.Dispositions)+len(req.ExpectUnits) > 0 || req.ForceToken != "" {
 			return Response{Result: ResultRefused, Error: ErrBadRequest, Message: "units takes no input but its name"}
 		}
-		states, err := h.libraryStates(ctx)
+		states, units, err := h.unitStates(ctx)
 		if err != nil {
 			return responseOf(err)
 		}
-		return Response{Result: ResultOK, LibraryStates: states}
+		return Response{Result: ResultOK, LibraryStates: states, UnitStates: units}
 	}
 	rec := AuditRecord{TS: h.cfg.Now(), Actor: req.Actor, Peer: peer, Op: req.Op, Units: req.ExpectUnits}
 	l, held, err := h.waitLock()
@@ -268,32 +272,6 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 		h.auditResponse(rec, resp)
 	}
 	return resp
-}
-
-// unitsTimeout bounds a units request's systemctl calls. Each reads one
-// property from the service manager, normally in milliseconds; 5 s allows a
-// busy manager and ends well before the daemon gives up on the request.
-var unitsTimeout = 5 * time.Second
-
-// libraryStates is the ActiveState of the vtllibrary@ instance of each
-// library in device.conf, as readLive reads it.
-func (h *Helper) libraryStates(ctx context.Context) (map[int]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, unitsTimeout)
-	defer cancel()
-	b, err := os.ReadFile(filepath.Join(h.cfg.ConfigDir, deviceConf))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, err
-	}
-	states := map[int]string{}
-	for _, st := range conffile.ParseDeviceConf(b).Stanzas() {
-		if st.Kind != "Library" {
-			continue
-		}
-		if states[st.ID], err = showProp(ctx, &h.cfg, libraryUnit(st.ID), "ActiveState"); err != nil {
-			return nil, err
-		}
-	}
-	return states, nil
 }
 
 func (h *Helper) auditResponse(rec AuditRecord, resp Response) {

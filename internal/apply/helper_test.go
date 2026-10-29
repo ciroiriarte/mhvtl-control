@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -284,25 +285,81 @@ func TestHelloStates(t *testing.T) {
 }
 
 // units reports the ActiveState of the vtllibrary@ instance of every
-// library in device.conf, for the daemon, which cannot ask systemd
-// itself. It changes nothing, takes no lock and is not audited.
+// library in device.conf, and the state of mhvtl.target, its support units
+// and every instance, for the daemon, which cannot ask systemd itself. It
+// changes nothing, takes no lock and is not audited.
 func TestUnits(t *testing.T) {
 	e := newEnv(t)
-	e.cfg.Systemctl = func(_ context.Context, args ...string) ([]byte, error) {
-		switch args[len(args)-1] {
-		case "vtllibrary@10.service":
-			return []byte("active\n"), nil
-		case "vtllibrary@30.service":
-			return []byte("failed\n"), nil
-		}
-		return nil, fmt.Errorf("unexpected %v", args)
+	// Blocks as systemd 261 prints them, in its own property order. A unit
+	// not listed here is one systemd does not know.
+	shown := map[string]string{
+		"mhvtl.target":               "LoadState=loaded\nActiveState=active\nSubState=active\nActiveEnterTimestampMonotonic=1000000\n",
+		"mhvtl-load-modules.service": "LoadState=loaded\nActiveState=active\nSubState=exited\nActiveEnterTimestampMonotonic=900000\nMainPID=0\nResult=success\n",
+		"mhvtl-media.service":        "LoadState=loaded\nActiveState=inactive\nSubState=dead\nActiveEnterTimestampMonotonic=0\nMainPID=0\nResult=success\n",
+		"vtllibrary@10.service":      "LoadState=loaded\nActiveState=active\nSubState=running\nActiveEnterTimestampMonotonic=5000000\nMainPID=4711\nResult=success\n",
+		"vtllibrary@30.service":      "LoadState=loaded\nActiveState=failed\nSubState=failed\nActiveEnterTimestampMonotonic=6000000\nMainPID=0\nResult=exit-code\n",
+		"vtltape@11.service":         "LoadState=loaded\nActiveState=active\nSubState=running\nActiveEnterTimestampMonotonic=4000000\nMainPID=4700\nResult=success\n",
 	}
+	var calls int
+	e.cfg.Systemctl = func(_ context.Context, args ...string) ([]byte, error) {
+		calls++
+		if len(args) < 3 || args[0] != "show" || args[1] != "--property=LoadState,ActiveState,SubState,Result,MainPID,ActiveEnterTimestampMonotonic" {
+			return nil, fmt.Errorf("unexpected %v", args)
+		}
+		var b []string
+		for _, u := range args[2:] {
+			blk, ok := shown[u]
+			if !ok {
+				blk = "LoadState=not-found\nActiveState=inactive\nSubState=dead\nActiveEnterTimestampMonotonic=0\nMainPID=0\nResult=success\n"
+			}
+			b = append(b, blk)
+		}
+		return []byte(strings.Join(b, "\n")), nil
+	}
+	e.cfg.Monotonic = func() (time.Duration, error) { return 65 * time.Second, nil }
 	e.rebuild()
 	release := e.holdLock()
 	resp := e.do(Request{Op: OpUnits})
 	release()
 	if resp.Result != ResultOK || !reflect.DeepEqual(resp.LibraryStates, map[int]string{10: "active", 30: "failed"}) {
 		t.Errorf("units: %+v", resp)
+	}
+	if calls != 1 {
+		t.Errorf("units ran systemctl %d times, want one show", calls)
+	}
+	var names []string
+	byName := map[string]UnitStatus{}
+	for _, u := range resp.UnitStates {
+		names = append(names, u.Name)
+		byName[u.Name] = u
+	}
+	want := append([]string{"mhvtl.target", "mhvtl-load-modules.service", "mhvtl-tcmu-handler.service", "mhvtl-media.service", "mhvtl-bay-monitor.service"}, shippedUnits...)
+	sort.Strings(want[5:])
+	got := append([]string(nil), names...)
+	sort.Strings(got[5:])
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("unit states for %v, want %v", names, want)
+	}
+	for name, u := range map[string]UnitStatus{
+		"mhvtl.target":               {Name: "mhvtl.target", LoadState: "loaded", ActiveState: "active", SubState: "active", ActiveEnterMonotonicUS: 1000000, UptimeUS: 64000000},
+		"mhvtl-load-modules.service": {Name: "mhvtl-load-modules.service", LoadState: "loaded", ActiveState: "active", SubState: "exited", Result: "success", ActiveEnterMonotonicUS: 900000, UptimeUS: 64100000},
+		"mhvtl-media.service":        {Name: "mhvtl-media.service", LoadState: "loaded", ActiveState: "inactive", SubState: "dead", Result: "success"},
+		"vtllibrary@10.service":      {Name: "vtllibrary@10.service", LoadState: "loaded", ActiveState: "active", SubState: "running", Result: "success", MainPID: 4711, ActiveEnterMonotonicUS: 5000000, UptimeUS: 60000000},
+		"vtllibrary@30.service":      {Name: "vtllibrary@30.service", LoadState: "loaded", ActiveState: "failed", SubState: "failed", Result: "exit-code", ActiveEnterMonotonicUS: 6000000},
+		"vtltape@11.service":         {Name: "vtltape@11.service", LoadState: "loaded", ActiveState: "active", SubState: "running", Result: "success", MainPID: 4700, ActiveEnterMonotonicUS: 4000000, UptimeUS: 61000000},
+		// A unit systemd does not know is reported, not an error.
+		"mhvtl-tcmu-handler.service": {Name: "mhvtl-tcmu-handler.service", LoadState: "not-found", ActiveState: "inactive", SubState: "dead", Result: "success"},
+		"vtltape@34.service":         {Name: "vtltape@34.service", LoadState: "not-found", ActiveState: "inactive", SubState: "dead", Result: "success"},
+	} {
+		if byName[name] != u {
+			t.Errorf("%s: %+v, want %+v", name, byName[name], u)
+		}
+	}
+	// Without the clock the uptime is left out.
+	e.cfg.Monotonic = func() (time.Duration, error) { return 0, errors.New("no clock") }
+	e.rebuild()
+	if resp := e.do(Request{Op: OpUnits}); resp.Result != ResultOK || resp.UnitStates[0].UptimeUS != 0 || resp.UnitStates[0].ActiveState != "active" {
+		t.Errorf("units without a clock: %+v", resp)
 	}
 	if l := e.auditLines(); l != nil {
 		t.Errorf("units was audited: %v", l)
@@ -338,6 +395,29 @@ func TestUnits(t *testing.T) {
 	e.rebuild()
 	if resp := e.do(Request{Op: OpUnits}); resp.Result == ResultOK || !strings.Contains(resp.Message, "no bus") {
 		t.Errorf("units without systemctl: %+v", resp)
+	}
+	// An answer that does not have a block per unit is an error, not a
+	// guess at which block is which.
+	e.cfg.Systemctl = func(context.Context, ...string) ([]byte, error) {
+		return []byte("LoadState=loaded\nActiveState=active\n"), nil
+	}
+	e.rebuild()
+	if resp := e.do(Request{Op: OpUnits}); resp.Result == ResultOK || resp.UnitStates != nil {
+		t.Errorf("units with a short answer: %+v", resp)
+	}
+}
+
+// The real monotonic clock reads, and is not the wall clock.
+func TestMonotonic(t *testing.T) {
+	a, err := monotonic()
+	if err != nil || a <= 0 {
+		t.Fatalf("monotonic: %v, %v", a, err)
+	}
+	if b, _ := monotonic(); b < a {
+		t.Errorf("monotonic went back: %v then %v", a, b)
+	}
+	if a > time.Duration(time.Now().UnixNano())/2 {
+		t.Errorf("monotonic %v looks like the wall clock", a)
 	}
 }
 

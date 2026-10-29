@@ -228,23 +228,8 @@ type capabilitiesDTO struct {
 
 func (s *Server) capabilities(ctx context.Context) capabilitiesDTO {
 	p := s.cfg.Capabilities.withDefaults()
-	c := capabilitiesDTO{Helper: helperAbsent}
-	if s.cfg.Helper != nil {
-		state, err := s.helperState(ctx)
-		switch h, ok := helloStates[state]; {
-		case err != nil:
-			c.Helper, c.HelperError = helperUnreachable, err.Error()
-		case ok:
-			c.Helper = h
-		default:
-			c.Helper, c.HelperError = helperUnreachable, fmt.Sprintf("unknown state %q", state)
-		}
-	} else if fi, err := os.Lstat(p.HelperSocket); err == nil && fi.Mode()&fs.ModeSocket != 0 {
-		c.Helper = helperPresent
-		if _, err := os.Lstat(p.LegacyEnv); err == nil {
-			c.Helper = helperLegacy
-		}
-	}
+	c := capabilitiesDTO{}
+	c.Helper, c.HelperError = s.helperStatus(ctx, p)
 	switch {
 	case c.Helper == helperAbsent:
 		c.Writes = writesNoHelper
@@ -265,6 +250,29 @@ func (s *Server) capabilities(ctx context.Context) capabilitiesDTO {
 	}
 	c.PerLibraryHomeMedia = media.PerLibraryHome(p.MakeVTLMedia)
 	return c
+}
+
+// helperStatus is capabilitiesDTO.Helper and HelperError: the helper's
+// hello, or without a helper client whether its socket exists.
+func (s *Server) helperStatus(ctx context.Context, p CapabilityPaths) (string, string) {
+	if s.cfg.Helper != nil {
+		state, err := s.helperState(ctx)
+		switch h, ok := helloStates[state]; {
+		case err != nil:
+			return helperUnreachable, err.Error()
+		case ok:
+			return h, ""
+		default:
+			return helperUnreachable, fmt.Sprintf("unknown state %q", state)
+		}
+	}
+	if fi, err := os.Lstat(p.HelperSocket); err == nil && fi.Mode()&fs.ModeSocket != 0 {
+		if _, err := os.Lstat(p.LegacyEnv); err == nil {
+			return helperLegacy, ""
+		}
+		return helperPresent, ""
+	}
+	return helperAbsent, ""
 }
 
 func (s *Server) handleConfigCapabilities(w http.ResponseWriter, r *http.Request) {

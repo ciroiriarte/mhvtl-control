@@ -43,10 +43,12 @@ const (
 	// OpRecover recovers an apply that died, and does nothing else.
 	OpRecover = "recover"
 	// OpUnits reports the ActiveState of each library's vtllibrary@
-	// instance (Response.LibraryStates) and changes nothing. The daemon's
+	// instance (Response.LibraryStates), and the state of mhvtl.target, its
+	// support units and every vtllibrary@ and vtltape@ instance of
+	// device.conf (Response.UnitStates). It changes nothing. The daemon's
 	// unit keeps it away from systemd, so it asks here whether a library
 	// runs. It takes no input but its name: the libraries are those of the
-	// helper's own device.conf. Its systemctl calls are bounded
+	// helper's own device.conf. Its one systemctl call is bounded
 	// (unitsTimeout), and a unit an apply is stopping or starting shows as
 	// deactivating or activating.
 	OpUnits = "units"
@@ -148,6 +150,9 @@ type Response struct {
 	// LibraryStates answer units: the ActiveState of vtllibrary@N for
 	// each library N of device.conf.
 	LibraryStates map[int]string `json:"library_states,omitempty"`
+	// UnitStates answer units: mhvtl.target, then its support units, then
+	// the vtllibrary@ and vtltape@ instances in device.conf's order.
+	UnitStates []UnitStatus `json:"unit_states,omitempty"`
 	// Error is a machine-readable reason (one of the Err* codes) for
 	// refused and error results; Message says it in words.
 	Error   string `json:"error,omitempty"`
@@ -196,6 +201,26 @@ type Response struct {
 	JournalTail   string   `json:"journal_tail,omitempty"`
 	OrphanedMedia []string `json:"orphaned_media,omitempty"`
 	Unplaced      []string `json:"unplaced,omitempty"`
+}
+
+// UnitStatus is a unit as systemctl show reports it. A unit systemd does
+// not know has LoadState not-found and ActiveState inactive.
+type UnitStatus struct {
+	Name        string `json:"name"`
+	LoadState   string `json:"load_state"`
+	ActiveState string `json:"active_state"`
+	SubState    string `json:"sub_state"`
+	// Result is a service's last result ("success", "exit-code", ...); a
+	// target has none.
+	Result  string `json:"result,omitempty"`
+	MainPID int    `json:"main_pid,omitempty"`
+	// ActiveEnterMonotonicUS is CLOCK_MONOTONIC, in microseconds, when the
+	// unit last entered the active state; 0 when it never did.
+	ActiveEnterMonotonicUS uint64 `json:"active_enter_monotonic_us,omitempty"`
+	// UptimeUS is how long an active unit has been active, from
+	// ActiveEnterMonotonicUS and the helper's CLOCK_MONOTONIC; 0 when the
+	// unit is not active or the clock could not be read.
+	UptimeUS uint64 `json:"uptime_us,omitempty"`
 }
 
 // Conflict is a file a recovery did not restore.
