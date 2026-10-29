@@ -72,3 +72,25 @@ func TestGCMPath(t *testing.T) {
 		t.Errorf("GCM() = %v, want present", got)
 	}
 }
+
+func TestLocateLibexec(t *testing.T) {
+	dir := t.TempDir()
+	saved := LibexecDirs
+	t.Cleanup(func() { LibexecDirs = saved })
+	LibexecDirs = []string{filepath.Join(dir, "none"), dir}
+	t.Setenv("PATH", t.TempDir())
+
+	name := "vtltape-test-libexec"
+	v := &Vtltape{Path: name}
+	if got := v.GCM(); got != GCMUnknown {
+		t.Errorf("in neither PATH nor libexec: %v, want unknown", got)
+	}
+	write(t, filepath.Join(dir, name), []byte("x"+gcmMarker+"x"), time.Unix(1700000000, 0))
+	if got := v.GCM(); got != GCMPresent {
+		t.Errorf("in libexec only: %v, want present", got)
+	}
+	// A path with a slash is taken as given, not searched for.
+	if got := (&Vtltape{Path: "./" + name}).GCM(); got != GCMUnknown {
+		t.Errorf("relative path outside libexec: %v, want unknown", got)
+	}
+}

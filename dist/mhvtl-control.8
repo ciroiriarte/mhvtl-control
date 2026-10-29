@@ -93,9 +93,10 @@ Paths of mhVTL's mktape, edit_tape and mhvtl-raw-format. Default: found in
 .BR PATH .
 .TP
 .BI \-vtltape " path"
-Path of mhVTL's vtltape, default found in
-.BR PATH .
-It is read, not run, to tell whether it has AES-GCM drive encryption; the
+Path of mhVTL's vtltape. Default: found in
+.BR PATH ,
+then in /usr/libexec/mhvtl and /usr/local/libexec/mhvtl, where mhVTL
+installs its daemons. It is read, not run, to tell whether it has AES-GCM drive encryption; the
 dashboard shows the drives of one older than markh794/mhvtl#328 as
 simulated, and as unknown when it cannot be read.
 .TP

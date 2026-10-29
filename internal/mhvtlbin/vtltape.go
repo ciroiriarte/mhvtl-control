@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,14 +32,35 @@ const (
 // markh794/mhvtl#328 (833f3ad); an older vtltape does not contain it.
 const gcmMarker = "Encryption: expects"
 
+// LibexecDirs are where a name not found in PATH is looked for next. mhVTL
+// installs its daemons in $(LIBEXECDIR)/mhvtl, /usr/libexec/mhvtl with the
+// default PREFIX, since markh794/mhvtl 0d1a744 (config.mk:20-24 at 0d98bde);
+// before that they were in /usr/bin, which PATH finds.
+var LibexecDirs = []string{"/usr/libexec/mhvtl", "/usr/local/libexec/mhvtl"}
+
 // Vtltape inspects one vtltape binary. The result is kept until the file's
 // path, size or modification time changes.
 type Vtltape struct {
-	Path string // a path, or a name looked up in PATH
+	Path string // a path, or a name looked up in PATH, then in LibexecDirs
 
 	mu  sync.Mutex
 	key fileKey
 	gcm GCM
+}
+
+// locate resolves v.Path to the file to inspect.
+func (v *Vtltape) locate() (string, error) {
+	path, err := exec.LookPath(v.Path)
+	if err == nil || strings.ContainsRune(v.Path, '/') {
+		return path, err
+	}
+	for _, d := range LibexecDirs {
+		p := filepath.Join(d, v.Path)
+		if fi, serr := os.Stat(p); serr == nil && fi.Mode().IsRegular() {
+			return p, nil
+		}
+	}
+	return "", err
 }
 
 type fileKey struct {
@@ -48,7 +71,7 @@ type fileKey struct {
 
 // GCM reports whether the binary has AES-GCM encryption.
 func (v *Vtltape) GCM() GCM {
-	path, err := exec.LookPath(v.Path)
+	path, err := v.locate()
 	if err != nil {
 		return GCMUnknown
 	}
