@@ -166,19 +166,21 @@ func TestWriteProtected(t *testing.T) {
 	}
 }
 
-// A cartridge at tape format 7 holds AES-GCM blocks; one below may hold
-// simulated-encryption ones, which the MAM does not record.
-func TestEncryptionFormat(t *testing.T) {
+// A cartridge at tape format 7 has held AES-GCM blocks; the MAM does not
+// record simulated-encryption ones, and vtltape knows no format 8.
+func TestAESGCMFormat(t *testing.T) {
 	home := t.TempDir()
-	gcm := binary.NativeEndian.AppendUint32(nil, 7)
-	gcm = binary.NativeEndian.AppendUint32(gcm, 4)
-	writeCart(t, home, "GCM001", append(gcm, encode([]rec{{0x0408, []byte{0}}})...), encode(nil))
-	if c, _ := Read(home, "GCM001"); c.Encryption != "aes-gcm" || c.Type != "data" {
-		t.Errorf("format 7 = %+v, want aes-gcm data", c)
-	}
-	writeCart(t, home, "PLN001", typeMAM(0), encode(nil))
-	if c, _ := Read(home, "PLN001"); c.Encryption != "" {
-		t.Errorf("format 3 encryption = %q, want none", c.Encryption)
+	for _, tc := range []struct {
+		pcl  string
+		fmt  uint32
+		want bool
+	}{{"FMT006", 6, false}, {"FMT007", 7, true}, {"FMT008", 8, false}} {
+		b := binary.NativeEndian.AppendUint32(nil, tc.fmt)
+		b = binary.NativeEndian.AppendUint32(b, 4)
+		writeCart(t, home, tc.pcl, append(b, encode([]rec{{attrMediumType, []byte{0}}})...), encode(nil))
+		if c, _ := Read(home, tc.pcl); c.AESGCMFormat != tc.want || c.Type != "data" {
+			t.Errorf("format %d = %+v, want aes_gcm_format %v", tc.fmt, c, tc.want)
+		}
 	}
 }
 

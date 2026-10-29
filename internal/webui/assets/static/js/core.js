@@ -1158,6 +1158,34 @@
     return msg;
   }
 
+  // encryptionBadge is the drive card's encryption badge for a drive of GET
+  // /api/v1/libraries ({cls, text, title}), or null: a drive whose
+  // personality cannot encrypt ("none") or that reports nothing gets none.
+  function encryptionBadge(d) {
+    var kind = d ? d.encryption : "";
+    if (kind === "simulated") {
+      return {
+        cls: "badge enc simulated", text: "encryption simulated",
+        title: d.encryption_legacy
+          ? "This mhVTL predates AES-GCM (markh794/mhvtl#328): any encryption is simulated, with the key stored in the clear in each block header"
+          : "Simulated encryption: the key is stored in the clear in each block header, so the data is not protected",
+      };
+    }
+    if (kind === "aes-gcm") {
+      return {
+        cls: "badge enc", text: "encryption aes-gcm",
+        title: "AES-256-GCM drive encryption, used when the backup application sets a key (mhVTL built without OpenSSL offers none)",
+      };
+    }
+    if (kind === "unknown") {
+      return {
+        cls: "badge", text: "encryption unknown",
+        title: "vtltape could not be found or read, so whether it has AES-GCM encryption is unknown",
+      };
+    }
+    return null;
+  }
+
   /* ---- view state across re-renders (#77) ------------------------------ *
    * Panels are rebuilt from scratch, each control bound to the data it was
    * drawn from. These keep what the operator was doing across a rebuild:
@@ -1326,6 +1354,7 @@
     problemText: problemText,
     buildValidateBody: buildValidateBody,
     kernelChNote: kernelChNote,
+    encryptionBadge: encryptionBadge,
   };
 
   /* ---- UMD tail ------------------------------------------------------- */

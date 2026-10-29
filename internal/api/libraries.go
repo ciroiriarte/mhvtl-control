@@ -10,6 +10,8 @@ import (
 
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/mhvtlbin"
+	"mhvtl-control/internal/personality"
 	"mhvtl-control/internal/scsi"
 )
 
@@ -40,12 +42,16 @@ type driveDTO struct {
 	CompressionEnabled bool   `json:"compression_enabled"`
 	CompressionType    string `json:"compression_type"`
 	CompressionFactor  int    `json:"compression_factor"`
-	// Encryption is "aes-gcm" or "simulated" (device.conf Encryption).
-	Encryption string `json:"encryption"`
-	Loaded     *bool  `json:"loaded,omitempty"`
-	Barcode    string `json:"barcode,omitempty"`
-	SourceSlot int    `json:"source_slot,omitempty"`
-	SourceMAP  int    `json:"source_map,omitempty"`
+	// Encryption is the kind of encryption the drive writes with, GET
+	// /libraries only (driveEncryption): "aes-gcm", "simulated", "none"
+	// or "unknown". EncryptionLegacy marks "simulated" because the
+	// installed vtltape predates AES-GCM, whatever device.conf says.
+	Encryption       string `json:"encryption,omitempty"`
+	EncryptionLegacy bool   `json:"encryption_legacy,omitempty"`
+	Loaded           *bool  `json:"loaded,omitempty"`
+	Barcode          string `json:"barcode,omitempty"`
+	SourceSlot       int    `json:"source_slot,omitempty"`
+	SourceMAP        int    `json:"source_map,omitempty"`
 	// Nodes are the drive's device nodes, when it is found on this host.
 	Nodes *changer.Nodes `json:"nodes,omitempty"`
 }
@@ -90,7 +96,6 @@ func toDriveDTO(d config.Drive) driveDTO {
 		CompressionEnabled: d.CompressionEnabled,
 		CompressionType:    d.CompressionType,
 		CompressionFactor:  d.CompressionFactor,
-		Encryption:         d.Encryption,
 	}
 }
 
@@ -191,9 +196,16 @@ func (s *Server) handleLibraries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	live, liveErrs := s.liveInventories(r.Context(), inv.Libraries)
+	gcm := mhvtlbin.GCMUnknown
+	if s.cfg.Vtltape != nil {
+		gcm = s.cfg.Vtltape.GCM()
+	}
 	libs := make([]libraryDTO, 0, len(inv.Libraries))
 	for _, l := range inv.Libraries {
 		dto := toLibraryDTO(l)
+		for i, d := range l.Drives {
+			dto.Drives[i].Encryption, dto.Drives[i].EncryptionLegacy = driveEncryption(d, gcm)
+		}
 		if inv, ok := live[l.ID]; ok {
 			applyLive(&dto, inv)
 		} else {
@@ -203,6 +215,23 @@ func (s *Server) handleLibraries(w http.ResponseWriter, r *http.Request) {
 		libs = append(libs, dto)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"libraries": libs})
+}
+
+// driveEncryption is the kind of encryption drive d writes with, given
+// what the installed vtltape has. A personality without Security Protocol
+// has none (personality.DriveModel.SP). A vtltape older than
+// markh794/mhvtl#328 has only the simulated kind and ignores device.conf
+// Encryption, so legacy is set.
+func driveEncryption(d config.Drive, gcm mhvtlbin.GCM) (kind string, legacy bool) {
+	switch {
+	case !personality.DriveFor(d.Product).SP:
+		return "none", false
+	case gcm == mhvtlbin.GCMPresent:
+		return d.Encryption, false
+	case gcm == mhvtlbin.GCMAbsent:
+		return "simulated", true
+	}
+	return "unknown", false
 }
 
 // lookupLibrary resolves the {id} path value against device.conf, writing the

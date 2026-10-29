@@ -94,6 +94,15 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 	}
 }
 
+// Encryption is a drive directive: in a Library stanza it raises no
+// Problem, as vtllibrary does not read it.
+func TestEncryptionInLibrary(t *testing.T) {
+	c := ParseDeviceConf([]byte("Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00\n Encryption: bogus\n"))
+	if len(c.Problems) != 0 {
+		t.Errorf("problems = %v", c.Problems)
+	}
+}
+
 // TestConfValue checks attribute keys and values are read as conf_value
 // reads them, and that SetAttr writes only what it reads back.
 func TestConfValue(t *testing.T) {

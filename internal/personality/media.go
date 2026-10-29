@@ -36,7 +36,11 @@ type DriveModel struct {
 	// to load a WORM cartridge in a drive whose personality does not
 	// ("drive doesn't support WORM", usr/cmd/vtltape.c:1484-1488, upstream
 	// master ebbda22), whatever its media list says.
-	WORM  bool
+	WORM bool
+	// SP is the personality's ssc_pm.drive_supports_SP: only then does
+	// vtltape register SECURITY PROTOCOL IN/OUT (usr/cmd/vtltape.c:2475,
+	// upstream master ebbda22), so only then can the drive encrypt.
+	SP    bool
 	Media []Media
 }
 
@@ -188,43 +192,43 @@ var DriveModels = []DriveModel{
 		{"LTO2", RW}, {"LTO2 Clean", RO},
 		{"LTO3", RW}, {"LTO3 Clean", RO}, {"LTO3 WORM", RW},
 	}},
-	{InitFn: "init_hp_ult_4", Source: "usr/pm/hp_ultrium_pm.c:573", WORM: true, Media: []Media{
+	{InitFn: "init_hp_ult_4", Source: "usr/pm/hp_ultrium_pm.c:573", WORM: true, SP: true, Media: []Media{
 		{"LTO2", RO}, {"LTO2 Clean", RO},
 		{"LTO3", RW}, {"LTO3 Clean", RO}, {"LTO3 WORM", RW},
 		{"LTO4", RW}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW},
 	}},
-	{InitFn: "init_hp_ult_5", Source: "usr/pm/hp_ultrium_pm.c:642", WORM: true, Media: []Media{
+	{InitFn: "init_hp_ult_5", Source: "usr/pm/hp_ultrium_pm.c:642", WORM: true, SP: true, Media: []Media{
 		{"LTO3", RO}, {"LTO3 Clean", RO},
 		{"LTO4", RW}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW}, {"LTO4 ENCR", RW},
 		{"LTO5", RW}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 	}},
-	{InitFn: "init_hp_ult_6", Source: "usr/pm/hp_ultrium_pm.c:716", WORM: true, Media: []Media{
+	{InitFn: "init_hp_ult_6", Source: "usr/pm/hp_ultrium_pm.c:716", WORM: true, SP: true, Media: []Media{
 		{"LTO4", RO}, {"LTO4 Clean", RO}, {"LTO4 WORM", RO},
 		{"LTO5", RW}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 		{"LTO6", RW}, {"LTO6 Clean", RO}, {"LTO6 WORM", RW}, {"LTO6 ENCR", RW},
 	}},
-	{InitFn: "init_hp_ult_7", Source: "usr/pm/hp_ultrium_pm.c:791", WORM: true, Media: []Media{
+	{InitFn: "init_hp_ult_7", Source: "usr/pm/hp_ultrium_pm.c:791", WORM: true, SP: true, Media: []Media{
 		{"LTO5", RO}, {"LTO5 Clean", RO}, {"LTO5 WORM", RO},
 		{"LTO6", RW}, {"LTO6 Clean", RO}, {"LTO6 WORM", RW}, {"LTO6 ENCR", RW},
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
 	}},
-	{InitFn: "init_hp_ult_8", Source: "usr/pm/hp_ultrium_pm.c:865", WORM: true, Media: []Media{
+	{InitFn: "init_hp_ult_8", Source: "usr/pm/hp_ultrium_pm.c:865", WORM: true, SP: true, Media: []Media{
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
 		{"LTO8", RW}, {"LTO8 Clean", RO}, {"LTO8 WORM", RW}, {"LTO8 ENCR", RW}, {"LTO8 M8", RW},
 	}},
 	{InitFn: "init_3592_j1a", Source: "usr/pm/ibm_03592_pm.c:364", WORM: true, Media: []Media{
 		{"03592 JA", RW}, {"03592 JA Clean", RO}, {"03592 JA WORM", RW},
 	}},
-	{InitFn: "init_3592_E05", Source: "usr/pm/ibm_03592_pm.c:402", WORM: true, Media: []Media{
+	{InitFn: "init_3592_E05", Source: "usr/pm/ibm_03592_pm.c:402", WORM: true, SP: true, Media: []Media{
 		{"03592 JA", RW}, {"03592 JA Clean", RO}, {"03592 JA WORM", RW},
 		{"03592 JB", RW}, {"03592 JB Clean", RO}, {"03592 JB WORM", RW},
 	}},
-	{InitFn: "init_3592_E06", Source: "usr/pm/ibm_03592_pm.c:443", WORM: true, Media: []Media{
+	{InitFn: "init_3592_E06", Source: "usr/pm/ibm_03592_pm.c:443", WORM: true, SP: true, Media: []Media{
 		{"03592 JA", RW}, {"03592 JA Clean", RO}, {"03592 JA WORM", RW},
 		{"03592 JB", RW}, {"03592 JB Clean", RO}, {"03592 JB WORM", RW},
 		{"03592 JC", RW}, {"03592 JC Clean", RO}, {"03592 JC WORM", RW},
 	}},
-	{InitFn: "init_3592_E07", Source: "usr/pm/ibm_03592_pm.c:493", WORM: true, Media: []Media{
+	{InitFn: "init_3592_E07", Source: "usr/pm/ibm_03592_pm.c:493", WORM: true, SP: true, Media: []Media{
 		{"03592 JB", RW}, {"03592 JB Clean", RO}, {"03592 JB WORM", RW},
 		{"03592 JC", RW}, {"03592 JC Clean", RO}, {"03592 JC WORM", RW},
 		{"03592 JK", RW}, {"03592 JK Clean", RO}, {"03592 JK WORM", RW},
@@ -247,38 +251,38 @@ var DriveModels = []DriveModel{
 		{"SDLT 320", RW}, {"SDLT 320 Clean", RO},
 		{"SDLT 600", RW}, {"SDLT 600 Clean", RO}, {"SDLT 600 WORM", RW},
 	}},
-	{InitFn: "init_9840A_ssc", Source: "usr/pm/stk9x40_pm.c:343", WORM: true, Media: []Media{
+	{InitFn: "init_9840A_ssc", Source: "usr/pm/stk9x40_pm.c:343", WORM: true, SP: true, Media: []Media{
 		{"9840A", RW}, {"9840A Clean", RO},
 	}},
-	{InitFn: "init_9840B_ssc", Source: "usr/pm/stk9x40_pm.c:382", WORM: true, Media: []Media{
+	{InitFn: "init_9840B_ssc", Source: "usr/pm/stk9x40_pm.c:382", WORM: true, SP: true, Media: []Media{
 		{"9840A", RW}, {"9840A Clean", RO},
 		{"9840B", RW}, {"9840B Clean", RO},
 	}},
-	{InitFn: "init_9840C_ssc", Source: "usr/pm/stk9x40_pm.c:424", WORM: true, Media: []Media{
+	{InitFn: "init_9840C_ssc", Source: "usr/pm/stk9x40_pm.c:424", WORM: true, SP: true, Media: []Media{
 		{"9840A", RO}, {"9840A Clean", RO},
 		{"9840B", RW}, {"9840B Clean", RO},
 		{"9840C", RW}, {"9840C Clean", RO},
 	}},
-	{InitFn: "init_9840D_ssc", Source: "usr/pm/stk9x40_pm.c:470", WORM: true, Media: []Media{
+	{InitFn: "init_9840D_ssc", Source: "usr/pm/stk9x40_pm.c:470", WORM: true, SP: true, Media: []Media{
 		{"9840B", RO}, {"9840B Clean", RO},
 		{"9840C", RW}, {"9840C Clean", RO},
 		{"9840D", RW}, {"9840D Clean", RO},
 	}},
-	{InitFn: "init_9940A_ssc", Source: "usr/pm/stk9x40_pm.c:513", WORM: true, Media: []Media{
+	{InitFn: "init_9940A_ssc", Source: "usr/pm/stk9x40_pm.c:513", WORM: true, SP: true, Media: []Media{
 		{"9940A", RW}, {"9940A Clean", RO},
 	}},
-	{InitFn: "init_9940B_ssc", Source: "usr/pm/stk9x40_pm.c:549", WORM: true, Media: []Media{
+	{InitFn: "init_9940B_ssc", Source: "usr/pm/stk9x40_pm.c:549", WORM: true, SP: true, Media: []Media{
 		{"9940A", RW}, {"9940A Clean", RO},
 		{"9940B", RW}, {"9940B Clean", RO},
 	}},
-	{InitFn: "init_t10kA_ssc", Source: "usr/pm/t10000_pm.c:425", WORM: true, Media: []Media{
+	{InitFn: "init_t10kA_ssc", Source: "usr/pm/t10000_pm.c:425", WORM: true, SP: true, Media: []Media{
 		{"T10KA", RW}, {"T10KA Clean", RO},
 	}},
-	{InitFn: "init_t10kB_ssc", Source: "usr/pm/t10000_pm.c:465", WORM: true, Media: []Media{
+	{InitFn: "init_t10kB_ssc", Source: "usr/pm/t10000_pm.c:465", WORM: true, SP: true, Media: []Media{
 		{"T10KA", RW}, {"T10KA Clean", RO},
 		{"T10KB", RW}, {"T10KB Clean", RO},
 	}},
-	{InitFn: "init_t10kC_ssc", Source: "usr/pm/t10000_pm.c:508", WORM: true, Media: []Media{
+	{InitFn: "init_t10kC_ssc", Source: "usr/pm/t10000_pm.c:508", WORM: true, SP: true, Media: []Media{
 		{"T10KA", RW}, {"T10KA Clean", RO},
 		{"T10KB", RW}, {"T10KB Clean", RO},
 		{"T10KC", RW}, {"T10KC Clean", RO},
@@ -295,35 +299,35 @@ var DriveModels = []DriveModel{
 		{"LTO2", RW}, {"LTO2 Clean", RO},
 		{"LTO3", RW}, {"LTO3 Clean", RO}, {"LTO3 WORM", RW},
 	}},
-	{InitFn: "init_ult3580_td4", Source: "usr/pm/ult3580_pm.c:699", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td4", Source: "usr/pm/ult3580_pm.c:699", WORM: true, SP: true, Media: []Media{
 		{"LTO2", RO}, {"LTO2 Clean", RO},
 		{"LTO3", RW}, {"LTO3 Clean", RO}, {"LTO3 WORM", RW},
 		{"LTO4", RW}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW},
 	}},
-	{InitFn: "init_ult3580_td5", Source: "usr/pm/ult3580_pm.c:767", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td5", Source: "usr/pm/ult3580_pm.c:767", WORM: true, SP: true, Media: []Media{
 		{"LTO3", RO}, {"LTO3 Clean", RO},
 		{"LTO4", RW}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW}, {"LTO4 ENCR", RW},
 		{"LTO5", RW}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_td6", Source: "usr/pm/ult3580_pm.c:843", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td6", Source: "usr/pm/ult3580_pm.c:843", WORM: true, SP: true, Media: []Media{
 		{"LTO4", RO}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW},
 		{"LTO5", RW}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 		{"LTO6", RW}, {"LTO6 Clean", RO}, {"LTO6 WORM", RW}, {"LTO6 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_td7", Source: "usr/pm/ult3580_pm.c:1024", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td7", Source: "usr/pm/ult3580_pm.c:1024", WORM: true, SP: true, Media: []Media{
 		{"LTO5", RO}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 		{"LTO6", RW}, {"LTO6 Clean", RO}, {"LTO6 WORM", RW}, {"LTO6 ENCR", RW},
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_td8", Source: "usr/pm/ult3580_pm.c:1034", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td8", Source: "usr/pm/ult3580_pm.c:1034", WORM: true, SP: true, Media: []Media{
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
 		{"LTO8", RW}, {"LTO8 Clean", RO}, {"LTO8 WORM", RW}, {"LTO8 ENCR", RW}, {"LTO8 M8", RW},
 	}},
-	{InitFn: "init_ult3580_td9", Source: "usr/pm/ult3580_pm.c:1049", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td9", Source: "usr/pm/ult3580_pm.c:1049", WORM: true, SP: true, Media: []Media{
 		{"LTO8", RW}, {"LTO8 Clean", RO}, {"LTO8 WORM", RW}, {"LTO8 ENCR", RW},
 		{"LTO9", RW}, {"LTO9 Clean", RO}, {"LTO9 WORM", RW}, {"LTO9 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_tda", Source: "usr/pm/ult3580_pm.c:1062", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_tda", Source: "usr/pm/ult3580_pm.c:1062", WORM: true, SP: true, Media: []Media{
 		{"LTO10", RW}, {"LTO10 Clean", RO}, {"LTO10 WORM", RW}, {"LTO10 ENCR", RW},
 		{"LTO10P", RW},
 	}},

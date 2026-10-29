@@ -393,16 +393,9 @@
     } else {
       wrap.appendChild(mk("span", { class: "badge comp off", text: "compression off" }));
     }
-    if (d.encryption === "simulated") {
-      wrap.appendChild(mk("span", {
-        class: "badge enc simulated", text: "encryption simulated",
-        attrs: { title: "Simulated encryption: the key is stored in the clear in each block header, so the data is not protected" },
-      }));
-    } else if (d.encryption) {
-      wrap.appendChild(mk("span", {
-        class: "badge enc", text: "encryption " + String(d.encryption),
-        attrs: { title: "AES-256-GCM drive encryption, used when the backup application sets a key (mhVTL built without OpenSSL offers none)" },
-      }));
+    var enc = core.encryptionBadge(d);
+    if (enc) {
+      wrap.appendChild(mk("span", { class: enc.cls, text: enc.text, attrs: { title: enc.title } }));
     }
     var sa = scsiAddr(d);
     if (sa.addr) {
@@ -1122,8 +1115,9 @@
             : c.media_absent ? "Disk not attached: the bay is empty or the disk was removed." : "";
       var tr = mk("tr", { class: note ? "has-note" : "", children: [
         mk("td", { class: "mono", text: bc }),
-        mk("td", { children: [document.createTextNode(c.type || "—")].concat(c.encryption ? [document.createTextNode(" "),
-          mk("span", { class: "badge enc", text: String(c.encryption), attrs: { title: "holds AES-256-GCM encrypted blocks" } })] : []) }),
+        mk("td", { children: [document.createTextNode(c.type || "—")].concat(c.aes_gcm_format ? [document.createTextNode(" "),
+          mk("span", { class: "badge enc", text: "AES-GCM format", attrs: {
+            title: "Has held AES-256-GCM blocks; drives set to simulated refuse encrypted writes to it until it is re-formatted" } })] : []) }),
         mk("td", { class: "mono", text: c.density || "—", attrs: c.description ? { title: String(c.description) } : null }),
         capCell,
         mk("td", { children: [c.write_protected ? mk("span", { class: "badge wp", text: "WP", attrs: { title: "write protected" } }) : document.createTextNode("—")] }),

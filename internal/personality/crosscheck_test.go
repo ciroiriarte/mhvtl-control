@@ -564,6 +564,61 @@ func setsWORM(f cfile, first, last int) bool {
 	return sets(first, last)
 }
 
+var setSPRe = regexp.MustCompile(`\bssc_pm\.drive_supports_SP\s*=\s*(\w+)\s*;`)
+
+// supportsSP returns the value the drive init function leaves in
+// ssc_pm.drive_supports_SP: the last assignment, in the order of its lines
+// and of the functions of the same file it calls, after the static ssc_pm
+// initializer.
+func supportsSP(t *testing.T, f cfile, first, last int) bool {
+	t.Helper()
+	sp := false
+	set := func(n int, v string) {
+		switch v {
+		case "TRUE", "1":
+			sp = true
+		case "FALSE", "0":
+			sp = false
+		default:
+			t.Fatalf("%s: drive_supports_SP set to %q", f.at(n), v)
+		}
+	}
+	for i, l := range f.lines {
+		if !sscPMStartRe.MatchString(l) {
+			continue
+		}
+		for j := i + 1; j < len(f.lines) && !strings.HasPrefix(f.lines[j], "};"); j++ {
+			if m := regexp.MustCompile(`\.drive_supports_SP\s*=\s*(\w+)`).FindStringSubmatch(f.lines[j]); m != nil {
+				set(j+1, m[1])
+			}
+		}
+	}
+	visited := map[int]bool{}
+	var walk func(a, b int)
+	walk = func(a, b int) {
+		if visited[a] {
+			return
+		}
+		visited[a] = true
+		for n := a; n <= b; n++ {
+			if m := setSPRe.FindStringSubmatch(f.lines[n-1]); m != nil {
+				set(n, m[1])
+			}
+			for _, m := range anyCallRe.FindAllStringSubmatch(f.lines[n-1], -1) {
+				ca, cb, ok := f.body(m[1])
+				if !ok {
+					ca, cb, ok = bodyAnyProto(f, m[1])
+				}
+				if ok {
+					walk(ca, cb)
+				}
+			}
+		}
+	}
+	walk(first, last)
+	return sp
+}
+
 func TestCrossCheckDriveMedia(t *testing.T) {
 	root := mhvtlRepo(t)
 	files := pmFiles(t, root)
@@ -591,6 +646,9 @@ func TestCrossCheckDriveMedia(t *testing.T) {
 		logDrift(t, dm.Source, f.at(first-1))
 		if got := setsWORM(f, first, last); got != dm.WORM {
 			t.Errorf("%s: %s sets set_WORM: %v; DriveModels has WORM %v", f.at(first-1), dm.InitFn, got, dm.WORM)
+		}
+		if got := supportsSP(t, f, first, last); got != dm.SP {
+			t.Errorf("%s: %s leaves drive_supports_SP %v; DriveModels has SP %v", f.at(first-1), dm.InitFn, got, dm.SP)
 		}
 		arrays := genArrays(f)
 		var got []cmedia

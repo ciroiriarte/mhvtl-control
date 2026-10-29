@@ -12,6 +12,7 @@ import (
 
 	"mhvtl-control/internal/changer"
 	"mhvtl-control/internal/config"
+	"mhvtl-control/internal/mhvtlbin"
 )
 
 // etcDir holds copies of mhVTL's sample etc/device.conf and library_contents.10.
@@ -219,8 +220,13 @@ func TestLibrariesDriveIdentity(t *testing.T) {
 	}
 }
 
-// Each drive reports the encryption device.conf selects: aes-gcm unless it
-// says simulated.
+type fakeVtltape mhvtlbin.GCM
+
+func (f fakeVtltape) GCM() mhvtlbin.GCM { return mhvtlbin.GCM(f) }
+
+// Each drive reports the encryption it writes with: device.conf's choice on
+// a vtltape with AES-GCM, simulated on an older one, none for a personality
+// without Security Protocol, unknown when vtltape cannot be inspected.
 func TestLibrariesDriveEncryption(t *testing.T) {
 	dir := writeConfigDir(t)
 	p := filepath.Join(dir, "device.conf")
@@ -228,34 +234,55 @@ func TestLibrariesDriveEncryption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	conf := string(b)
 	const hdr = "Drive: 12 CHANNEL: 00 TARGET: 02 LUN: 00\n Library ID: 10 Slot: 02\n"
-	if !strings.Contains(string(b), hdr) {
-		t.Fatal("fixture has no drive 12")
+	if !strings.Contains(conf, hdr) || !strings.Contains(conf, "ULT3580-TD6") {
+		t.Fatal("fixture has no drive 12 or no TD6")
 	}
-	b = []byte(strings.Replace(string(b), hdr, hdr+" Encryption: simulated\n", 1))
-	if err := os.WriteFile(p, b, 0o644); err != nil {
+	conf = strings.Replace(conf, hdr, hdr+" Encryption: simulated\n", 1)
+	conf = strings.Replace(conf, "ULT3580-TD6", "ULT3580-TD3", 1) // the first is drive 13
+	if err := os.WriteFile(p, []byte(conf), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(Config{ConfigDir: dir})
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/libraries", nil))
-	var body struct {
-		Libraries []struct {
-			Drives []struct {
-				ID         int    `json:"id"`
-				Encryption string `json:"encryption"`
-			} `json:"drives"`
-		} `json:"libraries"`
+	type enc struct {
+		Kind   string `json:"encryption"`
+		Legacy bool   `json:"encryption_legacy"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	got := map[int]string{}
-	for _, d := range body.Libraries[0].Drives {
-		got[d.ID] = d.Encryption
-	}
-	if got[11] != "aes-gcm" || got[12] != "simulated" {
-		t.Errorf("encryption by drive = %v, want 11 aes-gcm, 12 simulated", got)
+	for _, tc := range []struct {
+		name string
+		svc  VtltapeService
+		want map[int]enc
+	}{
+		{"aes-gcm vtltape", fakeVtltape(mhvtlbin.GCMPresent), map[int]enc{11: {"aes-gcm", false}, 12: {"simulated", false}, 13: {"none", false}}},
+		{"older vtltape", fakeVtltape(mhvtlbin.GCMAbsent), map[int]enc{11: {"simulated", true}, 12: {"simulated", true}, 13: {"none", false}}},
+		{"unreadable vtltape", fakeVtltape(mhvtlbin.GCMUnknown), map[int]enc{11: {"unknown", false}, 12: {"unknown", false}, 13: {"none", false}}},
+		{"not configured", nil, map[int]enc{11: {"unknown", false}, 13: {"none", false}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := NewServer(Config{ConfigDir: dir, Vtltape: tc.svc})
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/libraries", nil))
+			var body struct {
+				Libraries []struct {
+					Drives []struct {
+						ID int `json:"id"`
+						enc
+					} `json:"drives"`
+				} `json:"libraries"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			got := map[int]enc{}
+			for _, d := range body.Libraries[0].Drives {
+				got[d.ID] = d.enc
+			}
+			for id, w := range tc.want {
+				if got[id] != w {
+					t.Errorf("drive %d = %+v, want %+v", id, got[id], w)
+				}
+			}
+		})
 	}
 }
 

@@ -508,3 +508,22 @@ test("mediaLocText and filterMedia know the picker", () => {
   const carts = [{ barcode: "P1", location: { kind: "picker", number: 1 } }, { barcode: "S1", location: { kind: "shelf" } }];
   assert.deepStrictEqual(core.filterMedia(carts, { where: "library" }).map((c) => c.barcode), ["P1"]);
 });
+
+test("encryptionBadge marks simulated, explains a pre-AES-GCM mhVTL, hides none", () => {
+  const sim = core.encryptionBadge({ encryption: "simulated" });
+  assert.strictEqual(sim.text, "encryption simulated");
+  assert.ok(sim.cls.includes("simulated"));
+  assert.ok(sim.title.includes("in the clear"));
+  const legacy = core.encryptionBadge({ encryption: "simulated", encryption_legacy: true });
+  assert.ok(legacy.cls.includes("simulated"));
+  assert.ok(legacy.title.includes("predates AES-GCM"));
+  const gcm = core.encryptionBadge({ encryption: "aes-gcm" });
+  assert.strictEqual(gcm.text, "encryption aes-gcm");
+  assert.ok(!gcm.cls.includes("simulated"));
+  const unk = core.encryptionBadge({ encryption: "unknown" });
+  assert.strictEqual(unk.text, "encryption unknown");
+  assert.strictEqual(unk.cls, "badge");
+  assert.strictEqual(core.encryptionBadge({ encryption: "none" }), null);
+  assert.strictEqual(core.encryptionBadge({}), null);
+  assert.strictEqual(core.encryptionBadge(null), null);
+});

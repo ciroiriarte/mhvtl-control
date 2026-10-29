@@ -23,6 +23,7 @@ import (
 	"mhvtl-control/internal/drivestats"
 	"mhvtl-control/internal/ipc"
 	"mhvtl-control/internal/media"
+	"mhvtl-control/internal/mhvtlbin"
 	"mhvtl-control/internal/rawdisk"
 	"mhvtl-control/internal/webui"
 )
@@ -62,6 +63,7 @@ func main() {
 	})
 	mktape := flag.String("mktape", "mktape", "path to mhVTL's mktape (creates media)")
 	editTape := flag.String("edit-tape", "edit_tape", "path to mhVTL's edit_tape (edits media)")
+	vtltape := flag.String("vtltape", "vtltape", "path to mhVTL's vtltape (inspected for AES-GCM encryption)")
 	homeDir := flag.String("home-dir", "/var/lib/mhvtl", "media home of a library device.conf and mhvtl.conf give none for")
 	args, legacyToken, legacy, err := legacyOptions(envFile, legacyEnvFile, os.Getenv)
 	if err != nil {
@@ -112,6 +114,7 @@ func main() {
 		Changers:    changer.NewManager(locator, changer.OpenSG),
 		Media:       media.Tools{Mktape: *mktape, EditTape: *editTape, ConfigDir: *configDir},
 		DefaultHome: *homeDir,
+		Vtltape:     &mhvtlbin.Vtltape{Path: *vtltape},
 		Drives:      stats,
 		Nodes:       changer.NodeResolver{Locator: &sysfsOnly, Drive: nodeDrives.Locate},
 		DiskOptions: rawdisk.Options{IncludeVirtual: *includeVirtual, ScanPaths: scanPaths},

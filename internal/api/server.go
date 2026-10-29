@@ -23,6 +23,7 @@ import (
 	"mhvtl-control/internal/hostids"
 	"mhvtl-control/internal/ipc"
 	"mhvtl-control/internal/media"
+	"mhvtl-control/internal/mhvtlbin"
 	"mhvtl-control/internal/rawdisk"
 )
 
@@ -74,11 +75,22 @@ type Config struct {
 	// RequireLoopbackHost refuses requests whose Host is not localhost or a
 	// loopback IP. Set when the daemon listens on loopback with no token.
 	RequireLoopbackHost bool
+	// Vtltape tells whether the installed vtltape has AES-GCM encryption;
+	// implemented by *mhvtlbin.Vtltape. Nil means drives report
+	// encryption "unknown".
+	Vtltape VtltapeService
 	// Helper talks to the apply helper, mhvtl-control-apply; implemented by
 	// *applyclient.Client. Nil means GET /config/capabilities only checks
 	// that its socket exists.
 	Helper HelperService
 }
+
+// VtltapeService reports what the installed vtltape supports.
+type VtltapeService interface {
+	GCM() mhvtlbin.GCM
+}
+
+var _ VtltapeService = (*mhvtlbin.Vtltape)(nil)
 
 // HelperService is the apply helper surface the API uses.
 type HelperService interface {

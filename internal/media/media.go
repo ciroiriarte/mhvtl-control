@@ -80,11 +80,13 @@ type Cartridge struct {
 	ReadBytes      uint64 `json:"read_bytes"`
 	Partitions     int    `json:"partitions,omitempty"`
 	LastWritten    string `json:"last_written,omitempty"`
-	// Encryption is "aes-gcm" once the cartridge holds AES-GCM blocks
-	// (its tape format is TAPE_FMT_VERSION_GCM), else empty: it may then
-	// hold simulated-encryption blocks, which only a scan of its blocks
-	// would tell.
-	Encryption string `json:"encryption,omitempty"`
+	// AESGCMFormat is whether the cartridge's tape format is
+	// TAPE_FMT_VERSION_GCM: it has held AES-GCM blocks, not that it holds
+	// them now, as a rewrite from BOT keeps the format. Drives set to
+	// simulated refuse encrypted writes to it until it is re-formatted
+	// (usr/vtlcart.c:1940 at 03c7d09). Simulated-encryption blocks are not
+	// recorded in the MAM; only a scan of the blocks would find them.
+	AESGCMFormat bool `json:"aes_gcm_format,omitempty"`
 
 	// Raw backend only, from the MVTL superblock.
 	UUID         string `json:"uuid,omitempty"`
@@ -404,9 +406,9 @@ func parseMAM(c *Cartridge, b []byte) error {
 	if len(b) < mamHeaderLen {
 		return errors.New("short header")
 	}
-	if binary.NativeEndian.Uint32(b) >= tapeFmtVersionGCM {
-		c.Encryption = "aes-gcm"
-	}
+	// vtltape refuses a format newer than it knows (usr/vtlcart.c:1266
+	// at 03c7d09), so a later one is not taken as AES-GCM.
+	c.AESGCMFormat = binary.NativeEndian.Uint32(b) == tapeFmtVersionGCM
 	return walkRecords(b[mamHeaderLen:], func(id uint16, v []byte) {
 		switch id {
 		case attrRemainingCapacity:
