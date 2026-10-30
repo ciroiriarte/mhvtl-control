@@ -33,10 +33,16 @@ const (
 // starts a helper instance for its units op, as hello does (helloTTL).
 const serviceTTL = 2 * time.Second
 
-// serviceTimeout bounds one GET /service read, hello and units included:
-// the helper's own systemctl call gives up after 5 s (apply.unitsTimeout),
-// and the dashboard's poll must not wait on a wedged helper for longer.
-var serviceTimeout = 6 * time.Second
+// serviceHelloWait and serviceUnitsWait bound the hello and the units
+// request of one GET /service read. They run at the same time, each to its
+// own deadline, so a slow hello does not eat into units: the read ends
+// within the longer, 6 s, before the dashboard's next poll (POLL_SECONDS,
+// 10 s). units' is above the helper's own systemctl bound
+// (apply.unitsTimeout, 5 s), hello's is helloTimeout.
+var (
+	serviceHelloWait = helloTimeout
+	serviceUnitsWait = 6 * time.Second
+)
 
 // serviceCache holds the last GET /service answer, from when it ended, and
 // the read in flight, which every caller that asks meanwhile shares. mu
@@ -152,12 +158,9 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// service1 reads the service status once, within serviceTimeout, and
-// caches it. A read that panics is not cached, as in hello1: it runs out of
+// service1 reads the service status once and caches it. A read that panics is not cached, as in hello1: it runs out of
 // reach of the HTTP recover middleware, and the flight must end.
 func (s *Server) service1(ctx context.Context, f *serviceFlight) {
-	ctx, cancel := context.WithTimeout(ctx, serviceTimeout)
-	defer cancel()
 	c := &s.service
 	defer func() {
 		if r := recover(); r != nil {
@@ -182,7 +185,30 @@ func (s *Server) service1(ctx context.Context, f *serviceFlight) {
 func (s *Server) serviceStatus(ctx context.Context) serviceDTO {
 	dto := serviceDTO{Libraries: []serviceLibraryDTO{}, StandaloneDrives: []serviceDriveDTO{}, Errors: []string{}}
 	fail := func(err error) { dto.Errors = append(dto.Errors, err.Error()) }
-	dto.Helper, dto.HelperError = s.helperStatus(ctx, s.cfg.Capabilities.withDefaults())
+	type unitsAnswer struct {
+		resp apply.Response
+		err  error
+	}
+	var unitsDone chan unitsAnswer
+	if s.cfg.Helper != nil {
+		unitsDone = make(chan unitsAnswer, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(ctx, serviceUnitsWait)
+			defer cancel()
+			// Its own goroutine, out of reach of service1's recover.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("apply helper units panicked: %v\n%s", r, debug.Stack())
+					unitsDone <- unitsAnswer{err: errors.New("the apply helper units request failed; the daemon log has the cause")}
+				}
+			}()
+			resp, err := s.cfg.Helper.Do(ctx, apply.Request{Op: apply.OpUnits})
+			unitsDone <- unitsAnswer{resp, err}
+		}()
+	}
+	helloCtx, cancel := context.WithTimeout(ctx, serviceHelloWait)
+	dto.Helper, dto.HelperError = s.helperStatus(helloCtx, s.cfg.Capabilities.withDefaults())
+	cancel()
 
 	sysRoot := s.cfg.SysRoot
 	if sysRoot == "" {
@@ -206,10 +232,9 @@ func (s *Server) serviceStatus(ctx context.Context) serviceDTO {
 	dto.Queue.Exists = queueExists()
 
 	units := map[string]*apply.UnitStatus{}
-	if s.cfg.Helper != nil {
-		ctx, cancel := context.WithTimeout(ctx, unitsWait)
-		resp, err := s.cfg.Helper.Do(ctx, apply.Request{Op: apply.OpUnits})
-		cancel()
+	if unitsDone != nil {
+		a := <-unitsDone
+		resp, err := a.resp, a.err
 		switch {
 		case errors.Is(err, applyclient.ErrAbsent):
 		case err != nil:

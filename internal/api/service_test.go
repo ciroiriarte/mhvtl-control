@@ -255,13 +255,19 @@ func (h *blockingHelper) Do(ctx context.Context, req apply.Request) (apply.Respo
 	return apply.Response{}, ctx.Err()
 }
 
-// A wedged helper delays neither GET /system nor a GET /service past
-// serviceTimeout, and concurrent GET /service share the one read.
+// serviceWaits sets the hello and units bounds for a test.
+func serviceWaits(t *testing.T, hello, units time.Duration) {
+	t.Helper()
+	oldHello, oldUnits := serviceHelloWait, serviceUnitsWait
+	serviceHelloWait, serviceUnitsWait = hello, units
+	t.Cleanup(func() { serviceHelloWait, serviceUnitsWait = oldHello, oldUnits })
+}
+
+// A wedged helper delays neither GET /system nor a GET /service past its
+// bounds, and concurrent GET /service share the one read.
 func TestServiceHelperWedged(t *testing.T) {
 	noQueue(t, false)
-	old := serviceTimeout
-	serviceTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { serviceTimeout = old })
+	serviceWaits(t, 300*time.Millisecond, 300*time.Millisecond)
 	h := &blockingHelper{started: make(chan struct{}, 4)}
 	srv := NewServer(Config{ConfigDir: writeConfigDir(t), SysRoot: serviceSys(t, ""), Helper: h})
 	handler := srv.Handler()
@@ -296,5 +302,47 @@ func TestServiceHelperWedged(t *testing.T) {
 	}
 	if h.calls() != 1 {
 		t.Errorf("%d units calls for two concurrent requests", h.calls())
+	}
+}
+
+// slowUnitsHelper takes hello and units each most of its own allowance.
+type slowUnitsHelper struct {
+	unitsHelper
+	hello, units time.Duration
+}
+
+func (h *slowUnitsHelper) Hello(ctx context.Context) (string, error) {
+	select {
+	case <-time.After(h.hello):
+		return applyclient.Present, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (h *slowUnitsHelper) Do(ctx context.Context, req apply.Request) (apply.Response, error) {
+	select {
+	case <-time.After(h.units):
+		return h.unitsHelper.Do(ctx, req)
+	case <-ctx.Done():
+		return apply.Response{}, ctx.Err()
+	}
+}
+
+// A slow hello does not eat into units' deadline: each has its own, and
+// the read ends within the longer.
+func TestServiceSlowHello(t *testing.T) {
+	noQueue(t, false)
+	serviceWaits(t, 400*time.Millisecond, 400*time.Millisecond)
+	h := &slowUnitsHelper{unitsHelper: unitsHelper{resp: apply.Response{Result: apply.ResultOK, UnitStates: []apply.UnitStatus{
+		{Name: "mhvtl.target", LoadState: "loaded", ActiveState: "active"},
+	}}}, hello: 300 * time.Millisecond, units: 300 * time.Millisecond}
+	start := time.Now()
+	got := getService(t, NewServer(Config{ConfigDir: writeConfigDir(t), SysRoot: serviceSys(t, ""), Helper: h}))
+	if got.Manager != "systemd" || got.Helper != "present" || got.Target == nil || len(got.Errors) != 0 {
+		t.Errorf("slow hello: %+v", got)
+	}
+	if d := time.Since(start); d > 550*time.Millisecond {
+		t.Errorf("GET /service took %v: hello and units did not run side by side", d)
 	}
 }

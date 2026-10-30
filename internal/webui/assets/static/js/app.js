@@ -3014,7 +3014,14 @@
       if (drawPanel("service", $("service-status"), bg, svc, [gen], function () { renderService(svc); })) {
         setPanelGrey("service-status", false);
       }
-    }).catch(function () { /* aborted */ });
+    }).catch(function (e) {
+      if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      // A fault drawing the table: say so in its place, not as a grey box.
+      console.error("service table:", e);
+      drawn.service = null;
+      drawService({ error: String((e && e.message) || e) });
+      setPanelGrey("service-status", false);
+    });
   }
   function refreshLibraries(gen, signal, bg) {
     if (!bg) {
