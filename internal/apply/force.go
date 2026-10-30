@@ -106,11 +106,11 @@ func (b forceBinding) mac(key, nonce []byte, expiry uint64) []byte {
 	writeField(m, b.R1)
 	writeField(m, b.Loaded...)
 	// Written only for a service op, so an apply's token is computed as
-	// it was before service ops existed. It cannot pass for a Loaded
-	// entry, which the helper formats as "library N drive slot M (...)"
-	// or "drive N" (planChecks).
+	// it was before service ops existed. The fixed tag ahead of it keeps
+	// it apart from a Loaded entry, which the helper formats as "library N
+	// drive slot M (...)" or "drive N" (planChecks).
 	if b.Scope != "" {
-		writeField(m, b.Scope)
+		writeField(m, "service-scope", b.Scope)
 	}
 	return m.Sum(nil)
 }

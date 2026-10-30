@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -272,18 +274,24 @@ func serviceEnv(action string) func(t *testing.T) (*env, *fakeSystem, Request) {
 }
 
 // (g) A service op killed after any step is recovered by the next request:
-// the files come back, and the library's units run again. A stop's
-// recovery says the units it had stopped were started again.
+// the library's units run again, with the live placement, which is also
+// what library_contents ends with. Before the stop's verdict the library
+// still runs, and the recovery's own guardedStop reads the same R1′; from
+// it on, the intent journals that placement as the source. A stop's
+// recovery says the units it had stopped were started again only once it
+// had stopped them.
 func TestServiceRecoverAfterEveryStep(t *testing.T) {
 	for _, action := range []string{ActionRestart, ActionStop} {
 		steps := killPoints(t, serviceEnv(action))
 		if len(steps) < 5 {
 			t.Fatalf("%s: kill points %v", action, steps)
 		}
+		stopped := false
 		for _, step := range steps {
+			stopped = stopped || step == "apply: library 10 stopped"
 			t.Run(action+" "+step, func(t *testing.T) {
 				e, s, req := serviceEnv(action)(t)
-				lc := e.read("library_contents.10")
+				want := placementOf(s.live[10])
 				e.h.killPoint = func(st string) bool { return st == step }
 				if resp := e.do(req); resp.Result != ResultError || !e.intentExists() {
 					t.Fatalf("killed: %+v", resp)
@@ -293,7 +301,8 @@ func TestServiceRecoverAfterEveryStep(t *testing.T) {
 				if resp.Result != ResultRecovered || e.intentExists() || !strings.Contains(resp.Message, "service:"+action) {
 					t.Fatalf("next request: %+v", resp)
 				}
-				if action == ActionStop && !strings.Contains(resp.Message, "the units the stop had stopped were started again") {
+				said := strings.Contains(resp.Message, "the units the stop had stopped were started again")
+				if said != (action == ActionStop && stopped) {
 					t.Errorf("message %q", resp.Message)
 				}
 				for _, u := range library10Units {
@@ -301,14 +310,178 @@ func TestServiceRecoverAfterEveryStep(t *testing.T) {
 						t.Errorf("%s is %s", u, s.unitState(u))
 					}
 				}
-				// Restored, or the live placement written back over it:
-				// never a third layout.
-				got := e.read("library_contents.10")
-				if !bytes.Equal(got, lc) && !strings.Contains(string(got), "\nSlot 21: E01001L8\n") {
-					t.Errorf("library_contents.10:\n%s", diffLines(string(lc), string(got)))
+				if p := placementOf(s.started[10]); !samePlacement(p, want) {
+					t.Errorf("library 10 started with %+v, want the live %+v", p, want)
+				}
+				got := string(e.read("library_contents.10"))
+				if !strings.Contains(got, "\nSlot 1:\n") || !strings.Contains(got, "\nSlot 21: E01001L8\n") {
+					t.Errorf("library_contents.10 lacks the live placement:\n%s", got)
 				}
 			})
 		}
+	}
+}
+
+// A stop of a library that was not running, killed after it, starts
+// nothing at recovery and does not say it did.
+func TestServiceRecoverInactiveStop(t *testing.T) {
+	e, s := newExecEnv(t)
+	for _, u := range library10Units {
+		s.state[u] = "inactive"
+	}
+	e.h.killPoint = func(st string) bool { return st == "merged" }
+	if resp := e.do(service(OpService, ActionStop)); resp.Result != ResultError || !e.intentExists() {
+		t.Fatalf("killed: %+v", resp)
+	}
+	e.rebuild()
+	resp := e.do(service(OpServicePlan, ActionStop))
+	if resp.Result != ResultRecovered || strings.Contains(resp.Message, "started again") {
+		t.Fatalf("next request: %+v", resp)
+	}
+	for _, u := range library10Units {
+		if s.unitState(u) != "inactive" {
+			t.Errorf("%s is %s", u, s.unitState(u))
+		}
+	}
+}
+
+// writesPersist turns PERSIST on, and has vtllibrary@10 write p as its
+// .persist when it stops.
+func writesPersist(e *env, s *fakeSystem, p string) {
+	e.replaceFile("device.conf", " PERSIST: False", " PERSIST: True")
+	s.onStop = func(u string) {
+		if u == "vtllibrary@10.service" {
+			os.WriteFile(filepath.Join(e.dir, "library_contents.10.persist"), []byte(p), 0o644)
+		}
+	}
+}
+
+// livePersist is library_contents.10 as vtllibrary saves it after moved.
+func livePersist(lc string) string {
+	return strings.Replace(strings.Replace(lc, "Slot 1: E01001L8", "Slot 1: ", 1), "Slot 21: \n", "Slot 21: E01001L8        \n", 1)
+}
+
+// restarted checks that a restart of library 10 applied, started it with
+// want, wrote want's slots 1 and 21 into library_contents.10 and moved the
+// .persist aside.
+func restarted(t *testing.T, e *env, s *fakeSystem, want validate.Placement) {
+	t.Helper()
+	if resp := e.do(service(OpService, ActionRestart)); resp.Result != ResultApplied {
+		t.Fatalf("service: %+v", resp)
+	}
+	if p := placementOf(s.started[10]); !samePlacement(p, want) {
+		t.Errorf("library 10 started with %+v, want %+v", p, want)
+	}
+	got := string(e.read("library_contents.10"))
+	for _, n := range []int{1, 21} {
+		line := fmt.Sprintf("\nSlot %d: %s\n", n, want.Slots[n])
+		if want.Slots[n] == "" {
+			line = fmt.Sprintf("\nSlot %d: ?\n", n)
+		}
+		if !regexp.MustCompile(line).MatchString(got) {
+			t.Errorf("library_contents.10 lacks %q:\n%s", line, got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(e.dir, "library_contents.10.persist")); !os.IsNotExist(err) {
+		t.Errorf(".persist left in place: %v", err)
+	}
+}
+
+// With PERSIST on, a trusted .persist written at the stop is the source.
+func TestServiceRestartTrustedPersist(t *testing.T) {
+	e, s := newExecEnv(t)
+	writesPersist(e, s, livePersist(string(e.read("library_contents.10"))))
+	moved(s)
+	restarted(t, e, s, placementOf(s.live[10]))
+	if rec := e.lastAudit(); !strings.Contains(rec.Diff, "+Slot 21: E01001L8") {
+		t.Errorf("audit %+v", rec)
+	}
+}
+
+// A .persist of a library that stopped with Result other than success is
+// not trusted: the live placement is the source, whatever it says.
+func TestServiceRestartUntrustedPersist(t *testing.T) {
+	e, s := newExecEnv(t)
+	writesPersist(e, s, string(e.read("library_contents.10")))
+	moved(s)
+	inner := e.cfg.Systemctl
+	e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
+		if args[0] == "show" && args[1] == "--property=Result" && args[3] == "vtllibrary@10.service" {
+			return []byte("exit-code\n"), nil
+		}
+		return inner(ctx, args...)
+	}
+	e.rebuild()
+	restarted(t, e, s, placementOf(s.live[10]))
+}
+
+// A trusted .persist that disagrees with READ ELEMENT STATUS rolls the
+// restart back with persist_mismatch, keeping its placement.
+func TestServiceRestartPersistMismatch(t *testing.T) {
+	e, s := newExecEnv(t)
+	lc := string(e.read("library_contents.10"))
+	writesPersist(e, s, lc)
+	moved(s)
+	resp := e.do(service(OpService, ActionRestart))
+	if resp.Result != ResultRolledBack || resp.Error != ErrPersistMismatch {
+		t.Fatalf("service: %+v", resp)
+	}
+	if got := string(e.read("library_contents.10")); got != lc {
+		t.Errorf("library_contents.10:\n%s", diffLines(lc, got))
+	}
+	for _, u := range library10Units {
+		if s.unitState(u) != "active" {
+			t.Errorf("%s is %s", u, s.unitState(u))
+		}
+	}
+	if rec := e.lastAudit(); rec.Op != "service:restart" || rec.Error != ErrPersistMismatch {
+		t.Errorf("audit %+v", rec)
+	}
+}
+
+// A restart of an inactive library takes the file it would load: with
+// PERSIST on, its .persist; with it off, library_contents.
+func TestServiceRestartInactive(t *testing.T) {
+	for _, persist := range []bool{false, true} {
+		t.Run(fmt.Sprintf("persist %v", persist), func(t *testing.T) {
+			e, s := newExecEnv(t)
+			for _, u := range library10Units {
+				s.state[u] = "inactive"
+			}
+			lc := string(e.read("library_contents.10"))
+			want := placementOf(s.fromDisk(10))
+			if persist {
+				e.replaceFile("device.conf", " PERSIST: False", " PERSIST: True")
+				os.WriteFile(filepath.Join(e.dir, "library_contents.10.persist"), []byte(livePersist(lc)), 0o644)
+				want.Slots[21] = want.Slots[1]
+				delete(want.Slots, 1)
+			}
+			restarted(t, e, s, want)
+			if !s.before("start vtllibrary@10.service", "offline 10") {
+				t.Errorf("an inactive library was taken offline before its start: %v", s.calls)
+			}
+		})
+	}
+}
+
+// Low 4: a .persist lists the pickers, which then come from it. A
+// cartridge the file has on the picker, which the library put in a slot
+// since, stays in the slot.
+func TestServiceRestartPersistPicker(t *testing.T) {
+	e, s := newExecEnv(t)
+	lc := string(e.read("library_contents.10"))
+	e.replaceFile("library_contents.10", "Picker 1:\n", "Picker 1: E01003L8\n")
+	e.replaceFile("library_contents.10", "Slot 3: E01003L8\n", "Slot 3: \n")
+	writesPersist(e, s, lc)
+	s.liveWith(10, func(inv *changer.Inventory) {
+		inv.Slots[2] = changer.SlotState{Number: 3, Full: true, Barcode: "E01003L8"}
+	})
+	if resp := e.do(service(OpService, ActionRestart)); resp.Result != ResultApplied {
+		t.Fatalf("service: %+v", resp)
+	}
+	got := string(e.read("library_contents.10"))
+	if !strings.Contains(got, "\nPicker 1:\n") || !strings.Contains(got, "\nSlot 3: E01003L8\n") {
+		t.Errorf("library_contents.10:\n%s", diffLines(lc, got))
 	}
 }
 
@@ -436,5 +609,23 @@ func TestServiceBindingKeepsApply(t *testing.T) {
 	}
 	if len(macs) != 2 {
 		t.Error("restart and stop bind alike")
+	}
+}
+
+// A write that fails is audited with the file it was writing.
+func TestServiceWriteFailureAudited(t *testing.T) {
+	e, s := newExecEnv(t)
+	moved(s)
+	e.h.beforeWrite = func(name string) {
+		if name == "library_contents.10" {
+			e.replaceFile(name, "Slot 2: E01002L8", "Slot 2: ")
+		}
+	}
+	resp := e.do(service(OpService, ActionRestart))
+	if resp.Result == ResultApplied {
+		t.Fatalf("service: %+v", resp)
+	}
+	if rec := e.lastAudit(); len(rec.Files) != 1 || rec.Files[0].Name != "library_contents.10" || !strings.Contains(rec.Diff, "+Slot 21: E01001L8") {
+		t.Errorf("audit %+v", rec)
 	}
 }

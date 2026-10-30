@@ -480,7 +480,7 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 		cur, _ := findLib(c.cur, ls.ID)
 		if x.service {
 			// No edit: next is the placement source itself.
-			next = unedited(cur, ls.Source)
+			next = unedited(cur, ls.Source, ls.SourceKind)
 		}
 		merged, err := mergeLibrary(cur, next, ls.Source, req.Dispositions, forced[ls.ID], bayIn(homeOf(next, c.nextHome)))
 		if err != nil {
@@ -491,6 +491,9 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 			return x.rollback(ctx, err)
 		}
 		data, err := renderContents(base.data, merged)
+		if err == nil && x.service && ls.SourceKind == SourcePersist {
+			data, err = renderPickers(data, merged)
+		}
 		if err != nil {
 			return x.rollback(ctx, fail(ErrPlacement, "", fmt.Errorf("library %d: %w", ls.ID, err)))
 		}
@@ -506,13 +509,12 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 	if err != nil {
 		return x.rollback(ctx, err)
 	}
+	// The audit lists the files as written, the merged library_contents
+	// included (for a service op its only change, D2), before the write: a
+	// write that fails partway and rolls back is audited with them.
+	rec.Files, rec.Diff, rec.DiffTruncated = auditFiles(changes, c.nextFiles)
 	if err := h.writeFiles(ctx, x.it, changes, c.nextFiles); err != nil {
 		return x.rollback(ctx, err)
-	}
-	if x.service {
-		// The placement a service op writes is its only change: audited
-		// with its diff, as an apply's request files are (D2).
-		rec.Files, rec.Diff, rec.DiffTruncated = auditFiles(changes, c.nextFiles)
 	}
 	if x.stopOnly {
 		return x.stopped(ctx)

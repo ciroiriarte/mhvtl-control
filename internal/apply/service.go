@@ -3,6 +3,7 @@ package apply
 import (
 	"context"
 
+	"mhvtl-control/internal/conffile"
 	"mhvtl-control/internal/config"
 	"mhvtl-control/internal/hostids"
 	"mhvtl-control/internal/validate"
@@ -49,7 +50,8 @@ func checkServiceRequest(req *Request) error {
 // library and every drive of it, stopped and started as an apply
 // restarting it would. A stop has the same plan, and units, and ends after
 // the write (execution.stopOnly); it never uses UnitPlan.Stop, whose
-// units the apply disables and whose library the merge skips.
+// units the apply disables and whose library the merge skips. checkBudget
+// so counts a stop's starts too, which it never runs: conservative.
 func servicePlan(lib config.Library) UnitPlan {
 	var drives []int
 	for _, d := range lib.Drives {
@@ -102,6 +104,11 @@ func (h *Helper) checkService(ctx context.Context, req *Request, files *fileSet)
 	// The host's devices, for the ch warning; a read error leaves it
 	// partial, as it does validation's.
 	host, _ := hostids.Read(h.cfg.SysRoot)
+	// A restart of a library whose vtllibrary@ is inactive or failed is in
+	// effect the library start of plan 4.2, without that row's checks
+	// (D6). Phase 3 routes that case through the start action and puts its
+	// check here; until then it runs as a restart, whose guardedStop finds
+	// nothing running.
 	plan := servicePlan(lib)
 	c := &checked{plan: &plan, cur: cur, next: cur, curDC: dc, nextDC: dc, curHome: home, nextHome: home,
 		nextFiles: files.withChanges(req), live: live, inv: invs, host: host}
@@ -125,8 +132,11 @@ func (h *Helper) checkService(ctx context.Context, req *Request, files *fileSet)
 // nothing edited: each storage slot (the ones the Slot lines skip
 // included) and MAP slot holds src's cartridge. Merged with src
 // (validate.Merge takes next as an edit of that view), it yields src, so a
-// service op writes the placement guardedStop found.
-func unedited(lib config.Library, src validate.Placement) config.Library {
+// service op writes the placement guardedStop found. kind is src's
+// SourceKind: a .persist lists the pickers too, which then come from it,
+// so a cartridge the file has on a picker but a host moved to a slot stays
+// in the slot. READ ELEMENT STATUS and library_contents give the file's.
+func unedited(lib config.Library, src validate.Placement, kind string) config.Library {
 	base := validate.Baseline(lib, &src, nil)
 	out := lib
 	out.Slots, out.MAPs = nil, nil
@@ -136,5 +146,28 @@ func unedited(lib config.Library, src validate.Placement) config.Library {
 	for _, m := range lib.MAPs {
 		out.MAPs = append(out.MAPs, config.MAPSlot{Number: m.Number, Barcode: base.MAPs[m.Number]})
 	}
+	if kind == SourcePersist {
+		out.PickerMedia = nil
+		for _, n := range sortedInts(src.Pickers) {
+			out.PickerMedia = append(out.PickerMedia, config.Slot{Number: n, Barcode: src.Pickers[n]})
+		}
+	}
 	return out
+}
+
+// renderPickers sets the Picker lines of data, a library_contents, to p's
+// pickers, for a service op whose source is a .persist: renderContents
+// keeps them, as an apply's are the client's. Only an emptied picker can
+// be written; one p fills that the file has otherwise is refused
+// (conffile.SetBarcode).
+func renderPickers(data []byte, p validate.Placement) ([]byte, error) {
+	c := conffile.ParseLibContents(data)
+	for _, e := range c.Entries() {
+		if e.Kind == "Picker" && e.Barcode != p.Pickers[e.Number] {
+			if err := c.SetBarcode("Picker", e.Number, p.Pickers[e.Number]); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return c.Render(), nil
 }
