@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -52,6 +53,9 @@ type forceBinding struct {
 	// READ ELEMENT STATUS and TEST UNIT READY found them (idle and
 	// standalone drives included): a drive loaded since voids it.
 	Loaded []string
+	// Scope is a service op's action and library ("service:stop library
+	// 10"), so a stop's token is no restart's; empty for an apply.
+	Scope string
 }
 
 // bindingOf computes the binding of req with units, live and the loaded
@@ -75,6 +79,9 @@ func bindingOf(req *Request, units []string, live *validate.Live, loaded []strin
 	b.R1 = conffile.Hash(r1)
 	b.Loaded = append([]string{}, loaded...)
 	sort.Strings(b.Loaded)
+	if req.Op == OpServicePlan || req.Op == OpService {
+		b.Scope = fmt.Sprintf("service:%s library %d", req.Action, *req.Library)
+	}
 	return b
 }
 
@@ -98,6 +105,13 @@ func (b forceBinding) mac(key, nonce []byte, expiry uint64) []byte {
 	writeField(m, strings.Join(b.Units, " "))
 	writeField(m, b.R1)
 	writeField(m, b.Loaded...)
+	// Written only for a service op, so an apply's token is computed as
+	// it was before service ops existed. It cannot pass for a Loaded
+	// entry, which the helper formats as "library N drive slot M (...)"
+	// or "drive N" (planChecks).
+	if b.Scope != "" {
+		writeField(m, b.Scope)
+	}
 	return m.Sum(nil)
 }
 

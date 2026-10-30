@@ -244,7 +244,7 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 		}
 		return Response{Result: ResultOK, LibraryStates: states, UnitStates: units}
 	}
-	rec := AuditRecord{TS: h.cfg.Now(), Actor: req.Actor, Peer: peer, Op: req.Op, Units: req.ExpectUnits}
+	rec := AuditRecord{TS: h.cfg.Now(), Actor: req.Actor, Peer: peer, Op: auditOp(req), Units: req.ExpectUnits}
 	l, held, err := h.waitLock()
 	if err != nil {
 		return responseOf(err)
@@ -268,7 +268,7 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 		return h.recover(ctx, it, false, req.Actor, peer)
 	}
 	resp := h.handle(ctx, req, &rec)
-	if req.Op != OpPlan || resp.Result != ResultValidated {
+	if !planning(req.Op) || resp.Result != ResultValidated {
 		h.auditResponse(rec, resp)
 	}
 	return resp
@@ -286,12 +286,12 @@ func (h *Helper) handle(ctx context.Context, req *Request, rec *AuditRecord) Res
 	if req.Op == OpRecover {
 		return Response{Result: ResultOK, Message: "nothing to recover"}
 	}
-	if req.Op == OpPlan && req.ForceToken != "" {
+	if planning(req.Op) && req.ForceToken != "" {
 		return Response{Result: ResultRefused, Error: ErrBadRequest, Message: "a force token goes with an apply"}
 	}
 	// Exec step 1, after exclusive.lock: the daemon's cooperative lock,
 	// then no media home move half done.
-	if req.Op == OpApply {
+	if applying(req.Op) {
 		l, err := h.applyLock()
 		if err != nil {
 			return responseOf(err)
@@ -305,13 +305,19 @@ func (h *Helper) handle(ctx context.Context, req *Request, rec *AuditRecord) Res
 	}
 
 	files := newFileSet(h.cfg.ConfigDir)
-	c, err := h.check(ctx, req, files, rec)
+	var c *checked
+	var err error
+	if req.Op == OpServicePlan || req.Op == OpService {
+		c, err = h.checkService(ctx, req, files)
+	} else {
+		c, err = h.check(ctx, req, files, rec)
+	}
 	var resp Response
 	if err == nil {
 		var forced map[int][]changer.DriveState
 		forced, resp, err = h.planChecks(ctx, req, c)
 		if err == nil && resp.Result == "" {
-			if req.Op == OpPlan {
+			if planning(req.Op) {
 				resp = Response{Result: ResultValidated, Warnings: c.warnings}
 			} else {
 				resp = h.execute(ctx, req, c, forced, rec)
@@ -361,7 +367,7 @@ func (h *Helper) planChecks(ctx context.Context, req *Request, c *checked) (map[
 	}
 	if len(loaded) == 0 {
 		// A force token finds nothing to force: the change's own units.
-		if req.Op == OpApply && req.ForceToken != "" {
+		if applying(req.Op) && req.ForceToken != "" {
 			return nil, Response{}, checkExpectUnits(req.ExpectUnits, *c.plan)
 		}
 		return nil, Response{}, nil
@@ -371,7 +377,7 @@ func (h *Helper) planChecks(ctx context.Context, req *Request, c *checked) (map[
 	// token binds and expect_units must name.
 	fp := withForced(*c.plan, c, forced)
 	binding := bindingOf(req, fp.Units(), c.live, loaded)
-	if req.Op == OpApply && req.ForceToken != "" {
+	if applying(req.Op) && req.ForceToken != "" {
 		// The response lists the forced units. The token, which binds
 		// them, is used up only once expect_units names them.
 		c.plan = &fp
@@ -392,7 +398,7 @@ func (h *Helper) planChecks(ctx context.Context, req *Request, c *checked) (map[
 	}
 	resp := Response{Result: ResultRefused, Error: ErrDriveLoaded, Units: fp.Units(), Notes: fp.Notes,
 		Message: "loaded drives the apply would stop: " + strings.Join(loaded, ", ") + "; unload them, or apply with the force token to put each cartridge back in its slot"}
-	if req.Op == OpPlan {
+	if planning(req.Op) {
 		tok, exp, err := h.mintForce(binding)
 		if err != nil {
 			return nil, Response{}, err

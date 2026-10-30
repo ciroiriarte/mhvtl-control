@@ -65,6 +65,11 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 		return responseOf(err)
 	}
 	msg := fmt.Sprintf("recovered the %s of %s by %q; plan again", it.Op, it.Started.Format("2006-01-02 15:04:05Z07:00"), it.Actor)
+	if it.Op == OpService+":"+ActionStop && units {
+		// unwind starts again every unit the stop had stopped: the stop
+		// did not finish, so the library is back as it was.
+		msg += "; the units the stop had stopped were started again"
+	}
 	if len(conflicts) > 0 {
 		msg += "; " + restoreConflicts(conflicts).Error()
 	}

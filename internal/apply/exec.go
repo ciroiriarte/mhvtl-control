@@ -324,6 +324,11 @@ type execution struct {
 	// approved are the units expect_units named, which the checks found
 	// equal to the plan's.
 	approved map[string]bool
+	// service is a service op (mhvtl-control#14): no media and no
+	// enabling or disabling (steps 7, 8), and the files it writes are
+	// audited. stopOnly is its stop, which ends after the write (step 6),
+	// leaving the units down but enabled.
+	service, stopOnly bool
 }
 
 // allow refuses a unit the forward path would stop or start that is not
@@ -363,12 +368,13 @@ func (x *execution) allow(u string) error {
 func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced map[int][]changer.DriveState, rec *AuditRecord) Response {
 	// The plan is the one the checks derived, the forced drives in it
 	// (planChecks): derived once, from the drive states read there.
-	x := &execution{h: h, req: req, c: c, plan: *c.plan, approved: set(req.ExpectUnits)}
+	x := &execution{h: h, req: req, c: c, plan: *c.plan, approved: set(req.ExpectUnits),
+		service: req.Op == OpService, stopOnly: req.Op == OpService && req.Action == ActionStop}
 	boot, err := h.bootID()
 	if err != nil {
 		return responseOf(err)
 	}
-	x.it = &Intent{V: Version, BootID: boot, Started: h.cfg.Now().UTC(), Actor: req.Actor, Peer: rec.Peer, Op: req.Op,
+	x.it = &Intent{V: Version, BootID: boot, Started: h.cfg.Now().UTC(), Actor: req.Actor, Peer: rec.Peer, Op: rec.Op,
 		Step: "planned", Libraries: affected(x.plan), Exec: &ExecJournal{Plan: x.plan, Merged: map[int]validate.Placement{}}}
 	for _, id := range sortedInts(forced) {
 		lib, _ := findLib(c.cur, id)
@@ -472,6 +478,10 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 			continue // a library deleted: its units stay down
 		}
 		cur, _ := findLib(c.cur, ls.ID)
+		if x.service {
+			// No edit: next is the placement source itself.
+			next = unedited(cur, ls.Source)
+		}
 		merged, err := mergeLibrary(cur, next, ls.Source, req.Dispositions, forced[ls.ID], bayIn(homeOf(next, c.nextHome)))
 		if err != nil {
 			return x.rollback(ctx, fail(ErrPlacement, "", err))
@@ -499,6 +509,14 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 	if err := h.writeFiles(ctx, x.it, changes, c.nextFiles); err != nil {
 		return x.rollback(ctx, err)
 	}
+	if x.service {
+		// The placement a service op writes is its only change: audited
+		// with its diff, as an apply's request files are (D2).
+		rec.Files, rec.Diff, rec.DiffTruncated = auditFiles(changes, c.nextFiles)
+	}
+	if x.stopOnly {
+		return x.stopped(ctx)
+	}
 
 	// 7. Media.
 	if x.plan.NewBarcodes > 0 {
@@ -509,8 +527,10 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 	warnings := append([]string{}, c.warnings...)
 
 	// 8. Units.
-	if err := x.units(ctx); err != nil {
-		return x.rollback(ctx, err)
+	if !x.service {
+		if err := x.units(ctx); err != nil {
+			return x.rollback(ctx, err)
+		}
 	}
 
 	// 9. Start, then hold offline.
@@ -548,6 +568,29 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 
 	// 11. Done.
 	if err := h.removeIntent(); err != nil {
+		return responseOf(err)
+	}
+	return resp
+}
+
+// stopped ends a service stop after its write: the units stay down, and
+// stay enabled, so they start again at boot; the bay monitor, which other
+// libraries may use, starts again.
+func (x *execution) stopped(ctx context.Context) Response {
+	var warnings []string
+	warnings = append(warnings, x.c.warnings...)
+	if x.it.Exec.BayStopped {
+		if _, err := x.h.cfg.Systemctl(ctx, "start", bayMonitor); err != nil {
+			warnings = append(warnings, fmt.Sprintf("systemctl start %s: %v", bayMonitor, err))
+		}
+	}
+	resp := Response{Result: ResultApplied, Units: x.c.plan.Units(), Warnings: warnings, ForcedUnloads: x.forcedReport()}
+	for _, f := range x.it.Exec.Forced {
+		if f.Unknown {
+			resp.Unplaced = append(resp.Unplaced, unknownCartridge(f.Drive))
+		}
+	}
+	if err := x.h.removeIntent(); err != nil {
 		return responseOf(err)
 	}
 	return resp

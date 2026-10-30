@@ -31,8 +31,8 @@ const Version = 1
 // Operations. A request is one JSON object on its own connection, and the
 // answer one JSON object back on it. Every op goes through the same peer
 // check (CheckPeer). hello and units answer before exclusive.lock, so they
-// never wait behind an apply, and are not audited; plan, apply and recover
-// take the lock and are audited.
+// never wait behind an apply, and are not audited; plan, apply, recover,
+// service_plan and service take the lock and are audited.
 const (
 	// OpHello reports the helper's state and changes nothing.
 	OpHello = "hello"
@@ -52,6 +52,23 @@ const (
 	// (unitsTimeout), and a unit an apply is stopping or starting shows as
 	// deactivating or activating.
 	OpUnits = "units"
+	// OpServicePlan checks a service action on one library (Action,
+	// Library) and reports what it would do, as plan does for a change
+	// set; OpService checks and carries it out (mhvtl-control#14). Both
+	// take the lock; service is audited as "service:<action>", and a
+	// service_plan only when it is refused.
+	OpServicePlan = "service_plan"
+	OpService     = "service"
+)
+
+// Service actions. A restart and a stop run the apply sequence on the
+// library's units with no file changed but the placement: guardedStop,
+// the live placement merged into library_contents.<N> and written if it
+// changed, then for a restart the start held offline. A stop leaves the
+// units down, not disabled: they start again at boot.
+const (
+	ActionRestart = "restart"
+	ActionStop    = "stop"
 )
 
 // Request is one call to the helper: a JSON object, decoded strictly.
@@ -74,6 +91,10 @@ type Request struct {
 	// Actor says who asked, for the audit: the daemon's authenticated
 	// user, or a description of the client.
 	Actor string `json:"actor,omitempty"`
+	// Action and Library name a service op's action and the library it
+	// acts on; the helper derives the units from them.
+	Action  string `json:"action,omitempty"`
+	Library *int   `json:"library,omitempty"`
 }
 
 // File is a file to write. Content is base64 in JSON, so any bytes go
@@ -326,6 +347,13 @@ func DecodeRequest(r io.Reader) (*Request, error) {
 	}
 	switch req.Op {
 	case OpHello, OpPlan, OpApply, OpRecover, OpUnits:
+		if req.Action != "" || req.Library != nil {
+			return nil, refuse(ErrBadRequest, "%s takes no action or library", req.Op)
+		}
+	case OpServicePlan, OpService:
+		if err := checkServiceRequest(&req); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, refuse(ErrBadRequest, "unknown op %q", req.Op)
 	}
