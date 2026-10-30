@@ -332,12 +332,10 @@
     ] });
   }
 
-  // renderSystem draws GET /system and, below it, the Service table from
-  // GET /service (svc), or the reason it could not be read.
-  function renderSystem(s, svc) {
-    preserve($("system-status"), function () { drawSystem(s, svc); });
+  function renderSystem(s) {
+    preserve($("system-status"), function () { drawSystem(s); });
   }
-  function drawSystem(s, svc) {
+  function drawSystem(s) {
     s = s || {};
     // Topbar host summary (textContent only).
     var stat = $("sys-stat");
@@ -366,11 +364,17 @@
     body.appendChild(mk("table", { children: [tbody] }));
     var chNote = core.kernelChNote(s.kernel_ch);
     if (chNote) { body.appendChild(mk("p", { class: "warn", text: chNote })); }
-    drawService(body, svc);
   }
 
-  // drawService appends the read-only Service table (mhvtl-control#14).
-  function drawService(body, svc) {
+  // renderService draws the read-only Service table below the system table
+  // (mhvtl-control#14) from GET /service (svc), or the reason it could not
+  // be read ({error}).
+  function renderService(svc) {
+    preserve($("service-status"), function () { drawService(svc); });
+  }
+  function drawService(svc) {
+    var body = $("service-status");
+    clear(body);
     body.appendChild(mk("h3", { class: "svc-head", text: "Service" }));
     if (!svc || svc.error) {
       body.appendChild(mk("p", { class: "muted", text: "Service status unavailable" + (svc && svc.error ? ": " + svc.error : "") }));
@@ -383,7 +387,7 @@
           return mk("span", { class: "badge" + (n === "ch exposed" ? " unknown" : ""), text: n });
         }) }));
       }
-      return mk("tr", { key: r.key, children: [
+      return mk("tr", { children: [
         unit,
         mk("td", { children: [mk("span", { class: "badge " + r.cls, text: r.state })] }),
         mk("td", { class: "mono", text: r.pid || "—" }),
@@ -2980,17 +2984,14 @@
       setPanelGrey("system-status", true); // loading/greyed until THIS panel's data lands
       busy("system-panel", true);
     }
-    // A daemon without GET /service (older than mhvtl-control#14) or a
-    // failed read still draws the system table.
-    var svcReq = api("/api/v1/service", { signal: signal }).catch(function (e) {
-      if (e.name === "AbortError") { throw e; }
-      return { error: e.message };
-    });
-    return Promise.all([api("/api/v1/system", { signal: signal }), svcReq]).then(function (r) {
-      var s = r[0], svc = r[1];
+    // The Service table is read apart, so a slow or failing GET /service
+    // (a wedged helper, or a daemon older than mhvtl-control#14) never
+    // holds back or greys the system table.
+    var svc = refreshService(gen, signal, bg);
+    var sys = api("/api/v1/system", { signal: signal }).then(function (s) {
       if (!bg) { busy("system-panel", false); }
       if (isStale(gen, NodeState.generation)) { return; }
-      if (drawPanel("system", $("system-status"), bg, { system: s, service: svc }, [gen], function () { renderSystem(s, svc); })) {
+      if (drawPanel("system", $("system-status"), bg, s, [gen], function () { renderSystem(s); })) {
         setPanelGrey("system-status", false); // new-node content rendered: interactive again
       }
       (bg ? sysStatus.quietOk() : sysStatus.ok());
@@ -2999,6 +3000,21 @@
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
       sysStatus.error("system: " + e.message, bg ? "poll" : "load");
     });
+    return Promise.all([sys, svc]);
+  }
+  // refreshService draws the Service table; a failed read is shown in the
+  // table's place, never in the panel's status region.
+  function refreshService(gen, signal, bg) {
+    if (!bg) { setPanelGrey("service-status", true); }
+    return api("/api/v1/service", { signal: signal }).catch(function (e) {
+      if (e.name === "AbortError") { throw e; }
+      return { error: e.message };
+    }).then(function (svc) {
+      if (isStale(gen, NodeState.generation)) { return; }
+      if (drawPanel("service", $("service-status"), bg, svc, [gen], function () { renderService(svc); })) {
+        setPanelGrey("service-status", false);
+      }
+    }).catch(function () { /* aborted */ });
   }
   function refreshLibraries(gen, signal, bg) {
     if (!bg) {
@@ -3223,6 +3239,7 @@
     sysStatus.grey(); libStatus.grey(); diskStatus.grey(); mediaStatus.grey();
     configStatus.grey(); findingsStatus.grey();
     setPanelGrey("system-status", true);
+    setPanelGrey("service-status", true);
     setPanelGrey("library-rack", true);
     setPanelGrey("disk-dock", true);
     setPanelGrey("media-list", true);

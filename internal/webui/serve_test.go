@@ -38,7 +38,7 @@ func TestIndexServesDashboard(t *testing.T) {
 		t.Errorf("GET / content-type = %q, want text/html", ct)
 	}
 	// The three Workstream-E panels and the theme/remote controls must render.
-	for _, id := range []string{"library-rack", "disk-dock", "system-status", "theme-select", "target-dialog"} {
+	for _, id := range []string{"library-rack", "disk-dock", "system-status", "service-status", "theme-select", "target-dialog"} {
 		if !strings.Contains(body, id) {
 			t.Errorf("index.html missing expected element id %q", id)
 		}

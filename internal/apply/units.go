@@ -94,10 +94,16 @@ func (h *Helper) unitStates(ctx context.Context) (map[int]string, []UnitStatus, 
 // parseShow parses the output of systemctl show for the units names: one
 // block of Key=Value lines per unit, in the order given, separated by blank
 // lines. A unit systemd does not know still has its block (LoadState
-// not-found).
+// not-found). A value runs from the first '=' to the end of the line. A
+// MainPID or ActiveEnterTimestampMonotonic that is not a number is left 0
+// for that unit rather than failing the others: the daemon's config
+// staging needs only the libraries' ActiveState (LibraryStates). systemctl
+// ends every line with '\n' alone, so no CRLF is handled: a '\r' would be
+// part of a value, and a CRLF blank line no separator, which the block
+// count then refuses.
 func parseShow(out []byte, names []string) ([]UnitStatus, error) {
 	var blocks [][]byte
-	for _, b := range bytes.Split(bytes.ReplaceAll(out, []byte("\r\n"), []byte("\n")), []byte("\n\n")) {
+	for _, b := range bytes.Split(out, []byte("\n\n")) {
 		if len(bytes.TrimSpace(b)) > 0 {
 			blocks = append(blocks, b)
 		}
@@ -113,7 +119,6 @@ func parseShow(out []byte, names []string) ([]UnitStatus, error) {
 			if !ok {
 				continue
 			}
-			var err error
 			switch k {
 			case "LoadState":
 				u.LoadState = v
@@ -124,12 +129,13 @@ func parseShow(out []byte, names []string) ([]UnitStatus, error) {
 			case "Result":
 				u.Result = v
 			case "MainPID":
-				u.MainPID, err = strconv.Atoi(v)
+				if n, err := strconv.Atoi(v); err == nil {
+					u.MainPID = n
+				}
 			case "ActiveEnterTimestampMonotonic":
-				u.ActiveEnterMonotonicUS, err = strconv.ParseUint(v, 10, 64)
-			}
-			if err != nil {
-				return nil, fmt.Errorf("systemctl show %s: %s: %w", names[i], k, err)
+				if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+					u.ActiveEnterMonotonicUS = n
+				}
 			}
 		}
 		units[i] = u

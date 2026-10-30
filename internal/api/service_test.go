@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -237,5 +238,63 @@ func TestServiceBackend(t *testing.T) {
 		if len(got.Errors) != 0 {
 			t.Errorf("%s: errors %v", tc.name, got.Errors)
 		}
+	}
+}
+
+// blockingHelper answers hello at once and units only when its context
+// ends, as a wedged helper does.
+type blockingHelper struct {
+	unitsHelper
+	started chan struct{}
+}
+
+func (h *blockingHelper) Do(ctx context.Context, req apply.Request) (apply.Response, error) {
+	h.unitsHelper.Do(ctx, req)
+	h.started <- struct{}{}
+	<-ctx.Done()
+	return apply.Response{}, ctx.Err()
+}
+
+// A wedged helper delays neither GET /system nor a GET /service past
+// serviceTimeout, and concurrent GET /service share the one read.
+func TestServiceHelperWedged(t *testing.T) {
+	noQueue(t, false)
+	old := serviceTimeout
+	serviceTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { serviceTimeout = old })
+	h := &blockingHelper{started: make(chan struct{}, 4)}
+	srv := NewServer(Config{ConfigDir: writeConfigDir(t), SysRoot: serviceSys(t, ""), Helper: h})
+	handler := srv.Handler()
+
+	type answer struct {
+		dto serviceDTO
+		d   time.Duration
+	}
+	answers := make(chan answer, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			start := time.Now()
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/service", nil))
+			var dto serviceDTO
+			json.Unmarshal(rec.Body.Bytes(), &dto)
+			answers <- answer{dto, time.Since(start)}
+		}()
+	}
+	<-h.started // the units call is in flight
+	start := time.Now()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/system", nil))
+	if rec.Code != http.StatusOK || time.Since(start) > 100*time.Millisecond {
+		t.Errorf("GET /system with units in flight: %d after %v", rec.Code, time.Since(start))
+	}
+	for i := 0; i < 2; i++ {
+		a := <-answers
+		if a.d > 2*time.Second || a.dto.Manager != "unavailable" || len(a.dto.Errors) != 1 || len(a.dto.Libraries) != 2 {
+			t.Errorf("GET /service with a wedged helper: %+v after %v", a.dto, a.d)
+		}
+	}
+	if h.calls() != 1 {
+		t.Errorf("%d units calls for two concurrent requests", h.calls())
 	}
 }

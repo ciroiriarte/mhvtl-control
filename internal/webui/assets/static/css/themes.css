@@ -398,7 +398,9 @@ select, input[type="text"], input[type="password"], input[type="number"], input[
 .badge.enc.simulated { color: var(--warn); border-color: var(--warn); border-style: dashed; }
 .badge.unknown { color: var(--warn); border-color: var(--warn); }
 /* ---- Service table (System panel, mhvtl-control#14) ------------------- */
-.svc-head { font-size: 12px; margin: 12px 0 4px; }
+#service-status { padding-top: 0; }
+#service-status:empty { display: none; }
+.svc-head { font-size: 12px; margin: 0 0 4px; }
 .svc-scroll { overflow-x: auto; }
 .svc-table { width: 100%; }
 .svc-table th, .svc-table td { font-size: 12px; vertical-align: top; }

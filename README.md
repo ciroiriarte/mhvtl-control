@@ -346,7 +346,8 @@ mhvtl-control's own unit can't reach systemd, so it asks the apply helper
 for the unit states (the helper's `units` request, which takes no lock and
 isn't audited). Without the helper, `manager` is `unavailable` and the
 units are left out; the rest is still reported. An answer is reused for 2
-seconds. The dashboard shows it as the Service table of the System panel.
+seconds, and a helper that doesn't answer within 6 seconds is reported in
+`errors`. The dashboard shows it as the Service table of the System panel.
 
 ## The kernel ch driver
 

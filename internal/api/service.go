@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -31,13 +33,25 @@ const (
 // starts a helper instance for its units op, as hello does (helloTTL).
 const serviceTTL = 2 * time.Second
 
-// serviceCache holds the last GET /service answer. A caller that finds it
-// stale builds the next one under mu, so callers meanwhile wait for it
-// rather than each starting a helper.
+// serviceTimeout bounds one GET /service read, hello and units included:
+// the helper's own systemctl call gives up after 5 s (apply.unitsTimeout),
+// and the dashboard's poll must not wait on a wedged helper for longer.
+var serviceTimeout = 6 * time.Second
+
+// serviceCache holds the last GET /service answer, from when it ended, and
+// the read in flight, which every caller that asks meanwhile shares. mu
+// is never held across the read.
 type serviceCache struct {
-	mu  sync.Mutex
-	at  time.Time
-	dto serviceDTO
+	mu     sync.Mutex
+	at     time.Time
+	dto    serviceDTO
+	flight *serviceFlight
+}
+
+// serviceFlight is a read in progress; dto is set before done is closed.
+type serviceFlight struct {
+	done chan struct{}
+	dto  serviceDTO
 }
 
 // queueExists reports whether mhVTL's message queue exists. It opens the
@@ -115,13 +129,52 @@ type serviceDriveDTO struct {
 func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 	c := &s.service
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.at.IsZero() || s.now().Sub(c.at) >= serviceTTL {
-		// Built apart from the request, so a client that goes away does
-		// not leave a cancellation cached for the others.
-		c.dto, c.at = s.serviceStatus(context.WithoutCancel(r.Context())), s.now()
+	if !c.at.IsZero() && s.now().Sub(c.at) < serviceTTL {
+		dto := c.dto
+		c.mu.Unlock()
+		writeJSON(w, http.StatusOK, dto)
+		return
 	}
-	writeJSON(w, http.StatusOK, c.dto)
+	f := c.flight
+	if f == nil {
+		f = &serviceFlight{done: make(chan struct{})}
+		c.flight = f
+		// Read apart from the request, so a client that goes away
+		// neither cancels it for the others nor gets its cancellation
+		// cached.
+		go s.service1(context.WithoutCancel(r.Context()), f)
+	}
+	c.mu.Unlock()
+	select {
+	case <-f.done:
+		writeJSON(w, http.StatusOK, f.dto)
+	case <-r.Context().Done():
+	}
+}
+
+// service1 reads the service status once, within serviceTimeout, and
+// caches it. A read that panics is not cached, as in hello1: it runs out of
+// reach of the HTTP recover middleware, and the flight must end.
+func (s *Server) service1(ctx context.Context, f *serviceFlight) {
+	ctx, cancel := context.WithTimeout(ctx, serviceTimeout)
+	defer cancel()
+	c := &s.service
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("GET /service panicked: %v\n%s", r, debug.Stack())
+			f.dto = serviceDTO{Manager: managerUnavailable, Libraries: []serviceLibraryDTO{}, StandaloneDrives: []serviceDriveDTO{},
+				Errors: []string{"the service status read failed; the daemon log has the cause"}}
+			c.mu.Lock()
+			c.flight = nil
+			c.mu.Unlock()
+			close(f.done)
+		}
+	}()
+	f.dto = s.serviceStatus(ctx)
+	c.mu.Lock()
+	c.dto, c.at, c.flight = f.dto, s.now(), nil
+	c.mu.Unlock()
+	close(f.done)
 }
 
 // serviceStatus reads device.conf, mhvtl.conf and sysfs, and asks the
