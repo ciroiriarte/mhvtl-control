@@ -37,6 +37,9 @@ type UnitPlan struct {
 	GuardDrives, RollbackGuardDrives int
 	// Verbose is a VERBOSE change, which restarts every instance.
 	Verbose bool
+	// Target is a service op on mhvtl.target: after the guarded stops it
+	// stops the target, and its support units go down with it.
+	Target bool
 	// Notes say what applies without a restart.
 	Notes []string
 }
@@ -394,6 +397,12 @@ const (
 	sigtermRollback = stopSlack - 10*time.Second
 	// maxBudget is RuntimeMaxSec less a margin (plan 3.1).
 	maxBudget = 1700 * time.Second
+	// targetCycle bounds stopping mhvtl.target once its instances are
+	// down and starting its support units and the target again: the TCMU
+	// handler's TimeoutStopSec=10, and 10 s each for the oneshots
+	// mhvtl-load-modules (modprobe) and mhvtl-media (make_vtl_media of a
+	// library whose media exists).
+	targetCycle = 30 * time.Second
 )
 
 // unitsTime is the time to stop or start units, by their kind.
@@ -426,10 +435,16 @@ func (p UnitPlan) Budget() time.Duration {
 		unitsTime(p.StopOrder(), libraryStop, driveStop) + media + daemonReload +
 		unitsTime(p.StartOrder(), libraryStart, driveStart) + startWait +
 		time.Duration(len(p.Restart)+len(p.Start))*readback
+	if p.Target {
+		forward += targetCycle
+	}
 	rollback := up + time.Duration(p.RollbackGuardDrives)*guardDrive +
 		unitsTime(p.StartOrder(), libraryStop, driveStop) + daemonReload +
 		unitsTime(p.StopOrder(), libraryStart, driveStart) +
 		time.Duration(len(p.Restart)+len(p.Stop))*readback
+	if p.Target {
+		rollback += targetCycle
+	}
 	return forward + rollback + stopSlack
 }
 

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +48,11 @@ type ExecJournal struct {
 	Stops []*LibStop `json:"stops,omitempty"`
 	// StandaloneStopped are the standalone drives stopped.
 	StandaloneStopped []string `json:"standalone_stopped,omitempty"`
+	// TargetStopped: a target op stopped mhvtl.target, after its guarded
+	// stops. Support are the targetSupport units that ran before, which go
+	// down with it and are started again by name before the instances.
+	TargetStopped bool     `json:"target_stopped,omitempty"`
+	Support       []string `json:"support,omitempty"`
 	// Forced are the loaded drives a force token let the apply stop.
 	Forced []ForcedUnload `json:"forced,omitempty"`
 	// Merged is the placement written to each library's library_contents.
@@ -327,8 +333,9 @@ type execution struct {
 	// service is a service op (mhvtl-control#14): no media and no
 	// enabling or disabling (steps 7, 8), and the files it writes are
 	// audited. stopOnly is its stop, which ends after the write (step 6),
-	// leaving the units down but enabled.
-	service, stopOnly bool
+	// leaving the units down but enabled; startOnly its library start,
+	// which skips steps 3-8. target is an op on mhvtl.target.
+	service, stopOnly, startOnly, target bool
 }
 
 // allow refuses a unit the forward path would stop or start that is not
@@ -366,10 +373,14 @@ func (x *execution) allow(u string) error {
 //
 // A failure from step 4 on, once a unit was stopped, rolls back (step 12).
 func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced map[int][]changer.DriveState, rec *AuditRecord) Response {
+	if req.Op == OpService && req.Target && req.Action == ActionStart {
+		return h.startTarget(ctx, req, c)
+	}
 	// The plan is the one the checks derived, the forced drives in it
 	// (planChecks): derived once, from the drive states read there.
 	x := &execution{h: h, req: req, c: c, plan: *c.plan, approved: set(req.ExpectUnits),
-		service: req.Op == OpService, stopOnly: req.Op == OpService && req.Action == ActionStop}
+		service: req.Op == OpService, stopOnly: req.Op == OpService && req.Action == ActionStop,
+		startOnly: req.Op == OpService && req.Action == ActionStart, target: req.Op == OpService && req.Target}
 	boot, err := h.bootID()
 	if err != nil {
 		return responseOf(err)
@@ -393,6 +404,10 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 	}
 	if err := h.saveIntent(x.it); err != nil {
 		return responseOf(err)
+	}
+	if x.startOnly {
+		// Plan 4.2, library start: steps 9-11 only.
+		return x.finish(ctx, append([]string{}, c.warnings...))
 	}
 
 	// 3. Bay monitor.
@@ -516,6 +531,11 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 	if err := h.writeFiles(ctx, x.it, changes, c.nextFiles); err != nil {
 		return x.rollback(ctx, err)
 	}
+	if x.target {
+		if err := x.stopTarget(ctx); err != nil {
+			return x.rollback(ctx, err)
+		}
+	}
 	if x.stopOnly {
 		return x.stopped(ctx)
 	}
@@ -534,8 +554,27 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 			return x.rollback(ctx, err)
 		}
 	}
+	return x.finish(ctx, warnings)
+}
+
+// finish is execute steps 9-11. A target restart starts the support units
+// that ran before it by name ahead of the instances, and mhvtl.target once
+// they are up.
+func (x *execution) finish(ctx context.Context, warnings []string) Response {
+	h, c := x.h, x.c
 
 	// 9. Start, then hold offline.
+	for _, u := range x.it.Exec.Support {
+		if err := supportAllowed(x.req, u); err != nil {
+			return x.rollback(ctx, err)
+		}
+		if err := x.step("start "+u, nil); err != nil {
+			return x.rollback(ctx, err)
+		}
+		if _, err := h.cfg.Systemctl(ctx, "start", u); err != nil {
+			return x.rollback(ctx, fail(ErrStart, u, fmt.Errorf("systemctl start %s: %w", u, err)))
+		}
+	}
 	offline, err := h.bringUp(ctx, startGroups(x.plan), func(u string) error {
 		if err := x.allow(u); err != nil {
 			return err
@@ -547,6 +586,16 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 		// puts back online any it does not reach.
 		x.held = offline
 		return x.rollback(ctx, err)
+	}
+	if x.it.Exec.TargetStopped {
+		if err := supportAllowed(x.req, mhvtlTarget); err != nil {
+			x.held = offline
+			return x.rollback(ctx, err)
+		}
+		if _, err := h.cfg.Systemctl(ctx, "start", mhvtlTarget); err != nil {
+			x.held = offline
+			return x.rollback(ctx, fail(ErrStart, mhvtlTarget, fmt.Errorf("systemctl start %s: %w", mhvtlTarget, err)))
+		}
 	}
 	if err := x.step("started", nil); err != nil {
 		return x.rollback(ctx, err)
@@ -575,13 +624,84 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 	return resp
 }
 
+// stopTarget stops mhvtl.target once its libraries and standalone drives
+// are down (plan 4.2, target restart and stop): the support units, PartOf=
+// it, go down with it. mhvtl-load-modules has no ExecStop, so mhvtl.ko or
+// the TCMU modules stay loaded, and the helper runs no module command. The
+// support units that ran, and the bay monitor, are journaled first, so a
+// restart, a rollback and a recovery start them again.
+func (x *execution) stopTarget(ctx context.Context) error {
+	h := x.h
+	var running []string
+	for _, u := range targetSupport {
+		state, err := showProp(ctx, &h.cfg, u, "ActiveState")
+		if err != nil {
+			return err
+		}
+		if state == "active" {
+			running = append(running, u)
+		}
+	}
+	bay, err := showProp(ctx, &h.cfg, bayMonitor, "ActiveState")
+	if err != nil {
+		return err
+	}
+	if err := supportAllowed(x.req, mhvtlTarget); err != nil {
+		return err
+	}
+	if err := x.step("stop "+mhvtlTarget, func() {
+		x.it.Exec.TargetStopped, x.it.Exec.Support = true, running
+		x.it.Exec.BayStopped = x.it.Exec.BayStopped || bay == "active"
+	}); err != nil {
+		return err
+	}
+	if _, err := h.cfg.Systemctl(ctx, "stop", mhvtlTarget); err != nil {
+		return fmt.Errorf("systemctl stop %s: %w", mhvtlTarget, err)
+	}
+	return nil
+}
+
+// startTarget is a target start (plan 4.2): systemctl start mhvtl.target,
+// then a wait for each unit of the plan, the instances it starts. It stops
+// nothing and writes nothing, so it keeps no intent; a unit that does not
+// come up is reported with its journal, and the rest are left as systemd
+// left them.
+func (h *Helper) startTarget(ctx context.Context, req *Request, c *checked) Response {
+	resp := Response{Result: ResultApplied, Units: c.plan.Units(), Warnings: c.warnings}
+	if err := supportAllowed(req, mhvtlTarget); err != nil {
+		return responseOf(err)
+	}
+	_, serr := h.cfg.Systemctl(ctx, "start", mhvtlTarget)
+	err := serr
+	if serr != nil {
+		err = fail(ErrStart, mhvtlTarget, fmt.Errorf("systemctl start %s: %w", mhvtlTarget, serr))
+	}
+	// The unit that failed says more than the target's job does.
+	for _, u := range c.plan.StartOrder() {
+		if werr := h.waitActive(ctx, u); werr != nil {
+			err = werr
+			break
+		}
+	}
+	if err == nil {
+		return resp
+	}
+	resp.Result, resp.Error, resp.Message, resp.FailedUnit = ResultError, ErrStart, err.Error(), unitOf(err)
+	if resp.FailedUnit != "" && h.cfg.JournalTail != nil {
+		if out, jerr := h.cfg.JournalTail(ctx, resp.FailedUnit); jerr == nil {
+			resp.JournalTail = string(out)
+		}
+	}
+	return resp
+}
+
 // stopped ends a service stop after its write: the units stay down, and
 // stay enabled, so they start again at boot; the bay monitor, which other
-// libraries may use, starts again.
+// libraries may use, starts again, unless the target went down with it.
 func (x *execution) stopped(ctx context.Context) Response {
 	var warnings []string
 	warnings = append(warnings, x.c.warnings...)
-	if x.it.Exec.BayStopped {
+	if x.it.Exec.BayStopped && !x.it.Exec.TargetStopped {
 		if _, err := x.h.cfg.Systemctl(ctx, "start", bayMonitor); err != nil {
 			warnings = append(warnings, fmt.Sprintf("systemctl start %s: %v", bayMonitor, err))
 		}
@@ -1266,7 +1386,9 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 		if ref == nil {
 			ref = l
 		}
-		if !ref.Active {
+		// A library start found the library down: what ran is what it
+		// started, and stays stopped.
+		if !ref.Active || it.Op == OpService+":"+ActionStart {
 			continue
 		}
 		g := unitGroup{lib: id}
@@ -1295,10 +1417,22 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 			return unplaced, fmt.Errorf("systemctl enable %s: %w", u, err)
 		}
 	}
+	// A target op stopped the support units with mhvtl.target: they come
+	// back before the instances, the target after them.
+	for _, u := range ex.Support {
+		if _, err := h.cfg.Systemctl(ctx, "start", u); err != nil {
+			return unplaced, fmt.Errorf("systemctl start %s: %w", u, err)
+		}
+	}
 	offline, err := h.bringUp(ctx, groups, func(string) error { return nil })
 	h.online(offline)
 	if err != nil {
 		return unplaced, err
+	}
+	if ex.TargetStopped {
+		if _, err := h.cfg.Systemctl(ctx, "start", mhvtlTarget); err != nil {
+			return unplaced, fmt.Errorf("systemctl start %s: %w", mhvtlTarget, err)
+		}
 	}
 	if ex.BayStopped {
 		if _, err := h.cfg.Systemctl(ctx, "start", bayMonitor); err != nil {
@@ -1372,6 +1506,21 @@ func (l lifecycle) Stop(ctx context.Context, it *Intent) error {
 		return err
 	}
 	for _, d := range append(append([]int{}, p.StopStandalone...), p.StartStandalone...) {
+		// A standalone drive the dead apply had not stopped yet still ran
+		// as it was before it: journaled with the stopped ones, unwind
+		// starts it again.
+		if u := driveUnit(d); slices.Contains(p.StopStandalone, d) && !slices.Contains(it.Exec.StandaloneStopped, u) {
+			state, err := showProp(ctx, &h.cfg, u, "ActiveState")
+			if err != nil {
+				return err
+			}
+			if state == "active" {
+				it.Exec.StandaloneStopped = append(it.Exec.StandaloneStopped, u)
+				if err := h.saveIntent(it); err != nil {
+					return err
+				}
+			}
+		}
 		if _, err := h.cfg.Systemctl(ctx, "stop", driveUnit(d)); err != nil {
 			return fmt.Errorf("systemctl stop %s: %w", driveUnit(d), err)
 		}

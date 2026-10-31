@@ -388,7 +388,7 @@ func (h *Helper) planChecks(ctx context.Context, req *Request, c *checked) (map[
 		if err := checkExpectUnits(req.ExpectUnits, fp); err != nil {
 			return nil, Response{}, err
 		}
-		if err := checkBudget(fp); err != nil {
+		if err := budgetOf(req, fp); err != nil {
 			return nil, Response{}, err
 		}
 		if err := h.useForce(nonce, expiry); err != nil {

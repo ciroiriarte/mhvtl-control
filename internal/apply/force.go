@@ -54,7 +54,8 @@ type forceBinding struct {
 	// standalone drives included): a drive loaded since voids it.
 	Loaded []string
 	// Scope is a service op's action and library ("service:stop library
-	// 10"), so a stop's token is no restart's; empty for an apply.
+	// 10") or target ("service:stop target"), so a stop's token is no
+	// restart's; empty for an apply.
 	Scope string
 }
 
@@ -80,7 +81,11 @@ func bindingOf(req *Request, units []string, live *validate.Live, loaded []strin
 	b.Loaded = append([]string{}, loaded...)
 	sort.Strings(b.Loaded)
 	if req.Op == OpServicePlan || req.Op == OpService {
-		b.Scope = fmt.Sprintf("service:%s library %d", req.Action, *req.Library)
+		if req.Target {
+			b.Scope = fmt.Sprintf("service:%s target", req.Action)
+		} else {
+			b.Scope = fmt.Sprintf("service:%s library %d", req.Action, *req.Library)
+		}
 	}
 	return b
 }

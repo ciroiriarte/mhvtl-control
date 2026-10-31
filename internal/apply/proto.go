@@ -53,8 +53,9 @@ const (
 	// deactivating or activating.
 	OpUnits = "units"
 	// OpServicePlan checks a service action on one library (Action,
-	// Library) and reports what it would do, as plan does for a change
-	// set; OpService checks and carries it out (mhvtl-control#14). Both
+	// Library) or on mhvtl.target (Action, Target) and reports what it
+	// would do, as plan does for a change set; OpService checks and carries
+	// it out (mhvtl-control#14). Both
 	// take the lock; service is audited as "service:<action>", and a
 	// service_plan only when it is refused.
 	OpServicePlan = "service_plan"
@@ -65,10 +66,16 @@ const (
 // library's units with no file changed but the placement: guardedStop,
 // the live placement merged into library_contents.<N> and written if it
 // changed, then for a restart the start held offline. A stop leaves the
-// units down, not disabled: they start again at boot.
+// units down, not disabled: they start again at boot. A start of a
+// library that is not running starts its units held offline, with no
+// guardedStop and no write. On the target, a restart and a stop do the
+// same for every library and standalone drive, then stop mhvtl.target
+// and, for a restart, start its support units, the instances and the
+// target again; a start is systemctl start mhvtl.target.
 const (
 	ActionRestart = "restart"
 	ActionStop    = "stop"
+	ActionStart   = "start"
 )
 
 // Request is one call to the helper: a JSON object, decoded strictly.
@@ -91,10 +98,12 @@ type Request struct {
 	// Actor says who asked, for the audit: the daemon's authenticated
 	// user, or a description of the client.
 	Actor string `json:"actor,omitempty"`
-	// Action and Library name a service op's action and the library it
-	// acts on; the helper derives the units from them.
+	// Action and Library, or Target, name a service op's action and what
+	// it acts on: one library, or mhvtl.target with every library and
+	// standalone drive. The helper derives the units from them.
 	Action  string `json:"action,omitempty"`
 	Library *int   `json:"library,omitempty"`
+	Target  bool   `json:"target,omitempty"`
 }
 
 // File is a file to write. Content is base64 in JSON, so any bytes go
@@ -292,6 +301,10 @@ const (
 	ErrLive = "live_state"
 	// ErrStart: a unit did not start.
 	ErrStart = "start_failed"
+	// ErrUseRestart: a library start found vtllibrary@N running (plan
+	// D6): restart the library instead, which brings its drives back with
+	// it.
+	ErrUseRestart = "use_restart"
 	// ErrPlacement: the placement cannot be merged.
 	ErrPlacement        = "placement"
 	ErrNotWritable      = "not_writable"
@@ -347,8 +360,8 @@ func DecodeRequest(r io.Reader) (*Request, error) {
 	}
 	switch req.Op {
 	case OpHello, OpPlan, OpApply, OpRecover, OpUnits:
-		if req.Action != "" || req.Library != nil {
-			return nil, refuse(ErrBadRequest, "%s takes no action or library", req.Op)
+		if req.Action != "" || req.Library != nil || req.Target {
+			return nil, refuse(ErrBadRequest, "%s takes no action, library or target", req.Op)
 		}
 	case OpServicePlan, OpService:
 		if err := checkServiceRequest(&req); err != nil {

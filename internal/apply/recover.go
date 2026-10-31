@@ -65,11 +65,16 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 		return responseOf(err)
 	}
 	msg := fmt.Sprintf("recovered the %s of %s by %q; plan again", it.Op, it.Started.Format("2006-01-02 15:04:05Z07:00"), it.Actor)
-	if it.Op == OpService+":"+ActionStop && units && stoppedActive(it) {
+	if it.Op == OpService+":"+ActionStop && units && it.Exec != nil && stoppedActive(it.Exec.Stops) {
 		// unwind starts again every unit the stop had stopped of a library
 		// that ran: the stop did not finish, so the library is back as it
 		// was.
 		msg += "; the units the stop had stopped were started again"
+	}
+	if it.Op == OpService+":"+ActionStart && units && it.Exec != nil && stoppedActive(it.Exec.Recovery) {
+		// The recovery's guardedStop stopped what the start had started,
+		// and unwind leaves it down, as it was before the start.
+		msg += "; the units the start had started were stopped again"
 	}
 	if len(conflicts) > 0 {
 		msg += "; " + restoreConflicts(conflicts).Error()
@@ -177,13 +182,10 @@ func (h *Helper) activeInstances(ctx context.Context) ([]string, error) {
 	return active, nil
 }
 
-// stoppedActive reports whether the intent journals a unit stopped of a
-// library that was running, which unwind starts again.
-func stoppedActive(it *Intent) bool {
-	if it.Exec == nil {
-		return false
-	}
-	for _, ls := range it.Exec.Stops {
+// stoppedActive reports whether stops, verdicts of a guardedStop, stopped
+// a unit of a library that was running.
+func stoppedActive(stops []*LibStop) bool {
+	for _, ls := range stops {
 		if ls.Active && len(ls.Stopped) > 0 {
 			return true
 		}
