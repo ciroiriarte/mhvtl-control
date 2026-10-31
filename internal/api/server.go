@@ -185,11 +185,21 @@ func (k *keyedMutex) ch(key string) chan struct{} {
 	return l
 }
 
+// release frees l. Like sync.Mutex's Unlock, releasing a lock not held
+// panics rather than blocking.
+func release(l chan struct{}) {
+	select {
+	case <-l:
+	default:
+		panic("unlock of unlocked library lock")
+	}
+}
+
 // lock locks the mutex for key and returns its unlock.
 func (k *keyedMutex) lock(key string) func() {
 	l := k.ch(key)
 	l <- struct{}{}
-	return func() { <-l }
+	return func() { release(l) }
 }
 
 // lockCtx is lock, giving up with ctx's error when ctx ends first.
@@ -197,7 +207,7 @@ func (k *keyedMutex) lockCtx(ctx context.Context, key string) (func(), error) {
 	l := k.ch(key)
 	select {
 	case l <- struct{}{}:
-		return func() { <-l }, nil
+		return func() { release(l) }, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

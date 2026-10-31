@@ -358,3 +358,37 @@ func TestServiceActionLockWaitBounded(t *testing.T) {
 		t.Errorf("after the move: %d %s", rec.Code, rec.Body)
 	}
 }
+
+// A keyedMutex lock released twice panics, as sync.Mutex does, rather
+// than block; after a normal release the lock is taken again at once.
+func TestKeyedMutexDoubleRelease(t *testing.T) {
+	var k keyedMutex
+	for _, take := range []func() func(){
+		func() func() { return k.lock("10") },
+		func() func() {
+			unlock, err := k.lockCtx(context.Background(), "10")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return unlock
+		},
+	} {
+		unlock := take()
+		unlock()
+		func() {
+			defer func() {
+				if r := recover(); r != "unlock of unlocked library lock" {
+					t.Errorf("double release: recovered %v", r)
+				}
+			}()
+			unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		again, err := k.lockCtx(ctx, "10")
+		cancel()
+		if err != nil {
+			t.Fatalf("lock after a release: %v", err)
+		}
+		again()
+	}
+}
