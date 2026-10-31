@@ -468,8 +468,17 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 		if err := x.allow(driveUnit(id)); err != nil {
 			return x.rollback(ctx, err)
 		}
+		// Only a drive that runs is journaled, as guardedStop journals: a
+		// rollback or recovery starts what was journaled, and a drive that
+		// was down stays down.
+		state, err := showProp(ctx, &h.cfg, driveUnit(id), "ActiveState")
+		if err != nil {
+			return x.rollback(ctx, err)
+		}
 		if err := x.step("stop "+driveUnit(id), func() {
-			x.it.Exec.StandaloneStopped = append(x.it.Exec.StandaloneStopped, driveUnit(id))
+			if state == "active" {
+				x.it.Exec.StandaloneStopped = append(x.it.Exec.StandaloneStopped, driveUnit(id))
+			}
 		}); err != nil {
 			return x.rollback(ctx, err)
 		}
@@ -559,7 +568,7 @@ func (h *Helper) execute(ctx context.Context, req *Request, c *checked, forced m
 
 // finish is execute steps 9-11. A target restart starts the support units
 // that ran before it by name ahead of the instances, and mhvtl.target once
-// they are up.
+// they are up and online.
 func (x *execution) finish(ctx context.Context, warnings []string) Response {
 	h, c := x.h, x.c
 
@@ -587,22 +596,25 @@ func (x *execution) finish(ctx context.Context, warnings []string) Response {
 		x.held = offline
 		return x.rollback(ctx, err)
 	}
-	if x.it.Exec.TargetStopped {
-		if err := supportAllowed(x.req, mhvtlTarget); err != nil {
-			x.held = offline
-			return x.rollback(ctx, err)
-		}
-		if _, err := h.cfg.Systemctl(ctx, "start", mhvtlTarget); err != nil {
-			x.held = offline
-			return x.rollback(ctx, fail(ErrStart, mhvtlTarget, fmt.Errorf("systemctl start %s: %w", mhvtlTarget, err)))
-		}
-	}
 	if err := x.step("started", nil); err != nil {
 		return x.rollback(ctx, err)
 	}
 
-	// 10. Online and verify.
+	// 10. Online and verify. mhvtl.target starts only once the libraries
+	// are online, as in unwind: mhvtl-bay-monitor.service is WantedBy= it,
+	// and a bay event or an adoption at its start must not meet an
+	// offline library. Starting it also pulls in
+	// mhvtl-control-apply-recover.service, which is harmless: RecoverBoot
+	// leaves an intent of the same boot alone before it takes the lock.
 	h.online(offline)
+	if x.it.Exec.TargetStopped {
+		if err := supportAllowed(x.req, mhvtlTarget); err != nil {
+			return x.rollback(ctx, err)
+		}
+		if _, err := h.cfg.Systemctl(ctx, "start", mhvtlTarget); err != nil {
+			return x.rollback(ctx, fail(ErrStart, mhvtlTarget, fmt.Errorf("systemctl start %s: %w", mhvtlTarget, err)))
+		}
+	}
 	if x.it.Exec.BayStopped {
 		if _, err := h.cfg.Systemctl(ctx, "start", bayMonitor); err != nil {
 			warnings = append(warnings, fmt.Sprintf("systemctl start %s: %v", bayMonitor, err))
@@ -627,7 +639,9 @@ func (x *execution) finish(ctx context.Context, warnings []string) Response {
 // stopTarget stops mhvtl.target once its libraries and standalone drives
 // are down (plan 4.2, target restart and stop): the support units, PartOf=
 // it, go down with it. mhvtl-load-modules has no ExecStop, so mhvtl.ko or
-// the TCMU modules stay loaded, and the helper runs no module command. The
+// the TCMU modules stay loaded. The helper issues no modprobe or rmmod
+// itself; a restart starting mhvtl-load-modules by name runs its
+// idempotent modprobe, which leaves loaded modules as they are. The
 // support units that ran, and the bay monitor, are journaled first, so a
 // restart, a rollback and a recovery start them again.
 func (x *execution) stopTarget(ctx context.Context) error {
@@ -1429,6 +1443,8 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 	if err != nil {
 		return unplaced, err
 	}
+	// The target starts once the libraries are online (see finish); it
+	// also pulls in mhvtl-control-apply-recover.service, harmlessly.
 	if ex.TargetStopped {
 		if _, err := h.cfg.Systemctl(ctx, "start", mhvtlTarget); err != nil {
 			return unplaced, fmt.Errorf("systemctl start %s: %w", mhvtlTarget, err)

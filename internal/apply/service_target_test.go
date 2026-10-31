@@ -67,8 +67,9 @@ func supportCalls(s *fakeSystem) []string {
 	return out
 }
 
-// noModuleCommand fails on a call that loads or unloads a module, or
-// stops or starts mhvtl-load-modules by name.
+// noModuleCommand fails on a modprobe or rmmod the helper issues itself,
+// or a stop of mhvtl-load-modules by name. A start of it by name (a target
+// restart) runs only its idempotent modprobe, so it is allowed.
 func noModuleCommand(t *testing.T, s *fakeSystem) {
 	t.Helper()
 	for _, c := range s.calls {
@@ -549,5 +550,144 @@ func TestServiceTargetRequests(t *testing.T) {
 	tgt := target(OpServicePlan, ActionStop, nil)
 	if bindingOf(&lib, nil, nil, nil).Scope == bindingOf(&tgt, nil, nil, nil).Scope {
 		t.Error("target and library scopes alike")
+	}
+}
+
+// wantsBay models mhvtl.target's Wants= of the bay monitor: starting the
+// target starts it, and it records how many libraries were still offline
+// to hosts at that moment.
+func wantsBay(s *fakeSystem, offlineAtStart *int) {
+	*offlineAtStart = -1
+	s.onStart = func(u string) {
+		if u == mhvtlTarget {
+			*offlineAtStart = len(s.offline) + len(s.pendingOnline)
+			s.state[bayMonitor] = "active"
+		}
+	}
+}
+
+// #91 review 1: a target restart starts mhvtl.target, and with it the bay
+// monitor, only once every library it held offline is online again.
+func TestServiceTargetStartsTargetOnline(t *testing.T) {
+	e, s := newExecEnv(t)
+	standalone34(e)
+	partOf(s)
+	s.state[bayMonitor] = "active"
+	var offline int
+	wantsBay(s, &offline)
+	if resp := e.do(target(OpService, ActionRestart, targetUnits)); resp.Result != ResultApplied {
+		t.Fatalf("service: %+v", resp)
+	}
+	if offline != 0 {
+		t.Errorf("mhvtl.target started with %d libraries offline: %v", offline, s.calls)
+	}
+	for _, id := range []string{"10", "30"} {
+		if !s.before("online "+id, "start "+mhvtlTarget) {
+			t.Errorf("library %s online after the target: %v", id, s.calls)
+		}
+	}
+}
+
+// #91 review 2: a standalone drive that was down before a target stop is
+// not started by its rollback, nor by the recovery of one killed at any
+// step.
+func TestServiceTargetStopLeavesDownDrive(t *testing.T) {
+	setup := func(t *testing.T) (*env, *fakeSystem, Request) {
+		e, s := newExecEnv(t)
+		standalone34(e)
+		partOf(s)
+		s.state["vtltape@34.service"] = "inactive"
+		moved(s)
+		return e, s, target(OpService, ActionStop, targetUnits)
+	}
+	e, s, req := setup(t)
+	e.h.beforeWrite = func(name string) {
+		if name == "library_contents.10" {
+			e.replaceFile(name, "Slot 2: E01002L8", "Slot 2: ")
+		}
+	}
+	if resp := e.do(req); resp.Result != ResultRolledBack {
+		t.Fatalf("service: %+v", resp)
+	}
+	if s.unitState("vtltape@34.service") != "inactive" || s.has("start vtltape@34.service") {
+		t.Errorf("rollback started vtltape@34: %v", s.calls)
+	}
+	if s.unitState("vtltape@11.service") != "active" {
+		t.Errorf("rollback left vtltape@11 %s", s.unitState("vtltape@11.service"))
+	}
+	for _, step := range killPoints(t, setup) {
+		t.Run(step, func(t *testing.T) {
+			e, s, req := setup(t)
+			e.h.killPoint = func(st string) bool { return st == step }
+			if resp := e.do(req); resp.Result != ResultError {
+				t.Fatalf("killed: %+v", resp)
+			}
+			e.rebuild()
+			if resp := e.do(target(OpServicePlan, ActionStop, nil)); resp.Result != ResultRecovered {
+				t.Fatalf("next request: %+v", resp)
+			}
+			if s.unitState("vtltape@34.service") != "inactive" || s.has("start vtltape@34.service") {
+				t.Errorf("recovery started vtltape@34: %v", s.calls)
+			}
+		})
+	}
+}
+
+// #91 review 3: a target restart brings back exactly the instances that
+// ran: a stopped library with its drives, a down drive of a running
+// library and a down standalone drive stay down. A stopped library with a
+// drive that runs is refused: the drive would come back alone.
+func TestServiceTargetRestartOnlyActive(t *testing.T) {
+	e, s := newExecEnv(t)
+	standalone34(e)
+	partOf(s)
+	for _, u := range append(append([]string{}, library30Units...), "vtltape@12.service", "vtltape@34.service") {
+		s.state[u] = "inactive"
+	}
+	pr := e.do(target(OpServicePlan, ActionRestart, nil))
+	want := append(append([]string{}, library10Units...), "vtltape@34.service")
+	if pr.Result != ResultValidated || !slices.Equal(pr.Units, sortedCopy(want)) {
+		t.Fatalf("service_plan: %+v", pr)
+	}
+	if resp := e.do(target(OpService, ActionRestart, pr.Units)); resp.Result != ResultApplied {
+		t.Fatalf("service: %+v", resp)
+	}
+	for _, u := range append(append([]string{}, library30Units...), "vtltape@12.service", "vtltape@34.service") {
+		if s.has("start "+u) || s.unitState(u) != "inactive" {
+			t.Errorf("%s started: %v", u, s.calls)
+		}
+	}
+	for _, u := range []string{"vtllibrary@10.service", "vtltape@11.service", "vtltape@13.service", "vtltape@14.service"} {
+		if !s.before("stop "+u, "start "+u) || s.unitState(u) != "active" {
+			t.Errorf("%s not restarted: %v", u, s.calls)
+		}
+	}
+
+	s.state["vtltape@31.service"] = "active"
+	if pr := e.do(target(OpServicePlan, ActionRestart, nil)); pr.Result != ResultRefused || pr.Error != ErrUseRestart || !strings.Contains(pr.Message, "vtltape@31.service running") {
+		t.Errorf("stopped library, drive running: %+v", pr)
+	}
+}
+
+// #91 review 6: the recovery of a target stop that had stopped only a
+// standalone drive says the units were started again.
+func TestServiceTargetStopRecoverStandaloneNote(t *testing.T) {
+	e, s := newExecEnv(t)
+	standalone34(e)
+	partOf(s)
+	for _, u := range append(append([]string{}, library10Units...), library30Units...) {
+		s.state[u] = "inactive"
+	}
+	e.h.killPoint = func(st string) bool { return st == "stop "+mhvtlTarget }
+	if resp := e.do(target(OpService, ActionStop, targetUnits)); resp.Result != ResultError {
+		t.Fatalf("killed: %+v", resp)
+	}
+	e.rebuild()
+	resp := e.do(target(OpServicePlan, ActionStop, nil))
+	if resp.Result != ResultRecovered || !strings.Contains(resp.Message, "the units the stop had stopped were started again") {
+		t.Errorf("next request: %+v", resp)
+	}
+	if s.unitState("vtltape@34.service") != "active" {
+		t.Errorf("vtltape@34 is %s", s.unitState("vtltape@34.service"))
 	}
 }

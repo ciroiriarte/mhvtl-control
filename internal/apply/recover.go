@@ -65,10 +65,11 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 		return responseOf(err)
 	}
 	msg := fmt.Sprintf("recovered the %s of %s by %q; plan again", it.Op, it.Started.Format("2006-01-02 15:04:05Z07:00"), it.Actor)
-	if it.Op == OpService+":"+ActionStop && units && it.Exec != nil && stoppedActive(it.Exec.Stops) {
+	if it.Op == OpService+":"+ActionStop && units && it.Exec != nil && (stoppedActive(it.Exec.Stops) || len(it.Exec.StandaloneStopped) > 0) {
 		// unwind starts again every unit the stop had stopped of a library
-		// that ran: the stop did not finish, so the library is back as it
-		// was.
+		// that ran, and every standalone drive it had stopped (journaled
+		// only when it ran): the stop did not finish, so the units are
+		// back as they were.
 		msg += "; the units the stop had stopped were started again"
 	}
 	if it.Op == OpService+":"+ActionStart && units && it.Exec != nil && stoppedActive(it.Exec.Recovery) {

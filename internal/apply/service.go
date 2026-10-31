@@ -92,6 +92,68 @@ func targetPlan(inv config.Inventory) UnitPlan {
 	return p
 }
 
+// targetRestartPlan is targetPlan for a restart: it brings back exactly
+// the instances that ran before it. A library whose vtllibrary@ is down is
+// left out with its drives, as a drive of it that runs could only come
+// back alone (D6): that is refused, restart that library first. A down
+// drive of a running library, or a down standalone drive, is stopped (a
+// no-op) but not started. Residual: starting mhvtl.target again at the
+// end starts what its Wants= names, so an enabled instance that was down
+// comes up then, as at boot; the helper neither starts nor waits for it.
+func (h *Helper) targetRestartPlan(ctx context.Context, inv config.Inventory) (UnitPlan, error) {
+	p := targetPlan(inv)
+	var restart []int
+	for _, id := range p.Restart {
+		lib, _ := findLib(inv, id)
+		dn, state, err := h.down(ctx, libraryUnit(id))
+		if err != nil {
+			return p, err
+		}
+		drives, err := h.downDrives(ctx, lib)
+		if err != nil {
+			return p, err
+		}
+		if dn {
+			if len(drives) < len(lib.Drives) {
+				var up []string
+				for _, d := range lib.Drives {
+					if !slices.Contains(drives, d.ID) {
+						up = append(up, driveUnit(d.ID))
+					}
+				}
+				return p, refuse(ErrUseRestart, "library %d is %s with %s running; a target restart would start them alone, out of the library: restart library %d first", id, state, strings.Join(up, ", "), id)
+			}
+			delete(p.StopDrives, id)
+			delete(p.StartDrives, id)
+			p.GuardDrives -= len(lib.Drives)
+			p.RollbackGuardDrives -= len(lib.Drives)
+			continue
+		}
+		restart = append(restart, id)
+		start := p.StartDrives[id][:0:0]
+		for _, d := range p.StartDrives[id] {
+			if !slices.Contains(drives, d) {
+				start = append(start, d)
+			}
+		}
+		p.RollbackGuardDrives -= len(p.StartDrives[id]) - len(start)
+		p.StartDrives[id] = start
+	}
+	p.Restart = restart
+	var start []int
+	for _, id := range p.StartStandalone {
+		dn, _, err := h.down(ctx, driveUnit(id))
+		if err != nil {
+			return p, err
+		}
+		if !dn {
+			start = append(start, id)
+		}
+	}
+	p.StartStandalone = start
+	return p, nil
+}
+
 // down reports the ActiveState of unit is inactive or failed: systemctl
 // start would start it.
 func (h *Helper) down(ctx context.Context, unit string) (bool, string, error) {
@@ -282,6 +344,10 @@ func (h *Helper) checkService(ctx context.Context, req *Request, files *fileSet)
 	switch {
 	case req.Target && req.Action == ActionStart:
 		if plan, err = h.targetStartPlan(ctx, cur); err != nil {
+			return nil, err
+		}
+	case req.Target && req.Action == ActionRestart:
+		if plan, err = h.targetRestartPlan(ctx, cur); err != nil {
 			return nil, err
 		}
 	case req.Target:
