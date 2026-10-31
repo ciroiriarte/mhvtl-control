@@ -1524,8 +1524,9 @@ func (l lifecycle) Stop(ctx context.Context, it *Intent) error {
 	for _, d := range append(append([]int{}, p.StopStandalone...), p.StartStandalone...) {
 		// A standalone drive the dead apply had not stopped yet still ran
 		// as it was before it: journaled with the stopped ones, unwind
-		// starts it again.
-		if u := driveUnit(d); slices.Contains(p.StopStandalone, d) && !slices.Contains(it.Exec.StandaloneStopped, u) {
+		// starts it again. One the apply started itself (in Started) was
+		// down before it, as its stop was not journaled: it stays down.
+		if u := driveUnit(d); slices.Contains(p.StopStandalone, d) && !slices.Contains(it.Exec.StandaloneStopped, u) && !slices.Contains(it.Exec.Started, u) {
 			state, err := showProp(ctx, &h.cfg, u, "ActiveState")
 			if err != nil {
 				return err

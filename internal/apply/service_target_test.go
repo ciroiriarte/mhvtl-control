@@ -633,14 +633,50 @@ func TestServiceTargetStopLeavesDownDrive(t *testing.T) {
 	}
 }
 
-// #91 review 3: a target restart brings back exactly the instances that
-// ran: a stopped library with its drives, a down drive of a running
-// library and a down standalone drive stay down. A stopped library with a
-// drive that runs is refused: the drive would come back alone.
+// wantsInstances models mhvtl.target's Wants= on the instances: starting
+// the target starts each enabled vtllibrary@ or vtltape@ that is down, and
+// logs it as "wanted <unit>".
+func wantsInstances(s *fakeSystem) {
+	prev := s.onStart
+	s.onStart = func(u string) {
+		prev(u)
+		if u != mhvtlTarget {
+			return
+		}
+		var units []string
+		for w, on := range s.enabled {
+			if on && (strings.HasPrefix(w, "vtllibrary@") || strings.HasPrefix(w, "vtltape@")) && s.unitState(w) != "active" {
+				units = append(units, w)
+			}
+		}
+		slices.Sort(units)
+		for _, w := range units {
+			s.log("wanted %s", w)
+			s.state[w] = "active"
+		}
+	}
+}
+
+// wantedAlone fails on an instance the target's Wants= started: one the
+// restart left for it, outside the plan.
+func wantedAlone(t *testing.T, s *fakeSystem) {
+	t.Helper()
+	for _, c := range s.calls {
+		if strings.HasPrefix(c, "wanted ") {
+			t.Errorf("mhvtl.target started %s on its own: %v", strings.TrimPrefix(c, "wanted "), s.calls)
+		}
+	}
+}
+
+// #91 review 3: a target restart brings back what ran, and nothing more
+// when nothing more is wanted: a stopped library with its drives, a down
+// drive of a running library and a down standalone drive, none enabled,
+// stay down.
 func TestServiceTargetRestartOnlyActive(t *testing.T) {
 	e, s := newExecEnv(t)
 	standalone34(e)
 	partOf(s)
+	wantsInstances(s)
 	for _, u := range append(append([]string{}, library30Units...), "vtltape@12.service", "vtltape@34.service") {
 		s.state[u] = "inactive"
 	}
@@ -662,10 +698,110 @@ func TestServiceTargetRestartOnlyActive(t *testing.T) {
 			t.Errorf("%s not restarted: %v", u, s.calls)
 		}
 	}
+	wantedAlone(t, s)
+}
 
+// #91 re-review R1: a down drive the target wants starts with its running
+// library, before the online and the target's start, so the target has
+// nothing to start alone; with the generator every instance is wanted. A
+// wanted library that was down starts with its drives, held offline.
+func TestServiceTargetRestartStartsWanted(t *testing.T) {
+	for _, gen := range []bool{false, true} {
+		t.Run(fmt.Sprintf("generator %v", gen), func(t *testing.T) {
+			e, s := newExecEnv(t)
+			standalone34(e)
+			partOf(s)
+			wantsInstances(s)
+			all := append(append(append([]string{}, library10Units...), library30Units...), "vtltape@34.service")
+			for _, u := range all {
+				s.enabled[u] = true
+			}
+			if gen {
+				g := filepath.Join(t.TempDir(), "mhvtl-generator")
+				os.WriteFile(g, nil, 0o755)
+				e.h.cfg.Generators = []string{g}
+				s.enabled["vtltape@12.service"] = false
+			}
+			for _, u := range append(append([]string{}, library30Units...), "vtltape@12.service", "vtltape@34.service") {
+				s.state[u] = "inactive"
+			}
+			pr := e.do(target(OpServicePlan, ActionRestart, nil))
+			if pr.Result != ResultValidated || !slices.Equal(pr.Units, sortedCopy(all)) {
+				t.Fatalf("service_plan: %+v", pr)
+			}
+			if resp := e.do(target(OpService, ActionRestart, pr.Units)); resp.Result != ResultApplied {
+				t.Fatalf("service: %+v", resp)
+			}
+			if !s.before("start vtltape@12.service", "start vtllibrary@10.service") || !s.before("start vtltape@12.service", "online 10") || !s.before("start vtltape@12.service", "start "+mhvtlTarget) {
+				t.Errorf("vtltape@12 not started with its library: %v", s.calls)
+			}
+			if !s.before("start vtllibrary@30.service", "offline 30") || !s.before("offline 30", "start "+mhvtlTarget) {
+				t.Errorf("library 30 not started held offline: %v", s.calls)
+			}
+			for _, u := range all {
+				if s.unitState(u) != "active" {
+					t.Errorf("%s is %s", u, s.unitState(u))
+				}
+			}
+			wantedAlone(t, s)
+		})
+	}
+}
+
+// #91 re-review item 4: a down library with a drive that still runs is
+// restarted as an inactive library is (phase 2): its guardedStop stops the
+// drive, which starts again with the library and is registered by it.
+func TestServiceTargetRestartInactiveLibraryDriveRuns(t *testing.T) {
+	e, s := newExecEnv(t)
+	standalone34(e)
+	partOf(s)
+	wantsInstances(s)
+	for _, u := range library30Units {
+		s.state[u] = "inactive"
+	}
 	s.state["vtltape@31.service"] = "active"
-	if pr := e.do(target(OpServicePlan, ActionRestart, nil)); pr.Result != ResultRefused || pr.Error != ErrUseRestart || !strings.Contains(pr.Message, "vtltape@31.service running") {
-		t.Errorf("stopped library, drive running: %+v", pr)
+	pr := e.do(target(OpServicePlan, ActionRestart, nil))
+	if pr.Result != ResultValidated || !slices.Contains(pr.Units, "vtllibrary@30.service") || !slices.Contains(pr.Units, "vtltape@31.service") {
+		t.Fatalf("service_plan: %+v", pr)
+	}
+	if resp := e.do(target(OpService, ActionRestart, pr.Units)); resp.Result != ResultApplied {
+		t.Fatalf("service: %+v", resp)
+	}
+	if !s.before("stop vtltape@31.service", "start vtltape@31.service") || !s.before("start vtltape@31.service", "start vtllibrary@30.service") || !s.before("start vtllibrary@30.service", "offline 30") {
+		t.Errorf("vtltape@31 not restarted with library 30: %v", s.calls)
+	}
+	if s.unitState("vtllibrary@30.service") != "active" || s.unitState("vtltape@32.service") != "inactive" {
+		t.Errorf("library 30 %s, vtltape@32 %s", s.unitState("vtllibrary@30.service"), s.unitState("vtltape@32.service"))
+	}
+	wantedAlone(t, s)
+}
+
+// #91 re-review LOW: a standalone drive that was down and that the
+// restart started itself (wanted) is stopped by the recovery of a restart
+// killed after its start, and not started again: it was down before.
+func TestServiceTargetRecoverLeavesStartedDriveDown(t *testing.T) {
+	e, s := newExecEnv(t)
+	standalone34(e)
+	partOf(s)
+	s.state["vtltape@34.service"] = "inactive"
+	s.enabled["vtltape@34.service"] = true
+	e.h.killPoint = func(st string) bool { return st == "started" }
+	if resp := e.do(target(OpService, ActionRestart, targetUnits)); resp.Result != ResultError {
+		t.Fatalf("killed: %+v", resp)
+	}
+	if s.unitState("vtltape@34.service") != "active" {
+		t.Fatalf("the restart did not start vtltape@34: %v", s.calls)
+	}
+	e.rebuild()
+	s.calls = nil
+	if resp := e.do(target(OpServicePlan, ActionRestart, nil)); resp.Result != ResultRecovered {
+		t.Fatalf("next request: %+v", resp)
+	}
+	if s.unitState("vtltape@34.service") != "inactive" || s.has("start vtltape@34.service") {
+		t.Errorf("recovery left vtltape@34 %s: %v", s.unitState("vtltape@34.service"), s.calls)
+	}
+	if s.unitState("vtltape@11.service") != "active" {
+		t.Errorf("vtltape@11 is %s", s.unitState("vtltape@11.service"))
 	}
 }
 

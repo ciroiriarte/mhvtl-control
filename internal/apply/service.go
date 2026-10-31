@@ -92,37 +92,50 @@ func targetPlan(inv config.Inventory) UnitPlan {
 	return p
 }
 
-// targetRestartPlan is targetPlan for a restart: it brings back exactly
-// the instances that ran before it. A library whose vtllibrary@ is down is
-// left out with its drives, as a drive of it that runs could only come
-// back alone (D6): that is refused, restart that library first. A down
-// drive of a running library, or a down standalone drive, is stopped (a
-// no-op) but not started. Residual: starting mhvtl.target again at the
-// end starts what its Wants= names, so an enabled instance that was down
-// comes up then, as at boot; the helper neither starts nor waits for it.
+// targetRestartPlan is targetPlan for a restart. Its start half brings up
+// what ran before it and what mhvtl.target wants (every instance with the
+// generator, else the enabled ones), so the final start of the target has
+// nothing left to start on its own (#91 review R1):
+//   - a running library starts again with its drives that ran or are
+//     wanted, so a wanted drive that was down starts with it and is
+//     registered by it (D6);
+//   - a library that was down comes back when it, or one of its drives,
+//     ran or is wanted. That is a restart of an inactive library, as a
+//     library restart is (phase 2): its guardedStop stops the drives that
+//     still run, and they start again with the library, held offline;
+//   - a library with nothing of it running or wanted is left out;
+//   - a standalone drive starts again when it ran or is wanted.
+//
+// A unit that neither ran nor is wanted is stopped (a no-op) but not
+// started.
 func (h *Helper) targetRestartPlan(ctx context.Context, inv config.Inventory) (UnitPlan, error) {
+	gen := h.generator()
 	p := targetPlan(inv)
+	back := func(u string) (bool, error) {
+		dn, _, err := h.down(ctx, u)
+		if err != nil {
+			return false, err
+		}
+		return !dn || gen || h.enabled(ctx, u), nil
+	}
 	var restart []int
 	for _, id := range p.Restart {
 		lib, _ := findLib(inv, id)
-		dn, state, err := h.down(ctx, libraryUnit(id))
+		libBack, err := back(libraryUnit(id))
 		if err != nil {
 			return p, err
 		}
-		drives, err := h.downDrives(ctx, lib)
-		if err != nil {
-			return p, err
-		}
-		if dn {
-			if len(drives) < len(lib.Drives) {
-				var up []string
-				for _, d := range lib.Drives {
-					if !slices.Contains(drives, d.ID) {
-						up = append(up, driveUnit(d.ID))
-					}
-				}
-				return p, refuse(ErrUseRestart, "library %d is %s with %s running; a target restart would start them alone, out of the library: restart library %d first", id, state, strings.Join(up, ", "), id)
+		var start []int
+		for _, d := range p.StartDrives[id] {
+			ok, err := back(driveUnit(d))
+			if err != nil {
+				return p, err
 			}
+			if ok {
+				start = append(start, d)
+			}
+		}
+		if !libBack && len(start) == 0 {
 			delete(p.StopDrives, id)
 			delete(p.StartDrives, id)
 			p.GuardDrives -= len(lib.Drives)
@@ -130,23 +143,17 @@ func (h *Helper) targetRestartPlan(ctx context.Context, inv config.Inventory) (U
 			continue
 		}
 		restart = append(restart, id)
-		start := p.StartDrives[id][:0:0]
-		for _, d := range p.StartDrives[id] {
-			if !slices.Contains(drives, d) {
-				start = append(start, d)
-			}
-		}
 		p.RollbackGuardDrives -= len(p.StartDrives[id]) - len(start)
 		p.StartDrives[id] = start
 	}
 	p.Restart = restart
 	var start []int
 	for _, id := range p.StartStandalone {
-		dn, _, err := h.down(ctx, driveUnit(id))
+		ok, err := back(driveUnit(id))
 		if err != nil {
 			return p, err
 		}
-		if !dn {
+		if ok {
 			start = append(start, id)
 		}
 	}
