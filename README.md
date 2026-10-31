@@ -349,6 +349,44 @@ units are left out; the rest is still reported. An answer is reused for 2
 seconds, and a helper that doesn't answer within 6 seconds is reported in
 `errors`. The dashboard shows it as the Service table of the System panel.
 
+### Service actions
+
+With writes turned on (see [the configuration editor](#configuration-editor)),
+the same apply helper starts, stops and restarts mhVTL:
+
+- `POST /api/v1/service/libraries/{id}/{action}` acts on one library's
+  `vtllibrary@` and `vtltape@` units;
+- `POST /api/v1/service/{action}` acts on `mhvtl.target`, every library
+  and the support units.
+
+`{action}` is `restart`, `stop` or `start`. The body is
+`{"dry_run": true}` for the plan, then `{"units": [...]}` with the units the
+plan listed, plus `force_token` after a `drive_loaded` plan; the units must
+not have changed in between (`409 unit`). The answer has the fields of
+`POST /config/apply`, plus `action` and `library` or `target`.
+
+- A library being stopped first has its placement saved: with `PERSIST` off
+  it is written to `library_contents.<id>` before the stop, so the library
+  starts again with the cartridges where they are now.
+- A cartridge in a drive the action stops answers `409 drive_loaded` with a
+  force token, valid 120 seconds; the action then puts it back in its slot.
+- `start` of a running library, or of the target while a running library
+  has drives down, is refused with `409 use_restart`: restart the library,
+  since a drive started alone stays out of its library until the library
+  starts.
+- An action that, with its rollback, may not fit the helper's 30-minute
+  `RuntimeMaxSec=` is refused with `422 budget` (act on the libraries one at
+  a time), and a placement the helper cannot save with `422 placement`.
+- A failed action is rolled back (`500 rolled_back`, with `failed_unit` and
+  `journal_tail`); one interrupted by a crash is recovered by the next
+  request (`409 recovered`).
+- A stopped library or target stays down until started, and starts again at
+  boot.
+
+While an action runs, the daemon holds the affected libraries: cartridge
+moves and other queue commands for them wait for it to end. The dashboard
+offers the actions on the Service table's target and library rows.
+
 ## The kernel ch driver
 
 Linux's `ch` driver (`/dev/sch*`) leaks references. Each time it attaches to a

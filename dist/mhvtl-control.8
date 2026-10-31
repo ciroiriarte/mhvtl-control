@@ -186,6 +186,41 @@ in the capabilities is neither
 nor
 .BR intent_unreadable ,
 then disable both units again.
+.SH SERVICE CONTROL
+With writes on,
+.B POST /api/v1/service/libraries/\fIid\fB/\fIaction\fR
+starts, stops or restarts one library's
+.B vtllibrary@
+and
+.B vtltape@
+units, and
+.B POST /api/v1/service/\fIaction\fR
+mhvtl.target with every library and the support units;
+.I action
+is
+.BR restart ,
+.B stop
+or
+.BR start .
+A dry run
+.RB ( dry_run )
+lists the units; the action takes them back in
+.B units
+and is refused (409
+.BR unit )
+if they changed. As for an apply, a loaded drive answers
+.B drive_loaded
+with a force token, a failed action is rolled back, and an interrupted one is
+recovered. With PERSIST off, a library's placement is written to
+library_contents.<id> before it stops. Starting a running library is refused
+with
+.BR use_restart ;
+an action that with its rollback may not fit the helper's 30-minute
+RuntimeMaxSec= with
+.BR budget .
+A stopped library stays down until started, and starts again at boot.
+Moves and queue commands for the libraries an action affects wait until it
+ends.
 .SH NOTES
 Under
 .BR mhvtl-control.service ,

@@ -385,10 +385,11 @@ func TestConfigView(t *testing.T) {
 	// Every configuration request other than a GET is the validation, a dry
 	// run or apply of the stage, a stage delete, or an edit sent through
 	// stageEdit, which refuses unless cfgEditable. The other requests that
-	// send a method go to the library and storage routes. A call with a
-	// second argument other than { signal: signal } may send one.
+	// send a method go to the library and storage routes, or are a service
+	// action (POST /api/v1/service/...). A call with a second argument other
+	// than { signal: signal } may send one.
 	sends := map[string]bool{`cfgPath("/apply")`: true, `cfgPath("/stages/" + encodeURIComponent(st.id))`: true,
-		`"/api/v1/config/validate"`: true, `cfgPath("/validate")`: true, "path": true, "o.path": true}
+		`"/api/v1/config/validate"`: true, `cfgPath("/validate")`: true, "path": true, "o.path": true, "servicePath(scope, action)": true}
 	pathCalls := 0
 	for _, args := range jsCalls(app, "api") {
 		if args[0] == "path" {

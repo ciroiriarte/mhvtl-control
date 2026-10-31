@@ -1240,6 +1240,183 @@
       "; queue " + (svc && svc.queue && svc.queue.exists ? "present" : "absent");
   }
 
+  var SERVICE_ACTIONS = { start: "Start", stop: "Stop", restart: "Restart" };
+
+  // unitDown is whether a unit of GET /api/v1/service is inactive or
+  // failed: what systemctl start would start.
+  function unitDown(u) {
+    var a = u ? String(u.active_state || "") : "";
+    return a === "inactive" || a === "failed";
+  }
+  function unitBusy(u) {
+    return !!u && /^(activating|deactivating|reloading)$/.test(String(u.active_state || ""));
+  }
+
+  // serviceLibrary is library id of GET /api/v1/service, or null.
+  function serviceLibrary(svc, id) {
+    var found = null;
+    coerceArray(svc && svc.libraries).forEach(function (l) {
+      if (coerceNumber(l.id) === coerceNumber(id)) { found = l; }
+    });
+    return found;
+  }
+
+  // serviceActionAllowed says whether the Service table offers action
+  // ("start", "stop", "restart") on scope ("target", or a library id), as
+  // {ok, reason, suggest}. Service actions are configuration writes: they
+  // need capabilities.writes "ok" and the units from the apply helper. A
+  // start follows D6 (mhvtl-control#14): never of a running library, and
+  // one running with drives down suggests a restart, since a drive started
+  // alone stays out of its library until the library starts.
+  function serviceActionAllowed(caps, svc, scope, action) {
+    var no = function (reason, suggest) { return { ok: false, reason: reason, suggest: suggest || "" }; };
+    if (!Object.prototype.hasOwnProperty.call(SERVICE_ACTIONS, action)) { return no("Unknown action"); }
+    if (!writesEditable(caps)) {
+      return no("Service actions are configuration writes: " + (caps && caps.writes ? "writes are " + String(caps.writes) : "capabilities not known"));
+    }
+    if (!svc || svc.manager !== "systemd") { return no("Unit states need the apply helper"); }
+    var libs = coerceArray(svc.libraries);
+    var downDrives = function (l) {
+      return coerceArray(l.drives).filter(function (d) { return unitDown(d.unit); }).map(function (d) { return coerceNumber(d.id); });
+    };
+    if (scope === "target") {
+      var units = [svc.target];
+      libs.forEach(function (l) {
+        units.push(l.unit);
+        coerceArray(l.drives).forEach(function (d) { units.push(d.unit); });
+      });
+      coerceArray(svc.standalone_drives).forEach(function (d) { units.push(d.unit); });
+      if (units.some(unitBusy)) { return no("A unit is starting or stopping"); }
+      if (action === "start") {
+        for (var i = 0; i < libs.length; i++) {
+          if (!unitDown(libs[i].unit) && downDrives(libs[i]).length) {
+            return no("Library " + coerceNumber(libs[i].id) + " runs with drives " + downDrives(libs[i]).join(", ") + " down: restart it", "restart");
+          }
+        }
+        if (!units.some(unitDown)) { return no("Everything already runs"); }
+      }
+      if (action === "stop" && units.every(unitDown)) { return no("Everything is already stopped"); }
+      return { ok: true, reason: "", suggest: "" };
+    }
+    var lib = serviceLibrary(svc, scope);
+    if (!lib) { return no("Library " + String(scope) + " is not in device.conf"); }
+    var id = coerceNumber(lib.id);
+    if (unitBusy(lib.unit) || coerceArray(lib.drives).some(function (d) { return unitBusy(d.unit); })) {
+      return no("Library " + id + " is starting or stopping");
+    }
+    var down = downDrives(lib);
+    if (action === "start") {
+      if (!unitDown(lib.unit)) {
+        return down.length
+          ? no("Library " + id + " runs with drives " + down.join(", ") + " down: restart it, which brings them back with it", "restart")
+          : no("Library " + id + " already runs");
+      }
+      return { ok: true, reason: "", suggest: "" };
+    }
+    if (action === "stop" && unitDown(lib.unit) && down.length === coerceArray(lib.drives).length) {
+      return no("Library " + id + " is already stopped");
+    }
+    return { ok: true, reason: "", suggest: "" };
+  }
+
+  // servicePath is the POST route of action on scope ("target" or a
+  // library id). It builds only /api/v1/service/... paths: it throws on an
+  // action other than restart, stop and start, or a scope that is neither.
+  function servicePath(scope, action) {
+    if (!Object.prototype.hasOwnProperty.call(SERVICE_ACTIONS, action)) {
+      throw new Error("unknown service action " + String(action));
+    }
+    if (scope === "target") { return "/api/v1/service/" + action; }
+    if (typeof scope !== "number" || !(scope >= 0) || Math.floor(scope) !== scope) {
+      throw new Error("bad service scope " + String(scope));
+    }
+    return "/api/v1/service/libraries/" + scope + "/" + action;
+  }
+
+  // serviceConfirmText is the confirmation of a service action from its
+  // dry run res (POST /service/... with dry_run): {ok, title, text,
+  // okLabel}. A refused dry run gives ok false and the reason, with what to
+  // do instead; drive_loaded is not a refusal here, the force dialog
+  // offers it. scope is "target" or a library id; svc is GET /service, for
+  // each library's PERSIST.
+  function serviceConfirmText(action, scope, res, svc) {
+    res = res || {};
+    var verb = SERVICE_ACTIONS[action] || String(action);
+    var what = scope === "target" ? "mhvtl.target" : "library " + coerceNumber(scope);
+    var title = verb + " " + what;
+    var code = res.error && res.error.code ? String(res.error.code) : "";
+    var msg = res.error && res.error.message ? String(res.error.message) : "";
+    if (code && code !== "drive_loaded") {
+      var hint = code === "budget" ? " Act on the libraries one at a time."
+        : code === "use_restart" ? " Use Restart instead."
+        : code === "unit" ? " The units changed: try again."
+        : "";
+      var reason = msg || code;
+      if (hint && !/[.!?]$/.test(reason)) { reason += "."; }
+      return { ok: false, title: title, text: reason + hint, okLabel: "" };
+    }
+    var plan = res.plan || {};
+    var units = coerceArray(plan.units).map(String);
+    var parts = [];
+    var n = units.length + (units.length === 1 ? " unit" : " units");
+    parts.push(action === "start" ? n + " start." : action === "stop" ? n + " stop." : n + " stop and start.");
+    if (code === "drive_loaded") {
+      parts.push(msg + ". Each cartridge goes back to its slot first.");
+    }
+    var ids = [];
+    units.forEach(function (u) {
+      var m = /^vtllibrary@(\d+)\.service$/.exec(u);
+      if (m) { ids.push(Number(m[1])); }
+    });
+    if (action !== "start") {
+      ids.forEach(function (id) {
+        var l = serviceLibrary(svc, id);
+        parts.push(l && l.persist
+          ? "PERSIST on: the placement library " + id + " saves at its stop is written to library_contents." + id + "."
+          : "PERSIST off: the current placement is written to library_contents." + id + " first.");
+      });
+    }
+    if (action !== "stop") {
+      coerceArray(plan.offline_libraries).forEach(function (id) {
+        parts.push("Library " + coerceNumber(id) + " is offline to hosts until all its units run.");
+      });
+    }
+    if (action === "stop") {
+      parts.push(scope === "target"
+        ? "Stop leaves mhVTL down until started; it starts again at boot. The kernel modules stay loaded."
+        : "Stop leaves the library down until started; it starts again at boot.");
+    }
+    coerceArray(res.warnings).forEach(function (w) { parts.push(String(w)); });
+    return { ok: true, title: title, text: parts.join(" "), okLabel: verb };
+  }
+
+  // serviceResultText is how the Service table shows a service action's
+  // answer, or the error of a failed call (its body): {tone, text, tail},
+  // tail being the failed unit's journal.
+  function serviceResultText(res) {
+    res = res || {};
+    var code = res.error && res.error.code ? String(res.error.code) : "";
+    var msg = res.error && res.error.message ? String(res.error.message) : "";
+    var what = (SERVICE_ACTIONS[res.action] || "Action") + " of " + (res.target ? "mhvtl.target" : "library " + coerceNumber(res.library));
+    var tail = res.journal_tail ? String(res.journal_tail) : "";
+    var failed = res.failed_unit ? " " + String(res.failed_unit) + " did not start." : "";
+    switch (String(res.result || "")) {
+      case "applied":
+        var extra = coerceArray(res.warnings).concat(coerceArray(res.placement_drift)).map(String);
+        coerceArray(res.forced_unloads).forEach(function (f) {
+          extra.push(String(f.barcode || "a cartridge") + " went back from drive " + coerceNumber(f.drive) + " to slot " + coerceNumber(f.source_slot));
+        });
+        return { tone: extra.length ? "warn" : "ok", text: what + " done." + (extra.length ? " " + extra.join("; ") : ""), tail: "" };
+      case "rolled_back":
+        return { tone: "error", text: what + " failed and was rolled back: the units are back as they were." + failed + (msg ? " " + msg : ""), tail: tail };
+      case "recovered":
+        return { tone: "warn", text: "The helper first recovered an earlier action that had died and did nothing else: " + (msg || "try again") + ".", tail: "" };
+      case "error":
+        return { tone: "error", text: what + " failed." + failed + (msg ? " " + msg : ""), tail: tail };
+    }
+    return { tone: "error", text: what + " failed: " + (msg || code || "no answer"), tail: tail };
+  }
+
   // encryptionBadge is the drive card's encryption badge for a drive of GET
   // /api/v1/libraries ({cls, text, title}), or null: a drive whose
   // personality cannot encrypt ("none") or that reports nothing gets none.
@@ -1439,6 +1616,10 @@
     fmtUptime: fmtUptime,
     serviceRows: serviceRows,
     serviceBackendText: serviceBackendText,
+    serviceActionAllowed: serviceActionAllowed,
+    servicePath: servicePath,
+    serviceConfirmText: serviceConfirmText,
+    serviceResultText: serviceResultText,
     encryptionBadge: encryptionBadge,
   };
 

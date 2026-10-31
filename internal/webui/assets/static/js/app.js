@@ -366,11 +366,39 @@
     if (chNote) { body.appendChild(mk("p", { class: "warn", text: chNote })); }
   }
 
-  // renderService draws the read-only Service table below the system table
+  // renderService draws the Service table below the system table
   // (mhvtl-control#14) from GET /service (svc), or the reason it could not
-  // be read ({error}).
+  // be read ({error}), with the Start, Stop and Restart buttons of the
+  // target and each library, and the last action's result.
+  var svcLast = null;   // the GET /service drawn
+  var svcCaps = null;   // GET /config/capabilities, for the buttons
+  var svcBusy = false;  // a service dry run or action is in flight
+  var svcResult = null; // core.serviceResultText of the last action
   function renderService(svc) {
     preserve($("service-status"), function () { drawService(svc); });
+  }
+  function redrawService() {
+    drawn.service = null;
+    renderService(svcLast || { error: "not read yet" });
+  }
+  // serviceScope is the scope of a Service table row: "target", a library
+  // id, or null for a row without actions.
+  function serviceScope(key) {
+    if (key === "svc-target") { return "target"; }
+    var m = /^svc-lib-(\d+)$/.exec(key);
+    return m ? Number(m[1]) : null;
+  }
+  function serviceButtons(svc, scope, key) {
+    return mk("div", { class: "svc-actions", children: ["start", "stop", "restart"].map(function (action) {
+      var allowed = core.serviceActionAllowed(svcCaps, svc, scope, action);
+      var label = action.charAt(0).toUpperCase() + action.slice(1);
+      var b = mk("button", { class: "btn sm", text: label, key: key + "-" + action,
+        attrs: { type: "button", "aria-label": label + " " + (scope === "target" ? "mhvtl.target" : "library " + scope) } });
+      b.disabled = !mutationsEnabled || svcBusy || !allowed.ok;
+      if (allowed.reason) { b.title = allowed.reason; }
+      b.addEventListener("click", function () { serviceCheck(scope, action); });
+      return b;
+    }) });
   }
   function drawService(svc) {
     var body = $("service-status");
@@ -381,6 +409,7 @@
       return;
     }
     var rows = core.serviceRows(svc).map(function (r) {
+      var scope = serviceScope(r.key);
       var unit = mk("td", { children: [mk("span", { text: r.name })] });
       if (r.notes.length) {
         unit.appendChild(mk("div", { class: "badges", children: r.notes.map(function (n) {
@@ -392,13 +421,14 @@
         mk("td", { children: [mk("span", { class: "badge " + r.cls, text: r.state })] }),
         mk("td", { class: "mono", text: r.pid || "—" }),
         mk("td", { text: r.uptime || "—" }),
+        mk("td", { children: scope === null ? [] : [serviceButtons(svc, scope, r.key)] }),
       ] });
     });
     if (rows.length) {
       body.appendChild(mk("div", { class: "svc-scroll", key: "svc-scroll", children: [
         mk("table", { class: "svc-table", children: [
           mk("thead", { children: [mk("tr", { children: [
-            mk("th", { text: "Unit" }), mk("th", { text: "State" }), mk("th", { text: "PID" }), mk("th", { text: "Up" }),
+            mk("th", { text: "Unit" }), mk("th", { text: "State" }), mk("th", { text: "PID" }), mk("th", { text: "Up" }), mk("th", { text: "" }),
           ] })] }),
           mk("tbody", { children: rows }),
         ] }),
@@ -407,9 +437,78 @@
     if (svc.manager !== "systemd") {
       body.appendChild(mk("p", { class: "muted", text: "Unit states need the apply helper (mhvtl-control-apply.socket)." }));
     }
+    if (svcResult) {
+      body.appendChild(mk("p", { class: svcResult.tone === "ok" ? "ok" : svcResult.tone === "info" ? "muted" : svcResult.tone,
+        key: "svc-result", attrs: { role: "status" }, text: svcResult.text }));
+      if (svcResult.tail) { body.appendChild(mk("pre", { class: "diff", key: "svc-tail", text: svcResult.tail })); }
+    }
     body.appendChild(mk("p", { class: "muted", text: core.serviceBackendText(svc) }));
     coerceArray(svc.errors).forEach(function (e) {
       body.appendChild(mk("p", { class: "warn", text: String(e) }));
+    });
+  }
+
+  var servicePath = core.servicePath;
+  // serviceAnswer is a service call's answer: the body, which carries the
+  // result for every answer of the helper, or one built from the error.
+  function serviceAnswer(e, scope, action) {
+    if (e && e.body && e.body.result) { return e.body; }
+    return { action: action, target: scope === "target", library: scope === "target" ? null : scope,
+      error: { code: (e && e.code) || "", message: String((e && e.message) || e) } };
+  }
+  // serviceCheck runs the dry run of action on scope, then asks to confirm
+  // what it would do, or to confirm the unloads of a drive_loaded plan.
+  function serviceCheck(scope, action) {
+    var gen = NodeState.generation;
+    svcBusy = true;
+    svcResult = { tone: "info", text: "Checking…" };
+    redrawService();
+    api(servicePath(scope, action), { method: "POST", body: { dry_run: true }, read: true }).catch(function (e) {
+      if (e && e.name === "AbortError") { throw e; }
+      return serviceAnswer(e, scope, action);
+    }).then(function (res) {
+      if (isStale(gen, NodeState.generation)) { svcBusy = false; svcResult = null; return; }
+      svcBusy = false;
+      svcResult = null;
+      var c = core.serviceConfirmText(action, scope, res, svcLast);
+      if (!c.ok) {
+        svcResult = { tone: "error", text: c.text, tail: "" };
+        redrawService();
+        return;
+      }
+      redrawService();
+      var plan = core.planSummary(res);
+      var run = function (token) { serviceRun(scope, action, plan.units, token); };
+      if (plan.force) {
+        openForceDialog(plan.force, { title: c.title + " with unload", detail: c.text, okLabel: "Unload and " + action,
+          intro: "The action puts each loaded cartridge back in its slot, then stops and restarts these drives:", onOk: run });
+        return;
+      }
+      openConfirm(c.title, c.text, c.okLabel, function () { run(""); });
+    }).catch(function (e) {
+      if (isStale(gen, NodeState.generation)) { svcBusy = false; svcResult = null; return; }
+      svcBusy = false;
+      svcResult = e && e.name === "AbortError" ? null : { tone: "error", text: String((e && e.message) || e), tail: "" };
+      redrawService();
+    });
+  }
+  // serviceRun carries out the action with the dry run's units, shows its
+  // result in the Service table and reads every panel again.
+  function serviceRun(scope, action, units, token) {
+    var gen = NodeState.generation;
+    svcBusy = true;
+    svcResult = { tone: "info", text: action.charAt(0).toUpperCase() + action.slice(1) + " running…" };
+    redrawService();
+    var body = { units: units };
+    if (token) { body.force_token = token; }
+    api(servicePath(scope, action), { method: "POST", body: body }).catch(function (e) {
+      return serviceAnswer(e, scope, action);
+    }).then(function (res) {
+      if (isStale(gen, NodeState.generation)) { svcBusy = false; svcResult = null; return; }
+      svcBusy = false;
+      svcResult = core.serviceResultText(res);
+      redrawService();
+      refresh();
     });
   }
 
@@ -2699,18 +2798,24 @@
     openConfirm("Apply the pending changes", parts.join(" "), "Apply", function () { doApply(""); });
   }
 
-  // openForceDialog offers the forced apply of a drive_loaded plan: the
-  // drives it unloads and how long its token lasts.
-  function openForceDialog(force) {
-    var dlg = mk("dialog", { class: "wide", attrs: { "aria-label": "Apply with unload" } });
+  // openForceDialog offers the forced run of a drive_loaded plan: the
+  // drives it unloads and how long its token lasts. opts are what differs
+  // from the configuration apply's dialog, the default: title, intro (the
+  // line above the drives), detail (a paragraph before it), okLabel and
+  // onOk, called with the token.
+  function openForceDialog(force, opts) {
+    opts = opts || {};
+    var title = opts.title || "Apply with unload";
+    var dlg = mk("dialog", { class: "wide", attrs: { "aria-label": title } });
     var form = mk("form", { attrs: { method: "dialog" } });
-    form.appendChild(mk("h3", { text: "Apply with unload", attrs: { style: "margin:0 0 6px" } }));
+    form.appendChild(mk("h3", { text: title, attrs: { style: "margin:0 0 6px" } }));
     form.appendChild(mk("p", { text: force.message }));
-    form.appendChild(mk("p", { class: "muted", text: "The apply puts each loaded cartridge back in its slot, then stops and restarts these drives:" }));
+    if (opts.detail) { form.appendChild(mk("p", { text: opts.detail })); }
+    form.appendChild(mk("p", { class: "muted", text: opts.intro || "The apply puts each loaded cartridge back in its slot, then stops and restarts these drives:" }));
     form.appendChild(mk("ul", { children: force.drives.map(function (u) { return mk("li", { class: "mono", text: u }); }) }));
     var left = mk("p", { class: "mono" });
     form.appendChild(left);
-    var ok = mk("button", { class: "btn primary", text: "Unload and apply", attrs: { type: "button" } });
+    var ok = mk("button", { class: "btn primary", text: opts.okLabel || "Unload and apply", attrs: { type: "button" } });
     form.appendChild(mk("div", { class: "dialog-buttons", children: [mk("button", { class: "btn", text: "Cancel", attrs: { value: "cancel" } }), ok] }));
     dlg.appendChild(form);
     function tick() {
@@ -2728,7 +2833,7 @@
     });
     ok.addEventListener("click", function () {
       dlg.close();
-      doApply(force.token);
+      (opts.onOk || doApply)(force.token);
     });
     document.body.appendChild(dlg);
     if (dlg.showModal) { dlg.showModal(); }
@@ -3006,12 +3111,20 @@
   // table's place, never in the panel's status region.
   function refreshService(gen, signal, bg) {
     if (!bg) { setPanelGrey("service-status", true); }
-    return api("/api/v1/service", { signal: signal }).catch(function (e) {
+    // The capabilities gate the buttons; without them they stay disabled.
+    var caps = api("/api/v1/config/capabilities", { signal: signal }).catch(function (e) {
+      if (e.name === "AbortError") { throw e; }
+      return null;
+    });
+    return Promise.all([api("/api/v1/service", { signal: signal }).catch(function (e) {
       if (e.name === "AbortError") { throw e; }
       return { error: e.message };
-    }).then(function (svc) {
+    }), caps]).then(function (r) {
+      var svc = r[0];
       if (isStale(gen, NodeState.generation)) { return; }
-      if (drawPanel("service", $("service-status"), bg, svc, [gen], function () { renderService(svc); })) {
+      svcLast = svc;
+      svcCaps = r[1];
+      if (drawPanel("service", $("service-status"), bg, svc, [gen, svcCaps, svcBusy, svcResult, mutationsEnabled], function () { renderService(svc); })) {
         setPanelGrey("service-status", false);
       }
     }).catch(function (e) {

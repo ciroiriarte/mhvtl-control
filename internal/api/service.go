@@ -46,18 +46,30 @@ var (
 
 // serviceCache holds the last GET /service answer, from when it ended, and
 // the read in flight, which every caller that asks meanwhile shares. mu
-// is never held across the read.
+// is never held across the read. gen counts forget calls: a read begun
+// before one is not cached.
 type serviceCache struct {
 	mu     sync.Mutex
 	at     time.Time
 	dto    serviceDTO
 	flight *serviceFlight
+	gen    int
 }
 
 // serviceFlight is a read in progress; dto is set before done is closed.
 type serviceFlight struct {
 	done chan struct{}
 	dto  serviceDTO
+	gen  int
+}
+
+// forget drops the cached answer and detaches the read in flight, after a
+// service action changed the units: the next GET reads them again.
+func (c *serviceCache) forget() {
+	c.mu.Lock()
+	c.at, c.flight = time.Time{}, nil
+	c.gen++
+	c.mu.Unlock()
 }
 
 // queueExists reports whether mhVTL's message queue exists. It opens the
@@ -143,7 +155,7 @@ func (s *Server) handleService(w http.ResponseWriter, r *http.Request) {
 	}
 	f := c.flight
 	if f == nil {
-		f = &serviceFlight{done: make(chan struct{})}
+		f = &serviceFlight{done: make(chan struct{}), gen: c.gen}
 		c.flight = f
 		// Read apart from the request, so a client that goes away
 		// neither cancels it for the others nor gets its cancellation
@@ -168,14 +180,18 @@ func (s *Server) service1(ctx context.Context, f *serviceFlight) {
 			f.dto = serviceDTO{Manager: managerUnavailable, Libraries: []serviceLibraryDTO{}, StandaloneDrives: []serviceDriveDTO{},
 				Errors: []string{"the service status read failed; the daemon log has the cause"}}
 			c.mu.Lock()
-			c.flight = nil
+			if c.flight == f {
+				c.flight = nil
+			}
 			c.mu.Unlock()
 			close(f.done)
 		}
 	}()
 	f.dto = s.serviceStatus(ctx)
 	c.mu.Lock()
-	c.dto, c.at, c.flight = f.dto, s.now(), nil
+	if c.gen == f.gen {
+		c.dto, c.at, c.flight = f.dto, s.now(), nil
+	}
 	c.mu.Unlock()
 	close(f.done)
 }

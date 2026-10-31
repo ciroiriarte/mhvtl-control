@@ -818,8 +818,9 @@ type applyPlanDTO struct {
 // applyResultDTO is POST /config/apply's answer: the helper's, and on a
 // status other than 200 the error envelope's code and message too.
 type applyResultDTO struct {
-	Error  *errorDetail `json:"error,omitempty"`
-	Stage  string       `json:"stage"`
+	Error *errorDetail `json:"error,omitempty"`
+	// Stage is the stage applied; a service action has none.
+	Stage  string       `json:"stage,omitempty"`
 	Result string       `json:"result"`
 	Plan   applyPlanDTO `json:"plan"`
 	// Findings are the validation of the change, the placement merge's
@@ -912,6 +913,33 @@ func offlineLibraries(units []string) []int {
 	return ids
 }
 
+// applyResultOf is the helper's answer as applyResultDTO, with the error
+// envelope's code when code is not "".
+func applyResultOf(resp apply.Response, code string) applyResultDTO {
+	out := applyResultDTO{
+		Result:         resp.Result,
+		Plan:           applyPlanDTO{Units: resp.Units, Notes: resp.Notes, OfflineLibraries: offlineLibraries(resp.Units)},
+		Findings:       resp.Findings,
+		Warnings:       resp.Warnings,
+		ForceToken:     resp.ForceToken,
+		ForceExpires:   resp.ForceExpires,
+		ForcedUnloads:  resp.ForcedUnloads,
+		PlacementDrift: resp.PlacementDrift,
+		File:           resp.File,
+		CurrentSHA256:  resp.CurrentSHA256,
+		FailedUnit:     resp.FailedUnit,
+		JournalTail:    resp.JournalTail,
+		OrphanedMedia:  resp.OrphanedMedia,
+		Unplaced:       resp.Unplaced,
+		Conflicts:      resp.Conflicts,
+		RollbackDir:    resp.RollbackDir,
+	}
+	if code != "" {
+		out.Error = &errorDetail{Code: code, Message: applyMessage(resp)}
+	}
+	return out
+}
+
 // handleConfigApply sends a stage to the helper: as a plan with dry_run,
 // else as an apply expecting the units of the stage's plan, which must be
 // of the stage as it is (plan_required otherwise). A plan refused for
@@ -988,29 +1016,8 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	status, code := applyStatus(resp)
-	out := applyResultDTO{
-		Stage:          st.id,
-		Result:         resp.Result,
-		Plan:           applyPlanDTO{Units: resp.Units, Notes: resp.Notes, OfflineLibraries: offlineLibraries(resp.Units)},
-		Findings:       resp.Findings,
-		Warnings:       resp.Warnings,
-		ForceToken:     resp.ForceToken,
-		ForceExpires:   resp.ForceExpires,
-		ForcedUnloads:  resp.ForcedUnloads,
-		PlacementDrift: resp.PlacementDrift,
-		File:           resp.File,
-		CurrentSHA256:  resp.CurrentSHA256,
-		FailedUnit:     resp.FailedUnit,
-		JournalTail:    resp.JournalTail,
-		OrphanedMedia:  resp.OrphanedMedia,
-		Unplaced:       resp.Unplaced,
-		Conflicts:      resp.Conflicts,
-		RollbackDir:    resp.RollbackDir,
-		Dispositions:   hreq.Dispositions,
-	}
-	if code != "" {
-		out.Error = &errorDetail{Code: code, Message: applyMessage(resp)}
-	}
+	out := applyResultOf(resp, code)
+	out.Stage, out.Dispositions = st.id, hreq.Dispositions
 	if !req.DryRun {
 		out.ForceToken, out.ForceExpires = "", nil
 		last := out

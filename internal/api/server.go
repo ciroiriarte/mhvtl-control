@@ -220,6 +220,8 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/system", s.handleSystem)
 	mux.HandleFunc("GET /api/v1/service", s.handleService)
+	mux.HandleFunc("POST /api/v1/service/{action}", s.handleServiceTarget)
+	mux.HandleFunc("POST /api/v1/service/libraries/{id}/{action}", s.handleServiceLibrary)
 	mux.HandleFunc("GET /api/v1/libraries", s.handleLibraries)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/mount", s.handleMount)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/unmount", s.handleUnmount)
