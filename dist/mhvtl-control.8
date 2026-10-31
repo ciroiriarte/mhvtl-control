@@ -218,7 +218,12 @@ with
 an action that with its rollback may not fit the helper's 30-minute
 RuntimeMaxSec= with
 .BR budget .
-A stopped library stays down until started, and starts again at boot.
+A stopped library stays down until started, and starts again at boot; a
+stop interrupted by a crash is undone by its recovery, which starts the
+units it had stopped again, so the stop must be retried. A target restart
+brings back what ran plus what mhvtl.target wants (every device.conf
+instance under the generator, else the enabled ones), each drive with its
+library; a library with nothing running or wanted stays down.
 Moves and queue commands for the libraries an action affects wait until it
 ends; an action waits at most a minute for a library one of them holds,
 then answers 503

@@ -381,7 +381,13 @@ not have changed in between (`409 unit`). The answer has the fields of
   `journal_tail`); one interrupted by a crash is recovered by the next
   request (`409 recovered`).
 - A stopped library or target stays down until started, and starts again at
-  boot.
+  boot. A stop interrupted by a crash is undone by its recovery, which starts
+  the units it had stopped again: the library ends up running, so retry the
+  stop.
+- A target restart brings back what ran plus what `mhvtl.target` wants
+  (every `device.conf` instance under the generator, else the enabled ones),
+  each drive with its library; a library with nothing running or wanted
+  stays down.
 
 While an action runs, the daemon holds the affected libraries: cartridge
 moves and other queue commands for them wait for it to end. An action
