@@ -164,26 +164,43 @@ type Server struct {
 	now func() time.Time
 }
 
-// keyedMutex is a set of mutexes created on first use.
+// keyedMutex is a set of mutexes created on first use. Each is a channel
+// of capacity one, so a lock can also give up when a context ends.
 type keyedMutex struct {
 	mu sync.Mutex
-	m  map[string]*sync.Mutex
+	m  map[string]chan struct{}
+}
+
+func (k *keyedMutex) ch(key string) chan struct{} {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.m == nil {
+		k.m = map[string]chan struct{}{}
+	}
+	l, ok := k.m[key]
+	if !ok {
+		l = make(chan struct{}, 1)
+		k.m[key] = l
+	}
+	return l
 }
 
 // lock locks the mutex for key and returns its unlock.
 func (k *keyedMutex) lock(key string) func() {
-	k.mu.Lock()
-	if k.m == nil {
-		k.m = map[string]*sync.Mutex{}
+	l := k.ch(key)
+	l <- struct{}{}
+	return func() { <-l }
+}
+
+// lockCtx is lock, giving up with ctx's error when ctx ends first.
+func (k *keyedMutex) lockCtx(ctx context.Context, key string) (func(), error) {
+	l := k.ch(key)
+	select {
+	case l <- struct{}{}:
+		return func() { <-l }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	l, ok := k.m[key]
-	if !ok {
-		l = &sync.Mutex{}
-		k.m[key] = l
-	}
-	k.mu.Unlock()
-	l.Lock()
-	return l.Unlock
 }
 
 // lockLibrary serializes cartridge moves and queue commands for library id.
@@ -197,6 +214,18 @@ func (s *Server) lockLibrary(id int) func() {
 		s.live.forget(id)
 		unlock()
 	}
+}
+
+// lockLibraryCtx is lockLibrary, giving up when ctx ends first.
+func (s *Server) lockLibraryCtx(ctx context.Context, id int) (func(), error) {
+	unlock, err := s.libs.lockCtx(ctx, strconv.Itoa(id))
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		s.live.forget(id)
+		unlock()
+	}, nil
 }
 
 // maxBody bounds a JSON request body.

@@ -509,6 +509,12 @@
       svcResult = core.serviceResultText(res);
       redrawService();
       refresh();
+    }).catch(function (e) {
+      // A fault drawing the result must not leave every button disabled.
+      console.error("service action:", e);
+      svcBusy = false;
+      svcResult = { tone: "error", text: String((e && e.message) || e), tail: "" };
+      redrawService();
     });
   }
 

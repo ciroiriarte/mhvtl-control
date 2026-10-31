@@ -1327,7 +1327,7 @@
       throw new Error("unknown service action " + String(action));
     }
     if (scope === "target") { return "/api/v1/service/" + action; }
-    if (typeof scope !== "number" || !(scope >= 0) || Math.floor(scope) !== scope) {
+    if (!Number.isSafeInteger(scope) || scope < 0) {
       throw new Error("bad service scope " + String(scope));
     }
     return "/api/v1/service/libraries/" + scope + "/" + action;

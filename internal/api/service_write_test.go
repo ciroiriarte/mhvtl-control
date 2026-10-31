@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -278,5 +280,81 @@ func TestServiceForgetDetachesFlight(t *testing.T) {
 	c.forget()
 	if c.flight != nil || c.gen == f.gen {
 		t.Errorf("forget left flight %v, gen %d", c.flight, c.gen)
+	}
+}
+
+// #92 review 1: a device.conf that repeats a library ID does not lock the
+// library twice: the action answers, and the library takes moves again.
+func TestServiceActionDuplicateLibraryID(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	dc, err := os.ReadFile(filepath.Join(e.dir, "device.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := strings.Index(string(dc), "Library: 10 ")
+	j := i + strings.Index(string(dc[i:]), "# fifo")
+	if err := os.WriteFile(filepath.Join(e.dir, "device.conf"), append(dc, "\n"+string(dc[i:j])...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.answer(func(apply.Request) apply.Response {
+		return apply.Response{Result: apply.ResultApplied, Units: lib10Units}
+	})
+	for _, path := range []string{"/api/v1/service/libraries/10/restart", "/api/v1/service/restart"} {
+		done := make(chan int, 1)
+		go func() { done <- e.call(http.MethodPost, path, map[string]any{"units": lib10Units}).Code }()
+		select {
+		case code := <-done:
+			if code != http.StatusOK {
+				t.Errorf("%s: %d", path, code)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s hung on the repeated library", path)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	unlock, err := e.srv.lockLibraryCtx(ctx, 10)
+	if err != nil {
+		t.Fatalf("library 10 still locked: %v", err)
+	}
+	unlock()
+}
+
+// #92 review 2: with writes off the gate answers first, whatever the
+// action or library: a caller learns nothing of the libraries there are.
+func TestServiceActionGateFirst(t *testing.T) {
+	e := newWriteEnv(t, func(c *Config) { c.Token = "" })
+	for _, p := range []string{"/api/v1/service/reload", "/api/v1/service/libraries/99/restart", "/api/v1/service/libraries/x/stop", "/api/v1/service/libraries/10/reload"} {
+		if rec := e.call(http.MethodPost, p, map[string]any{"dry_run": true}); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "token_required") {
+			t.Errorf("%s: %d %s", p, rec.Code, rec.Body)
+		}
+	}
+}
+
+// #92 review 3: an action waits a bounded time for a library a move or
+// queue command holds, then answers 503 busy without asking the helper.
+func TestServiceActionLockWaitBounded(t *testing.T) {
+	saved := serviceLockWait
+	serviceLockWait = 50 * time.Millisecond
+	t.Cleanup(func() { serviceLockWait = saved })
+	e := newWriteEnv(t, nil)
+	e.answer(func(apply.Request) apply.Response {
+		return apply.Response{Result: apply.ResultApplied, Units: lib10Units}
+	})
+	unlock := e.srv.lockLibrary(30)
+	rec := e.call(http.MethodPost, "/api/v1/service/restart", map[string]any{"units": lib10Units})
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"busy"`) || !strings.Contains(rec.Body.String(), "library 30") {
+		t.Errorf("held library: %d %s", rec.Code, rec.Body)
+	}
+	if n := len(e.requests()); n != 0 {
+		t.Errorf("%d helper requests", n)
+	}
+	// Library 10, taken before 30, was released again.
+	if rec := e.call(http.MethodPost, "/api/v1/service/libraries/10/restart", map[string]any{"units": lib10Units}); rec.Code != http.StatusOK {
+		t.Errorf("library 10 after the busy answer: %d %s", rec.Code, rec.Body)
+	}
+	unlock()
+	if rec := e.call(http.MethodPost, "/api/v1/service/restart", map[string]any{"units": lib10Units}); rec.Code != http.StatusOK {
+		t.Errorf("after the move: %d %s", rec.Code, rec.Body)
 	}
 }

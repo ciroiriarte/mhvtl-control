@@ -3,12 +3,19 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"sort"
+	"time"
 
 	"mhvtl-control/internal/apply"
 	"mhvtl-control/internal/applyclient"
 )
+
+// serviceLockWait bounds how long a service action waits for the libraries
+// it acts on; a variable so a test can shorten it.
+var serviceLockWait = time.Minute
 
 // serviceRequest is the body of POST /service/{action} and POST
 // /service/libraries/{id}/{action}.
@@ -49,20 +56,15 @@ func serviceHTTPStatus(resp apply.Response) (int, string) {
 }
 
 func (s *Server) handleServiceTarget(w http.ResponseWriter, r *http.Request) {
-	s.serviceAction(w, r, nil)
+	s.serviceAction(w, r, false)
 }
 
 func (s *Server) handleServiceLibrary(w http.ResponseWriter, r *http.Request) {
-	id, err := pathInt(r, "id")
-	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", err.Error())
-		return
-	}
-	s.serviceAction(w, r, &id)
+	s.serviceAction(w, r, true)
 }
 
-// serviceAction sends a service action on library lib, or on mhvtl.target
-// when lib is nil, to the helper (mhvtl-control#14, plan 4.3): a
+// serviceAction sends a service action on the library of the path's id
+// when library is set, else on mhvtl.target, to the helper (mhvtl-control#14, plan 4.3): a
 // service_plan with dry_run, else a service expecting the dry run's units.
 // It is gated as a configuration write. The action holds lockLibrary for
 // every library it may stop or start, in ascending order, until the
@@ -71,7 +73,21 @@ func (s *Server) handleServiceLibrary(w http.ResponseWriter, r *http.Request) {
 // live read, and the action drops the cached GET /service. A dry run takes
 // no lock, so it does not wait out an action in progress: the helper
 // answers it apply_in_progress, and the action checks again.
-func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request, lib *int) {
+func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request, library bool) {
+	// The gate answers first: with writes off, a caller learns nothing of
+	// the actions or libraries there are.
+	if !s.writeAllowed(w, r) {
+		return
+	}
+	var lib *int
+	if library {
+		id, err := pathInt(r, "id")
+		if err != nil {
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		lib = &id
+	}
 	action := r.PathValue("action")
 	switch action {
 	case apply.ActionRestart, apply.ActionStop, apply.ActionStart:
@@ -94,7 +110,7 @@ func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request, lib *int)
 		return
 	}
 	var req serviceRequest
-	if !s.writeAllowed(w, r) || !decodeStrict(w, r, &req) {
+	if !decodeStrict(w, r, &req) {
 		return
 	}
 	if req.DryRun && req.ForceToken != "" {
@@ -116,9 +132,22 @@ func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request, lib *int)
 		defer cancel()
 	}
 	if !req.DryRun {
+		// A device.conf can repeat a library ID; the mutexes are not
+		// reentrant.
 		sort.Ints(ids)
+		ids = slices.Compact(ids)
+		// The wait for a library held by a move or queue command is
+		// bounded: the action answers busy rather than queue behind a
+		// command that hangs. Once held, the locks last until the answer.
+		lctx, lcancel := context.WithTimeout(r.Context(), serviceLockWait)
+		defer lcancel()
 		for _, id := range ids {
-			defer s.lockLibrary(id)()
+			unlock, err := s.lockLibraryCtx(lctx, id)
+			if err != nil {
+				writeError(w, http.StatusServiceUnavailable, "busy", fmt.Sprintf("library %d is busy with a move or queue command; try again", id))
+				return
+			}
+			defer unlock()
 		}
 	}
 	resp, err := s.cfg.Helper.Do(ctx, hreq)

@@ -198,7 +198,7 @@ test("servicePath builds only /api/v1/service routes", () => {
     assert.throws(() => core.servicePath("target", action), /unknown service action/);
     assert.throws(() => core.servicePath(10, action), /unknown service action/);
   }
-  for (const scope of ["10", "../config", -1, 1.5, NaN, null, undefined, "Target"]) {
+  for (const scope of ["10", "../config", -1, 1.5, NaN, Infinity, 1e21, 2 ** 53, null, undefined, "Target"]) {
     assert.throws(() => core.servicePath(scope, "restart"), /bad service scope/);
   }
 });

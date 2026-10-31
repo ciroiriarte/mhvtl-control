@@ -384,7 +384,9 @@ not have changed in between (`409 unit`). The answer has the fields of
   boot.
 
 While an action runs, the daemon holds the affected libraries: cartridge
-moves and other queue commands for them wait for it to end. The dashboard
+moves and other queue commands for them wait for it to end. An action
+waits at most a minute for a library a move or queue command holds, then
+answers `503 busy`. The dashboard
 offers the actions on the Service table's target and library rows.
 
 ## The kernel ch driver

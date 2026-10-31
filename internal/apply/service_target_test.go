@@ -827,3 +827,27 @@ func TestServiceTargetStopRecoverStandaloneNote(t *testing.T) {
 		t.Errorf("vtltape@34 is %s", s.unitState("vtltape@34.service"))
 	}
 }
+
+// #92 review 4: a library added to device.conf between a target's dry run
+// and its action changes the units, so the action echoing the dry run's
+// units is refused (409 unit at the daemon) before anything stops; the
+// daemon then holds the locks of the libraries it read.
+func TestServiceTargetLibraryAddedAfterPlan(t *testing.T) {
+	e, s := newExecEnv(t)
+	standalone34(e)
+	pr := e.do(target(OpServicePlan, ActionRestart, nil))
+	if pr.Result != ResultValidated {
+		t.Fatalf("service_plan: %+v", pr)
+	}
+	addLibraries(e, 1)
+	e.rebuild()
+	resp := e.do(target(OpService, ActionRestart, pr.Units))
+	if resp.Result != ResultRefused || resp.Error != ErrUnit || !slices.Contains(resp.Units, "vtllibrary@40.service") {
+		t.Fatalf("service: %+v", resp)
+	}
+	for _, c := range s.calls {
+		if strings.HasPrefix(c, "stop ") || strings.HasPrefix(c, "start ") {
+			t.Errorf("refused action ran %q", c)
+		}
+	}
+}
