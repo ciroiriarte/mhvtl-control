@@ -1,3 +1,28 @@
+mhvtl-control (0.6.0-1) unstable; urgency=medium
+
+  * Service control (#14): GET /api/v1/service reports mhvtl.target, its
+    support units, each vtllibrary@ and vtltape@ unit, the configured backend
+    next to the loaded modules, and the message queue; the System panel shows
+    it (#89).
+  * Restart, stop and start a library or the whole mhvtl.target from the API
+    (POST /api/v1/service/...) and the dashboard, through the configuration
+    helper and behind the same gate as configuration writes. With PERSIST off
+    a library's live cartridge placement is written to library_contents first,
+    so a restart keeps it; a cartridge in a drive is put back in its slot with
+    a force token; a failed action is rolled back and an interrupted one
+    recovered. A stop leaves units enabled (#90-#92).
+  * Configuration apply: recovery no longer leaves a standalone drive down
+    when the apply died before stopping it, and a rollback no longer starts a
+    standalone drive that was down before the apply (#91).
+  * Report each drive's encryption (aes-gcm, simulated, none) from what its
+    vtltape binary and personality support, and mark cartridges that have held
+    AES-GCM data (#75).
+  * Find vtltape in /usr/libexec/mhvtl, where mhVTL installs its daemons since
+    markh794/mhvtl 0d1a744; encryption read "unknown" on those installs (#88).
+  * Releases refresh the OBS package from the tag (#68).
+
+ -- Ciro Iriarte <ciro.iriarte@gmail.com>  Sat, 31 Oct 2026 12:00:00 -0300
+
 mhvtl-control (0.5.0-1) unstable; urgency=medium
 
   * Refuse cross-site writes: a POST, PATCH, PUT or DELETE whose

@@ -4,7 +4,7 @@
 %global debug_package %{nil}
 
 Name:           mhvtl-control
-Version:        0.5.0
+Version:        0.6.0
 Release:        1%{?dist}
 Summary:        Management daemon and web dashboard for the mhVTL virtual tape library
 License:        Apache-2.0
@@ -153,6 +153,14 @@ fi
 %dir %attr(0700,root,root) %{_sharedstatedir}/mhvtl-control-apply
 
 %changelog
+* Sat Oct 31 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.6.0-1
+- Service control (#14): GET /api/v1/service reports mhvtl.target, its support units, each vtllibrary@ and vtltape@ unit, the configured backend next to the loaded modules, and the message queue; the System panel shows it (#89).
+- Restart, stop and start a library or the whole mhvtl.target from the API (POST /api/v1/service/...) and the dashboard, through the configuration helper and behind the same gate as configuration writes. With PERSIST off a library's live cartridge placement is written to library_contents first, so a restart keeps it; a cartridge in a drive is put back in its slot with a force token; a failed action is rolled back and an interrupted one recovered. A stop leaves units enabled (#90-#92).
+- Configuration apply: recovery no longer leaves a standalone drive down when the apply died before stopping it, and a rollback no longer starts a standalone drive that was down before the apply (#91).
+- Report each drive's encryption (aes-gcm, simulated, none) from what its vtltape binary and personality support, and mark cartridges that have held AES-GCM data (#75).
+- Find vtltape in /usr/libexec/mhvtl, where mhVTL installs its daemons since markh794/mhvtl 0d1a744; encryption read "unknown" on those installs (#88).
+- Releases refresh the OBS package from the tag (#68).
+
 * Wed Oct 28 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.5.0-1
 - Refuse cross-site writes: a POST, PATCH, PUT or DELETE whose Sec-Fetch-Site or Origin names another origin gets 403, so a web page cannot change libraries through a token-less daemon on loopback. On loopback without a token, a Host other than localhost or a loopback address gets 421 (DNS rebinding). --cors-origin '*' now requires an API token.
 - Dashboard: keeps scroll positions, focus and open lists across redraws (#77) and refreshes itself every 10 s while the tab is visible, with an indicator and a pause button next to Refresh (#76).
