@@ -527,3 +527,51 @@ test("encryptionBadge marks simulated, explains a pre-AES-GCM mhVTL, hides none"
   assert.strictEqual(core.encryptionBadge({}), null);
   assert.strictEqual(core.encryptionBadge(null), null);
 });
+
+test("transportDeviceText names libraries, drives and standalone drives", () => {
+  assert.strictEqual(core.transportDeviceText(null), "");
+  assert.strictEqual(core.transportDeviceText({ kind: "library", id: 10 }), "Library 10");
+  assert.strictEqual(core.transportDeviceText({ kind: "drive", id: 11, library_id: 10 }), "Drive 11 (library 10)");
+  assert.strictEqual(core.transportDeviceText({ kind: "drive", id: 13 }), "Drive 13 (standalone)");
+});
+
+test("transportSessionText gives the session state and addresses", () => {
+  assert.strictEqual(core.transportSessionText(null), "none");
+  assert.strictEqual(core.transportSessionText({ state: "TARG_SESS_STATE_LOGGED_IN",
+    connections: [{ cid: 0, address: "192.0.2.10" }] }), "logged in from 192.0.2.10");
+  assert.strictEqual(core.transportSessionText({ connections: [] }), "session");
+});
+
+test("transportView resolves LUNs to devices and lists backstores on no LUN", () => {
+  const v = core.transportView({
+    configfs: true,
+    backstores: [
+      { hba: "user_0", name: "lib10", enabled: true, device: { kind: "library", id: 10 } },
+      { hba: "user_0", name: "tape11", enabled: false, device: { kind: "drive", id: 11, library_id: 10 } },
+      { hba: "user_0", name: "tape12" },
+    ],
+    fabrics: [{ name: "iscsi", transport: "iscsi", targets: [{ wwn: "iqn.x:vtl", tpgs: [{
+      tag: 1, enabled: true, portals: ["0.0.0.0:3260"],
+      luns: [{ lun: 0, hba: "user_0", backstore: "lib10" }, { lun: 1, hba: "user_0", backstore: "tape11" }],
+      acls: [
+        { initiator: "iqn.a", mapped_luns: [{ lun: 0, tpg_lun: 0 }, { lun: 1, tpg_lun: 3, write_protect: true }],
+          session: { state: "TARG_SESS_STATE_LOGGED_IN", connections: [] } },
+        { initiator: "iqn.b", mapped_luns: [] },
+      ],
+      dynamic_sessions: [],
+    }] }] }],
+  });
+  assert.strictEqual(v.tpgs.length, 1);
+  const g = v.tpgs[0];
+  assert.strictEqual(g.key, "iscsi/iqn.x:vtl/1");
+  assert.strictEqual(g.enabled, true);
+  assert.deepStrictEqual(g.luns, [
+    { lun: 0, backstore: "lib10", device: "Library 10", enabled: true },
+    { lun: 1, backstore: "tape11", device: "Drive 11 (library 10)", enabled: false },
+  ]);
+  assert.deepStrictEqual(g.acls[0].luns, ["0", "1→3 (ro)"]);
+  assert.strictEqual(g.acls[0].active, true);
+  assert.strictEqual(g.acls[1].session, "none");
+  assert.deepStrictEqual(v.unexported, ["tape12"]);
+  assert.deepStrictEqual(core.transportView({}), { tpgs: [], unexported: [] });
+});

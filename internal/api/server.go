@@ -67,6 +67,9 @@ type Config struct {
 	// SysRoot is the sysfs mount point POST /config/validate and GET
 	// /system read the host's SCSI devices from; empty means /sys.
 	SysRoot string
+	// TargetRoot is the LIO configfs directory GET /transports reads;
+	// empty means transports.DefaultRoot.
+	TargetRoot string
 	// Capabilities are the host paths GET /config/capabilities inspects.
 	Capabilities CapabilityPaths
 	// InsecureListen is whether the daemon listens on a non-loopback address
@@ -273,6 +276,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/v1/libraries/{id}/media/{barcode}", s.handleMediaEdit)
 	mux.HandleFunc("GET /api/v1/libraries/{id}/drives/{drive}/stats", s.handleDriveStats)
 	mux.HandleFunc("GET /api/v1/storage/disks", s.handleDisks)
+	mux.HandleFunc("GET /api/v1/transports", s.handleTransports)
 	mux.HandleFunc("POST /api/v1/storage/disks/format", s.handleFormat)
 	mux.HandleFunc("GET /api/v1/config", s.handleConfig)
 	mux.HandleFunc("GET /api/v1/config/capabilities", s.handleConfigCapabilities)
@@ -349,17 +353,19 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 
 // System describes the host and daemon state.
 type System struct {
-	Hostname         string     `json:"hostname"`
-	OS               string     `json:"os"`
-	KernelVersion    string     `json:"kernel_version"`
-	Architecture     string     `json:"architecture"`
-	CPUCount         int        `json:"cpu_count"`
-	MemTotalBytes    uint64     `json:"mem_total_bytes"`
-	MemAvailBytes    uint64     `json:"mem_available_bytes"`
-	LoadAverage      [3]float64 `json:"load_average"`
-	UptimeSeconds    float64    `json:"uptime_seconds"`
-	ActiveTransports []string   `json:"active_transports"`
-	Version          string     `json:"version"`
+	Hostname      string     `json:"hostname"`
+	OS            string     `json:"os"`
+	KernelVersion string     `json:"kernel_version"`
+	Architecture  string     `json:"architecture"`
+	CPUCount      int        `json:"cpu_count"`
+	MemTotalBytes uint64     `json:"mem_total_bytes"`
+	MemAvailBytes uint64     `json:"mem_available_bytes"`
+	LoadAverage   [3]float64 `json:"load_average"`
+	UptimeSeconds float64    `json:"uptime_seconds"`
+	// ActiveTransports are local while mhvtl.ko is loaded, and each
+	// transport GET /transports finds exporting a LUN.
+	ActiveTransports []string `json:"active_transports"`
+	Version          string   `json:"version"`
 	// KernelCh is the Linux ch driver's reference leak on this host
 	// (chleak), read from device.conf and sysfs on each request;
 	// KernelChError says why it is incomplete or absent (an unreadable
@@ -373,6 +379,7 @@ func (s *Server) handleSystem(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	sys := collectSystem()
 	sys.Version = s.cfg.Version
+	sys.ActiveTransports = s.activeTransports()
 	sys.KernelCh, sys.KernelChError = s.kernelCh(sys.KernelVersion)
 	_ = json.NewEncoder(w).Encode(sys)
 }
@@ -399,9 +406,8 @@ func (s *Server) kernelCh(release string) (*chleak.Status, string) {
 
 func collectSystem() System {
 	s := System{
-		CPUCount:         runtime.NumCPU(),
-		UptimeSeconds:    time.Since(startTime).Seconds(),
-		ActiveTransports: []string{"local"},
+		CPUCount:      runtime.NumCPU(),
+		UptimeSeconds: time.Since(startTime).Seconds(),
 	}
 	s.Hostname, _ = os.Hostname()
 	s.OS, s.KernelVersion, s.Architecture = uname()

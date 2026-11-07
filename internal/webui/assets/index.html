@@ -128,6 +128,13 @@
         <div class="panel-status" id="disk-status" data-panel-status role="alert" aria-live="polite"></div>
         <div class="body" id="disk-dock"><p class="muted">Loading disks…</p></div>
       </section>
+
+      <!-- Transport Map: the LIO exports read from configfs (read-only). -->
+      <section class="panel col-12" id="transport-panel" aria-busy="false">
+        <header>Transport Map <span class="count" id="transport-count"></span></header>
+        <div class="panel-status" id="transport-status" data-panel-status role="alert" aria-live="polite"></div>
+        <div class="body" id="transport-map"><p class="muted">Loading transports…</p></div>
+      </section>
     </div>
   </main>
 

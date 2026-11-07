@@ -251,6 +251,7 @@
   var sysStatus = PanelStatus("system-status-region");
   var libStatus = PanelStatus("lib-status");
   var diskStatus = PanelStatus("disk-status");
+  var transportStatus = PanelStatus("transport-status");
   var mediaStatus = PanelStatus("media-status");
   var configStatus = PanelStatus("config-status");
   var findingsStatus = PanelStatus("findings-status");
@@ -1088,6 +1089,83 @@
         row.appendChild(bar);
       }
       dock.appendChild(row);
+    });
+  }
+
+  // renderTransports draws the Transport Map from GET /transports: a table
+  // of LUNs and one of ACLs per target portal group, read-only.
+  function renderTransports(data) {
+    preserve($("transport-map"), function () { drawTransports(data); });
+  }
+  function onOff(v) { return v == null ? null : mk("span", { class: "badge " + (v ? "st-active" : "unknown"), text: v ? "enabled" : "disabled" }); }
+  function drawTransports(data) {
+    data = data || {};
+    var view = core.transportView(data);
+    var active = coerceArray(data.active_transports).map(String);
+    $("transport-count").textContent = view.tpgs.length ? "(" + view.tpgs.length + ")" : "";
+    var box = $("transport-map");
+    clear(box);
+    box.appendChild(mk("p", { class: "muted", text: "Active: " + (active.length ? active.join(", ") : "none") }));
+    if (!data.configfs) {
+      box.appendChild(mk("p", { class: "muted", text: "No LIO target in configfs (/sys/kernel/config/target): nothing is exported through TCMU, iSCSI, Fibre Channel or USB." }));
+    } else if (!view.tpgs.length) {
+      box.appendChild(mk("p", { class: "muted", text: "No fabric target is configured." }));
+    }
+    view.tpgs.forEach(function (g) {
+      var sec = mk("div", { class: "transport-tpg", key: "tpg/" + g.key });
+      var head = mk("div", { class: "head" });
+      head.appendChild(mk("span", { class: "badge", text: g.transport }));
+      head.appendChild(mk("span", { class: "name", text: g.wwn }));
+      head.appendChild(mk("span", { class: "muted", text: g.fabric + " · TPG " + g.tag }));
+      var en = onOff(g.enabled);
+      if (en) { head.appendChild(en); }
+      sec.appendChild(head);
+      if (g.portals.length) {
+        sec.appendChild(mk("div", { class: "muted mono cap-line", text: "Portals: " + g.portals.join(", ") }));
+      }
+      var lunRows = g.luns.map(function (l) {
+        var st = onOff(l.enabled);
+        return mk("tr", { children: [
+          mk("td", { class: "mono", text: String(l.lun) }),
+          mk("td", { class: "mono", text: l.backstore || "—" }),
+          mk("td", { text: l.device || "—" }),
+          mk("td", { children: st ? [st] : [] }),
+        ] });
+      });
+      sec.appendChild(mk("div", { class: "svc-scroll", key: "luns/" + g.key, children: [
+        mk("table", { class: "svc-table", attrs: { "aria-label": "LUNs of " + g.wwn }, children: [
+          mk("thead", { children: [mk("tr", { children: [
+            mk("th", { text: "LUN" }), mk("th", { text: "Backstore" }), mk("th", { text: "Device" }), mk("th", { text: "Backstore state" }),
+          ] })] }),
+          mk("tbody", { children: lunRows.length ? lunRows : [mk("tr", { children: [mk("td", { class: "muted", text: "No LUNs", attrs: { colspan: "4" } })] })] }),
+        ] }),
+      ] }));
+      if (g.acls.length) {
+        sec.appendChild(mk("div", { class: "svc-scroll", key: "acls/" + g.key, children: [
+          mk("table", { class: "svc-table", attrs: { "aria-label": "Initiators allowed on " + g.wwn }, children: [
+            mk("thead", { children: [mk("tr", { children: [
+              mk("th", { text: "Initiator" }), mk("th", { text: "Mapped LUNs" }), mk("th", { text: "Session" }),
+            ] })] }),
+            mk("tbody", { children: g.acls.map(function (a) {
+              return mk("tr", { children: [
+                mk("td", { class: "mono", text: a.initiator }),
+                mk("td", { class: "mono", text: a.luns.length ? a.luns.join(", ") : "—" }),
+                mk("td", { children: [mk("span", { class: a.active ? "badge st-active" : "muted", text: a.session })] }),
+              ] });
+            }) }),
+          ] }),
+        ] }));
+      }
+      if (g.dynamic.length) {
+        sec.appendChild(mk("p", { class: "muted mono cap-line", text: "Sessions without an ACL: " + g.dynamic.join(", ") }));
+      }
+      box.appendChild(sec);
+    });
+    if (view.unexported.length) {
+      box.appendChild(mk("p", { class: "muted", text: "Backstores on no LUN: " + view.unexported.join(", ") }));
+    }
+    coerceArray(data.warnings).forEach(function (w) {
+      box.appendChild(mk("p", { class: "warn", text: "Not read: " + String(w) }));
     });
   }
 
@@ -3181,6 +3259,25 @@
       diskStatus.error("disks: " + e.message, bg ? "poll" : "load");
     });
   }
+  function refreshTransports(gen, signal, bg) {
+    if (!bg) {
+      transportStatus.loading();
+      setPanelGrey("transport-map", true);
+      busy("transport-panel", true);
+    }
+    return api("/api/v1/transports", { signal: signal }).then(function (d) {
+      if (!bg) { busy("transport-panel", false); }
+      if (isStale(gen, NodeState.generation)) { return; }
+      if (drawPanel("transports", $("transport-map"), bg, d, [gen], function () { renderTransports(d); })) {
+        setPanelGrey("transport-map", false);
+      }
+      (bg ? transportStatus.quietOk() : transportStatus.ok());
+    }).catch(function (e) {
+      if (!bg) { busy("transport-panel", false); }
+      if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      transportStatus.error("transports: " + e.message, bg ? "poll" : "load");
+    });
+  }
 
   // drawMedia draws the media of libId (payload d) through drawPanel. The
   // rows also read the library's drives and MAP state, so the cached
@@ -3259,6 +3356,7 @@
       all.push(refreshMedia(gen, signal, bg));
     }
     if (due("disks")) { all.push(refreshDisks(gen, signal, bg)); }
+    if (due("transports")) { all.push(refreshTransports(gen, signal, bg)); }
     if (due("config")) { all.push(refreshConfig(gen, signal, bg)); }
     refreshesInFlight++;
     var settled = function () {
@@ -3363,7 +3461,8 @@
   }
   function greyPanels() {
     sysStatus.grey(); libStatus.grey(); diskStatus.grey(); mediaStatus.grey();
-    configStatus.grey(); findingsStatus.grey();
+    configStatus.grey(); findingsStatus.grey(); transportStatus.grey();
+    setPanelGrey("transport-map", true);
     setPanelGrey("system-status", true);
     setPanelGrey("service-status", true);
     setPanelGrey("library-rack", true);
@@ -3428,7 +3527,7 @@
         // Panels stay greyed (controls uninteractive) while the node is down.
         var m = "node unreachable — controls disabled until it responds";
         sysStatus.error(m); libStatus.error(m); diskStatus.error(m); mediaStatus.error(m);
-        configStatus.error(m); findingsStatus.error(m);
+        configStatus.error(m); findingsStatus.error(m); transportStatus.error(m);
       }
     });
   }

@@ -1,0 +1,450 @@
+// Package transports reads the LIO target configuration from configfs
+// (/sys/kernel/config/target): the TCMU user backstores mhVTL's TCMU handler
+// creates, and the fabrics that export them (loopback, iSCSI, Fibre Channel,
+// USB gadget) with their LUNs, ACLs and sessions. It only reads; changes go
+// through mhVTL's mhvtl-fabrics (ADR 0004).
+//
+// The layout and file formats are the kernel's, as of Linux v6.12:
+//   - core/user_<N>/<name>/{enable,attrib/dev_config,wwn/vpd_unit_serial}
+//     (drivers/target/target_core_configfs.c, target_core_user.c
+//     tcmu_dev_config_show);
+//   - <fabric>/<wwn>/tpgt_<T>/{enable,lun/lun_<N>/<link>,np/<portal>,
+//     acls/<initiator>/lun_<M>/{<link>,write_protect}}
+//     (drivers/target/target_core_fabric_configfs.c);
+//   - iscsi/<iqn>/tpgt_<T>/acls/<initiator>/info and
+//     tpgt_<T>/dynamic_sessions (drivers/target/iscsi/iscsi_target_configfs.c
+//     lio_target_nacl_info_show, target_core_transport.c
+//     target_show_dynamic_sessions).
+//
+// https://github.com/torvalds/linux/tree/v6.12/drivers/target
+package transports
+
+import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+
+	"mhvtl-control/internal/config"
+)
+
+// DefaultRoot is where configfs exposes the LIO target.
+const DefaultRoot = "/sys/kernel/config/target"
+
+// fabrics are the fabric directories read, with the transport each serves.
+// loopback (tcm_loop) is how the TCMU handler presents the devices on this
+// host.
+var fabrics = []struct{ dir, transport string }{
+	{"loopback", "local"},
+	{"iscsi", "iscsi"},
+	{"qla2xxx", "fc"},
+	{"efct", "fc"},
+	{"usb_gadget", "usb"},
+}
+
+// Map is the LIO configuration read from configfs.
+type Map struct {
+	// ConfigFS is whether the target directory exists (configfs mounted
+	// and target_core_mod loaded).
+	ConfigFS   bool        `json:"configfs"`
+	Backstores []Backstore `json:"backstores"`
+	Fabrics    []Fabric    `json:"fabrics"`
+	// Warnings name the files that could not be read; what they hold is
+	// left out.
+	Warnings []string `json:"warnings"`
+}
+
+// Backstore is a TCMU user backstore, core/user_<N>/<name>.
+type Backstore struct {
+	HBA     string `json:"hba"`
+	Name    string `json:"name"`
+	Enabled *bool  `json:"enabled,omitempty"`
+	// DevConfig is attrib/dev_config; mhVTL's handler sets "mhvtl/<minor>"
+	// (usr/cmd/mhvtl_tcmu_handler.c), the minor being the device.conf
+	// Library or Drive number.
+	DevConfig  string `json:"dev_config,omitempty"`
+	UnitSerial string `json:"unit_serial,omitempty"`
+	// Minor is DevConfig's minor when it is an mhVTL backstore.
+	Minor *int `json:"minor,omitempty"`
+	// Device is the device.conf device Minor names, when one does.
+	Device *Device `json:"device,omitempty"`
+}
+
+// Device is a device.conf library or drive.
+type Device struct {
+	// Kind is "library" or "drive".
+	Kind string `json:"kind"`
+	ID   int    `json:"id"`
+	// LibraryID is a drive's library, absent for a standalone drive.
+	LibraryID *int `json:"library_id,omitempty"`
+}
+
+// Fabric is one fabric module's configuration.
+type Fabric struct {
+	// Name is the configfs directory: loopback, iscsi, qla2xxx, efct or
+	// usb_gadget.
+	Name string `json:"name"`
+	// Transport is local, iscsi, fc or usb.
+	Transport string   `json:"transport"`
+	Targets   []Target `json:"targets"`
+}
+
+// Target is a fabric WWN: an IQN, an FC port name or a naa. name.
+type Target struct {
+	WWN  string `json:"wwn"`
+	TPGs []TPG  `json:"tpgs"`
+}
+
+// TPG is a target portal group, tpgt_<Tag>.
+type TPG struct {
+	Tag int `json:"tag"`
+	// Enabled is absent for fabrics without an enable attribute (loopback).
+	Enabled *bool    `json:"enabled,omitempty"`
+	Portals []string `json:"portals"`
+	LUNs    []LUN    `json:"luns"`
+	ACLs    []ACL    `json:"acls"`
+	// DynamicSessions are the initiators logged in without an ACL
+	// (generate_node_acls); iSCSI and qla2xxx only.
+	DynamicSessions []string `json:"dynamic_sessions"`
+}
+
+// LUN is lun/lun_<LUN>, linked to a backstore.
+type LUN struct {
+	LUN       int    `json:"lun"`
+	HBA       string `json:"hba,omitempty"`
+	Backstore string `json:"backstore,omitempty"`
+}
+
+// ACL is an initiator's node ACL.
+type ACL struct {
+	Initiator  string      `json:"initiator"`
+	MappedLUNs []MappedLUN `json:"mapped_luns"`
+	// Session is the initiator's iSCSI session, nil when it has none or
+	// the fabric does not report one.
+	Session *Session `json:"session,omitempty"`
+}
+
+// MappedLUN is acls/<initiator>/lun_<LUN>, linked to the TPG's lun_<TPGLUN>.
+type MappedLUN struct {
+	LUN          int   `json:"lun"`
+	TPGLUN       *int  `json:"tpg_lun,omitempty"`
+	WriteProtect *bool `json:"write_protect,omitempty"`
+}
+
+// Session is an iSCSI session, from the ACL's info file.
+type Session struct {
+	Alias       string       `json:"alias,omitempty"`
+	Type        string       `json:"type,omitempty"`
+	State       string       `json:"state,omitempty"`
+	Connections []Connection `json:"connections"`
+}
+
+// Connection is one connection of a Session.
+type Connection struct {
+	CID     int    `json:"cid"`
+	State   string `json:"state,omitempty"`
+	Address string `json:"address,omitempty"`
+}
+
+// reader collects the warnings of one Read.
+type reader struct {
+	root     string
+	warnings []string
+}
+
+func (r *reader) warn(p string, err error) {
+	if rel, e := filepath.Rel(r.root, p); e == nil {
+		p = rel
+	}
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		err = pe.Err
+	}
+	r.warnings = append(r.warnings, p+": "+err.Error())
+}
+
+// attr reads a configfs attribute. A missing one is no warning: not every
+// fabric or kernel has every attribute.
+func (r *reader) attr(p string) (string, bool) {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			r.warn(p, err)
+		}
+		return "", false
+	}
+	return strings.TrimRight(string(b), "\n\x00 "), true
+}
+
+func (r *reader) boolAttr(p string) *bool {
+	v, ok := r.attr(p)
+	if !ok {
+		return nil
+	}
+	b := v == "1"
+	return &b
+}
+
+// dirs lists the subdirectories of p, sorted by name.
+func (r *reader) dirs(p string) []string {
+	ents, err := os.ReadDir(p)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			r.warn(p, err)
+		}
+		return nil
+	}
+	var out []string
+	for _, e := range ents {
+		if e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// link returns the target of the first symlink in p: configfs names it as
+// the user chose, so it is found by type.
+func (r *reader) link(p string) (string, bool) {
+	ents, err := os.ReadDir(p)
+	if err != nil {
+		r.warn(p, err)
+		return "", false
+	}
+	for _, e := range ents {
+		if e.Type()&fs.ModeSymlink == 0 {
+			continue
+		}
+		t, err := os.Readlink(filepath.Join(p, e.Name()))
+		if err != nil {
+			r.warn(filepath.Join(p, e.Name()), err)
+			continue
+		}
+		return t, true
+	}
+	return "", false
+}
+
+// numbered parses "<prefix><N>".
+func numbered(name, prefix string) (int, bool) {
+	if !strings.HasPrefix(name, prefix) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(name[len(prefix):])
+	return n, err == nil && n >= 0
+}
+
+// Read reads the LIO configuration under root (DefaultRoot when empty). A
+// missing root is an empty Map, not an error; unreadable files are left out
+// and named in Warnings.
+func Read(root string) Map {
+	if root == "" {
+		root = DefaultRoot
+	}
+	m := Map{Backstores: []Backstore{}, Fabrics: []Fabric{}, Warnings: []string{}}
+	r := &reader{root: root}
+	if _, err := os.Stat(root); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			r.warn(root, err)
+			m.Warnings = r.warnings
+		}
+		return m
+	}
+	m.ConfigFS = true
+	core := filepath.Join(root, "core")
+	for _, hba := range r.dirs(core) {
+		if _, ok := numbered(hba, "user_"); !ok {
+			continue
+		}
+		for _, name := range r.dirs(filepath.Join(core, hba)) {
+			m.Backstores = append(m.Backstores, r.backstore(filepath.Join(core, hba, name), hba, name))
+		}
+	}
+	for _, f := range fabrics {
+		dir := filepath.Join(root, f.dir)
+		if _, err := os.Stat(dir); err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				r.warn(dir, err)
+			}
+			continue
+		}
+		fab := Fabric{Name: f.dir, Transport: f.transport, Targets: []Target{}}
+		for _, wwn := range r.dirs(dir) {
+			if f.dir == "iscsi" && wwn == "discovery_auth" {
+				continue
+			}
+			t := Target{WWN: wwn, TPGs: []TPG{}}
+			for _, tp := range r.dirs(filepath.Join(dir, wwn)) {
+				if tag, ok := numbered(tp, "tpgt_"); ok {
+					t.TPGs = append(t.TPGs, r.tpg(filepath.Join(dir, wwn, tp), tag))
+				}
+			}
+			fab.Targets = append(fab.Targets, t)
+		}
+		m.Fabrics = append(m.Fabrics, fab)
+	}
+	if r.warnings != nil {
+		m.Warnings = r.warnings
+	}
+	return m
+}
+
+func (r *reader) backstore(p, hba, name string) Backstore {
+	b := Backstore{HBA: hba, Name: name, Enabled: r.boolAttr(filepath.Join(p, "enable"))}
+	b.DevConfig, _ = r.attr(filepath.Join(p, "attrib", "dev_config"))
+	b.UnitSerial, _ = r.attr(filepath.Join(p, "wwn", "vpd_unit_serial"))
+	if n, ok := numbered(b.DevConfig, "mhvtl/"); ok {
+		b.Minor = &n
+	}
+	return b
+}
+
+func (r *reader) tpg(p string, tag int) TPG {
+	t := TPG{Tag: tag, Enabled: r.boolAttr(filepath.Join(p, "enable")),
+		Portals: []string{}, LUNs: []LUN{}, ACLs: []ACL{}, DynamicSessions: []string{}}
+	t.Portals = append(t.Portals, r.dirs(filepath.Join(p, "np"))...)
+	for _, name := range r.dirs(filepath.Join(p, "lun")) {
+		n, ok := numbered(name, "lun_")
+		if !ok {
+			continue
+		}
+		l := LUN{LUN: n}
+		// .../core/<hba>/<backstore>
+		if dst, ok := r.link(filepath.Join(p, "lun", name)); ok {
+			l.HBA, l.Backstore = filepath.Base(filepath.Dir(dst)), filepath.Base(dst)
+		}
+		t.LUNs = append(t.LUNs, l)
+	}
+	sort.Slice(t.LUNs, func(i, j int) bool { return t.LUNs[i].LUN < t.LUNs[j].LUN })
+	for _, init := range r.dirs(filepath.Join(p, "acls")) {
+		t.ACLs = append(t.ACLs, r.acl(filepath.Join(p, "acls", init), init))
+	}
+	if s, ok := r.attr(filepath.Join(p, "dynamic_sessions")); ok {
+		// One "<initiator>\n\0" per session.
+		for _, line := range strings.FieldsFunc(s, func(c rune) bool { return c == '\n' || c == 0 }) {
+			if line = strings.TrimSpace(line); line != "" {
+				t.DynamicSessions = append(t.DynamicSessions, line)
+			}
+		}
+	}
+	return t
+}
+
+func (r *reader) acl(p, init string) ACL {
+	a := ACL{Initiator: init, MappedLUNs: []MappedLUN{}}
+	for _, name := range r.dirs(p) {
+		n, ok := numbered(name, "lun_")
+		if !ok {
+			continue
+		}
+		ml := MappedLUN{LUN: n, WriteProtect: r.boolAttr(filepath.Join(p, name, "write_protect"))}
+		// .../lun/lun_<N>
+		if dst, ok := r.link(filepath.Join(p, name)); ok {
+			if tl, ok := numbered(filepath.Base(dst), "lun_"); ok {
+				ml.TPGLUN = &tl
+			}
+		}
+		a.MappedLUNs = append(a.MappedLUNs, ml)
+	}
+	sort.Slice(a.MappedLUNs, func(i, j int) bool { return a.MappedLUNs[i].LUN < a.MappedLUNs[j].LUN })
+	if info, ok := r.attr(filepath.Join(p, "info")); ok {
+		a.Session = parseSession(info)
+	}
+	return a
+}
+
+// parseSession parses an iSCSI ACL's info file (lio_target_nacl_info_show):
+// "No active iSCSI Session ..." or
+//
+//	InitiatorName: <iqn>
+//	InitiatorAlias: <alias>
+//	LIO Session ID: 1   ISID: 0x... TSIH: 1  SessionType: Normal
+//	Session State: TARG_SESS_STATE_LOGGED_IN
+//	...
+//	CID: 0  Connection State: TARG_CONN_STATE_LOGGED_IN
+//	   Address 192.0.2.10 TCP  StatSN: 0x...
+func parseSession(info string) *Session {
+	if strings.HasPrefix(info, "No active iSCSI Session") {
+		return nil
+	}
+	s := &Session{Connections: []Connection{}}
+	for _, line := range strings.Split(info, "\n") {
+		t := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(t, "InitiatorAlias:"):
+			s.Alias = strings.TrimSpace(strings.TrimPrefix(t, "InitiatorAlias:"))
+		case strings.HasPrefix(t, "LIO Session ID:"):
+			if i := strings.Index(t, "SessionType:"); i >= 0 {
+				s.Type = strings.TrimSpace(t[i+len("SessionType:"):])
+			}
+		case strings.HasPrefix(t, "Session State:"):
+			s.State = strings.TrimSpace(strings.TrimPrefix(t, "Session State:"))
+		case strings.HasPrefix(t, "CID:"):
+			c := Connection{}
+			f := strings.Fields(t)
+			if len(f) > 1 {
+				c.CID, _ = strconv.Atoi(f[1])
+			}
+			if i := strings.Index(t, "Connection State:"); i >= 0 {
+				c.State = strings.TrimSpace(t[i+len("Connection State:"):])
+			}
+			s.Connections = append(s.Connections, c)
+		case strings.HasPrefix(t, "Address "):
+			if f := strings.Fields(t); len(f) > 1 && len(s.Connections) > 0 {
+				s.Connections[len(s.Connections)-1].Address = f[1]
+			}
+		}
+	}
+	return s
+}
+
+// Resolve sets each mhVTL backstore's Device from inv: the minor is the
+// device.conf Library or Drive number (usr/transport_tcmu.c names the
+// backstore lib<minor> or tape<minor>).
+func (m *Map) Resolve(inv config.Inventory) {
+	devs := map[int]*Device{}
+	for _, lib := range inv.Libraries {
+		devs[lib.ID] = &Device{Kind: "library", ID: lib.ID}
+		for _, d := range lib.Drives {
+			id := lib.ID
+			devs[d.ID] = &Device{Kind: "drive", ID: d.ID, LibraryID: &id}
+		}
+	}
+	for _, d := range inv.Standalone {
+		devs[d.ID] = &Device{Kind: "drive", ID: d.ID}
+	}
+	for i := range m.Backstores {
+		if b := &m.Backstores[i]; b.Minor != nil {
+			b.Device = devs[*b.Minor]
+		}
+	}
+}
+
+// Active returns the transports that export something: a fabric with a
+// TPG, not disabled, that has a LUN. Each is named once, in fabrics order.
+func (m Map) Active() []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, f := range m.Fabrics {
+		if seen[f.Transport] || !f.exports() {
+			continue
+		}
+		seen[f.Transport] = true
+		out = append(out, f.Transport)
+	}
+	return out
+}
+
+func (f Fabric) exports() bool {
+	for _, t := range f.Targets {
+		for _, tp := range t.TPGs {
+			if (tp.Enabled == nil || *tp.Enabled) && len(tp.LUNs) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}

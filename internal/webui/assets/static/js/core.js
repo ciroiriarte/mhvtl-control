@@ -1513,15 +1513,16 @@
 
   /* ---- auto-refresh (#76) ---------------------------------------------- */
   // POLL_SECONDS is the poll loop's tick. System and libraries are read on
-  // every tick, media and disks on every third (disks probes block devices),
-  // and the configuration, whose findings POST a validation, on every sixth.
+  // every tick, media, disks and transports on every third (disks probes
+  // block devices), and the configuration, whose findings POST a
+  // validation, on every sixth.
   var POLL_SECONDS = 10;
 
   // pollPanels returns the panels due on tick n (1, 2, …).
   function pollPanels(n) {
     n = coerceNumber(n);
     var p = ["system", "libraries"];
-    if (n % 3 === 0) { p.push("media", "disks"); }
+    if (n % 3 === 0) { p.push("media", "disks", "transports"); }
     if (n % 6 === 0) { p.push("config"); }
     return p;
   }
@@ -1532,6 +1533,85 @@
     if (!on) { return "Auto-refresh paused"; }
     if (!last) { return "Auto-refresh every " + POLL_SECONDS + " s"; }
     return "Auto-refreshed " + last.toLocaleTimeString();
+  }
+
+  // transportDeviceText names the device.conf device of a TCMU backstore
+  // (GET /api/v1/transports backstores[].device).
+  function transportDeviceText(d) {
+    if (!d) { return ""; }
+    if (d.kind === "library") { return "Library " + coerceNumber(d.id); }
+    return "Drive " + coerceNumber(d.id) +
+      (d.library_id != null ? " (library " + coerceNumber(d.library_id) + ")" : " (standalone)");
+  }
+
+  // transportSessionText summarizes an ACL's iSCSI session: "none", or its
+  // state and the addresses it connects from.
+  function transportSessionText(s) {
+    if (!s) { return "none"; }
+    var state = String(s.state || "").replace(/^TARG_SESS_STATE_/, "").replace(/_/g, " ").toLowerCase();
+    var addrs = coerceArray(s.connections).map(function (c) { return String(c.address || ""); })
+      .filter(function (a) { return a; });
+    return (state || "session") + (addrs.length ? " from " + addrs.join(", ") : "");
+  }
+
+  // transportView flattens GET /api/v1/transports for the Transport Map:
+  // one entry per TPG with its LUNs resolved to their backstore and device,
+  // and the TCMU backstores no LUN exports.
+  function transportView(m) {
+    m = m || {};
+    var bsKey = function (hba, name) { return String(hba || "") + "/" + String(name || ""); };
+    var byKey = {};
+    coerceArray(m.backstores).forEach(function (b) { byKey[bsKey(b.hba, b.name)] = b; });
+    var linked = {};
+    var tpgs = [];
+    coerceArray(m.fabrics).forEach(function (f) {
+      coerceArray(f.targets).forEach(function (t) {
+        coerceArray(t.tpgs).forEach(function (g) {
+          var luns = coerceArray(g.luns).map(function (l) {
+            var key = bsKey(l.hba, l.backstore);
+            var b = byKey[key];
+            linked[key] = true;
+            return {
+              lun: coerceNumber(l.lun),
+              backstore: l.backstore ? String(l.backstore) : "",
+              device: b ? transportDeviceText(b.device) : "",
+              enabled: b && b.enabled != null ? !!b.enabled : null,
+            };
+          });
+          var acls = coerceArray(g.acls).map(function (a) {
+            return {
+              initiator: String(a.initiator || ""),
+              luns: coerceArray(a.mapped_luns).map(function (ml) {
+                var n = coerceNumber(ml.lun);
+                var to = ml.tpg_lun != null ? coerceNumber(ml.tpg_lun) : n;
+                return String(n) + (to !== n ? "→" + to : "") + (ml.write_protect ? " (ro)" : "");
+              }),
+              session: transportSessionText(a.session),
+              active: !!a.session,
+            };
+          });
+          tpgs.push({
+            key: String(f.name) + "/" + String(t.wwn) + "/" + coerceNumber(g.tag),
+            fabric: String(f.name || ""),
+            transport: String(f.transport || ""),
+            wwn: String(t.wwn || ""),
+            tag: coerceNumber(g.tag),
+            enabled: g.enabled != null ? !!g.enabled : null,
+            portals: coerceArray(g.portals).map(String),
+            luns: luns,
+            acls: acls,
+            dynamic: coerceArray(g.dynamic_sessions).map(String),
+          });
+        });
+      });
+    });
+    var unexported = coerceArray(m.backstores).filter(function (b) {
+      return !linked[bsKey(b.hba, b.name)];
+    }).map(function (b) {
+      var dev = transportDeviceText(b.device);
+      return String(b.name) + (dev ? " (" + dev + ")" : "");
+    });
+    return { tpgs: tpgs, unexported: unexported };
   }
 
   var API = {
@@ -1621,6 +1701,9 @@
     serviceConfirmText: serviceConfirmText,
     serviceResultText: serviceResultText,
     encryptionBadge: encryptionBadge,
+    transportDeviceText: transportDeviceText,
+    transportSessionText: transportSessionText,
+    transportView: transportView,
   };
 
   /* ---- UMD tail ------------------------------------------------------- */
