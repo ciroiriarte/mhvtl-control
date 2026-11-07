@@ -56,11 +56,12 @@ CID: 0  Connection State: TARG_CONN_STATE_LOGGED_IN
 func iscsiTree(t *testing.T) string {
 	files := map[string]string{
 		"version": "Target Engine Core ConfigFS Infrastructure v5.0\n",
-		"loopback/naa.5001405000000001/tpgt_1/nexus":    "naa.50014050000000ff\n",
-		"iscsi/discovery_auth/enforce_discovery_auth":   "0\n",
-		"iscsi/" + iqn + "/tpgt_1/enable":               "1\n",
-		"iscsi/" + iqn + "/tpgt_1/dynamic_sessions":     "",
-		"iscsi/" + iqn + "/tpgt_1/np/0.0.0.0:3260/iser": "0\n",
+		"loopback/naa.5001405000000001/tpgt_1/nexus":     "naa.50014050000000ff\n",
+		"iscsi/discovery_auth/enforce_discovery_auth":    "0\n",
+		"loopback/discovery_auth/enforce_discovery_auth": "0\n",
+		"iscsi/" + iqn + "/tpgt_1/enable":                "1\n",
+		"iscsi/" + iqn + "/tpgt_1/dynamic_sessions":      "",
+		"iscsi/" + iqn + "/tpgt_1/np/0.0.0.0:3260/iser":  "0\n",
 	}
 	links := map[string]string{
 		"loopback/naa.5001405000000001/tpgt_1/lun/lun_0/b1f2c3": "../../../../../../target/core/user_0/lib10",
@@ -70,7 +71,7 @@ func iscsiTree(t *testing.T) string {
 		minor := strings.TrimLeft(bs, "libtape")
 		files["core/user_0/"+bs+"/enable"] = "1\n"
 		files["core/user_0/"+bs+"/attrib/dev_config"] = "mhvtl/" + minor + "\n"
-		files["core/user_0/"+bs+"/wwn/vpd_unit_serial"] = "SER" + minor + "\n"
+		files["core/user_0/"+bs+"/wwn/vpd_unit_serial"] = "T10 VPD Unit Serial Number: SER" + minor + "\n"
 		lun := "lun_" + string(rune('0'+i))
 		links["iscsi/"+iqn+"/tpgt_1/lun/"+lun+"/"+bs+"link"] = "../../../../../../target/core/user_0/" + bs
 		files["iscsi/"+iqn+"/tpgt_1/lun/"+lun+"/alua_tg_pt_gp"] = "default_tg_pt_gp\n"
@@ -107,6 +108,9 @@ func TestReadISCSI(t *testing.T) {
 	}
 	if len(m.Fabrics) != 2 || m.Fabrics[0].Name != "loopback" || m.Fabrics[1].Name != "iscsi" {
 		t.Fatalf("fabrics = %+v, want loopback and iscsi", m.Fabrics)
+	}
+	if lb := m.Fabrics[0]; len(lb.Targets) != 1 || lb.Targets[0].WWN != "naa.5001405000000001" {
+		t.Fatalf("loopback targets = %+v, want only naa.5001405000000001 (not discovery_auth)", lb.Targets)
 	}
 	isc := m.Fabrics[1]
 	if len(isc.Targets) != 1 || isc.Targets[0].WWN != iqn {

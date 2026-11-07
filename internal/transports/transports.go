@@ -273,7 +273,9 @@ func Read(root string) Map {
 		}
 		fab := Fabric{Name: f.dir, Transport: f.transport, Targets: []Target{}}
 		for _, wwn := range r.dirs(dir) {
-			if f.dir == "iscsi" && wwn == "discovery_auth" {
+			// The fabric module creates discovery_auth next to the targets
+			// (iSCSI and loopback both have one); it is not a target.
+			if wwn == "discovery_auth" {
 				continue
 			}
 			t := Target{WWN: wwn, TPGs: []TPG{}}
@@ -295,7 +297,9 @@ func Read(root string) Map {
 func (r *reader) backstore(p, hba, name string) Backstore {
 	b := Backstore{HBA: hba, Name: name, Enabled: r.boolAttr(filepath.Join(p, "enable"))}
 	b.DevConfig, _ = r.attr(filepath.Join(p, "attrib", "dev_config"))
-	b.UnitSerial, _ = r.attr(filepath.Join(p, "wwn", "vpd_unit_serial"))
+	// target_wwn_vpd_unit_serial_show() prints "T10 VPD Unit Serial Number: %s"
+	serial, _ := r.attr(filepath.Join(p, "wwn", "vpd_unit_serial"))
+	b.UnitSerial = strings.TrimPrefix(serial, "T10 VPD Unit Serial Number: ")
 	if n, ok := numbered(b.DevConfig, "mhvtl/"); ok {
 		b.Minor = &n
 	}
