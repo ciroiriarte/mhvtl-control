@@ -211,7 +211,10 @@ func (r *reader) dirs(p string) []string {
 func (r *reader) link(p string) (string, bool) {
 	ents, err := os.ReadDir(p)
 	if err != nil {
-		r.warn(p, err)
+		// A LUN removed while it is read (mhvtl-fabrics apply) is not an error.
+		if !errors.Is(err, fs.ErrNotExist) {
+			r.warn(p, err)
+		}
 		return "", false
 	}
 	for _, e := range ents {
@@ -220,7 +223,9 @@ func (r *reader) link(p string) (string, bool) {
 		}
 		t, err := os.Readlink(filepath.Join(p, e.Name()))
 		if err != nil {
-			r.warn(filepath.Join(p, e.Name()), err)
+			if !errors.Is(err, fs.ErrNotExist) {
+				r.warn(filepath.Join(p, e.Name()), err)
+			}
 			continue
 		}
 		return t, true
