@@ -35,12 +35,17 @@ func (s *Server) handleTransports(w http.ResponseWriter, _ *http.Request) {
 
 // activeTransports is GET /system's active_transports.
 func (s *Server) activeTransports() []string {
-	return s.activeFrom(transports.Read(s.cfg.TargetRoot))
+	return s.activeWith(transports.Active(s.cfg.TargetRoot))
 }
 
-// activeFrom is local while mhvtl.ko (the pseudo HBA) is loaded,
-// then the transports m exports through.
+// activeFrom is activeWith for a map already read.
 func (s *Server) activeFrom(m transports.Map) []string {
+	return s.activeWith(m.Active())
+}
+
+// activeWith is local while mhvtl.ko (the pseudo HBA) is loaded, then the
+// exporting transports (transports.Active).
+func (s *Server) activeWith(exporting []string) []string {
 	sysRoot := s.cfg.SysRoot
 	if sysRoot == "" {
 		sysRoot = "/sys"
@@ -51,7 +56,7 @@ func (s *Server) activeFrom(m transports.Map) []string {
 	if kmod {
 		out = append(out, "local")
 	}
-	for _, t := range m.Active() {
+	for _, t := range exporting {
 		if t != "local" || !kmod {
 			out = append(out, t)
 		}

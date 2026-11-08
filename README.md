@@ -405,8 +405,8 @@ from the LIO configuration in configfs (`/sys/kernel/config/target`):
   `lib<id>` and `tape<id>` with `dev_config` `mhvtl/<id>`; `minor` is that
   id and `device` the library or drive of `device.conf` it names.
 - `fabrics`: `loopback` (the devices on this host, transport `local`),
-  `iscsi`, `qla2xxx` and `efct` (`fc`) and `usb_gadget` (`usb`), the ones
-  present. Each target lists its portal groups with `enabled`, `portals`,
+  `iscsi`, `qla2xxx`, `qla2xxx_npiv`, `efct`, `efct_npiv` and `fc` (FCoE)
+  (transport `fc`) and `usb_gadget` (`usb`), the ones present. Each target lists its portal groups with `enabled`, `portals`,
   `luns` (the backstore each links to), `acls` (each initiator's mapped LUNs
   and, for iSCSI, its session from the ACL's `info`) and `dynamic_sessions`
   (initiators logged in without an ACL).

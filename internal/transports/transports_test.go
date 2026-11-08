@@ -253,3 +253,57 @@ func TestReadFCAndUSB(t *testing.T) {
 		t.Errorf("active = %q, want fc (the USB TPG has no LUN)", got)
 	}
 }
+
+// Active(root), the shallow scan behind GET /system, agrees with
+// Read(root).Active() on every tree.
+func TestActiveMatchesRead(t *testing.T) {
+	trees := map[string]string{
+		"iscsi": iscsiTree(t),
+		"none":  filepath.Join(t.TempDir(), "missing"),
+		"npiv and fcoe, one disabled": fakeTree(t, map[string]string{
+			"qla2xxx_npiv/21:00:00:24:ff:31:4c:48@21:01:00:24:ff:31:4c:48/tpgt_1/enable": "0\n",
+			"efct_npiv/10:00:00:90:fa:00:00:01@10:00:00:90:fa:00:00:02/tpgt_1/enable":    "1\n",
+			"fc/20:00:00:25:b5:00:00:01/tpgt_1/enable":                                   "1\n",
+		}, map[string]string{
+			"qla2xxx_npiv/21:00:00:24:ff:31:4c:48@21:01:00:24:ff:31:4c:48/tpgt_1/lun/lun_0/x": "../../../../../../target/core/user_0/lib10",
+			"fc/20:00:00:25:b5:00:00:01/tpgt_1/lun/lun_0/x":                                   "../../../../../../target/core/user_0/lib10",
+		}),
+		"usb without a LUN": fakeTree(t, map[string]string{
+			"usb_gadget/naa.6001405c3214b06a/tpgt_1/enable": "1\n",
+		}, nil),
+	}
+	want := map[string][]string{
+		"iscsi":                       {"local", "iscsi"},
+		"none":                        {},
+		"npiv and fcoe, one disabled": {"fc"},
+		"usb without a LUN":           {},
+	}
+	for name, root := range trees {
+		got := Active(root)
+		if !reflect.DeepEqual(got, want[name]) {
+			t.Errorf("%s: Active = %q, want %q", name, got, want[name])
+		}
+		if read := Read(root).Active(); !reflect.DeepEqual(got, read) {
+			t.Errorf("%s: Active = %q, Read().Active() = %q", name, got, read)
+		}
+	}
+}
+
+// The NPIV and FCoE fabric directories are read as Fibre Channel
+func TestReadFCFabricNames(t *testing.T) {
+	files := map[string]string{}
+	for _, dir := range []string{"qla2xxx_npiv", "efct_npiv", "fc"} {
+		files[dir+"/20:00:00:25:b5:00:00:01/tpgt_1/enable"] = "1\n"
+	}
+	m := Read(fakeTree(t, files, nil))
+	var names []string
+	for _, f := range m.Fabrics {
+		if f.Transport != "fc" {
+			t.Errorf("%s: transport %q", f.Name, f.Transport)
+		}
+		names = append(names, f.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"qla2xxx_npiv", "efct_npiv", "fc"}) {
+		t.Errorf("fabrics = %q", names)
+	}
+}

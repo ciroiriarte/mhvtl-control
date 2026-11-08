@@ -36,12 +36,18 @@ const DefaultRoot = "/sys/kernel/config/target"
 
 // fabrics are the fabric directories read, with the transport each serves.
 // loopback (tcm_loop) is how the TCMU handler presents the devices on this
-// host.
+// host. The Fibre Channel modules register these names: tcm_qla2xxx
+// qla2xxx and qla2xxx_npiv, efct efct and efct_npiv, tcm_fc (FCoE) fc
+// (drivers/scsi/qla2xxx/tcm_qla2xxx.c, drivers/scsi/elx/efct/efct_lio.c,
+// drivers/target/tcm_fc/tfc_conf.c).
 var fabrics = []struct{ dir, transport string }{
 	{"loopback", "local"},
 	{"iscsi", "iscsi"},
 	{"qla2xxx", "fc"},
+	{"qla2xxx_npiv", "fc"},
 	{"efct", "fc"},
+	{"efct_npiv", "fc"},
+	{"fc", "fc"},
 	{"usb_gadget", "usb"},
 }
 
@@ -84,8 +90,8 @@ type Device struct {
 
 // Fabric is one fabric module's configuration.
 type Fabric struct {
-	// Name is the configfs directory: loopback, iscsi, qla2xxx, efct or
-	// usb_gadget.
+	// Name is the configfs directory: loopback, iscsi, qla2xxx,
+	// qla2xxx_npiv, efct, efct_npiv, fc or usb_gadget.
 	Name string `json:"name"`
 	// Transport is local, iscsi, fc or usb.
 	Transport string   `json:"transport"`
@@ -445,6 +451,54 @@ func (m Map) Active() []string {
 		out = append(out, f.Transport)
 	}
 	return out
+}
+
+// Active returns what Map.Active returns for the configuration under root
+// (DefaultRoot when empty), reading only the fabric, target, TPG and LUN
+// directories and stopping at the first LUN each transport exports. GET
+// /system calls it on every refresh, where Read would also walk every ACL
+// and session.
+func Active(root string) []string {
+	if root == "" {
+		root = DefaultRoot
+	}
+	r := &reader{root: root}
+	out := []string{}
+	seen := map[string]bool{}
+	for _, f := range fabrics {
+		if seen[f.transport] {
+			continue
+		}
+		dir := filepath.Join(root, f.dir)
+		if r.fabricExports(dir) {
+			seen[f.transport] = true
+			out = append(out, f.transport)
+		}
+	}
+	return out
+}
+
+func (r *reader) fabricExports(dir string) bool {
+	for _, wwn := range r.dirs(dir) {
+		if wwn == "discovery_auth" {
+			continue
+		}
+		for _, tp := range r.dirs(filepath.Join(dir, wwn)) {
+			if _, ok := numbered(tp, "tpgt_"); !ok {
+				continue
+			}
+			p := filepath.Join(dir, wwn, tp)
+			if en := r.boolAttr(filepath.Join(p, "enable")); en != nil && !*en {
+				continue
+			}
+			for _, l := range r.dirs(filepath.Join(p, "lun")) {
+				if _, ok := numbered(l, "lun_"); ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (f Fabric) exports() bool {
