@@ -34,13 +34,17 @@ import (
 // DefaultRoot is where configfs exposes the LIO target.
 const DefaultRoot = "/sys/kernel/config/target"
 
-// fabrics are the fabric directories read, with the transport each serves.
+// fabrics are the fabric directories known, with the transport each serves;
+// any other directory next to core is a fabric too (srpt, vhost,
+// xen-pvscsi, ibmvscsis, sbp, ...) and is read as transport "other".
 // loopback (tcm_loop) is how the TCMU handler presents the devices on this
 // host. The Fibre Channel modules register these names: tcm_qla2xxx
 // qla2xxx and qla2xxx_npiv, efct efct and efct_npiv, tcm_fc (FCoE) fc
 // (drivers/scsi/qla2xxx/tcm_qla2xxx.c, drivers/scsi/elx/efct/efct_lio.c,
 // drivers/target/tcm_fc/tfc_conf.c).
-var fabrics = []struct{ dir, transport string }{
+type fabricDir struct{ dir, transport string }
+
+var fabrics = []fabricDir{
 	{"loopback", "local"},
 	{"iscsi", "iscsi"},
 	{"qla2xxx", "fc"},
@@ -91,9 +95,9 @@ type Device struct {
 // Fabric is one fabric module's configuration.
 type Fabric struct {
 	// Name is the configfs directory: loopback, iscsi, qla2xxx,
-	// qla2xxx_npiv, efct, efct_npiv, fc or usb_gadget.
+	// qla2xxx_npiv, efct, efct_npiv, fc, usb_gadget, or another module's.
 	Name string `json:"name"`
-	// Transport is local, iscsi, fc or usb.
+	// Transport is local, iscsi, fc, usb, or other.
 	Transport string   `json:"transport"`
 	Targets   []Target `json:"targets"`
 }
@@ -194,15 +198,25 @@ func (r *reader) boolAttr(p string) *bool {
 	return &b
 }
 
+// readDir is os.ReadDir; tests replace it to remove a directory mid-read.
+var readDir = os.ReadDir
+
+// list reads directory p. gone is true when p no longer exists: configfs
+// entries vanish while an mhvtl-fabrics apply runs, which is no warning.
+func (r *reader) list(p string) (ents []fs.DirEntry, gone bool) {
+	ents, err := readDir(p)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, true
+		}
+		r.warn(p, err)
+	}
+	return ents, false
+}
+
 // dirs lists the subdirectories of p, sorted by name.
 func (r *reader) dirs(p string) []string {
-	ents, err := os.ReadDir(p)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			r.warn(p, err)
-		}
-		return nil
-	}
+	ents, _ := r.list(p)
 	var out []string
 	for _, e := range ents {
 		if e.IsDir() {
@@ -212,17 +226,11 @@ func (r *reader) dirs(p string) []string {
 	return out
 }
 
-// link returns the target of the first symlink in p: configfs names it as
-// the user chose, so it is found by type.
-func (r *reader) link(p string) (string, bool) {
-	ents, err := os.ReadDir(p)
-	if err != nil {
-		// A LUN removed while it is read (mhvtl-fabrics apply) is not an error.
-		if !errors.Is(err, fs.ErrNotExist) {
-			r.warn(p, err)
-		}
-		return "", false
-	}
+// link returns the target of the first symlink in p ("" when it has none):
+// configfs names it as the user chose, so it is found by type. gone is true
+// when p itself was removed while it was read.
+func (r *reader) link(p string) (target string, gone bool) {
+	ents, gone := r.list(p)
 	for _, e := range ents {
 		if e.Type()&fs.ModeSymlink == 0 {
 			continue
@@ -234,9 +242,33 @@ func (r *reader) link(p string) (string, bool) {
 			}
 			continue
 		}
-		return t, true
+		return t, false
 	}
-	return "", false
+	return "", gone
+}
+
+// fabricDirs returns the fabric directories under root: the known ones in
+// fabrics order, then any other directory except core, sorted, as "other".
+func (r *reader) fabricDirs(root string) []fabricDir {
+	known := map[string]string{}
+	for _, f := range fabrics {
+		known[f.dir] = f.transport
+	}
+	present := map[string]bool{}
+	var others []fabricDir
+	for _, d := range r.dirs(root) {
+		present[d] = true
+		if _, ok := known[d]; !ok && d != "core" {
+			others = append(others, fabricDir{d, "other"})
+		}
+	}
+	var out []fabricDir
+	for _, f := range fabrics {
+		if present[f.dir] {
+			out = append(out, f)
+		}
+	}
+	return append(out, others...)
 }
 
 // numbered parses "<prefix><N>".
@@ -274,14 +306,8 @@ func Read(root string) Map {
 			m.Backstores = append(m.Backstores, r.backstore(filepath.Join(core, hba, name), hba, name))
 		}
 	}
-	for _, f := range fabrics {
+	for _, f := range r.fabricDirs(root) {
 		dir := filepath.Join(root, f.dir)
-		if _, err := os.Stat(dir); err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				r.warn(dir, err)
-			}
-			continue
-		}
 		fab := Fabric{Name: f.dir, Transport: f.transport, Targets: []Target{}}
 		for _, wwn := range r.dirs(dir) {
 			// The fabric module creates discovery_auth next to the targets
@@ -310,7 +336,8 @@ func (r *reader) backstore(p, hba, name string) Backstore {
 	b.DevConfig, _ = r.attr(filepath.Join(p, "attrib", "dev_config"))
 	// target_wwn_vpd_unit_serial_show() prints "T10 VPD Unit Serial Number: %s"
 	serial, _ := r.attr(filepath.Join(p, "wwn", "vpd_unit_serial"))
-	b.UnitSerial = strings.TrimPrefix(serial, "T10 VPD Unit Serial Number: ")
+	// attr trims the space an empty serial leaves after the colon.
+	b.UnitSerial = strings.TrimSpace(strings.TrimPrefix(serial, "T10 VPD Unit Serial Number:"))
 	if n, ok := numbered(b.DevConfig, "mhvtl/"); ok {
 		b.Minor = &n
 	}
@@ -328,14 +355,20 @@ func (r *reader) tpg(p string, tag int) TPG {
 		}
 		l := LUN{LUN: n}
 		// .../core/<hba>/<backstore>
-		if dst, ok := r.link(filepath.Join(p, "lun", name)); ok {
+		dst, gone := r.link(filepath.Join(p, "lun", name))
+		if gone {
+			continue
+		}
+		if dst != "" {
 			l.HBA, l.Backstore = filepath.Base(filepath.Dir(dst)), filepath.Base(dst)
 		}
 		t.LUNs = append(t.LUNs, l)
 	}
 	sort.Slice(t.LUNs, func(i, j int) bool { return t.LUNs[i].LUN < t.LUNs[j].LUN })
 	for _, init := range r.dirs(filepath.Join(p, "acls")) {
-		t.ACLs = append(t.ACLs, r.acl(filepath.Join(p, "acls", init), init))
+		if a, ok := r.acl(filepath.Join(p, "acls", init), init); ok {
+			t.ACLs = append(t.ACLs, a)
+		}
 	}
 	if s, ok := r.attr(filepath.Join(p, "dynamic_sessions")); ok {
 		// One "<initiator>\n\0" per session.
@@ -348,19 +381,28 @@ func (r *reader) tpg(p string, tag int) TPG {
 	return t
 }
 
-func (r *reader) acl(p, init string) ACL {
-	a := ACL{Initiator: init, MappedLUNs: []MappedLUN{}}
-	for _, name := range r.dirs(p) {
-		n, ok := numbered(name, "lun_")
-		if !ok {
+// acl reads an initiator's node ACL; ok is false when it was removed while
+// it was read.
+func (r *reader) acl(p, init string) (a ACL, ok bool) {
+	a = ACL{Initiator: init, MappedLUNs: []MappedLUN{}}
+	ents, gone := r.list(p)
+	if gone {
+		return a, false
+	}
+	for _, e := range ents {
+		n, ok := numbered(e.Name(), "lun_")
+		if !ok || !e.IsDir() {
 			continue
 		}
+		name := e.Name()
 		ml := MappedLUN{LUN: n, WriteProtect: r.boolAttr(filepath.Join(p, name, "write_protect"))}
-		// .../lun/lun_<N>
-		if dst, ok := r.link(filepath.Join(p, name)); ok {
-			if tl, ok := numbered(filepath.Base(dst), "lun_"); ok {
-				ml.TPGLUN = &tl
-			}
+		// .../lun/lun_<N>; none yet while an apply links it
+		dst, gone := r.link(filepath.Join(p, name))
+		if gone {
+			continue
+		}
+		if tl, ok := numbered(filepath.Base(dst), "lun_"); ok {
+			ml.TPGLUN = &tl
 		}
 		a.MappedLUNs = append(a.MappedLUNs, ml)
 	}
@@ -368,7 +410,7 @@ func (r *reader) acl(p, init string) ACL {
 	if info, ok := r.attr(filepath.Join(p, "info")); ok {
 		a.Session = parseSession(info)
 	}
-	return a
+	return a, true
 }
 
 // parseSession parses an iSCSI ACL's info file (lio_target_nacl_info_show):
@@ -379,25 +421,40 @@ func (r *reader) acl(p, init string) ACL {
 //	LIO Session ID: 1   ISID: 0x... TSIH: 1  SessionType: Normal
 //	Session State: TARG_SESS_STATE_LOGGED_IN
 //	...
+//	----------------------[iSCSI Connections]-------------------------
 //	CID: 0  Connection State: TARG_CONN_STATE_LOGGED_IN
 //	   Address 192.0.2.10 TCP  StatSN: 0x...
+//
+// The alias is the initiator's to choose, and LIO does not refuse a newline
+// in it (TYPERANGE_UTF8), so an alias could carry lines that look like the
+// kernel's. Everything up to the last "LIO Session ID:" line is the name and
+// alias; the session is read only after it, and connections only after the
+// connections header.
 func parseSession(info string) *Session {
 	if strings.HasPrefix(info, "No active iSCSI Session") {
 		return nil
 	}
 	s := &Session{Connections: []Connection{}}
-	for _, line := range strings.Split(info, "\n") {
+	head, rest := "", info
+	if i := strings.LastIndex(info, "\nLIO Session ID:"); i >= 0 {
+		head, rest = info[:i], info[i+1:]
+	}
+	if i := strings.Index(head, "InitiatorAlias:"); i >= 0 {
+		s.Alias = strings.Join(strings.Fields(head[i+len("InitiatorAlias:"):]), " ")
+	}
+	conns := false
+	for _, line := range strings.Split(rest, "\n") {
 		t := strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(t, "InitiatorAlias:"):
-			s.Alias = strings.TrimSpace(strings.TrimPrefix(t, "InitiatorAlias:"))
-		case strings.HasPrefix(t, "LIO Session ID:"):
+		case strings.Contains(t, "[iSCSI Connections]"):
+			conns = true
+		case !conns && strings.HasPrefix(t, "LIO Session ID:"):
 			if i := strings.Index(t, "SessionType:"); i >= 0 {
 				s.Type = strings.TrimSpace(t[i+len("SessionType:"):])
 			}
-		case strings.HasPrefix(t, "Session State:"):
+		case !conns && strings.HasPrefix(t, "Session State:"):
 			s.State = strings.TrimSpace(strings.TrimPrefix(t, "Session State:"))
-		case strings.HasPrefix(t, "CID:"):
+		case conns && strings.HasPrefix(t, "CID:"):
 			c := Connection{}
 			f := strings.Fields(t)
 			if len(f) > 1 {
@@ -407,7 +464,7 @@ func parseSession(info string) *Session {
 				c.State = strings.TrimSpace(t[i+len("Connection State:"):])
 			}
 			s.Connections = append(s.Connections, c)
-		case strings.HasPrefix(t, "Address "):
+		case conns && strings.HasPrefix(t, "Address "):
 			if f := strings.Fields(t); len(f) > 1 && len(s.Connections) > 0 {
 				s.Connections[len(s.Connections)-1].Address = f[1]
 			}
@@ -439,7 +496,8 @@ func (m *Map) Resolve(inv config.Inventory) {
 }
 
 // Active returns the transports that export something: a fabric with a
-// TPG, not disabled, that has a LUN. Each is named once, in fabrics order.
+// TPG, not disabled, that has a LUN linked to a backstore. Each is named
+// once, in fabricDirs order.
 func (m Map) Active() []string {
 	out := []string{}
 	seen := map[string]bool{}
@@ -465,7 +523,7 @@ func Active(root string) []string {
 	r := &reader{root: root}
 	out := []string{}
 	seen := map[string]bool{}
-	for _, f := range fabrics {
+	for _, f := range r.fabricDirs(root) {
 		if seen[f.transport] {
 			continue
 		}
@@ -492,7 +550,10 @@ func (r *reader) fabricExports(dir string) bool {
 				continue
 			}
 			for _, l := range r.dirs(filepath.Join(p, "lun")) {
-				if _, ok := numbered(l, "lun_"); ok {
+				if _, ok := numbered(l, "lun_"); !ok {
+					continue
+				}
+				if dst, _ := r.link(filepath.Join(p, "lun", l)); dst != "" {
 					return true
 				}
 			}
@@ -504,8 +565,13 @@ func (r *reader) fabricExports(dir string) bool {
 func (f Fabric) exports() bool {
 	for _, t := range f.Targets {
 		for _, tp := range t.TPGs {
-			if (tp.Enabled == nil || *tp.Enabled) && len(tp.LUNs) > 0 {
-				return true
+			if tp.Enabled != nil && !*tp.Enabled {
+				continue
+			}
+			for _, l := range tp.LUNs {
+				if l.Backstore != "" {
+					return true
+				}
 			}
 		}
 	}

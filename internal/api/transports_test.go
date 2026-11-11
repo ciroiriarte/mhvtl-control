@@ -103,3 +103,16 @@ func TestSystemActiveTransports(t *testing.T) {
 		t.Errorf("active_transports = %q, want local, iscsi", got.ActiveTransports)
 	}
 }
+
+// TestTransportsDeviceConfUnreadable: the warning for a device.conf that
+// cannot be loaded does not name its path (the log does).
+func TestTransportsDeviceConfUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	got := getTransports(t, Config{ConfigDir: dir, TargetRoot: targetTree(t), SysRoot: t.TempDir()})
+	if !reflect.DeepEqual(got.Warnings, []string{"device.conf: unreadable"}) {
+		t.Errorf("warnings = %q, want [device.conf: unreadable]", got.Warnings)
+	}
+	if got.Backstores[0].Device != nil {
+		t.Errorf("lib10 device = %+v, want none without device.conf", got.Backstores[0].Device)
+	}
+}

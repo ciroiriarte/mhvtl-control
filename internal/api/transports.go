@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,7 +26,9 @@ func (s *Server) handleTransports(w http.ResponseWriter, _ *http.Request) {
 	if len(m.Backstores) > 0 {
 		inv, err := config.LoadInventory(s.cfg.ConfigDir)
 		if err != nil {
-			m.Warnings = append(m.Warnings, "device.conf: "+err.Error())
+			// The error names the absolute path; the log keeps it.
+			log.Printf("transports: %v", err)
+			m.Warnings = append(m.Warnings, "device.conf: unreadable")
 		} else {
 			m.Resolve(inv)
 		}
@@ -46,13 +49,8 @@ func (s *Server) activeFrom(m transports.Map) []string {
 // activeWith is local while mhvtl.ko (the pseudo HBA) is loaded, then the
 // exporting transports (transports.Active).
 func (s *Server) activeWith(exporting []string) []string {
-	sysRoot := s.cfg.SysRoot
-	if sysRoot == "" {
-		sysRoot = "/sys"
-	}
 	out := []string{}
-	_, err := os.Stat(filepath.Join(sysRoot, "module", hostids.MhvtlDriver))
-	kmod := err == nil
+	kmod := s.kmodLoaded()
 	if kmod {
 		out = append(out, "local")
 	}
@@ -62,4 +60,18 @@ func (s *Server) activeWith(exporting []string) []string {
 		}
 	}
 	return out
+}
+
+// sysRoot is the sysfs mount point: cfg.SysRoot, /sys when unset.
+func (s *Server) sysRoot() string {
+	if s.cfg.SysRoot != "" {
+		return s.cfg.SysRoot
+	}
+	return "/sys"
+}
+
+// kmodLoaded is whether mhvtl.ko (the pseudo HBA) is loaded.
+func (s *Server) kmodLoaded() bool {
+	_, err := os.Stat(filepath.Join(s.sysRoot(), "module", hostids.MhvtlDriver))
+	return err == nil
 }

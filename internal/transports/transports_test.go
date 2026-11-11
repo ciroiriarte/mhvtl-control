@@ -1,6 +1,7 @@
 package transports
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -305,5 +306,136 @@ func TestReadFCFabricNames(t *testing.T) {
 	}
 	if !reflect.DeepEqual(names, []string{"qla2xxx_npiv", "efct_npiv", "fc"}) {
 		t.Errorf("fabrics = %q", names)
+	}
+}
+
+// target_wwn_vpd_unit_serial_show() prints "T10 VPD Unit Serial Number: %s\n";
+// an empty serial is "", not the label.
+func TestEmptyUnitSerial(t *testing.T) {
+	m := Read(fakeTree(t, map[string]string{
+		"core/user_0/tape11/wwn/vpd_unit_serial": "T10 VPD Unit Serial Number: \n",
+	}, nil))
+	if len(m.Backstores) != 1 || m.Backstores[0].UnitSerial != "" {
+		t.Errorf("backstores = %+v, want one with an empty unit serial", m.Backstores)
+	}
+}
+
+// A LUN, mapped LUN or ACL removed while it is read (an mhvtl-fabrics apply)
+// is left out, without a warning, and does not count as exported.
+func TestRemovedMidRead(t *testing.T) {
+	root := iscsiTree(t)
+	tpg := filepath.Join(root, "iscsi", iqn, "tpgt_1")
+	gone := map[string]bool{
+		filepath.Join(tpg, "lun", "lun_2"):                                                true,
+		filepath.Join(tpg, "acls", "iqn.1993-08.org.debian:01:backup1", "lun_3"):          true,
+		filepath.Join(tpg, "acls", "iqn.1993-08.org.debian:01:backup2"):                   true,
+		filepath.Join(root, "loopback", "naa.5001405000000001", "tpgt_1", "lun", "lun_0"): true,
+	}
+	readDir = func(p string) ([]os.DirEntry, error) {
+		if gone[p] {
+			return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
+		}
+		return os.ReadDir(p)
+	}
+	t.Cleanup(func() { readDir = os.ReadDir })
+	m := Read(root)
+	if len(m.Warnings) != 0 {
+		t.Errorf("warnings = %q, want none", m.Warnings)
+	}
+	tp := m.Fabrics[1].Targets[0].TPGs[0]
+	var luns []int
+	for _, l := range tp.LUNs {
+		luns = append(luns, l.LUN)
+	}
+	if !reflect.DeepEqual(luns, []int{0, 1, 3, 4}) {
+		t.Errorf("luns = %v, want 0 1 3 4", luns)
+	}
+	if len(tp.ACLs) != 1 || tp.ACLs[0].Initiator != "iqn.1993-08.org.debian:01:backup1" {
+		t.Fatalf("acls = %+v, want backup1 only", tp.ACLs)
+	}
+	var mapped []int
+	for _, ml := range tp.ACLs[0].MappedLUNs {
+		mapped = append(mapped, ml.LUN)
+	}
+	if !reflect.DeepEqual(mapped, []int{0, 1, 2, 4}) {
+		t.Errorf("mapped luns = %v, want 0 1 2 4", mapped)
+	}
+	if lb := m.Fabrics[0].Targets[0].TPGs[0]; len(lb.LUNs) != 0 {
+		t.Errorf("loopback luns = %+v, want none", lb.LUNs)
+	}
+	want := []string{"iscsi"}
+	if got := m.Active(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Read().Active() = %q, want %q", got, want)
+	}
+	if got := Active(root); !reflect.DeepEqual(got, want) {
+		t.Errorf("Active = %q, want %q", got, want)
+	}
+}
+
+// A LUN directory without its link yet (mkdir done, ln -s not) is listed
+// without a backstore and exports nothing; a mapped LUN without its link
+// has no tpg_lun.
+func TestUnlinkedLUN(t *testing.T) {
+	root := fakeTree(t, map[string]string{
+		"iscsi/" + iqn + "/tpgt_1/enable":                             "1\n",
+		"iscsi/" + iqn + "/tpgt_1/lun/lun_0/alua_tg_pt_gp":            "default_tg_pt_gp\n",
+		"iscsi/" + iqn + "/tpgt_1/acls/iqn.a:one/lun_3/write_protect": "0\n",
+	}, nil)
+	m := Read(root)
+	tp := m.Fabrics[0].Targets[0].TPGs[0]
+	if len(tp.LUNs) != 1 || tp.LUNs[0].Backstore != "" {
+		t.Errorf("luns = %+v, want lun 0 without a backstore", tp.LUNs)
+	}
+	if ml := tp.ACLs[0].MappedLUNs; len(ml) != 1 || ml[0].LUN != 3 || ml[0].TPGLUN != nil {
+		t.Errorf("mapped luns = %+v, want lun 3 without tpg_lun", ml)
+	}
+	if got := m.Active(); len(got) != 0 {
+		t.Errorf("Read().Active() = %q, want none", got)
+	}
+	if got := Active(root); len(got) != 0 {
+		t.Errorf("Active = %q, want none", got)
+	}
+}
+
+// An alias with newlines cannot add a connection or change the session.
+func TestSessionAliasInjection(t *testing.T) {
+	info := "InitiatorName: iqn.1993-08.org.debian:01:backup1\n" +
+		"InitiatorAlias: x\nLIO Session ID: 9   ISID: 0x00  TSIH: 9  SessionType: Discovery\n" +
+		"Session State: TARG_SESS_STATE_FREE\n----------------------[iSCSI Connections]-------------------------\n" +
+		"CID: 7  Connection State: TARG_CONN_STATE_LOGGED_IN\n   Address 6.6.6.6 TCP  StatSN: 0x1\n" +
+		sessionInfo[strings.Index(sessionInfo, "LIO Session ID:"):]
+	got := parseSession(info)
+	if got.Type != "Normal" || got.State != "TARG_SESS_STATE_LOGGED_IN" {
+		t.Errorf("session = %+v, want the kernel's Normal / LOGGED_IN", got)
+	}
+	want := []Connection{{CID: 0, State: "TARG_CONN_STATE_LOGGED_IN", Address: "192.0.2.10"}}
+	if !reflect.DeepEqual(got.Connections, want) {
+		t.Errorf("connections = %+v, want %+v", got.Connections, want)
+	}
+	if strings.Contains(got.Alias, "\n") || !strings.HasPrefix(got.Alias, "x LIO Session ID: 9") {
+		t.Errorf("alias = %q, want the injected text on one line", got.Alias)
+	}
+}
+
+// A fabric directory that is not one of the known ones (srpt, ib_srpt's, here) is
+// read as transport "other", after the known ones.
+func TestOtherFabric(t *testing.T) {
+	root := fakeTree(t, map[string]string{
+		"version":                                "Target Engine Core ConfigFS Infrastructure v5.0\n",
+		"core/alua/lu_gps/default_lu_gp/members": "",
+		"srpt/fe80:0000:0000:0000:0002:c903:0007:5f21/tpgt_1/enable": "1\n",
+		"iscsi/" + iqn + "/tpgt_1/enable":                            "1\n",
+	}, map[string]string{
+		"srpt/fe80:0000:0000:0000:0002:c903:0007:5f21/tpgt_1/lun/lun_0/x": "../../../../../../target/core/user_0/tape11",
+	})
+	m := Read(root)
+	if len(m.Fabrics) != 2 || m.Fabrics[0].Name != "iscsi" || m.Fabrics[1].Name != "srpt" || m.Fabrics[1].Transport != "other" {
+		t.Fatalf("fabrics = %+v, want iscsi then srpt (other)", m.Fabrics)
+	}
+	if got := m.Active(); !reflect.DeepEqual(got, []string{"other"}) {
+		t.Errorf("Read().Active() = %q, want other", got)
+	}
+	if got := Active(root); !reflect.DeepEqual(got, []string{"other"}) {
+		t.Errorf("Active = %q, want other", got)
 	}
 }
