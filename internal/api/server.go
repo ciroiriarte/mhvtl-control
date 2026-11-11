@@ -392,10 +392,7 @@ func (s *Server) kernelCh(release string) (*chleak.Status, string) {
 	if err != nil {
 		return nil, err.Error()
 	}
-	sysRoot := s.cfg.SysRoot
-	if sysRoot == "" {
-		sysRoot = "/sys"
-	}
+	sysRoot := s.sysRoot()
 	host, hostErr := hostids.Read(sysRoot)
 	st, err := chleak.Check(sysRoot, release, inv.Libraries, host)
 	if err = errors.Join(hostErr, err); err != nil {

@@ -540,6 +540,14 @@ test("transportSessionText gives the session state and addresses", () => {
   assert.strictEqual(core.transportSessionText({ state: "TARG_SESS_STATE_LOGGED_IN",
     connections: [{ cid: 0, address: "192.0.2.10" }] }), "logged in from 192.0.2.10");
   assert.strictEqual(core.transportSessionText({ connections: [] }), "session");
+  assert.strictEqual(core.transportSessionText({ state: "TARG_SESS_FREE", connections: [] }), "free");
+});
+
+test("transportView marks a mapped LUN without its link as unlinked", () => {
+  var v = core.transportView({ backstores: [], fabrics: [{ name: "iscsi", transport: "iscsi", targets: [{ wwn: "iqn.t",
+    tpgs: [{ tag: 1, luns: [], acls: [{ initiator: "iqn.a",
+      mapped_luns: [{ lun: 3 }, { lun: 0, tpg_lun: 0 }, { lun: 1, tpg_lun: 2, write_protect: true }] }] }] }] }] });
+  assert.deepStrictEqual(v.tpgs[0].acls[0].luns, ["3 (unlinked)", "0", "1→2 (ro)"]);
 });
 
 test("transportView resolves LUNs to devices and lists backstores on no LUN", () => {

@@ -1548,7 +1548,9 @@
   // state and the addresses it connects from.
   function transportSessionText(s) {
     if (!s) { return "none"; }
-    var state = String(s.state || "").replace(/^TARG_SESS_STATE_/, "").replace(/_/g, " ").toLowerCase();
+    // The kernel prints TARG_SESS_STATE_<X>, and TARG_SESS_FREE for a
+    // session being freed (iscsi_target_configfs.c lio_target_nacl_info_show).
+    var state = String(s.state || "").replace(/^TARG_SESS_(STATE_)?/, "").replace(/_/g, " ").toLowerCase();
     var addrs = coerceArray(s.connections).map(function (c) { return String(c.address || ""); })
       .filter(function (a) { return a; });
     return (state || "session") + (addrs.length ? " from " + addrs.join(", ") : "");
@@ -1583,8 +1585,11 @@
               initiator: String(a.initiator || ""),
               luns: coerceArray(a.mapped_luns).map(function (ml) {
                 var n = coerceNumber(ml.lun);
-                var to = ml.tpg_lun != null ? coerceNumber(ml.tpg_lun) : n;
-                return String(n) + (to !== n ? "→" + to : "") + (ml.write_protect ? " (ro)" : "");
+                // No tpg_lun: the mapped LUN has no link yet (an apply in
+                // progress, or one that failed), so it maps to nothing.
+                var to = ml.tpg_lun != null ? "→" + coerceNumber(ml.tpg_lun) : " (unlinked)";
+                if (to === "→" + n) { to = ""; }
+                return String(n) + to + (ml.write_protect ? " (ro)" : "");
               }),
               session: transportSessionText(a.session),
               active: !!a.session,

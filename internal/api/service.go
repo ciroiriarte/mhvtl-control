@@ -226,10 +226,7 @@ func (s *Server) serviceStatus(ctx context.Context) serviceDTO {
 	dto.Helper, dto.HelperError = s.helperStatus(helloCtx, s.cfg.Capabilities.withDefaults())
 	cancel()
 
-	sysRoot := s.cfg.SysRoot
-	if sysRoot == "" {
-		sysRoot = "/sys"
-	}
+	sysRoot := s.sysRoot()
 	dto.Backend.Configured = "mhvtl"
 	switch b, err := os.ReadFile(filepath.Join(s.cfg.ConfigDir, "mhvtl.conf")); {
 	case err == nil:
@@ -239,9 +236,7 @@ func (s *Server) serviceStatus(ctx context.Context) serviceDTO {
 	case !errors.Is(err, os.ErrNotExist):
 		fail(err)
 	}
-	if _, err := os.Stat(filepath.Join(sysRoot, "module", hostids.MhvtlDriver)); err == nil {
-		dto.Backend.KernelModule.Loaded = true
-	}
+	dto.Backend.KernelModule.Loaded = s.kmodLoaded()
 	if _, err := os.Stat(filepath.Join(sysRoot, "module", "target_core_user")); err == nil {
 		dto.Backend.TCMU.TargetCoreUser = true
 	}
