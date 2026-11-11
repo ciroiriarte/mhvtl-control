@@ -49,8 +49,13 @@ and they are left out.
 reports, read-only from the LIO configuration in
 .IR /sys/kernel/config/target ,
 the TCMU backstores with the device.conf library or drive each serves, and
-the loopback, iSCSI, Fibre Channel and USB gadget targets with their portals,
-LUNs, ACLs and sessions.
+the loopback, iSCSI, Fibre Channel, USB gadget and any other fabric's
+targets with their portals, LUNs, ACLs and sessions (portal groups named
+.BI tpgt_ N
+as targetcli creates them). It names the initiators
+allowed in and the addresses their sessions connect from; on a host other
+users log in to, set
+.BR \-api\-token .
 .PP
 mhVTL may start after
 .BR mhvtl-control ,

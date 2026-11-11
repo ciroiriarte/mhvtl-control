@@ -406,18 +406,28 @@ from the LIO configuration in configfs (`/sys/kernel/config/target`):
   id and `device` the library or drive of `device.conf` it names.
 - `fabrics`: `loopback` (the devices on this host, transport `local`),
   `iscsi`, `qla2xxx`, `qla2xxx_npiv`, `efct`, `efct_npiv` and `fc` (FCoE)
-  (transport `fc`) and `usb_gadget` (`usb`), the ones present. Each target lists its portal groups with `enabled`, `portals`,
+  (transport `fc`) and `usb_gadget` (`usb`), the ones present. Any other
+  fabric module's directory (`srpt`, `vhost`, ...) is listed with transport
+  `other`, with its portal groups named `tpgt_<N>` as targetcli creates them
+  (a group named otherwise is not read). Each target lists its portal groups with `enabled`, `portals`,
   `luns` (the backstore each links to), `acls` (each initiator's mapped LUNs
   and, for iSCSI, its session from the ACL's `info`) and `dynamic_sessions`
-  (initiators logged in without an ACL).
+  (initiators logged in without an ACL). A LUN or mapped LUN not linked yet
+  has no backstore or `tpg_lun`; one removed while it is read (an apply in
+  progress) is left out.
 - `active_transports`: `local` while `mhvtl.ko` is loaded, then each
-  transport with an enabled portal group that has a LUN. `GET /api/v1/system`
-  reports the same list.
+  transport with an enabled portal group that has a LUN linked to a
+  backstore. `GET /api/v1/system` reports the same list.
 - `warnings`: the files that could not be read; what they hold is left out.
 
 Without configfs or LIO the answer is empty (`"configfs": false`). Changing
 the exports is mhVTL's `mhvtl-fabrics`' job; mhvtl-control does not write to
 configfs. The dashboard shows it as the Transport Map panel.
+
+The map names the initiators allowed in, the sessions logged in and the
+addresses they connect from. Without `-api-token` any local user can read it
+(and every other `/api/v1` route), so set a token on a host other users log
+in to.
 
 ## The kernel ch driver
 
