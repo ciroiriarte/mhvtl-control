@@ -300,8 +300,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 
 	if s.cfg.StaticFS != nil {
-		mux.Handle("GET /static/", http.FileServerFS(s.cfg.StaticFS))
+		tags := newStaticTags(s.cfg.StaticFS)
+		mux.Handle("GET /static/", tags.files(http.FileServerFS(s.cfg.StaticFS)))
 		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			tags.set(w, "index.html")
 			http.ServeFileFS(w, r, s.cfg.StaticFS, "index.html")
 		})
 	} else {
