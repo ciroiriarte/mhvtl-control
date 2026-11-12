@@ -60,6 +60,14 @@ const (
 	// service_plan only when it is refused.
 	OpServicePlan = "service_plan"
 	OpService     = "service"
+	// OpFabricsPlan checks a new fabrics.conf (one File, nothing else) and
+	// reports how mhvtl-fabrics.service would apply it (FabricsAction);
+	// OpFabrics writes it root:root 0600 and reloads or starts the unit,
+	// restoring the file when that fails (fabrics.go, mhvtl-control#6).
+	// Both take the lock; fabrics is audited with a diff whose CHAP
+	// secrets are masked, and a fabrics_plan only when it is refused.
+	OpFabricsPlan = "fabrics_plan"
+	OpFabrics     = "fabrics"
 )
 
 // Service actions. A restart and a stop run the apply sequence on the
@@ -231,6 +239,10 @@ type Response struct {
 	JournalTail   string   `json:"journal_tail,omitempty"`
 	OrphanedMedia []string `json:"orphaned_media,omitempty"`
 	Unplaced      []string `json:"unplaced,omitempty"`
+	// FabricsAction answers the fabrics ops: reload, start, or none when
+	// mhvtl.target is not running and the unit applies the file when it
+	// starts.
+	FabricsAction string `json:"fabrics_action,omitempty"`
 }
 
 // UnitStatus is a unit as systemctl show reports it. A unit systemd does
@@ -365,6 +377,10 @@ func DecodeRequest(r io.Reader) (*Request, error) {
 		}
 	case OpServicePlan, OpService:
 		if err := checkServiceRequest(&req); err != nil {
+			return nil, err
+		}
+	case OpFabricsPlan, OpFabrics:
+		if err := checkFabricsRequest(&req); err != nil {
 			return nil, err
 		}
 	default:

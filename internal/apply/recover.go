@@ -61,10 +61,20 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 			return responseOf(fmt.Errorf("recovery: starting: %w", err))
 		}
 	}
+	// A fabrics apply that died may have half-applied the new file: reload
+	// the unit so the targets follow the restored one. At boot the unit
+	// has not started yet and applies the restored file itself.
+	var fabricsNote string
+	if it.Op == OpFabrics && !boot {
+		fabricsNote = h.reconcileFabrics(ctx)
+	}
 	if err := h.removeIntent(); err != nil {
 		return responseOf(err)
 	}
 	msg := fmt.Sprintf("recovered the %s of %s by %q; plan again", it.Op, it.Started.Format("2006-01-02 15:04:05Z07:00"), it.Actor)
+	if fabricsNote != "" {
+		msg += "; " + fabricsNote
+	}
 	if it.Op == OpService+":"+ActionStop && units && it.Exec != nil && (stoppedActive(it.Exec.Stops) || len(it.Exec.StandaloneStopped) > 0) {
 		// unwind starts again every unit the stop had stopped of a library
 		// that ran, and every standalone drive it had stopped (journaled

@@ -26,6 +26,10 @@ type change struct {
 	base string // sha before, "" when absent
 	data []byte // new content; unused when del
 	del  bool
+	// private files are written root:root 0600 (the helper's ids),
+	// whatever the mode of the file they replace: fabrics.conf, which may
+	// hold CHAP secrets.
+	private bool
 }
 
 // changesOf returns the request's changes in write order (plan 3.2,
@@ -57,6 +61,14 @@ func changesOf(req *Request) []change {
 
 // errKilled is what a kill point returns in tests: the helper stops there
 // as if it had died, with no cleanup.
+// replace writes a change that is not a delete.
+func (h *Helper) replace(c change) error {
+	if c.private {
+		return conffile.ReplaceIfHashAs(h.cfg.ConfigDir, c.name, c.base, c.data, 0o600, os.Geteuid(), os.Getegid())
+	}
+	return conffile.ReplaceIfHash(h.cfg.ConfigDir, c.name, c.base, c.data)
+}
+
 var errKilled = errors.New("killed at a test kill point")
 
 // writeFiles makes the changes durable, one file at a time, behind the
@@ -118,7 +130,7 @@ func (h *Helper) writeFiles(ctx context.Context, it *Intent, changes []change, f
 			if c.del {
 				err = removeIfHash(h.cfg.ConfigDir, c.name, c.base, rb)
 			} else {
-				err = conffile.ReplaceIfHash(h.cfg.ConfigDir, c.name, c.base, c.data)
+				err = h.replace(c)
 			}
 		}
 		if err != nil {

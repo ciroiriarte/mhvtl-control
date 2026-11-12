@@ -348,3 +348,29 @@ func TestRemoveStale(t *testing.T) {
 		}
 	}
 }
+
+// TestReplaceIfHashAs: the given mode applies to a new file and to one it
+// replaces, whatever that one's mode was.
+func TestReplaceIfHashAs(t *testing.T) {
+	dir := t.TempDir()
+	if err := ReplaceIfHashAs(dir, "f", "", []byte("one\n"), 0o600, -1, -1); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "f")
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ReplaceIfHashAs(dir, "f", Hash([]byte("one\n")), []byte("two\n"), 0o600, -1, -1); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Errorf("mode %o, want 0600", st.Mode().Perm())
+	}
+	if err := ReplaceIfHashAs(dir, "f", Hash([]byte("one\n")), []byte("three\n"), 0o600, -1, -1); !errors.Is(err, ErrConflict) {
+		t.Errorf("stale base: %v, want a conflict", err)
+	}
+}

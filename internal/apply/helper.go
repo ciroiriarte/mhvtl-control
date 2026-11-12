@@ -267,7 +267,12 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 	if it != nil {
 		return h.recover(ctx, it, false, req.Actor, peer)
 	}
-	resp := h.handle(ctx, req, &rec)
+	var resp Response
+	if fabricsOp(req.Op) {
+		resp = h.fabrics(ctx, req, &rec)
+	} else {
+		resp = h.handle(ctx, req, &rec)
+	}
 	if !planning(req.Op) || resp.Result != ResultValidated {
 		h.auditResponse(rec, resp)
 	}
