@@ -386,10 +386,12 @@ func TestConfigView(t *testing.T) {
 	// run or apply of the stage, a stage delete, or an edit sent through
 	// stageEdit, which refuses unless cfgEditable. The other requests that
 	// send a method go to the library and storage routes, or are a service
-	// action (POST /api/v1/service/...). A call with a second argument other
-	// than { signal: signal } may send one.
+	// action (POST /api/v1/service/...), or an iSCSI export change sent
+	// through iscsiWrite, which refuses unless the write gate is open. A
+	// call with a second argument other than { signal: signal } may send one.
 	sends := map[string]bool{`cfgPath("/apply")`: true, `cfgPath("/stages/" + encodeURIComponent(st.id))`: true,
-		`"/api/v1/config/validate"`: true, `cfgPath("/validate")`: true, "path": true, "o.path": true, "servicePath(scope, action)": true}
+		`"/api/v1/config/validate"`: true, `cfgPath("/validate")`: true, "path": true, "o.path": true, "servicePath(scope, action)": true,
+		"iscsiPath(mode)": true}
 	pathCalls := 0
 	for _, args := range jsCalls(app, "api") {
 		if args[0] == "path" {
@@ -401,6 +403,14 @@ func TestConfigView(t *testing.T) {
 		if !sends[args[0]] && !strings.HasPrefix(args[0], `"/api/v1/libraries/`) && !strings.HasPrefix(args[0], `"/api/v1/storage/`) {
 			t.Errorf("app.js sends a configuration request outside stageEdit and the apply flow: api(%s)", strings.Join(strings.Fields(strings.Join(args, ", ")), " "))
 		}
+	}
+	if iw, ok := jsBody(app, "function iscsiWrite(mode, body) {"); !ok {
+		t.Error("app.js missing iscsiWrite")
+	} else if !strings.Contains(iw, "if (!gate.ok) {") || strings.Index(iw, "if (!gate.ok) {") > strings.Index(iw, "api(iscsiPath(mode)") {
+		t.Error("iscsiWrite sends without checking the write gate first")
+	}
+	if n := len(jsCalls(app, "iscsiWrite")); n != 1 {
+		t.Errorf("app.js calls iscsiWrite %d times, want 1 (iscsiSend)", n)
 	}
 	body, _ := jsBody(app, "function stageEdit(method, path, body, done) {")
 	if pathCalls != 1 || !strings.Contains(body, "api(path, { method: method, body: body })") {
@@ -639,4 +649,37 @@ func jsWord(s string, k int, w string) bool {
 
 func jsIdent(ch byte) bool {
 	return ch == '_' || ch == '$' || ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z'
+}
+
+// The Transport Map's iSCSI export section and its dialog. The CHAP secret
+// inputs are password fields the browser does not fill from a saved login,
+// and app.js never sets them other than to clear them.
+func TestISCSIExportStructure(t *testing.T) {
+	h := newServer()
+	_, index := get(t, h, "/")
+	for _, id := range []string{"iscsi-export", "iscsi-dialog", "iscsi-form", "iscsi-bind-fields", "iscsi-settings-fields",
+		"iscsi-initiators", "iscsi-target-name", "iscsi-clear-chap", "iscsi-clear-mutual", "iscsi-portals", "iscsi-base-name",
+		"iscsi-preview", "iscsi-error", "iscsi-preview-btn", "iscsi-apply-btn"} {
+		if !strings.Contains(index, `id="`+id+`"`) {
+			t.Errorf("index.html missing element id %q", id)
+		}
+	}
+	for _, id := range []string{"iscsi-chap-secret", "iscsi-mutual-secret"} {
+		if !strings.Contains(index, `type="password" id="`+id+`" autocomplete="new-password"`) {
+			t.Errorf("index.html: %s is not a new-password input", id)
+		}
+	}
+	_, app := get(t, h, "/static/js/app.js")
+	for _, want := range []string{`"/api/v1/transports/iscsi/config"`, "core.iscsiAllowed(", "core.iscsiOutcome(", "transportStatus.notes("} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js missing marker %q", want)
+		}
+	}
+	for _, id := range []string{"iscsi-chap-secret", "iscsi-mutual-secret"} {
+		for _, bad := range []string{`$("` + id + `").value = `, `$("` + id + `").textContent`} {
+			if strings.Contains(app, bad) {
+				t.Errorf("app.js writes into the secret input: %q", bad)
+			}
+		}
+	}
 }

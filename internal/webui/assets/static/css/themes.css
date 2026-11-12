@@ -181,7 +181,8 @@
 :root[data-theme="classic"] input[type="text"],
 :root[data-theme="classic"] input[type="search"],
 :root[data-theme="classic"] input[type="password"],
-:root[data-theme="classic"] input[type="number"] {
+:root[data-theme="classic"] input[type="number"],
+:root[data-theme="classic"] textarea {
   background: #fff; color: #000;
   border: 2px inset #d4d0c8; border-radius: 0;
 }
@@ -286,7 +287,7 @@ code, .mono, .num { font-family: var(--font-mono); }
    alternative text keeps it out of the button's name. */
 .auto-toggle[aria-pressed="true"]::before { content: "● " / ""; color: var(--ok); }
 .auto-toggle[aria-pressed="false"]::before { content: "○ " / ""; }
-select, input[type="text"], input[type="password"], input[type="number"], input[type="search"] {
+select, input[type="text"], input[type="password"], input[type="number"], input[type="search"], textarea {
   background: var(--bg-elev);
   color: var(--text);
   border: 1px solid var(--border);
@@ -446,6 +447,13 @@ select, input[type="text"], input[type="password"], input[type="number"], input[
 .transport-tpg .head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 4px; }
 .transport-tpg .name { font-family: var(--font-mono); font-weight: 700; overflow-wrap: anywhere; }
 .transport-tpg .svc-table + .svc-table, .transport-tpg .svc-scroll + .svc-scroll { margin-top: 8px; }
+/* iSCSI export (fabrics.conf) below the configfs view. */
+#iscsi-export:empty { display: none; }
+.iscsi-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+.iscsi-head h3 { margin: 0; font-size: 13px; }
+.iscsi-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+textarea { font-family: var(--font-mono); resize: vertical; }
+.panel-status .status-note { display: block; color: var(--warn); font-size: 12px; }
 .bar { height: 8px; border-radius: 999px; background: var(--bar-track); overflow: hidden; margin-top: 6px; }
 .bar > span { display: block; height: 100%; background: var(--bar-fill); }
 

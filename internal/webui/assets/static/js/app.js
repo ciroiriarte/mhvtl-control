@@ -188,7 +188,13 @@
       box.appendChild(x);
       return box;
     }
-    function keepSticky() { if (sticky) { region.appendChild(sticky); } }
+    // noteEls are standing notes about the panel's data (fabrics.conf
+    // problems), redrawn with it by notes() and kept across ok() and error().
+    var noteEls = [];
+    function keepSticky() {
+      if (sticky) { region.appendChild(sticky); }
+      noteEls.forEach(function (n) { region.appendChild(n); });
+    }
     return {
       loading: function () {
         if (!region) { return; }
@@ -220,6 +226,7 @@
         if (!region) { return; }
         sticky = null;
         shown = null;
+        noteEls = [];
         clear(region);
         region.appendChild(mk("span", { class: "status-line loading", text: "Switching node…" }));
       },
@@ -238,6 +245,13 @@
         shown = box;
         region.appendChild(box);
         keepSticky();
+      },
+      // notes replaces the standing notes with lines.
+      notes: function (lines) {
+        if (!region) { return; }
+        noteEls.forEach(function (n) { if (n.parentNode) { n.parentNode.removeChild(n); } });
+        noteEls = coerceArray(lines).map(function (l) { return mk("span", { class: "status-note", text: String(l) }); });
+        noteEls.forEach(function (n) { region.appendChild(n); });
       },
       warn: function (msg) {
         if (!region) { return; }
@@ -1166,6 +1180,289 @@
     }
     coerceArray(data.warnings).forEach(function (w) {
       box.appendChild(mk("p", { class: "warn", text: "Not read: " + String(w) }));
+    });
+  }
+
+  /* ---- iSCSI export (fabrics.conf) -------------------------------------- *
+   * One row per device.conf library and standalone drive, with Export, Edit
+   * and Stop exporting, and the shared settings. Every change is a dry run
+   * first (Preview: the diff and what the export service does), then the
+   * apply. Offered only while capabilities.writes is "ok", as the
+   * configuration editor. CHAP secrets stay in the dialog's password inputs,
+   * which are cleared when it closes; nothing drawn shows one.            */
+  var lastTransports = null; // GET /transports, null when not read
+  var iscsiState = { cfg: null, error: null, busy: false };
+  var iscsiCtx = null; // { mode: "bind" | "settings" | "unbind", row, gen, previewed }
+
+  function iscsiGate() {
+    return core.iscsiAllowed({ caps: lastCfg && lastCfg.caps, reachable: mutationsEnabled, cfg: iscsiState.cfg,
+      cfgError: iscsiState.error, busy: iscsiState.busy });
+  }
+  function iscsiRowList() {
+    return core.iscsiRows(lastCfg && lastCfg.config, iscsiState.cfg, lastTransports);
+  }
+  function renderISCSI() {
+    preserve($("iscsi-export"), drawISCSI);
+  }
+  function redrawISCSI() {
+    drawn.iscsi = null;
+    renderISCSI();
+  }
+  function iscsiButton(text, label, key, gate, onClick) {
+    var b = mk("button", { class: "btn sm", text: text, key: key, attrs: { type: "button", "aria-label": label } });
+    b.disabled = !gate.ok;
+    if (gate.reason) { b.title = gate.reason; }
+    b.addEventListener("click", onClick);
+    return b;
+  }
+  function iscsiLiveCell(r) {
+    if (!r.exported) { return mk("td", { class: "muted", text: "—" }); }
+    if (r.present === null) { return mk("td", { class: "muted", text: "not read" }); }
+    if (!r.present) { return mk("td", { children: [mk("span", { class: "badge unknown", text: "not in configfs" })] }); }
+    var td = mk("td", { children: [mk("span", { class: "badge st-active", text: "present" })] });
+    if (r.enabled === false) { td.appendChild(mk("span", { class: "badge unknown", text: "disabled" })); }
+    td.appendChild(mk("div", { class: "muted", text: r.luns + " LUN" + (r.luns === 1 ? "" : "s") + ", " +
+      r.sessions + " session" + (r.sessions === 1 ? "" : "s") }));
+    return td;
+  }
+  function drawISCSI() {
+    var box = $("iscsi-export");
+    if (!box) { return; }
+    clear(box);
+    var gate = iscsiGate();
+    var cfg = iscsiState.cfg;
+    var head = mk("div", { class: "iscsi-head", children: [mk("h3", { text: "iSCSI export" })] });
+    box.appendChild(head);
+    if (gate.hide) {
+      box.appendChild(mk("p", { class: "muted", text: gate.reason }));
+      return;
+    }
+    var iscsi = cfg.iscsi || {};
+    head.appendChild(iscsiButton("Edit settings…", "Edit the iSCSI portals and base name", "iscsi-settings", gate,
+      function () { iscsiOpen("settings", null); }));
+    if (!gate.ok) { box.appendChild(mk("p", { class: "muted", text: "Changes unavailable: " + gate.reason })); }
+    if (!cfg.exists) {
+      box.appendChild(mk("p", { class: "muted", text: "fabrics.conf does not exist yet: the first change creates it." }));
+    } else if (!iscsi.present) {
+      box.appendChild(mk("p", { class: "muted", text: "fabrics.conf has no iSCSI section yet." }));
+    }
+    var portals = coerceArray(iscsi.portals).map(String);
+    box.appendChild(mk("p", { class: "muted mono cap-line", text: "Portals: " + (portals.length ? portals.join(", ") : "none set") }));
+    box.appendChild(mk("p", { class: "muted mono cap-line", text: "Base name: " + (iscsi.base_name ? String(iscsi.base_name) : "none set") }));
+    if (!lastCfg) {
+      box.appendChild(mk("p", { class: "muted", text: "device.conf not read yet: only the exported devices are listed." }));
+    }
+    var rows = iscsiRowList().map(function (r) {
+      var acts = [];
+      if (!r.exported) {
+        acts.push(iscsiButton("Export…", "Export " + r.label + " over iSCSI", r.key + "-export", gate, function () { iscsiOpen("bind", r); }));
+      } else {
+        if (!r.orphan) {
+          acts.push(iscsiButton("Edit…", "Edit the iSCSI export of " + r.label, r.key + "-edit", gate, function () { iscsiOpen("bind", r); }));
+        }
+        acts.push(iscsiButton("Stop exporting", "Stop exporting " + r.label + " over iSCSI", r.key + "-unbind", gate, function () { iscsiUnbind(r); }));
+      }
+      var chap = mk("td");
+      if (r.exported) {
+        chap.appendChild(mk("div", { text: r.chap }));
+        chap.appendChild(mk("div", { class: "muted", text: r.mutualChap }));
+      } else {
+        chap.textContent = "—";
+      }
+      return mk("tr", { children: [
+        mk("td", { text: r.label }),
+        mk("td", { children: [mk("span", { class: "badge " + (r.exported ? "st-active" : "unknown"), text: r.exported ? "exported" : "not exported" })] }),
+        mk("td", { class: "mono", text: r.wwn || "—" }),
+        mk("td", { class: "mono", text: r.initiators.length ? r.initiators.join(", ") : (r.exported ? "none" : "—") }),
+        chap,
+        iscsiLiveCell(r),
+        mk("td", { children: [mk("div", { class: "iscsi-actions", children: acts })] }),
+      ] });
+    });
+    box.appendChild(mk("div", { class: "svc-scroll", key: "iscsi-rows", children: [
+      mk("table", { class: "svc-table", attrs: { "aria-label": "iSCSI export per device" }, children: [
+        mk("thead", { children: [mk("tr", { children: ["Device", "Export", "IQN", "Initiators", "CHAP", "configfs", ""].map(function (h) {
+          return mk("th", { text: h });
+        }) })] }),
+        mk("tbody", { children: rows.length ? rows : [mk("tr", { children: [mk("td", { class: "muted", text: "No library or standalone drive in device.conf", attrs: { colspan: "7" } })] })] }),
+      ] }),
+    ] }));
+  }
+
+  // iscsiPath is the write route of a dialog mode.
+  function iscsiPath(mode) {
+    return "/api/v1/transports/iscsi" + (mode === "bind" ? "/bind" : mode === "unbind" ? "/unbind" : "");
+  }
+
+  // iscsiWrite sends one iSCSI change: the only request that does. It
+  // refuses unless the gate is open, and answers {res, status} for every
+  // answer, the error ones included (their body carries the result).
+  function iscsiWrite(mode, body) {
+    var gate = iscsiGate();
+    if (!gate.ok) { return Promise.resolve({ res: { error: { code: "refused", message: gate.reason } }, status: 403 }); }
+    iscsiState.busy = true;
+    redrawISCSI();
+    var done = function () { iscsiState.busy = false; redrawISCSI(); };
+    return api(iscsiPath(mode), { method: mode === "settings" ? "PATCH" : "POST", body: body, read: body.dry_run === true }).then(function (res) {
+      done();
+      return { res: res, status: 200 };
+    }, function (e) {
+      done();
+      if (e && e.name === "AbortError") { throw e; }
+      return { res: (e && e.body && Object.keys(e.body).length) ? e.body : { error: { message: String((e && e.message) || e) } }, status: (e && e.status) || 0 };
+    });
+  }
+
+  function iscsiFormValues() {
+    return {
+      initiators: $("iscsi-initiators").value, target_name: $("iscsi-target-name").value,
+      chap_name: $("iscsi-chap-name").value, chap_secret: $("iscsi-chap-secret").value,
+      mutual_name: $("iscsi-mutual-name").value, mutual_secret: $("iscsi-mutual-secret").value,
+      clear_chap: $("iscsi-clear-chap").checked, clear_mutual_chap: $("iscsi-clear-mutual").checked,
+      portals: $("iscsi-portals").value, base_name: $("iscsi-base-name").value,
+    };
+  }
+
+  // iscsiBody builds the request of the open dialog: {body} or {error, field}.
+  function iscsiBody(ctx, dryRun) {
+    if (ctx.mode === "unbind") { return { body: core.buildISCSIUnbindBody(ctx.row.id, dryRun) }; }
+    if (ctx.mode === "settings") {
+      return { body: core.buildISCSISettingsBody(iscsiState.cfg && iscsiState.cfg.iscsi, iscsiFormValues(), dryRun) };
+    }
+    return core.buildISCSIBindBody(ctx.row.id, iscsiFormValues(), ctx.row.target, dryRun);
+  }
+
+  // iscsiShow fills the dialog's result area: a message (tone "error" or
+  // "muted"), and optionally the action, the diff and a journal tail.
+  function iscsiShow(o) {
+    var box = $("iscsi-preview");
+    clear(box);
+    $("iscsi-error").textContent = o.error || "";
+    if (o.text) { box.appendChild(mk("p", { class: o.tone || "muted", text: o.text })); }
+    if (o.actionText) { box.appendChild(mk("p", { children: [mk("strong", { text: "Action: " }), mk("span", { class: "mono", text: o.actionText })] })); }
+    if (o.diff != null) {
+      var pre = mk("pre", { class: "diff" });
+      var lines = core.iscsiDiffLines(o.diff);
+      if (!lines.length) { pre.appendChild(mk("span", { class: "diff-ctx", text: "(no change to fabrics.conf)\n" })); }
+      lines.forEach(function (l) { pre.appendChild(mk("span", { class: l.cls, text: l.text + "\n" })); });
+      box.appendChild(pre);
+    }
+    if (o.tail) { box.appendChild(mk("pre", { class: "diff", text: o.tail })); }
+  }
+
+  function iscsiSetPreviewed(on) {
+    if (iscsiCtx) { iscsiCtx.previewed = on; }
+    $("iscsi-apply-btn").disabled = !on;
+  }
+
+  // iscsiReload reads the transports and fabrics.conf again; then the open
+  // dialog edits the device's record as it is now.
+  function iscsiReload() {
+    return refreshTransports(NodeState.generation).then(function () {
+      if (!iscsiCtx || !iscsiCtx.row) { return; }
+      var key = iscsiCtx.row.key;
+      iscsiRowList().forEach(function (r) { if (r.key === key) { iscsiCtx.row = r; } });
+    });
+  }
+
+  function iscsiOpen(mode, row) {
+    var gate = iscsiGate();
+    if (!gate.ok) { transportStatus.error(gate.reason); return; }
+    iscsiCtx = { mode: mode, row: row, gen: NodeState.generation, previewed: false };
+    var title = { bind: row && row.exported ? "Edit iSCSI export" : "Export over iSCSI", settings: "iSCSI settings", unbind: "Stop exporting" }[mode];
+    $("iscsi-dialog-title").textContent = title + (row ? ": " + row.label : "");
+    $("iscsi-dialog-intro").textContent = mode === "unbind"
+      ? "Removes the device's iSCSI target from fabrics.conf. Initiators using it lose the device."
+      : mode === "settings" ? "Shared by every exported device." : "Leave the CHAP fields empty to keep the CHAP setting as it is.";
+    $("iscsi-bind-fields").hidden = mode !== "bind";
+    $("iscsi-settings-fields").hidden = mode !== "settings";
+    ["iscsi-chap-name", "iscsi-chap-secret", "iscsi-mutual-name", "iscsi-mutual-secret"].forEach(function (id) { $(id).value = ""; });
+    $("iscsi-clear-chap").checked = false;
+    $("iscsi-clear-mutual").checked = false;
+    var t = row && row.target;
+    $("iscsi-initiators").value = t ? t.initiators.join("\n") : "";
+    $("iscsi-target-name").value = t ? t.target_name : "";
+    $("iscsi-chap-note").textContent = t ? (row.chap + " · " + row.mutualChap) : "";
+    $("iscsi-clear-chap-label").hidden = !(t && t.chap);
+    $("iscsi-clear-mutual-label").hidden = !(t && t.mutual_chap);
+    var iscsi = (iscsiState.cfg && iscsiState.cfg.iscsi) || {};
+    $("iscsi-portals").value = coerceArray(iscsi.portals).map(String).join("\n");
+    $("iscsi-base-name").value = iscsi.base_name ? String(iscsi.base_name) : "";
+    iscsiShow({ text: mode === "unbind" ? "" : "Preview the change before applying it." });
+    iscsiSetPreviewed(false);
+    $("iscsi-preview-btn").disabled = false;
+    var dlg = $("iscsi-dialog");
+    if (dlg.showModal) { dlg.showModal(); }
+    if (mode === "unbind") { iscsiSend(true); }
+  }
+
+  // iscsiUnbind asks to confirm, then previews the removal.
+  function iscsiUnbind(row) {
+    openConfirm("Stop exporting " + row.label, "Remove the iSCSI target" + (row.wwn ? " " + row.wwn : "") +
+      " from fabrics.conf? The change is previewed before it is applied.", "Continue", function () {
+      setTimeout(function () { iscsiOpen("unbind", row); }, 0);
+    });
+  }
+
+  // iscsiSend previews (dryRun) or applies the open dialog's change and
+  // shows the outcome.
+  function iscsiSend(dryRun) {
+    var ctx = iscsiCtx;
+    if (!ctx) { return; }
+    if (!canSendMutation(ctx.gen, NodeState.generation, mutationsEnabled)) {
+      iscsiShow({ error: "The node changed: close this dialog and refresh." });
+      return;
+    }
+    if (!dryRun && !ctx.previewed) { iscsiShow({ error: "Preview the change first." }); return; }
+    var gate = iscsiGate();
+    if (!gate.ok) { iscsiShow({ error: gate.reason }); return; }
+    var b = iscsiBody(ctx, dryRun);
+    if (b.error) {
+      iscsiShow({ error: b.error });
+      var bad = $(core.iscsiFieldInput(b.field));
+      if (bad) { bad.focus(); }
+      return;
+    }
+    iscsiSetPreviewed(false);
+    $("iscsi-preview-btn").disabled = true;
+    iscsiShow({ text: dryRun ? "Checking…" : "Applying…" });
+    iscsiWrite(ctx.mode, b.body).then(function (r) {
+      if (iscsiCtx !== ctx || isStale(ctx.gen, NodeState.generation)) { return; }
+      $("iscsi-preview-btn").disabled = false;
+      var o = core.iscsiOutcome(r.res, r.status);
+      switch (o.kind) {
+        case "validated":
+          if (!dryRun) { break; }
+          iscsiShow({ text: o.text, actionText: o.actionText, diff: o.diff });
+          iscsiSetPreviewed(true);
+          return;
+        case "applied":
+          if (dryRun) { break; }
+          closeDialog("iscsi-dialog");
+          toast("iSCSI: " + o.text);
+          iscsiReload();
+          return;
+        case "invalid":
+          iscsiShow({ error: o.text });
+          var el = $(core.iscsiFieldInput(o.field));
+          if (el && !el.closest("[hidden]")) { el.focus(); }
+          return;
+        case "conflict":
+        case "not_bound":
+        case "rolled_back":
+          iscsiShow({ error: o.text, tail: o.tail });
+          iscsiReload();
+          return;
+        case "readonly":
+          iscsiShow({ error: o.text });
+          refreshConfig(NodeState.generation, currentAbort ? currentAbort.signal : undefined);
+          return;
+      }
+      iscsiShow({ error: o.text, tail: o.tail });
+    }).catch(function (e) {
+      if (iscsiCtx !== ctx) { return; }
+      $("iscsi-preview-btn").disabled = false;
+      iscsiShow({ error: String((e && e.message) || e) });
     });
   }
 
@@ -3127,6 +3424,9 @@
         lastCfg = cfg;
         renderConfig();
         renderStage();
+        // The iSCSI export rows list device.conf's devices and its actions
+        // follow the write gate.
+        redrawISCSI();
       })) {
         setPanelGrey("config-view", false);
       }
@@ -3265,9 +3565,18 @@
       setPanelGrey("transport-map", true);
       busy("transport-panel", true);
     }
-    return api("/api/v1/transports", { signal: signal }).then(function (d) {
+    // fabrics.conf for the iSCSI export section; a daemon without the
+    // route (404) or a failed read leaves the section without actions.
+    var iscsiRead = api("/api/v1/transports/iscsi/config", { signal: signal }).then(function (c) {
+      return { cfg: c || {}, error: null };
+    }, function (e) {
+      if (e.name === "AbortError") { throw e; }
+      return { cfg: null, error: { status: e.status || 0, message: e.message } };
+    });
+    var mapRead = api("/api/v1/transports", { signal: signal }).then(function (d) {
       if (!bg) { busy("transport-panel", false); }
       if (isStale(gen, NodeState.generation)) { return; }
+      lastTransports = d || {};
       if (drawPanel("transports", $("transport-map"), bg, d, [gen], function () { renderTransports(d); })) {
         setPanelGrey("transport-map", false);
       }
@@ -3275,7 +3584,22 @@
     }).catch(function (e) {
       if (!bg) { busy("transport-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      lastTransports = null;
       transportStatus.error("transports: " + e.message, bg ? "poll" : "load");
+    });
+    return Promise.all([iscsiRead, mapRead]).then(function (r) {
+      if (isStale(gen, NodeState.generation)) { return; }
+      iscsiState.cfg = r[0].cfg;
+      iscsiState.error = r[0].error;
+      transportStatus.notes(core.iscsiNotes(iscsiState.cfg));
+      if (drawPanel("iscsi", $("iscsi-export"), bg, iscsiState.cfg, [gen, iscsiState.error, lastTransports, lastCfg && lastCfg.caps,
+        lastCfg && lastCfg.config && lastCfg.config.libraries, lastCfg && lastCfg.config && lastCfg.config.standalone_drives,
+        mutationsEnabled, iscsiState.busy], renderISCSI)) {
+        setPanelGrey("iscsi-export", false);
+      }
+    }).catch(function (e) {
+      if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      console.error("iSCSI export:", e);
     });
   }
 
@@ -3463,6 +3787,9 @@
     sysStatus.grey(); libStatus.grey(); diskStatus.grey(); mediaStatus.grey();
     configStatus.grey(); findingsStatus.grey(); transportStatus.grey();
     setPanelGrey("transport-map", true);
+    setPanelGrey("iscsi-export", true);
+    lastTransports = null;
+    iscsiState = { cfg: null, error: null, busy: false };
     setPanelGrey("system-status", true);
     setPanelGrey("service-status", true);
     setPanelGrey("library-rack", true);
@@ -3631,6 +3958,24 @@
     $("me-submit").addEventListener("click", doEdit);
     $("move-submit").addEventListener("click", doMove);
     $("stats-refresh").addEventListener("click", loadStats);
+    $("iscsi-preview-btn").addEventListener("click", function () { iscsiSend(true); });
+    $("iscsi-apply-btn").addEventListener("click", function () { iscsiSend(false); });
+    // A change to the form after a preview needs a new one before Apply.
+    var iscsiEdited = function () {
+      if (!iscsiCtx || !iscsiCtx.previewed) { return; }
+      iscsiSetPreviewed(false);
+      iscsiShow({ text: "Changed since the preview: preview again." });
+    };
+    $("iscsi-form").addEventListener("input", iscsiEdited);
+    $("iscsi-form").addEventListener("change", iscsiEdited);
+    // The secrets go with the dialog.
+    $("iscsi-dialog").addEventListener("close", function () {
+      ["iscsi-chap-secret", "iscsi-mutual-secret", "iscsi-chap-name", "iscsi-mutual-name"].forEach(function (id) { $(id).value = ""; });
+      iscsiCtx = null;
+      $("iscsi-apply-btn").disabled = true;
+      clear($("iscsi-preview"));
+      $("iscsi-error").textContent = "";
+    });
     $("confirm-form").addEventListener("submit", function (e) {
       var fn = confirmCtx;
       confirmCtx = null;
