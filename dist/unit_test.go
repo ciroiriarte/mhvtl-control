@@ -275,6 +275,34 @@ func TestRecoverDropIns(t *testing.T) {
 	}
 }
 
+// TestFabricsReloadDropIn: mhvtl-fabrics.service gains one ExecReload
+// running apply, after an empty assignment that resets any the unit has,
+// and nothing else: no ordering, dependency or sandbox change.
+func TestFabricsReloadDropIn(t *testing.T) {
+	path := "mhvtl-fabrics.service.d/50-mhvtl-control-reload.conf"
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloads []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if k, v, ok := strings.Cut(l, "="); ok && !strings.HasPrefix(l, "#") {
+			if k != "ExecReload" {
+				t.Errorf("%s: sets %s", path, k)
+			}
+			reloads = append(reloads, v)
+		}
+	}
+	if want := []string{"", "/usr/bin/mhvtl-fabrics apply"}; !slices.Equal(reloads, want) {
+		t.Errorf("%s: ExecReload %q, want %q", path, reloads, want)
+	}
+	for _, s := range []string{"Unit", "Install"} {
+		if v := section(t, path, s); len(v) != 0 {
+			t.Errorf("%s: [%s] %v", path, s, v)
+		}
+	}
+}
+
 // commented fails for each key whose line is not directly under a comment,
 // or under another listed key that is (one comment may explain a group).
 // Whether the key is set at all is exactly's to check.
