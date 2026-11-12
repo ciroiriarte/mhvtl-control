@@ -452,6 +452,8 @@ select, input[type="text"], input[type="password"], input[type="number"], input[
 .iscsi-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
 .iscsi-head h3 { margin: 0; font-size: 13px; }
 .iscsi-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+/* .form-grid and its labels set display, which beats the hidden attribute. */
+#iscsi-dialog [hidden] { display: none; }
 textarea { font-family: var(--font-mono); resize: vertical; }
 .panel-status .status-note { display: block; color: var(--warn); font-size: 12px; }
 .bar { height: 8px; border-radius: 999px; background: var(--bar-track); overflow: hidden; margin-top: 6px; }

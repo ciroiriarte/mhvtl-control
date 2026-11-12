@@ -664,6 +664,11 @@ func TestISCSIExportStructure(t *testing.T) {
 			t.Errorf("index.html missing element id %q", id)
 		}
 	}
+	// The dialog toggles its sections with the hidden attribute, which
+	// .form-grid's display would otherwise override.
+	if _, css := get(t, h, "/static/css/themes.css"); !strings.Contains(css, "#iscsi-dialog [hidden] { display: none; }") {
+		t.Error("themes.css: no rule making hidden work inside #iscsi-dialog")
+	}
 	for _, id := range []string{"iscsi-chap-secret", "iscsi-mutual-secret"} {
 		if !strings.Contains(index, `type="password" id="`+id+`" autocomplete="new-password"`) {
 			t.Errorf("index.html: %s is not a new-password input", id)
