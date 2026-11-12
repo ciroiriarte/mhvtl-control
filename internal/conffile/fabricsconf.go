@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/netip"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -1166,6 +1167,19 @@ func (c *FabricsConf) CheckPlan(dev *DeviceConf) []Problem {
 const SecretMask = "********"
 
 const fabMask = SecretMask
+
+// MaskSecrets replaces each secret in s with SecretMask, longest first so
+// a secret that contains another is masked whole.
+func MaskSecrets(s string, secrets []string) string {
+	sorted := append([]string(nil), secrets...)
+	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+	for _, v := range sorted {
+		if v != "" {
+			s = strings.ReplaceAll(s, v, SecretMask)
+		}
+	}
+	return s
+}
 
 // fabSecretField matches the start of a line naming a CHAP or mutual CHAP
 // secret, commented out or not, in any case and spacing. Between the words

@@ -678,3 +678,17 @@ func TestRedactFabricsAnySpace(t *testing.T) {
 		}
 	}
 }
+
+// A secret that contains another is masked whole, whatever the order the
+// secrets come in.
+func TestMaskSecrets(t *testing.T) {
+	const short, long = "abcdefghijkl", "abcdefghijkl-mnop"
+	for _, secrets := range [][]string{{short, long}, {long, short}} {
+		if got := MaskSecrets("x "+long+" y "+short, secrets); got != "x "+SecretMask+" y "+SecretMask {
+			t.Errorf("MaskSecrets(%q) = %q", secrets, got)
+		}
+	}
+	if got := MaskSecrets("abc", []string{""}); got != "abc" {
+		t.Errorf("empty secret: %q", got)
+	}
+}

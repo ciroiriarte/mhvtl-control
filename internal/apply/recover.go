@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"mhvtl-control/internal/conffile"
 )
 
 // recover brings back the files of the apply that left it, which is dead:
@@ -61,12 +63,23 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 			return responseOf(fmt.Errorf("recovery: starting: %w", err))
 		}
 	}
-	// A fabrics apply that died may have half-applied the new file: reload
-	// the unit so the targets follow the restored one. At boot the unit
-	// has not started yet and applies the restored file itself.
+	// A fabrics apply that died may have half-applied the new file: the
+	// targets follow the restored one (reconcileFabrics). At boot the unit
+	// has not started yet and applies the restored file itself. When that
+	// fails the intent stays, so the next request's recovery retries it.
 	var fabricsNote string
 	if it.Op == OpFabrics && !boot {
-		fabricsNote = h.reconcileFabrics(ctx)
+		removed := h.newFabricsRemoved(it)
+		note, err := h.reconcileFabrics(ctx, removed)
+		if err != nil {
+			var originals [][]byte
+			for _, f := range it.Files {
+				originals = append(originals, f.Original)
+			}
+			return Response{Result: ResultError, Error: ErrFabricsState, Conflicts: conflicts,
+				Message: conffile.MaskSecrets("recovery: "+reconcileAdvice(err, removed), fabricsSecrets(originals...))}
+		}
+		fabricsNote = note
 	}
 	if err := h.removeIntent(); err != nil {
 		return responseOf(err)

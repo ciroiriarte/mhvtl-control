@@ -41,7 +41,8 @@ const (
 	FabricsReload = "reload"
 	// FabricsStart is systemctl start of a unit that is inactive because
 	// fabrics.conf did not exist when mhvtl.target started
-	// (ConditionPathExists).
+	// (ConditionPathExists), or failed in an earlier first start whose
+	// file the rollback removed.
 	FabricsStart = "start"
 	// FabricsDeferred writes the file only: mhvtl.target is not running,
 	// and the unit applies the file when it starts.
@@ -58,7 +59,8 @@ const (
 	ErrFabricsUnit = "fabrics_unit"
 	// ErrFabricsState: the unit is in a state the helper does not guess
 	// its way out of (failed, changing, or stopped while mhvtl.target
-	// runs).
+	// runs), or a rollback could not make the targets follow the restored
+	// file.
 	ErrFabricsState = "fabrics_recovery_required"
 	// ErrFabricsApply: the reload or start failed; the file was restored.
 	ErrFabricsApply = "fabrics_apply_failed"
@@ -202,8 +204,16 @@ func (h *Helper) fabricsAction(ctx context.Context, existed bool) (string, error
 	switch st := fab["ActiveState"]; st {
 	case "active":
 		return FabricsReload, nil
-	case "inactive":
+	case "inactive", "failed":
+		// A failed first start leaves the unit failed and its file
+		// removed by the rollback: systemctl start then replaces the
+		// failed state, as start does for an inactive unit, now that the
+		// file exists again for ConditionPathExists.
 		switch {
+		case st == "failed" && existed:
+			// The failed run's ExecStopPost=mhvtl-fabrics remove took its
+			// targets down, so no session is up.
+			return "", refuse(ErrFabricsState, "%s failed; check journalctl -u %s, fix the cause, then systemctl restart %s, which starts it again (the failed run removed its targets, so no session is up to drop)", FabricsUnit, FabricsUnit, FabricsUnit)
 		case target["ActiveState"] != "active":
 			return FabricsDeferred, nil
 		case !existed:
@@ -211,8 +221,6 @@ func (h *Helper) fabricsAction(ctx context.Context, existed bool) (string, error
 		default:
 			return "", refuse(ErrFabricsState, "%s is stopped while %s runs and %s exists; check journalctl -u %s, then systemctl start %s", FabricsUnit, targetUnit, fabricsConf, FabricsUnit, FabricsUnit)
 		}
-	case "failed":
-		return "", refuse(ErrFabricsState, "%s failed; check journalctl -u %s, fix the cause, then systemctl start %s", FabricsUnit, FabricsUnit, FabricsUnit)
 	default:
 		return "", refuse(ErrFabricsState, "%s is %s; try again when it settles", FabricsUnit, orUnknown(st))
 	}
@@ -247,9 +255,18 @@ func showBlocks(out []byte, n int) ([]map[string]string, error) {
 	return units, nil
 }
 
-// runFabrics runs systemctl reload or start on the unit, bounded by
-// fabricsTimeout.
+// fabricsStop stops the unit; ExecStopPost=mhvtl-fabrics remove removes
+// its targets.
+const fabricsStop = "stop"
+
+// runFabrics runs systemctl reload, start or stop on the unit, and on no
+// other, bounded by fabricsTimeout.
 func (h *Helper) runFabrics(ctx context.Context, action string) error {
+	switch action {
+	case FabricsReload, FabricsStart, fabricsStop:
+	default:
+		return fmt.Errorf("systemctl %s %s: not a fabrics action", action, FabricsUnit)
+	}
 	ctx, cancel := context.WithTimeout(ctx, fabricsTimeout)
 	defer cancel()
 	_, err := h.cfg.Systemctl(ctx, action, FabricsUnit)
@@ -257,16 +274,20 @@ func (h *Helper) runFabrics(ctx context.Context, action string) error {
 }
 
 // rollBackFabrics restores fabrics.conf after a failed reload or start
-// and, when the unit is still active, reloads it again so the targets
-// follow the restored file: apply is incremental, so the failed run may
-// have changed some of them. The intent is kept when the restore fails,
-// for recovery.
+// and has the targets follow the restored file (reconcileFabrics): apply
+// is incremental, so the failed run may have changed some of them. It runs
+// to its end even when ctx ends (the helper got SIGTERM during the reload
+// or start). The intent is kept when the restore or the reconcile fails,
+// so that recovery retries them; a failed reconcile answers
+// fabrics_recovery_required, as configfs may then not match the file.
 func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string, runErr error, secrets []string) Response {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricsTimeout)
+	defer cancel()
 	resp := Response{Result: ResultRolledBack, Error: ErrFabricsApply, FailedUnit: FabricsUnit, FabricsAction: action}
-	msg := fmt.Sprintf("systemctl %s %s failed: %s", action, FabricsUnit, mask(errText(runErr), secrets))
+	msg := fmt.Sprintf("systemctl %s %s failed: %s", action, FabricsUnit, conffile.MaskSecrets(errText(runErr), secrets))
 	if h.cfg.JournalTail != nil {
 		if tail, err := h.cfg.JournalTail(ctx, FabricsUnit); err == nil {
-			resp.JournalTail = mask(string(tail), secrets)
+			resp.JournalTail = conffile.MaskSecrets(string(tail), secrets)
 		}
 	}
 	conflicts, err := h.restore(it)
@@ -281,31 +302,77 @@ func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string,
 	} else {
 		msg += "; " + fabricsConf + " restored"
 	}
-	if note := h.reconcileFabrics(ctx); note != "" {
-		msg += "; " + note
+	removed := h.newFabricsRemoved(it)
+	note, err := h.reconcileFabrics(ctx, removed)
+	if err != nil {
+		resp.Result, resp.Error = ResultError, ErrFabricsState
+		resp.Message = conffile.MaskSecrets(msg+"; "+reconcileAdvice(err, removed), secrets)
+		return resp
 	}
+	msg += "; " + note
 	if err := h.removeIntent(); err != nil {
 		msg += "; " + err.Error()
 	}
-	resp.Message = mask(msg, secrets)
+	resp.Message = conffile.MaskSecrets(msg, secrets)
 	return resp
 }
 
-// reconcileFabrics reloads mhvtl-fabrics.service when it is active, so the
-// targets follow fabrics.conf as it is now, and says what it did; an
-// inactive unit is left alone.
-func (h *Helper) reconcileFabrics(ctx context.Context) string {
+// newFabricsRemoved reports whether the restore removed a fabrics.conf the
+// apply had created: the intent records it as new, and it is gone.
+func (h *Helper) newFabricsRemoved(it *Intent) bool {
+	for _, f := range it.Files {
+		if f.Name == fabricsConf && !f.Existed {
+			cur, err := readTarget(h.cfg.ConfigDir, fabricsConf)
+			return err == nil && !cur.exists
+		}
+	}
+	return false
+}
+
+// reconcileFabrics has the targets follow fabrics.conf as it is now, and
+// says what it did. An active unit is reloaded, or stopped when removed is
+// set (the restore removed a file the apply had created): mhvtl-fabrics
+// apply fails without fabrics.conf (load,
+// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L80-L83),
+// while ExecStopPost=mhvtl-fabrics remove removes the targets
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/etc/mhvtl-fabrics.service.in#L20),
+// and the unit was not running before that start. An inactive or failed
+// unit has no targets and is left alone. Any other state (a job still
+// running) and a failed systemctl are errors: the targets may not follow
+// the file. It runs to its end even when ctx ends.
+func (h *Helper) reconcileFabrics(ctx context.Context, removed bool) (string, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricsTimeout)
+	defer cancel()
 	st, err := showProp(ctx, &h.cfg, FabricsUnit, "ActiveState")
 	if err != nil {
-		return err.Error()
+		return "", err
 	}
-	if st != "active" {
-		return FabricsUnit + " is " + orUnknown(st) + ", not reloaded"
+	switch st {
+	case "inactive", "failed":
+		return FabricsUnit + " is " + st + ", not reloaded", nil
+	case "active":
+	default:
+		return "", fmt.Errorf("%s is %s", FabricsUnit, orUnknown(st))
 	}
-	if err := h.runFabrics(ctx, FabricsReload); err != nil {
-		return "reloading " + FabricsUnit + " with it failed too: " + errText(err)
+	verb, done := FabricsReload, "reloaded "+FabricsUnit+" with it"
+	if removed {
+		verb, done = fabricsStop, "stopped "+FabricsUnit+", which removed its targets: it ran only for the start that failed"
 	}
-	return "reloaded " + FabricsUnit + " with it"
+	if err := h.runFabrics(ctx, verb); err != nil {
+		return "", fmt.Errorf("systemctl %s %s with it failed too: %s", verb, FabricsUnit, errText(err))
+	}
+	return done, nil
+}
+
+// reconcileAdvice is the message of a reconcile that failed: what to run
+// by hand, and that the next helper request retries it.
+func reconcileAdvice(err error, removed bool) string {
+	verb := FabricsReload
+	if removed {
+		verb = fabricsStop
+	}
+	return fmt.Sprintf("%v; configfs may not match %s: check journalctl -u %s, then systemctl %s %s; the next helper request retries it",
+		err, fabricsConf, FabricsUnit, verb, FabricsUnit)
 }
 
 // errText is err with the stderr of a failed command, which Output keeps
@@ -335,14 +402,4 @@ func fabricsSecrets(files ...[]byte) []string {
 		out = append(out, conffile.FabricsSecrets(f)...)
 	}
 	return out
-}
-
-// mask replaces each secret in s.
-func mask(s string, secrets []string) string {
-	for _, v := range secrets {
-		if v != "" {
-			s = strings.ReplaceAll(s, v, conffile.SecretMask)
-		}
-	}
-	return s
 }

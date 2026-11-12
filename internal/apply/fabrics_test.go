@@ -21,37 +21,62 @@ const (
 
 // fabEnv is a helper env whose systemctl answers show for
 // mhvtl-fabrics.service and mhvtl.target with the given states, and fails
-// the verbs in fail with err.
+// the verbs in fail with err once, those in failAlways every time. Like
+// exec.CommandContext, it fails every call once its context has ended.
 type fabEnv struct {
 	*env
 	fab, target string // ActiveState
 	load        string // LoadState of mhvtl-fabrics.service
 	canReload   string
 	fail        map[string]error
-	tail        string
+	failAlways  map[string]error
+	// failedStart is the ActiveState a failed start leaves: failed, as
+	// systemd leaves a oneshot whose ExecStart fails.
+	failedStart string
+	// onRun, when set, runs before a reload, start or stop.
+	onRun func(verb string)
+	tail  string
 }
 
 func newFabEnv(t *testing.T) *fabEnv {
-	f := &fabEnv{env: newEnv(t), fab: "active", target: "active", load: "loaded", canReload: "yes", fail: map[string]error{}}
+	f := &fabEnv{env: newEnv(t), fab: "active", target: "active", load: "loaded", canReload: "yes",
+		fail: map[string]error{}, failAlways: map[string]error{}, failedStart: "failed"}
 	f.writeConf("mhvtl.conf", string(f.read("mhvtl.conf"))+"MHVTL_BACKEND=tcmu\n", 0o644)
-	f.cfg.Systemctl = func(_ context.Context, args ...string) ([]byte, error) {
+	f.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
 		f.mu.Lock()
 		f.systemctl = append(f.systemctl, args)
 		f.mu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		switch args[0] {
 		case "show":
 			if strings.Contains(args[1], "CanReload") {
 				return []byte("LoadState=" + f.load + "\nActiveState=" + f.fab + "\nCanReload=" + f.canReload + "\n\nLoadState=loaded\nActiveState=" + f.target + "\nCanReload=no\n"), nil
 			}
 			return []byte(f.fab + "\n"), nil
-		case FabricsReload, FabricsStart:
-			if err := f.fail[args[0]]; err != nil {
-				delete(f.fail, args[0])
-				return nil, err
+		case FabricsReload, FabricsStart, fabricsStop:
+			if f.onRun != nil {
+				f.onRun(args[0])
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
 			}
-			if args[0] == FabricsStart {
+			err := f.fail[args[0]]
+			delete(f.fail, args[0])
+			if err == nil {
+				err = f.failAlways[args[0]]
+			}
+			switch {
+			case err != nil && args[0] == FabricsStart:
+				f.fab = f.failedStart
+			case err != nil:
+			case args[0] == FabricsStart:
 				f.fab = "active"
+			case args[0] == fabricsStop:
+				f.fab = "inactive"
 			}
+			return nil, err
 		}
 		return nil, nil
 	}
@@ -191,7 +216,7 @@ func TestFabricsRefusals(t *testing.T) {
 		result    string
 		code, msg string
 	}{
-		{"failed unit", func(f *fabEnv) { f.writeConf(fabricsConf, fabConf, 0o600); f.fab = "failed" }, "", ResultRefused, ErrFabricsState, "failed"},
+		{"failed unit", func(f *fabEnv) { f.writeConf(fabricsConf, fabConf, 0o600); f.fab = "failed" }, "", ResultRefused, ErrFabricsState, "then systemctl restart " + FabricsUnit},
 		{"stopped while the target runs", func(f *fabEnv) { f.writeConf(fabricsConf, fabConf, 0o600); f.fab = "inactive" }, "", ResultRefused, ErrFabricsState, "stopped while"},
 		{"reloading", func(f *fabEnv) { f.fab = "reloading" }, "", ResultRefused, ErrFabricsState, "reloading"},
 		{"not installed", func(f *fabEnv) { f.load = "not-found" }, "", ResultRefused, ErrFabricsUnit, "mhvtl-tcmu"},
@@ -309,6 +334,8 @@ func TestFabricsRollBack(t *testing.T) {
 	f.noSecret(fabSecret, fabNewSecret)
 }
 
+// A failed first start leaves the unit failed and the new file removed;
+// the next export starts it again, which replaces the failed state.
 func TestFabricsStartFailureRemovesNewFile(t *testing.T) {
 	f := newFabEnv(t)
 	f.fab = "inactive"
@@ -320,8 +347,161 @@ func TestFabricsStartFailureRemovesNewFile(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(f.dir, fabricsConf)); !os.IsNotExist(err) {
 		t.Errorf("new fabrics.conf not removed: %v", err)
 	}
-	if !strings.Contains(resp.Message, "not reloaded") {
-		t.Errorf("message %q, want the inactive unit left alone", resp.Message)
+	if f.fab != "failed" || !strings.Contains(resp.Message, "is failed, not reloaded") {
+		t.Errorf("unit %s, message %q, want the failed unit left alone", f.fab, resp.Message)
+	}
+	if v := f.verbs(); len(v) != 1 || v[0] != "start "+FabricsUnit {
+		t.Errorf("systemctl %v, want the failed start alone", v)
+	}
+
+	f.systemctl = nil
+	if plan := f.do(f.fabricsReq(OpFabricsPlan, fabConf)); plan.Result != ResultValidated || plan.FabricsAction != FabricsStart {
+		t.Fatalf("plan after the failed start = %+v, want validated start", plan)
+	}
+	resp = f.do(f.fabricsReq(OpFabrics, fabConf))
+	if resp.Result != ResultApplied || resp.FabricsAction != FabricsStart || f.fab != "active" {
+		t.Fatalf("export after the failed start = %+v (unit %s), want applied start", resp, f.fab)
+	}
+	if v := f.verbs(); len(v) != 1 || v[0] != "start "+FabricsUnit {
+		t.Errorf("systemctl %v, want start alone", v)
+	}
+}
+
+// A failed unit with no fabrics.conf while mhvtl.target is stopped only
+// gets the file: starting mhvtl.target starts the unit.
+func TestFabricsFailedDeferred(t *testing.T) {
+	f := newFabEnv(t)
+	f.fab, f.target = "failed", "inactive"
+	resp := f.do(f.fabricsReq(OpFabrics, fabConf))
+	if resp.Result != ResultApplied || resp.FabricsAction != FabricsDeferred || len(f.verbs()) != 0 {
+		t.Fatalf("got %+v, systemctl %v, want applied none", resp, f.verbs())
+	}
+}
+
+// A start that fails while the unit ends up active (systemctl cut off, the
+// job done) removes the new file, then stops the unit: mhvtl-fabrics apply
+// fails without fabrics.conf, and stopping removes the targets.
+func TestFabricsStartRollBackStops(t *testing.T) {
+	f := newFabEnv(t)
+	f.fab = "inactive"
+	f.fail[FabricsStart] = errors.New("signal: terminated")
+	f.failedStart = "active"
+	resp := f.do(f.fabricsReq(OpFabrics, fabConf))
+	if resp.Result != ResultRolledBack || !strings.Contains(resp.Message, "stopped "+FabricsUnit) {
+		t.Fatalf("got %+v", resp)
+	}
+	if v := f.verbs(); len(v) != 2 || v[1] != "stop "+FabricsUnit {
+		t.Errorf("systemctl %v, want the start, then stop", v)
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, fabricsConf)); !os.IsNotExist(err) || f.intentExists() {
+		t.Errorf("new fabrics.conf left (%v) or intent left %v", err, f.intentExists())
+	}
+}
+
+// When the reload of the restored file fails too, the answer is
+// fabrics_recovery_required, not rolled_back, and the intent stays: the
+// next request's recovery reloads again.
+func TestFabricsReconcileFailure(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	next := strings.Replace(fabConf, fabSecret, fabNewSecret, 1)
+	f.fail[FabricsReload] = &exec.ExitError{Stderr: []byte("Job failed near " + fabNewSecret)}
+	f.failAlways[FabricsReload] = &exec.ExitError{Stderr: []byte("Job failed")}
+	resp := f.do(f.fabricsReq(OpFabrics, next))
+	if resp.Result != ResultError || resp.Error != ErrFabricsState {
+		t.Fatalf("got %+v, want error fabrics_recovery_required", resp)
+	}
+	for _, want := range []string{"configfs may not match", "journalctl -u " + FabricsUnit, "systemctl reload " + FabricsUnit} {
+		if !strings.Contains(resp.Message, want) {
+			t.Errorf("message %q lacks %q", resp.Message, want)
+		}
+	}
+	if strings.Contains(resp.Message, fabNewSecret) {
+		t.Errorf("message %q holds the secret", resp.Message)
+	}
+	if string(f.read(fabricsConf)) != fabConf || !f.intentExists() {
+		t.Fatalf("want the original back and the intent kept (intent %v)", f.intentExists())
+	}
+
+	// Recovery while the reload still fails keeps the intent.
+	if resp := f.do(Request{Op: OpRecover, Actor: "test"}); resp.Result != ResultError || resp.Error != ErrFabricsState || !f.intentExists() {
+		t.Fatalf("recover with reload failing: %+v, intent %v", resp, f.intentExists())
+	}
+	delete(f.failAlways, FabricsReload)
+	f.systemctl = nil
+	resp = f.do(Request{Op: OpRecover, Actor: "test"})
+	if resp.Result != ResultRecovered || !strings.Contains(resp.Message, "reloaded "+FabricsUnit) || f.intentExists() {
+		t.Fatalf("recover: %+v, intent %v", resp, f.intentExists())
+	}
+	if v := f.verbs(); len(v) != 1 || v[0] != "reload "+FabricsUnit {
+		t.Errorf("systemctl %v, want one reload", v)
+	}
+	f.noSecret(fabSecret, fabNewSecret)
+}
+
+// SIGTERM during the reload ends the request's context: the rollback and
+// its reload of the restored file still run.
+func TestFabricsRollBackAfterCancel(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	next := strings.Replace(fabConf, fabSecret, fabNewSecret, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.onRun = func(string) { cancel(); f.onRun = nil }
+	req := f.fabricsReq(OpFabrics, next)
+	req.V = Version
+	resp := f.h.Handle(ctx, f.peer, &req)
+	if resp.Result != ResultRolledBack || !strings.Contains(resp.Message, "reloaded "+FabricsUnit) {
+		t.Fatalf("got %+v, want rolled back and reloaded", resp)
+	}
+	if string(f.read(fabricsConf)) != fabConf || f.intentExists() {
+		t.Errorf("file not restored or intent left %v", f.intentExists())
+	}
+	if v := f.verbs(); len(v) != 2 || v[1] != "reload "+FabricsUnit {
+		t.Errorf("systemctl %v, want the cut-off reload, then a reload", v)
+	}
+}
+
+// A first start killed with the helper leaves the unit running the new
+// file: recovery removes the file and stops the unit, which removes the
+// targets (a reload would fail without the file).
+func TestFabricsRecoveryOfFirstStart(t *testing.T) {
+	f := newFabEnv(t)
+	f.fab = "inactive"
+	f.h.killPoint = func(step string) bool { return step == "applying" }
+	if resp := f.do(f.fabricsReq(OpFabrics, fabConf)); resp.Result != ResultError {
+		t.Fatalf("killed apply: %+v", resp)
+	}
+	f.fab = "active" // the start job went on
+	f.h.killPoint = func(string) bool { return false }
+	f.systemctl = nil
+	resp := f.do(Request{Op: OpRecover, Actor: "test"})
+	if resp.Result != ResultRecovered || !strings.Contains(resp.Message, "stopped "+FabricsUnit) {
+		t.Fatalf("recover: %+v", resp)
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, fabricsConf)); !os.IsNotExist(err) || f.intentExists() {
+		t.Errorf("new file left (%v) or intent left %v", err, f.intentExists())
+	}
+	if v := f.verbs(); len(v) != 1 || v[0] != "stop "+FabricsUnit {
+		t.Errorf("systemctl %v, want one stop", v)
+	}
+}
+
+// Recovery while a job of the unit still runs cannot reconcile: it keeps
+// the intent for the next request.
+func TestFabricsRecoveryUnitBusy(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	f.h.killPoint = func(step string) bool { return step == "applying" }
+	f.do(f.fabricsReq(OpFabrics, strings.Replace(fabConf, fabSecret, fabNewSecret, 1)))
+	f.h.killPoint = func(string) bool { return false }
+	f.fab = "reloading"
+	resp := f.do(Request{Op: OpRecover, Actor: "test"})
+	if resp.Result != ResultError || resp.Error != ErrFabricsState || !f.intentExists() || !strings.Contains(resp.Message, "reloading") {
+		t.Fatalf("recover: %+v, intent %v", resp, f.intentExists())
+	}
+	if string(f.read(fabricsConf)) != fabConf {
+		t.Error("file not restored")
 	}
 }
 

@@ -59,8 +59,6 @@ func changesOf(req *Request) []change {
 	return append(append(append(conf, libs...), dev...), dels...)
 }
 
-// errKilled is what a kill point returns in tests: the helper stops there
-// as if it had died, with no cleanup.
 // replace writes a change that is not a delete.
 func (h *Helper) replace(c change) error {
 	if c.private {
@@ -69,6 +67,8 @@ func (h *Helper) replace(c change) error {
 	return conffile.ReplaceIfHash(h.cfg.ConfigDir, c.name, c.base, c.data)
 }
 
+// errKilled is what a kill point returns in tests: the helper stops there
+// as if it had died, with no cleanup.
 var errKilled = errors.New("killed at a test kill point")
 
 // writeFiles makes the changes durable, one file at a time, behind the
