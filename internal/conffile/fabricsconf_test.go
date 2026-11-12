@@ -663,3 +663,18 @@ func TestFabricsDiff(t *testing.T) {
 		t.Errorf("FabricsDiff = %q, want %q", got, want)
 	}
 }
+
+// TestRedactFabricsAnySpace: split_field collapses any isspace() byte in a
+// field name, so " CHAP\vsecret:" names a secret and is masked.
+func TestRedactFabricsAnySpace(t *testing.T) {
+	for _, sep := range []string{" ", "\t", "\v", "\f", "\r", " \v "} {
+		in := "iSCSI target: 10\n Mutual" + sep + "CHAP" + sep + "secret: OLDSECRET11\n"
+		got := string(RedactFabrics([]byte(in)))
+		if strings.Contains(got, "OLDSECRET11") {
+			t.Errorf("sep %q: not masked: %q", sep, got)
+		}
+		if s := FabricsSecrets([]byte(in)); len(s) == 0 || s[0] != "OLDSECRET11" {
+			t.Errorf("sep %q: FabricsSecrets = %q", sep, s)
+		}
+	}
+}

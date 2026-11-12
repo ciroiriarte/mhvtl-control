@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -163,8 +164,10 @@ func (s *Server) handleISCSIConfig(w http.ResponseWriter, _ *http.Request) {
 		// CheckPlan is for a file without parse problems.
 		ps = f.conf.CheckPlan(f.dev)
 	}
+	stored := conffile.FabricsSecrets(f.data)
 	for _, p := range ps {
-		out.Problems = append(out.Problems, iscsiProblemDTO{Line: p.Line, Message: p.Msg})
+		msg := quotedSecret.ReplaceAllString(maskAll(p.Msg, stored), "'(not shown)'")
+		out.Problems = append(out.Problems, iscsiProblemDTO{Line: p.Line, Message: msg})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -279,6 +282,21 @@ func fieldOf(msg string, fields []string) string {
 		}
 	}
 	return ""
+}
+
+// quotedSecret is a quoted name in a parser message that mentions a
+// secret, such as "unknown iSCSI target field 'chap secret= pa'": a field
+// name run into its value can carry the start of the secret.
+var quotedSecret = regexp.MustCompile(`(?i)'[^']*secret[^']*'`)
+
+// refusalText is msg with the given secrets masked and quoted names that
+// mention a secret cut. A refusal of the edit masks only the request's own
+// secrets: its message quotes values the client sent, and masking the
+// secrets stored in fabrics.conf there would tell the client which of its
+// values is one (a stored secret it quotes is one the client typed). A
+// refusal of the file as read quotes no request value, so it masks those.
+func refusalText(msg string, secrets []string) string {
+	return quotedSecret.ReplaceAllString(maskAll(msg, secrets), "'(not shown)'")
 }
 
 // maskAll replaces each secret in s, longest first so a secret that
@@ -409,15 +427,17 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, dryRun boo
 		writeError(w, http.StatusInternalServerError, "config_error", err.Error())
 		return
 	}
-	secrets = append(secrets, conffile.FabricsSecrets(f.data)...)
-	refuse := func(inv *fabricsInvalid) {
+	own, stored := secrets, conffile.FabricsSecrets(f.data)
+	secrets = append(append([]string(nil), own...), stored...)
+	refuseWith := func(inv *fabricsInvalid, mask []string) {
 		writeJSON(w, inv.status, struct {
 			Error fieldErrorDetail `json:"error"`
-		}{fieldErrorDetail{Code: inv.code, Message: maskAll(inv.msg, secrets), Field: inv.field}})
+		}{fieldErrorDetail{Code: inv.code, Message: refusalText(inv.msg, mask), Field: inv.field}})
 	}
+	refuse := func(inv *fabricsInvalid) { refuseWith(inv, own) }
 	if err := f.conf.Writable(); err != nil {
 		// The file as read: nothing the request says is at fault.
-		refuse(&fabricsInvalid{status: http.StatusUnprocessableEntity, code: apply.ErrInvalid, msg: err.Error()})
+		refuseWith(&fabricsInvalid{status: http.StatusUnprocessableEntity, code: apply.ErrInvalid, msg: err.Error()}, stored)
 		return
 	}
 	if inv := edit(f); inv != nil {
@@ -466,7 +486,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, dryRun boo
 	}
 	status, code := applyStatus(resp)
 	out := iscsiWriteDTO{
-		DryRun: dryRun, Action: resp.FabricsAction, Diff: conffile.FabricsDiff(f.data, next), Result: resp.Result,
+		DryRun: dryRun, Action: resp.FabricsAction, Diff: maskAll(conffile.FabricsDiff(f.data, next), secrets), Result: resp.Result,
 		Message: maskAll(resp.Message, secrets), CurrentSHA256: resp.CurrentSHA256,
 		JournalTail: maskAll(resp.JournalTail, secrets), RollbackDir: resp.RollbackDir,
 	}

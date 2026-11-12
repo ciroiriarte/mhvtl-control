@@ -512,3 +512,65 @@ func TestTransportUnsupported(t *testing.T) {
 		t.Errorf("%d helper requests", n)
 	}
 }
+
+// TestISCSIRefusalNoSecretOracle: a refusal quoting request values reads
+// the same whether or not one of them is a stored secret, so a client
+// cannot test guesses (security review 2026-11-12, finding 2).
+func TestISCSIRefusalNoSecretOracle(t *testing.T) {
+	e := iscsiEnv(t, fabricsSample, "reload", nil)
+	msg := func(guess string) string {
+		t.Helper()
+		rec := e.call(http.MethodPatch, "/api/v1/transports/iscsi",
+			map[string]any{"portals": []string{"letmein " + guess + " qwerty"}, "dry_run": true})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body)
+		}
+		return decodeBody[fieldErrBody](t, rec).Error.Message
+	}
+	wrong, right := msg("password1"), msg(chapSecret)
+	if right != strings.ReplaceAll(wrong, "password1", chapSecret) {
+		t.Errorf("refusal depends on the guess being a stored secret:\n%q\n%q", wrong, right)
+	}
+	if len(e.fabricsReqs()) != 0 {
+		t.Error("refusal reached the helper")
+	}
+}
+
+// TestISCSIProblemsNoSecretFragment: a malformed secret line's problem,
+// which quotes the field name run into the value, is not returned as is
+// (security review 2026-11-12).
+func TestISCSIProblemsNoSecretFragment(t *testing.T) {
+	bad := strings.Replace(fabricsSample, " CHAP secret: "+chapSecret, " CHAP secret= Pa:ss-word12", 1)
+	e := iscsiEnv(t, bad, "reload", nil)
+	rec := e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	got := decodeBody[iscsiConfigDTO](t, rec)
+	if len(got.Problems) == 0 {
+		t.Fatal("no problem reported for the malformed line")
+	}
+	for _, s := range []string{"pa:ss", "Pa:ss", "ss-word"} {
+		if strings.Contains(rec.Body.String(), s) {
+			t.Errorf("GET config holds %q: %s", s, rec.Body)
+		}
+	}
+	// A write against that file is refused with the same message.
+	rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30, "dry_run": true})
+	if rec.Code != http.StatusUnprocessableEntity || strings.Contains(strings.ToLower(rec.Body.String()), "pa:ss") {
+		t.Errorf("refusal %d: %s", rec.Code, rec.Body)
+	}
+}
+
+// TestISCSIDiffMasksAnySpacing: a secret field spelled with \v between the
+// words, which mhvtl-fabrics reads as "CHAP secret", is masked in the
+// preview (security review 2026-11-12, finding 1).
+func TestISCSIDiffMasksAnySpacing(t *testing.T) {
+	odd := strings.Replace(fabricsSample, " CHAP secret: ", " CHAP\vsecret: ", 1)
+	e := iscsiEnv(t, odd, "reload", nil)
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 10, "dry_run": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	noSecrets(t, "unbind preview", rec.Body.String())
+}
