@@ -445,10 +445,11 @@ func TestFabricsEditExisting(t *testing.T) {
 			return c.UpsertTarget(30, TargetEdit{Initiators: []string{"iqn.2024-01.com.example:pbs2"}})
 		}, fabEditBase + "\niSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs2\n"},
 		{"empty edit", func(c *FabricsConf) error { return c.UpsertTarget(10, TargetEdit{}) }, fabEditBase},
+		// Removing a target keeps the comments above it.
 		{"remove last target", func(c *FabricsConf) error { return c.RemoveTarget(50) },
-			strings.TrimSuffix(fabEditBase, "\n# tape 50\niSCSI target: 50\n Initiator name: iqn.2024-01.com.example:pbs1\n")},
+			strings.TrimSuffix(fabEditBase, "iSCSI target: 50\n Initiator name: iqn.2024-01.com.example:pbs1\n")},
 		{"remove middle target", func(c *FabricsConf) error { return c.RemoveTarget(10) },
-			fabEditBase[:strings.Index(fabEditBase, "# main\n")+len("# main\n")] + "\n# tape 50\niSCSI target: 50\n Initiator name: iqn.2024-01.com.example:pbs1\n"},
+			fabEditBase[:strings.Index(fabEditBase, "# PBS\n")+len("# PBS\n")] + "\n# tape 50\niSCSI target: 50\n Initiator name: iqn.2024-01.com.example:pbs1\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -488,15 +489,20 @@ func TestFabricsEditSample(t *testing.T) {
 		t.Errorf("CHAP added:\n%s", got)
 	}
 
-	// Removing the only target takes its comment block and the
-	// commented-out CHAP lines after it.
+	// Removing the only target takes the commented-out CHAP lines after it
+	// but keeps the comment block above it, which documents the record
+	// format and its SECURITY warning.
 	c = mustFabrics(t, sample)
 	if err := c.RemoveTarget(10); err != nil {
 		t.Fatal(err)
 	}
-	end := strings.Index(sample, ":mhvtl\n") + len(":mhvtl\n")
-	if got := string(c.Render()); got != sample[:end] {
+	end := strings.Index(sample, "iSCSI target: 10\n")
+	got := string(c.Render())
+	if got != sample[:end] {
 		t.Errorf("target removed:\n%s", got)
+	}
+	if !strings.Contains(got, "An Initiator name is an identity, not a credential") {
+		t.Error("the sample's SECURITY comment was removed with the target")
 	}
 }
 

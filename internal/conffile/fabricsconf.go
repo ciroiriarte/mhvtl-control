@@ -992,11 +992,15 @@ func (c *FabricsConf) UpsertTarget(id int, te TargetEdit) error {
 	})
 }
 
-// RemoveTarget removes an "iSCSI target:" record, as RemoveStanza removes a
-// device.conf stanza: its leading comment block, its lines up to the last
+// RemoveTarget removes an "iSCSI target:" record: its lines up to the last
 // field, the comments after that up to a blank line (such as commented-out
 // CHAP lines) unless the next record follows with no blank line, and one
-// blank line next to it. A missing target is ErrNotFound.
+// blank line next to it. Unlike RemoveStanza it keeps the comments above
+// the record: in mhVTL's sample fabrics.conf the block above the first
+// target documents the record format and its SECURITY warning
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/etc/fabrics.conf.sample),
+// and unexporting a library must not remove that. A missing target is
+// ErrNotFound.
 func (c *FabricsConf) RemoveTarget(id int) error {
 	return c.edit(func(e *fabEdit) error {
 		r := c.find(fabTarget, int64(id))
@@ -1004,7 +1008,7 @@ func (c *FabricsConf) RemoveTarget(id int) error {
 			return fmt.Errorf("iSCSI target %d: %w", id, ErrNotFound)
 		}
 		n := len(c.lines)
-		from, to := c.leadingStart(r.header), r.end()
+		from, to := r.header, r.end()
 		j := to
 		for j < n && isFabComment(c.lines[j].Text) {
 			j++
