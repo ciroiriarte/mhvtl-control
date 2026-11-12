@@ -420,9 +420,65 @@ from the LIO configuration in configfs (`/sys/kernel/config/target`):
   backstore. `GET /api/v1/system` reports the same list.
 - `warnings`: the files that could not be read; what they hold is left out.
 
-Without configfs or LIO the answer is empty (`"configfs": false`). Changing
-the exports is mhVTL's `mhvtl-fabrics`' job; mhvtl-control does not write to
-configfs. The dashboard shows it as the Transport Map panel.
+Without configfs or LIO the answer is empty (`"configfs": false`). The
+dashboard shows it as the Transport Map panel.
+
+### Export a library over iSCSI
+
+mhVTL's [`mhvtl-fabrics`](https://github.com/markh794/mhvtl/blob/master/man/mhvtl-fabrics.1.in)
+exports libraries to remote initiators as described in `/etc/mhvtl/fabrics.conf`
+([`fabrics.conf(5)`](https://github.com/markh794/mhvtl/blob/master/man/fabrics.conf.5.in)),
+with mhVTL's TCMU backend (`MHVTL_BACKEND=tcmu`, package `mhvtl-tcmu`).
+mhvtl-control edits that file and has `mhvtl-fabrics.service` apply it; it
+never writes configfs itself. These are writes, so they need what the
+configuration editor needs (see [Turn writes on](#turn-writes-on)).
+
+- `GET /api/v1/transports/iscsi/config`: the file as parsed: the portals, the
+  base name, and per exported library its initiators, target name and
+  derived IQN (`wwn`), whether CHAP and mutual CHAP are set, and the
+  `device.conf` device. Secrets are never returned. `problems` lists what
+  `mhvtl-fabrics` would refuse.
+- `PATCH /api/v1/transports/iscsi` `{"portals": [...], "base_name": "..."}`:
+  the settings every target shares. `[]` removes every portal (targets then
+  listen on `0.0.0.0:3260`), `""` removes the base name.
+- `POST /api/v1/transports/iscsi/bind` `{"library": 10, "initiators": [...],
+  "chap": {"name": "...", "secret": "..."}}`: export a library (or a
+  standalone drive) to the initiators listed, or change its record. Also
+  `target_name`, `mutual_chap`, `clear_chap` and `clear_mutual_chap`. A
+  field left out stays as it is, CHAP included.
+- `POST /api/v1/transports/iscsi/unbind` `{"library": 10}`: stop exporting it.
+
+Each takes `"dry_run": true` to see the change first: the diff of
+`fabrics.conf`, with every secret shown as `********`, and what the apply
+would do. An apply answers with the same, and for a bind the target as
+configfs shows it afterwards.
+
+The helper writes `fabrics.conf` mode 0600 (it may hold CHAP secrets), keeps
+the previous copy for rollback, and records the change in its audit log with
+secrets masked. Then:
+
+- with `mhvtl-fabrics.service` active, it runs `systemctl reload`, which runs
+  `mhvtl-fabrics apply`: targets, LUNs and ACLs follow the file, and sessions
+  to the targets the change leaves alone stay up. mhVTL's unit has no reload
+  of its own yet, so the package installs the drop-in
+  `mhvtl-fabrics.service.d/50-mhvtl-control-reload.conf` that adds it. A
+  restart would remove every target first and is never used;
+- on the first export, when the unit did not start because the file did not
+  exist, it starts the unit;
+- while `mhvtl.target` is stopped, it only writes the file, applied when
+  mhVTL starts.
+
+If the reload or start fails, the previous file is put back and applied
+again, and the answer carries the unit's last journal lines. The helper
+refuses, changing nothing, when `MHVTL_BACKEND` is not `tcmu` (`mhvtl-fabrics`
+would do nothing), when `mhvtl-fabrics.service` is missing, has no reload,
+has failed or was stopped while mhVTL runs (`fabrics_recovery_required`:
+check `journalctl -u mhvtl-fabrics`, then start it), and when the file
+changed since it was read (409).
+
+An initiator name is not a credential: any host can claim one. Without CHAP
+a listed initiator can read and write every tape, so use CHAP unless the
+portals are on a trusted storage network (`fabrics.conf(5)`, SECURITY).
 
 The map names the initiators allowed in, the sessions logged in and the
 addresses they connect from. Without `-api-token` any local user can read it

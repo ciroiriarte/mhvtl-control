@@ -57,6 +57,36 @@ allowed in and the addresses their sessions connect from; on a host other
 users log in to, set
 .BR \-api\-token .
 .PP
+.I /api/v1/transports/iscsi/config
+reads mhVTL's
+.BR fabrics.conf (5)
+with every secret left out.
+.I /api/v1/transports/iscsi
+(PATCH: portals, base name),
+.I /api/v1/transports/iscsi/bind
+and
+.I /api/v1/transports/iscsi/unbind
+edit it; each takes a dry run that shows the change with secrets masked.
+They are writes, so they need the token and the helper.
+.B mhvtl-control-apply
+writes the file mode 0600 and runs
+.BR "systemctl reload mhvtl-fabrics.service" ,
+which runs
+.BR "mhvtl-fabrics apply" ;
+sessions to targets the change leaves alone stay up. The reload comes from
+the drop-in
+.I mhvtl-fabrics.service.d/50-mhvtl-control-reload.conf
+shipped with mhvtl-control. On the first export it starts the unit instead,
+and while
+.B mhvtl.target
+is stopped it only writes the file. A failed reload or start puts the
+previous file back and applies it again. The helper refuses when
+.B MHVTL_BACKEND
+is not
+.BR tcmu ,
+and when the unit is missing, cannot reload, has failed or was stopped while
+mhVTL runs.
+.PP
 mhVTL may start after
 .BR mhvtl-control ,
 and may restart while it runs.
