@@ -318,22 +318,13 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// fabricsDiff is lineDiff of fabrics.conf with every CHAP secret masked
-// in the lines it shows, capped like auditFiles'. The diff is taken on the
-// real lines, so a changed secret still shows, as a masked line removed
-// and added.
+// fabricsDiff is conffile.FabricsDiff capped like auditFiles' diffs.
 func fabricsDiff(before, after []byte) (string, bool) {
-	var d strings.Builder
-	for _, l := range strings.SplitAfter(lineDiff(fabricsConf, before, after), "\n") {
-		if strings.HasPrefix(l, "-") && !strings.HasPrefix(l, "--- ") || strings.HasPrefix(l, "+") && !strings.HasPrefix(l, "+++ ") {
-			l = l[:1] + string(conffile.RedactFabrics([]byte(l[1:])))
-		}
-		d.WriteString(l)
-	}
-	if d := d.String(); len(d) > maxDiff {
+	d := conffile.FabricsDiff(before, after)
+	if len(d) > maxDiff {
 		return d[:maxDiff], true
 	}
-	return d.String(), false
+	return d, false
 }
 
 // fabricsSecrets lists the CHAP secret values of both files, for masking

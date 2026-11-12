@@ -273,6 +273,12 @@ func TestConfigWriteRoutesGated(t *testing.T) {
 		{http.MethodPost, "/api/v1/config/apply"},
 		{http.MethodPatch, "/api/v1/config/system"},
 		{http.MethodDelete, "/api/v1/config/stages/0123"},
+		{http.MethodPatch, "/api/v1/transports/iscsi"},
+		{http.MethodPost, "/api/v1/transports/iscsi/bind"},
+		{http.MethodPost, "/api/v1/transports/iscsi/unbind"},
+		{http.MethodPatch, "/api/v1/transports/fc"},
+		{http.MethodPost, "/api/v1/transports/fc/bind"},
+		{http.MethodPost, "/api/v1/transports/usb/unbind"},
 	}
 	anon := newWriteEnv(t, nil)
 	anon.anon = true

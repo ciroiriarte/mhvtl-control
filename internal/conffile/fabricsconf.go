@@ -1181,6 +1181,36 @@ func RedactFabrics(data []byte) []byte {
 	return out
 }
 
+// FabricsDiff is the change from before to after as the fabrics.conf lines
+// removed and added between their common head and tail, under a header
+// naming the file, with every CHAP secret masked in the lines it shows. It
+// diffs the real lines, so a changed secret still shows, as a masked line
+// removed and added. The helper's audit and the API's previews use it.
+func FabricsDiff(before, after []byte) string {
+	al, bl := strings.SplitAfter(string(before), "\n"), strings.SplitAfter(string(after), "\n")
+	i := 0
+	for i < len(al) && i < len(bl) && al[i] == bl[i] {
+		i++
+	}
+	j := 0
+	for j < len(al)-i && j < len(bl)-i && al[len(al)-1-j] == bl[len(bl)-1-j] {
+		j++
+	}
+	var d strings.Builder
+	fmt.Fprintf(&d, "--- fabrics.conf\n+++ fabrics.conf\n@@ line %d @@\n", i+1)
+	for _, side := range []struct {
+		sign  string
+		lines []string
+	}{{"-", al[i : len(al)-j]}, {"+", bl[i : len(bl)-j]}} {
+		for _, l := range side.lines {
+			if l != "" {
+				d.WriteString(side.sign + string(RedactFabrics([]byte(strings.TrimSuffix(l, "\n")))) + "\n")
+			}
+		}
+	}
+	return d.String()
+}
+
 // FabricsSecrets returns the values RedactFabrics masks, each also cut at
 // its first blank (a secret has none), for masking text that may quote
 // them, such as a command's error output.

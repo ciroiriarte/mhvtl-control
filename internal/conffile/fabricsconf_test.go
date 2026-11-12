@@ -645,3 +645,15 @@ func TestRedactFabrics(t *testing.T) {
 		t.Errorf("secret left: %s", got)
 	}
 }
+
+// TestFabricsDiff: the diff masks secrets and still shows a secret-only
+// change, as a masked line removed and added.
+func TestFabricsDiff(t *testing.T) {
+	a := "iSCSI target: 10\n Initiator name: iqn.2024-01.com.example:a\n CHAP name: a\n CHAP secret: old-secret-0123\n"
+	b := strings.Replace(a, "old-secret-0123", "new-secret-4567", 1)
+	got := FabricsDiff([]byte(a), []byte(b))
+	want := "--- fabrics.conf\n+++ fabrics.conf\n@@ line 4 @@\n- CHAP secret: ********\n+ CHAP secret: ********\n"
+	if got != want {
+		t.Errorf("FabricsDiff = %q, want %q", got, want)
+	}
+}
