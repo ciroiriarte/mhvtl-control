@@ -1192,7 +1192,8 @@
    * which are cleared when it closes; nothing drawn shows one.            */
   var lastTransports = null; // GET /transports, null when not read
   var iscsiState = { cfg: null, error: null, busy: false };
-  var iscsiCtx = null; // { mode: "bind" | "settings" | "unbind", row, gen, previewed }
+  // { mode: "bind" | "settings" | "unbind", row, gen, previewed, preview: {body, sha} of the last good preview }
+  var iscsiCtx = null;
 
   function iscsiGate() {
     return core.iscsiAllowed({ caps: lastCfg && lastCfg.caps, reachable: mutationsEnabled, cfg: iscsiState.cfg,
@@ -1350,8 +1351,13 @@
     if (o.tail) { box.appendChild(mk("pre", { class: "diff", text: o.tail })); }
   }
 
+  // iscsiSetPreviewed enables Apply for the change previewed last; off
+  // also forgets that preview, so Apply never sends anything else.
   function iscsiSetPreviewed(on) {
-    if (iscsiCtx) { iscsiCtx.previewed = on; }
+    if (iscsiCtx) {
+      iscsiCtx.previewed = on;
+      if (!on) { iscsiCtx.preview = null; }
+    }
     $("iscsi-apply-btn").disabled = !on;
   }
 
@@ -1368,7 +1374,7 @@
   function iscsiOpen(mode, row) {
     var gate = iscsiGate();
     if (!gate.ok) { transportStatus.error(gate.reason); return; }
-    iscsiCtx = { mode: mode, row: row, gen: NodeState.generation, previewed: false };
+    iscsiCtx = { mode: mode, row: row, gen: NodeState.generation, previewed: false, preview: null };
     var title = { bind: row && row.exported ? "Edit iSCSI export" : "Export over iSCSI", settings: "iSCSI settings", unbind: "Stop exporting" }[mode];
     $("iscsi-dialog-title").textContent = title + (row ? ": " + row.label : "");
     $("iscsi-dialog-intro").textContent = mode === "unbind"
@@ -1405,7 +1411,8 @@
   }
 
   // iscsiSend previews (dryRun) or applies the open dialog's change and
-  // shows the outcome.
+  // shows the outcome. An apply sends the body previewed last, not the
+  // form (core.iscsiApplyBody).
   function iscsiSend(dryRun) {
     var ctx = iscsiCtx;
     if (!ctx) { return; }
@@ -1413,10 +1420,10 @@
       iscsiShow({ error: "The node changed: close this dialog and refresh." });
       return;
     }
-    if (!dryRun && !ctx.previewed) { iscsiShow({ error: "Preview the change first." }); return; }
+    if (!dryRun && (!ctx.previewed || !ctx.preview)) { iscsiShow({ error: "Preview the change first." }); return; }
     var gate = iscsiGate();
     if (!gate.ok) { iscsiShow({ error: gate.reason }); return; }
-    var b = iscsiBody(ctx, dryRun);
+    var b = dryRun ? iscsiBody(ctx, true) : { body: core.iscsiApplyBody(ctx.preview.body, ctx.preview.sha) };
     if (b.error) {
       iscsiShow({ error: b.error });
       var bad = $(core.iscsiFieldInput(b.field));
@@ -1435,6 +1442,11 @@
           if (!dryRun) { break; }
           iscsiShow({ text: o.text, actionText: o.actionText, diff: o.diff });
           iscsiSetPreviewed(true);
+          ctx.preview = { body: b.body, sha: r.res && r.res.sha256 };
+          return;
+        case "unchanged":
+          iscsiShow({ text: o.text });
+          if (!dryRun) { iscsiReload(); }
           return;
         case "applied":
           if (dryRun) { break; }

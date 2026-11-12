@@ -43,10 +43,14 @@ test("buildISCSIBindBody on an existing record: empty CHAP is unchanged, clear f
   // Unchanged form: only the initiators (sent as listed) and dry_run.
   assert.deepStrictEqual(core.buildISCSIBindBody(10, { initiators: "iqn.a", target_name: "iqn.t", chap_name: "", chap_secret: "" }, existing, true).body,
     { library: 10, initiators: ["iqn.a"], dry_run: true });
-  // Emptying the initiators of a record sends the empty list; clearing the
-  // target name sends "".
-  assert.deepStrictEqual(core.buildISCSIBindBody(10, { initiators: "\n", target_name: "" }, existing, true).body,
-    { library: 10, initiators: [], target_name: "", dry_run: true });
+  // Clearing the target name sends "".
+  assert.deepStrictEqual(core.buildISCSIBindBody(10, { initiators: "iqn.a", target_name: "" }, existing, true).body,
+    { library: 10, initiators: ["iqn.a"], target_name: "", dry_run: true });
+  // Emptying the initiators of a record is refused here, never sent as [].
+  const emptied = core.buildISCSIBindBody(10, { initiators: "\n", target_name: "iqn.t" }, existing, true);
+  assert.strictEqual(emptied.body, undefined);
+  assert.strictEqual(emptied.field, "initiators");
+  assert.ok(/exports nothing/.test(emptied.error) && /Stop exporting/.test(emptied.error));
   // Remove CHAP wins over typed CHAP fields, and sends no credentials.
   const cleared = core.buildISCSIBindBody(10, { initiators: "iqn.a", target_name: "iqn.t", chap_name: "x", chap_secret: SECRET,
     clear_chap: true, clear_mutual_chap: true }, existing, false).body;
@@ -63,6 +67,16 @@ test("buildISCSIBindBody refuses half a CHAP pair, naming the field", () => {
   assert.strictEqual(b.field, "mutual_chap");
   assert.ok(!b.error.includes(MUTUAL));
   assert.strictEqual(core.buildISCSIBindBody(0, {}, null, true).field, "library");
+});
+
+test("iscsiApplyBody sends the previewed body with base_sha256", () => {
+  const previewed = { library: 10, initiators: ["iqn.a"], chap: { name: "u", secret: SECRET }, dry_run: true };
+  const body = core.iscsiApplyBody(previewed, "abc123");
+  assert.deepStrictEqual(body, { library: 10, initiators: ["iqn.a"], chap: { name: "u", secret: SECRET }, dry_run: false, base_sha256: "abc123" });
+  assert.strictEqual(previewed.dry_run, true); // the preview is left as it was
+  // No file when previewed: base_sha256 "" (present, not omitted).
+  assert.deepStrictEqual(core.iscsiApplyBody({ library: 30, dry_run: true }, ""), { library: 30, dry_run: false, base_sha256: "" });
+  assert.deepStrictEqual(core.iscsiApplyBody({ portals: [], dry_run: true }, undefined), { portals: [], dry_run: false, base_sha256: "" });
 });
 
 test("buildISCSIUnbindBody", () => {
@@ -214,6 +228,15 @@ test("iscsiOutcome maps write responses", () => {
   const c = core.iscsiOutcome({ result: "conflict", error: { code: "conflict", message: "changed" } }, 409);
   assert.strictEqual(c.kind, "conflict");
   assert.ok(/changed since it was read/.test(c.text));
+  const busy = core.iscsiOutcome({ result: "apply_in_progress", error: { code: "apply_in_progress", message: "another apply is running" } }, 409);
+  assert.deepStrictEqual([busy.kind, /Another change is being applied/.test(busy.text)], ["conflict", true]);
+  const rec = core.iscsiOutcome({ result: "recovered", error: { code: "recovered", message: "m" } }, 409);
+  assert.ok(/recovered a change that had been interrupted/.test(rec.text) && /make the change again/.test(rec.text));
+  const other = core.iscsiOutcome({ error: { code: "intent_unreadable", message: "intent.json unreadable" } }, 409);
+  assert.ok(/refused: intent.json unreadable/.test(other.text));
+  const same = core.iscsiOutcome({ dry_run: true, result: "unchanged", diff: "", sha256: "abc" }, 200);
+  assert.deepStrictEqual([same.kind, same.text], ["unchanged", "No change to fabrics.conf."]);
+  assert.strictEqual(core.iscsiOutcome({ dry_run: false, result: "unchanged" }, 200).kind, "unchanged");
   assert.strictEqual(core.iscsiOutcome({ error: { code: "not_bound", message: "x" } }, 404).kind, "not_bound");
   assert.strictEqual(core.iscsiOutcome({ error: { code: "token_required", message: "token" } }, 403).kind, "readonly");
   assert.strictEqual(core.iscsiOutcome({ error: { code: "unauthorized", message: "no" } }, 401).kind, "readonly");

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
 	"mhvtl-control/internal/apply"
@@ -166,7 +166,7 @@ func (s *Server) handleISCSIConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 	stored := conffile.FabricsSecrets(f.data)
 	for _, p := range ps {
-		msg := quotedSecret.ReplaceAllString(maskAll(p.Msg, stored), "'(not shown)'")
+		msg := quotedSecret.ReplaceAllString(conffile.MaskSecrets(p.Msg, stored), "'(not shown)'")
 		out.Problems = append(out.Problems, iscsiProblemDTO{Line: p.Line, Message: msg})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -188,10 +188,16 @@ func (c *chapDTO) creds() *conffile.CHAPCreds {
 
 // iscsiPatchRequest is PATCH /transports/iscsi: an absent field is left
 // as it is; portals [] removes them all, base_name "" removes it.
+//
+// Every iSCSI write takes base_sha256: the sha256 of fabrics.conf the
+// change was made against, as a write answer or GET /config gave it ("" for
+// no file). When present, the change is refused with 409 unless the file
+// is still that one.
 type iscsiPatchRequest struct {
-	Portals  []string `json:"portals"`
-	BaseName *string  `json:"base_name"`
-	DryRun   bool     `json:"dry_run"`
+	Portals    []string `json:"portals"`
+	BaseName   *string  `json:"base_name"`
+	BaseSHA256 *string  `json:"base_sha256"`
+	DryRun     bool     `json:"dry_run"`
 }
 
 // iscsiBindRequest is POST /transports/iscsi/bind.
@@ -203,13 +209,15 @@ type iscsiBindRequest struct {
 	ClearCHAP       bool     `json:"clear_chap"`
 	MutualCHAP      *chapDTO `json:"mutual_chap"`
 	ClearMutualCHAP bool     `json:"clear_mutual_chap"`
+	BaseSHA256      *string  `json:"base_sha256"`
 	DryRun          bool     `json:"dry_run"`
 }
 
 // iscsiUnbindRequest is POST /transports/iscsi/unbind.
 type iscsiUnbindRequest struct {
-	Library *int `json:"library"`
-	DryRun  bool `json:"dry_run"`
+	Library    *int    `json:"library"`
+	BaseSHA256 *string `json:"base_sha256"`
+	DryRun     bool    `json:"dry_run"`
 }
 
 // fieldErrorDetail is errorDetail with the request field at fault.
@@ -230,11 +238,15 @@ type iscsiTargetStateDTO struct {
 }
 
 // iscsiWriteDTO answers the iSCSI writes: the helper's answer and the
-// change, its diff with every secret masked.
+// change, its diff with every secret masked. SHA256 is fabrics.conf as the
+// daemon read it ("" when absent), what an apply of the previewed change
+// sends as base_sha256. Result "unchanged" is an edit that leaves the file
+// as it is, not sent to the helper.
 type iscsiWriteDTO struct {
 	DryRun        bool                 `json:"dry_run"`
 	Action        string               `json:"action"`
 	Diff          string               `json:"diff"`
+	SHA256        string               `json:"sha256"`
 	Result        string               `json:"result"`
 	Message       string               `json:"message,omitempty"`
 	Error         *errorDetail         `json:"error,omitempty"`
@@ -268,9 +280,15 @@ var fieldKeywords = []struct{ word, field string }{
 	{"lun", "library"},
 }
 
-// fieldOf is the request field msg is about, if it is one of fields.
+// fieldOf is the request field msg is about, if it is one of fields. Only
+// the text before the first quote counts: a quoted value is the client's
+// and may hold any of the words.
 func fieldOf(msg string, fields []string) string {
-	m := strings.ToLower(msg)
+	m := msg
+	if i := strings.IndexAny(m, `'"`); i >= 0 {
+		m = m[:i]
+	}
+	m = strings.ToLower(m)
 	for _, k := range fieldKeywords {
 		if strings.Contains(m, k.word) {
 			for _, f := range fields {
@@ -296,20 +314,7 @@ var quotedSecret = regexp.MustCompile(`(?i)'[^']*secret[^']*'`)
 // values is one (a stored secret it quotes is one the client typed). A
 // refusal of the file as read quotes no request value, so it masks those.
 func refusalText(msg string, secrets []string) string {
-	return quotedSecret.ReplaceAllString(maskAll(msg, secrets), "'(not shown)'")
-}
-
-// maskAll replaces each secret in s, longest first so a secret that
-// contains another is masked whole.
-func maskAll(s string, secrets []string) string {
-	sorted := append([]string(nil), secrets...)
-	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
-	for _, v := range sorted {
-		if v != "" {
-			s = strings.ReplaceAll(s, v, conffile.SecretMask)
-		}
-	}
-	return s
+	return quotedSecret.ReplaceAllString(conffile.MaskSecrets(msg, secrets), "'(not shown)'")
 }
 
 func (s *Server) handleISCSIPatch(w http.ResponseWriter, r *http.Request) {
@@ -321,7 +326,7 @@ func (s *Server) handleISCSIPatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "nothing to change: give portals or base_name")
 		return
 	}
-	s.fabricsWrite(w, r, req.DryRun, nil, []string{"portals", "base_name"}, nil,
+	s.fabricsWrite(w, r, fabricsWriteReq{dryRun: req.DryRun, base: req.BaseSHA256, fields: []string{"portals", "base_name"}},
 		func(f fabricsFiles) *fabricsInvalid {
 			if err := f.conf.SetISCSI(req.Portals, req.BaseName); err != nil {
 				return &fabricsInvalid{status: http.StatusUnprocessableEntity, code: apply.ErrInvalid, msg: err.Error()}
@@ -350,8 +355,16 @@ func (s *Server) handleISCSIBind(w http.ResponseWriter, r *http.Request) {
 			secrets = append(secrets, c.Secret)
 		}
 	}
-	fields := []string{"library", "initiators", "target_name", "chap", "mutual_chap", "base_name"}
-	s.fabricsWrite(w, r, req.DryRun, secrets, fields, &id, func(f fabricsFiles) *fabricsInvalid {
+	if req.Initiators != nil && len(req.Initiators) == 0 {
+		writeJSON(w, http.StatusUnprocessableEntity, struct {
+			Error fieldErrorDetail `json:"error"`
+		}{fieldErrorDetail{Code: apply.ErrInvalid, Field: "initiators", Message: fmt.Sprintf(
+			"initiators is empty: a record without an initiator exports nothing (fabrics.conf(5)); to stop exporting library %d, unbind it", id)}})
+		return
+	}
+	fields := []string{"library", "initiators", "target_name", "chap", "mutual_chap"}
+	q := fabricsWriteReq{dryRun: req.DryRun, base: req.BaseSHA256, secrets: secrets, fields: fields, target: &id, bind: true}
+	s.fabricsWrite(w, r, q, func(f fabricsFiles) *fabricsInvalid {
 		bound := false
 		for _, t := range f.conf.Targets() {
 			bound = bound || t.ID == id
@@ -391,7 +404,8 @@ func (s *Server) handleISCSIUnbind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := *req.Library
-	s.fabricsWrite(w, r, req.DryRun, nil, []string{"library"}, nil, func(f fabricsFiles) *fabricsInvalid {
+	q := fabricsWriteReq{dryRun: req.DryRun, base: req.BaseSHA256, fields: []string{"library"}, target: &id}
+	s.fabricsWrite(w, r, q, func(f fabricsFiles) *fabricsInvalid {
 		err := f.conf.RemoveTarget(id)
 		switch {
 		case errors.Is(err, conffile.ErrNotFound):
@@ -414,25 +428,45 @@ func (s *Server) handleTransportUnsupported(w http.ResponseWriter, r *http.Reque
 		"transport "+r.PathValue("type")+" cannot be configured through the API; only iscsi can")
 }
 
+// fabricsWriteReq is what fabricsWrite needs of an iSCSI write: base is
+// the request's base_sha256 (nil when absent); secrets are the request's
+// own; fields are the request fields a refusal may name; target is the
+// library the request binds or unbinds, and bind is set for a bind.
+type fabricsWriteReq struct {
+	dryRun  bool
+	base    *string
+	secrets []string
+	fields  []string
+	target  *int
+	bind    bool
+}
+
 // fabricsWrite reads fabrics.conf and device.conf, runs edit on the
 // former, checks the result as mhvtl-fabrics would plan it, and sends it
-// to the helper: fabrics_plan with dryRun, else fabrics. secrets are the
-// request's own; fields are the request fields a refusal may name. With
-// bind set, a real apply that reloads or starts the unit answers the
-// target's state in configfs.
-func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, dryRun bool, secrets, fields []string,
-	bind *int, edit func(fabricsFiles) *fabricsInvalid) {
+// to the helper: fabrics_plan with dryRun, else fabrics. A base_sha256
+// other than the file read is a conflict, and an edit that leaves the file
+// as it is answers unchanged; neither reaches the helper. With bind set, a
+// real apply that reloads or starts the unit answers the target's state in
+// configfs.
+func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsWriteReq, edit func(fabricsFiles) *fabricsInvalid) {
 	f, err := s.readFabricsFiles()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "config_error", err.Error())
 		return
 	}
-	own, stored := secrets, conffile.FabricsSecrets(f.data)
-	secrets = append(append([]string(nil), own...), stored...)
+	if q.base != nil && *q.base != f.sha {
+		cur := f.sha
+		writeJSON(w, http.StatusConflict, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.sha, Result: apply.ResultConflict,
+			CurrentSHA256: &cur, Error: &errorDetail{Code: apply.ResultConflict, Message: fabricsChanged}})
+		return
+	}
+	own, stored := q.secrets, conffile.FabricsSecrets(f.data)
+	secrets := append(append([]string(nil), own...), stored...)
 	refuseWith := func(inv *fabricsInvalid, mask []string) {
 		writeJSON(w, inv.status, struct {
-			Error fieldErrorDetail `json:"error"`
-		}{fieldErrorDetail{Code: inv.code, Message: refusalText(inv.msg, mask), Field: inv.field}})
+			Error  fieldErrorDetail `json:"error"`
+			SHA256 string           `json:"sha256"`
+		}{fieldErrorDetail{Code: inv.code, Message: refusalText(inv.msg, mask), Field: inv.field}, f.sha})
 	}
 	refuse := func(inv *fabricsInvalid) { refuseWith(inv, own) }
 	if err := f.conf.Writable(); err != nil {
@@ -442,7 +476,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, dryRun boo
 	}
 	if inv := edit(f); inv != nil {
 		if inv.field == "" && inv.code == apply.ErrInvalid {
-			inv.field = fieldOf(inv.msg, fields)
+			inv.field = fieldOf(inv.msg, q.fields)
 		}
 		refuse(inv)
 		return
@@ -453,21 +487,32 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, dryRun boo
 	}
 	if ps := f.conf.CheckPlan(f.dev); len(ps) > 0 {
 		msgs := make([]string, len(ps))
+		field := ""
 		for k, p := range ps {
 			msgs[k] = p.Error()
+			if field == "" && aboutTarget(f.conf, p, q.target) {
+				field = fieldOf(p.Msg, q.fields)
+			}
 		}
 		refuse(&fabricsInvalid{status: http.StatusUnprocessableEntity, code: apply.ErrInvalid,
-			field: fieldOf(ps[0].Msg, fields), msg: fabricsConfName + ": " + strings.Join(msgs, "; ")})
+			field: field, msg: fabricsConfName + ": " + strings.Join(msgs, "; ")})
 		return
 	}
 	next := f.conf.Render()
+	if f.exists && bytes.Equal(next, f.data) {
+		writeJSON(w, http.StatusOK, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.sha, Result: resultUnchanged})
+		return
+	}
 	secrets = append(secrets, conffile.FabricsSecrets(next)...)
 
 	hreq := apply.Request{Op: apply.OpFabricsPlan,
 		Files: []apply.File{{Name: fabricsConfName, BaseSHA256: f.sha, Content: next}},
 		Actor: "mhvtl-control API client " + r.RemoteAddr}
+	if q.base != nil {
+		hreq.Files[0].BaseSHA256 = *q.base
+	}
 	ctx := r.Context()
-	if !dryRun {
+	if !q.dryRun {
 		hreq.Op = apply.OpFabrics
 		// The apply runs to its end even if the client goes away.
 		var cancel context.CancelFunc
@@ -481,27 +526,52 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, dryRun boo
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusBadGateway, helperUnreachable, maskAll(err.Error(), secrets))
+		writeError(w, http.StatusBadGateway, helperUnreachable, conffile.MaskSecrets(err.Error(), secrets))
 		return
 	}
 	status, code := applyStatus(resp)
 	out := iscsiWriteDTO{
-		DryRun: dryRun, Action: resp.FabricsAction, Diff: maskAll(conffile.FabricsDiff(f.data, next), secrets), Result: resp.Result,
-		Message: maskAll(resp.Message, secrets), CurrentSHA256: resp.CurrentSHA256,
-		JournalTail: maskAll(resp.JournalTail, secrets), RollbackDir: resp.RollbackDir,
+		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: conffile.MaskSecrets(conffile.FabricsDiff(f.data, next), secrets),
+		SHA256: f.sha, Result: resp.Result, Message: conffile.MaskSecrets(resp.Message, secrets), CurrentSHA256: resp.CurrentSHA256,
+		JournalTail: conffile.MaskSecrets(resp.JournalTail, secrets), RollbackDir: resp.RollbackDir,
 	}
 	if code != "" {
 		msg := applyMessage(resp)
 		if resp.Result == apply.ResultConflict {
-			msg = fabricsConfName + " changed since it was read: read it again and resend the change"
+			msg = fabricsChanged
 		}
-		out.Error = &errorDetail{Code: code, Message: maskAll(msg, secrets)}
+		out.Error = &errorDetail{Code: code, Message: conffile.MaskSecrets(msg, secrets)}
 	}
-	if bind != nil && !dryRun && resp.Result == apply.ResultApplied &&
+	if q.bind && !q.dryRun && resp.Result == apply.ResultApplied &&
 		(resp.FabricsAction == apply.FabricsReload || resp.FabricsAction == apply.FabricsStart) {
-		out.Target = s.boundTarget(f, *bind)
+		out.Target = s.boundTarget(f, *q.target)
 	}
 	writeJSON(w, status, out)
+}
+
+const (
+	// resultUnchanged answers an edit that leaves fabrics.conf as it is.
+	resultUnchanged = "unchanged"
+	fabricsChanged  = fabricsConfName + " changed since it was read: read it again and resend the change"
+)
+
+// aboutTarget reports whether CheckPlan problem p is about the target the
+// request edits: its message names "iSCSI target <id>", or its line is
+// that record's header. Without a target (PATCH) every problem is the
+// request's.
+func aboutTarget(c *conffile.FabricsConf, p conffile.Problem, target *int) bool {
+	if target == nil {
+		return true
+	}
+	if regexp.MustCompile(fmt.Sprintf(`\biSCSI target %d\b`, *target)).MatchString(p.Msg) {
+		return true
+	}
+	for _, t := range c.Targets() {
+		if t.ID == *target {
+			return p.Line > 0 && p.Line == t.Line
+		}
+	}
+	return false
 }
 
 // boundTarget reads target id's state from configfs, by the name

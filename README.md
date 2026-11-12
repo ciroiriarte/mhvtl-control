@@ -449,9 +449,16 @@ configuration editor needs (see [Turn writes on](#turn-writes-on)).
 - `POST /api/v1/transports/iscsi/unbind` `{"library": 10}`: stop exporting it.
 
 Each takes `"dry_run": true` to see the change first: the diff of
-`fabrics.conf`, with every secret shown as `********`, and what the apply
-would do. An apply answers with the same, and for a bind the target as
-configfs shows it afterwards.
+`fabrics.conf`, with every secret shown as `********`, what the apply would
+do, and `sha256`, the hash of the file the change was made against (`""`
+when there is none). An apply answers with the same, and for a bind the
+target as configfs shows it afterwards. To apply exactly what was
+previewed, send the same body with `"dry_run": false` and
+`"base_sha256"` set to the preview's `sha256`: if `fabrics.conf` changed in
+between, the answer is 409 with `error.code` `conflict` and
+`current_sha256`, and nothing is written. A change that leaves the file as
+it is answers `"result": "unchanged"`. A bind with `"initiators": []` is
+refused: a record without an initiator exports nothing; use unbind.
 
 The helper writes `fabrics.conf` mode 0600 (it may hold CHAP secrets), keeps
 the previous copy for rollback, and records the change in its audit log with
@@ -468,13 +475,22 @@ secrets masked. Then:
 - while `mhvtl.target` is stopped, it only writes the file, applied when
   mhVTL starts.
 
-If the reload or start fails, the previous file is put back and applied
-again, and the answer carries the unit's last journal lines. The helper
-refuses, changing nothing, when `MHVTL_BACKEND` is not `tcmu` (`mhvtl-fabrics`
-would do nothing), when `mhvtl-fabrics.service` is missing, has no reload,
-has failed or was stopped while mhVTL runs (`fabrics_recovery_required`:
-check `journalctl -u mhvtl-fabrics`, then start it), and when the file
-changed since it was read (409).
+If the reload fails, the previous file is put back and the unit reloaded
+with it. If a first start fails, the new file is removed and the unit is
+left failed, its targets removed by its `ExecStopPost`; the next export
+starts it again. Either way the answer is `rolled_back` and carries the
+unit's last journal lines. When the reload of the restored file fails too,
+configfs may not match `fabrics.conf`: the answer is
+`fabrics_recovery_required`; check `journalctl -u mhvtl-fabrics`, then run
+`systemctl reload mhvtl-fabrics` (the helper's next request retries it). The
+helper refuses, changing nothing, when `MHVTL_BACKEND` is not `tcmu`
+(`mhvtl-fabrics` would do nothing), when `mhvtl-fabrics.service` is
+missing, has no reload, has failed with `fabrics.conf` in place (check
+`journalctl -u mhvtl-fabrics`, fix the cause, then
+`systemctl restart mhvtl-fabrics`) or was stopped while mhVTL runs (check
+the journal, then `systemctl start mhvtl-fabrics`), both
+`fabrics_recovery_required`, and when `base_sha256` is not the file's
+(409).
 
 An initiator name is not a credential: any host can claim one. Without CHAP
 a listed initiator can read and write every tape, so use CHAP unless the

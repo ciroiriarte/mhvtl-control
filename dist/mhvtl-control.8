@@ -79,13 +79,28 @@ the drop-in
 shipped with mhvtl-control. On the first export it starts the unit instead,
 and while
 .B mhvtl.target
-is stopped it only writes the file. A failed reload or start puts the
-previous file back and applies it again. The helper refuses when
+is stopped it only writes the file. A failed reload puts the previous file
+back and reloads the unit with it. A failed first start removes the new file
+and leaves the unit failed; the next export starts it again. When the
+reload of the restored file fails too, the answer is
+.B fabrics_recovery_required
+(configfs may not match the file): check
+.BR "journalctl -u mhvtl-fabrics" ,
+then run
+.BR "systemctl reload mhvtl-fabrics" .
+An apply that sends
+.I base_sha256
+(the
+.I sha256
+of a preview) is refused with 409 if the file changed since.
+The helper refuses when
 .B MHVTL_BACKEND
 is not
 .BR tcmu ,
-and when the unit is missing, cannot reload, has failed or was stopped while
-mhVTL runs.
+and when the unit is missing, cannot reload, has failed with the file in
+place (check the journal, fix the cause, then
+.BR "systemctl restart mhvtl-fabrics" )
+or was stopped while mhVTL runs.
 .PP
 mhVTL may start after
 .BR mhvtl-control ,

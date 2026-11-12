@@ -250,13 +250,14 @@ func TestISCSIPatchDryRunAndApply(t *testing.T) {
 }
 
 // A first bind creates the iSCSI record; without a Base name it is
-// refused on base_name, with one it goes to the helper.
+// refused naming no field (base_name is not a bind field), with a Target
+// name it goes to the helper.
 func TestISCSIBindNewRecord(t *testing.T) {
 	e := iscsiEnv(t, "", "start", nil)
 	bind := map[string]any{"library": 10, "initiators": []string{pbsIQN}, "dry_run": true}
 	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", bind)
 	if body := decodeBody[fieldErrBody](t, rec); rec.Code != http.StatusUnprocessableEntity ||
-		body.Error.Code != apply.ErrInvalid || body.Error.Field != "base_name" {
+		body.Error.Code != apply.ErrInvalid || body.Error.Field != "" {
 		t.Fatalf("no base name: %d %s", rec.Code, rec.Body)
 	}
 	if n := len(e.fabricsReqs()); n != 0 {
@@ -471,7 +472,7 @@ func TestISCSIBindTargetState(t *testing.T) {
 
 	// Deferred (mhvtl.target stopped) and dry runs read nothing.
 	deferred := iscsiEnv(t, fabricsSample, apply.FabricsDeferred, func(c *Config) { c.TargetRoot = root })
-	rec = deferred.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10, "initiators": []string{pbsIQN}})
+	rec = deferred.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10, "initiators": []string{pbsIQN, "iqn.2024-01.com.example:new"}})
 	if got = decodeBody[iscsiWriteDTO](t, rec); got.Target != nil || got.Action != "none" {
 		t.Errorf("deferred: %+v", got)
 	}
@@ -573,4 +574,133 @@ func TestISCSIDiffMasksAnySpacing(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
 	noSecrets(t, "unbind preview", rec.Body.String())
+}
+
+// Every write answers the sha256 it read; base_sha256 other than that is a
+// 409 that never reaches the helper, and an equal one is what the helper
+// gets.
+func TestISCSIBaseSHA256(t *testing.T) {
+	e := iscsiEnv(t, fabricsSample, "reload", nil)
+	sha := conffile.Hash([]byte(fabricsSample))
+	bind := map[string]any{"library": 30, "initiators": []string{pbsIQN}, "dry_run": true}
+	got := decodeBody[iscsiWriteDTO](t, e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", bind))
+	if got.SHA256 != sha || got.Result != apply.ResultValidated {
+		t.Fatalf("dry run = %+v, want sha256 %s", got, sha)
+	}
+
+	bind["dry_run"], bind["base_sha256"] = false, sha
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", bind)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: %d %s", rec.Code, rec.Body)
+	}
+	if reqs := e.fabricsReqs(); len(reqs) != 2 || reqs[1].Op != apply.OpFabrics || reqs[1].Files[0].BaseSHA256 != sha {
+		t.Fatalf("helper requests = %+v", reqs)
+	}
+
+	for name, body := range map[string]map[string]any{
+		"bind":   {"library": 30, "initiators": []string{pbsIQN}, "base_sha256": strings.Repeat("0", 64)},
+		"patch":  {"base_name": "iqn.2026-12.lan.example:x", "base_sha256": "", "dry_run": true},
+		"unbind": {"library": 30, "base_sha256": "stale"},
+	} {
+		method, path := http.MethodPost, "/api/v1/transports/iscsi/"+name
+		if name == "patch" {
+			method, path = http.MethodPatch, "/api/v1/transports/iscsi"
+		}
+		rec := e.call(method, path, body)
+		got := decodeBody[iscsiWriteDTO](t, rec)
+		if rec.Code != http.StatusConflict || got.Result != apply.ResultConflict || got.Error == nil || got.Error.Code != apply.ResultConflict ||
+			got.CurrentSHA256 == nil || *got.CurrentSHA256 != sha || got.SHA256 != sha {
+			t.Errorf("%s with a stale base: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if n := len(e.fabricsReqs()); n != 2 {
+		t.Errorf("%d helper requests, want 2: a conflict reached the helper", n)
+	}
+
+	// No file: base_sha256 "" matches, and is what the helper gets.
+	absent := iscsiEnv(t, "", "start", nil)
+	rec = absent.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10, "initiators": []string{pbsIQN},
+		"target_name": "iqn.2026-11.lan.example:lib10", "base_sha256": ""})
+	if got := decodeBody[iscsiWriteDTO](t, rec); rec.Code != http.StatusOK || got.SHA256 != "" || !strings.Contains(rec.Body.String(), `"sha256":""`) {
+		t.Errorf("no file: %d %s", rec.Code, rec.Body)
+	}
+	if reqs := absent.fabricsReqs(); len(reqs) != 1 || reqs[0].Files[0].BaseSHA256 != "" {
+		t.Errorf("helper requests = %+v", reqs)
+	}
+}
+
+// An edit that leaves fabrics.conf as it is answers unchanged, dry run or
+// not, without the helper.
+func TestISCSIUnchanged(t *testing.T) {
+	e := iscsiEnv(t, fabricsSample, "reload", nil)
+	for _, dry := range []bool{true, false} {
+		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10, "initiators": []string{pbsIQN}, "dry_run": dry})
+		got := decodeBody[iscsiWriteDTO](t, rec)
+		if rec.Code != http.StatusOK || got.Result != "unchanged" || got.Diff != "" || got.DryRun != dry ||
+			got.SHA256 != conffile.Hash([]byte(fabricsSample)) || got.Error != nil {
+			t.Errorf("dry run %v: %d %s", dry, rec.Code, rec.Body)
+		}
+	}
+	rec := e.call(http.MethodPatch, "/api/v1/transports/iscsi", map[string]any{"portals": []string{"192.0.2.10:3260"}})
+	if got := decodeBody[iscsiWriteDTO](t, rec); rec.Code != http.StatusOK || got.Result != "unchanged" {
+		t.Errorf("patch: %d %s", rec.Code, rec.Body)
+	}
+	if n := len(e.fabricsReqs()); n != 0 {
+		t.Errorf("%d helper requests", n)
+	}
+}
+
+// An explicit empty initiator list is refused: a record without one
+// exports nothing (fabrics.conf(5)).
+func TestISCSIBindEmptyInitiators(t *testing.T) {
+	e := iscsiEnv(t, fabricsSample, "reload", nil)
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10, "initiators": []string{}, "dry_run": true})
+	body := decodeBody[fieldErrBody](t, rec)
+	if rec.Code != http.StatusUnprocessableEntity || body.Error.Field != "initiators" || !strings.Contains(body.Error.Message, "unbind") ||
+		!strings.Contains(body.Error.Message, "exports nothing") {
+		t.Errorf("empty initiators: %d %s", rec.Code, rec.Body)
+	}
+	if n := len(e.fabricsReqs()); n != 0 {
+		t.Errorf("%d helper requests", n)
+	}
+}
+
+// A 422's field comes from the message before any quoted value, and a
+// CheckPlan problem of another target names no field.
+func TestISCSIFieldAttribution(t *testing.T) {
+	e := iscsiEnv(t, fabricsSample, "reload", nil)
+	for _, c := range []struct {
+		name  string
+		body  map[string]any
+		field string
+	}{
+		{"chap in a quoted initiator", map[string]any{"library": 10, "initiators": []string{"iqn.2024-01.com.Chapman:pbs"}}, "initiators"},
+		{"initiators in a quoted target name", map[string]any{"library": 10, "target_name": "IQN.initiators.x"}, "target_name"},
+	} {
+		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", c.body)
+		if body := decodeBody[fieldErrBody](t, rec); rec.Code != http.StatusUnprocessableEntity || body.Error.Field != c.field {
+			t.Errorf("%s: %d %s, want field %q", c.name, rec.Code, rec.Body, c.field)
+		}
+	}
+
+	other := iscsiEnv(t, fabricsSample+"\niSCSI target: 99\n Initiator name: "+pbsIQN+"\n", "reload", nil)
+	rec := other.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30, "initiators": []string{pbsIQN}})
+	if body := decodeBody[fieldErrBody](t, rec); rec.Code != http.StatusUnprocessableEntity || body.Error.Field != "" ||
+		!strings.Contains(body.Error.Message, "no Library or Drive 99") {
+		t.Errorf("problem of target 99 on a bind of 30: %d %s", rec.Code, rec.Body)
+	}
+	rec = other.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30})
+	if body := decodeBody[fieldErrBody](t, rec); rec.Code != http.StatusUnprocessableEntity || body.Error.Field != "" {
+		t.Errorf("problem of target 99 on an unbind of 30: %d %s", rec.Code, rec.Body)
+	}
+	if n := len(e.fabricsReqs()) + len(other.fabricsReqs()); n != 0 {
+		t.Errorf("%d helper requests", n)
+	}
+
+	if f := fieldOf("initiator name 'IQN.2024-01.com.Chapman:pbs' is not an iSCSI name", []string{"chap", "initiators"}); f != "initiators" {
+		t.Errorf("fieldOf = %q", f)
+	}
+	if f := fieldOf(`target name "x.initiators" is bad`, []string{"initiators", "target_name"}); f != "target_name" {
+		t.Errorf("fieldOf double quote = %q", f)
+	}
 }

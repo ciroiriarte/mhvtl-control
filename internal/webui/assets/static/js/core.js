@@ -1667,8 +1667,10 @@
   // mutual_name, mutual_secret, clear_chap, clear_mutual_chap}. existing is
   // the device's fabrics.conf target (iscsiRows' target), or null for a new
   // export. Omitted fields stay unchanged: empty CHAP fields keep the CHAP
-  // as it is, the initiators are sent when listed or when an existing list
-  // is emptied, and the target name when it differs from the record's.
+  // as it is, the initiators are sent when listed, and the target name when
+  // it differs from the record's. Emptying an existing list is refused here:
+  // a record without an initiator exports nothing (fabrics.conf(5)), and
+  // the API refuses an empty list.
   // Returns {body} or {error, field}, field naming the request field.
   function buildISCSIBindBody(id, form, existing, dryRun) {
     form = form || {};
@@ -1676,7 +1678,11 @@
     if (!Number.isInteger(n) || n <= 0) { return { error: "No device to export.", field: "library" }; }
     var body = { library: n };
     var inits = iscsiList(form.initiators);
-    if (inits.length || (existing && coerceArray(existing.initiators).length)) { body.initiators = inits; }
+    if (inits.length) {
+      body.initiators = inits;
+    } else if (existing && coerceArray(existing.initiators).length) {
+      return { error: "List at least one initiator: a record without one exports nothing. To stop exporting the device, use Stop exporting.", field: "initiators" };
+    }
     var name = String(form.target_name == null ? "" : form.target_name).trim();
     if (name !== (existing ? String(existing.target_name || "") : "")) { body.target_name = name; }
     var pairs = [
@@ -1700,6 +1706,18 @@
   // buildISCSIUnbindBody is the POST /transports/iscsi/unbind body.
   function buildISCSIUnbindBody(id, dryRun) {
     return { library: coerceNumber(id), dry_run: !!dryRun };
+  }
+
+  // iscsiApplyBody is the apply of a previewed change: the very body that
+  // was previewed, with dry_run false and base_sha256 the sha256 the
+  // preview answered, so the daemon refuses it (409) if fabrics.conf
+  // changed in between. It is never rebuilt from the form.
+  function iscsiApplyBody(previewed, sha) {
+    var body = {};
+    Object.keys(previewed || {}).forEach(function (k) { body[k] = previewed[k]; });
+    body.dry_run = false;
+    body.base_sha256 = String(sha == null ? "" : sha);
+    return body;
   }
 
   // chapText is a target's CHAP state for display: on with the user name,
@@ -1875,10 +1893,10 @@
 
   // iscsiOutcome maps a write's answer to what the UI does: res is the
   // response body (any status), status its HTTP status (0: no answer). kind
-  // is validated (a preview to confirm), applied, rolled_back, invalid
-  // (field: the request field to fix), conflict (fabrics.conf changed:
-  // reload and redo), not_bound, readonly, refused or error. text is built
-  // from the daemon's message, never from the request.
+  // is validated (a preview to confirm), unchanged (nothing to apply),
+  // applied, rolled_back, invalid (field: the request field to fix),
+  // conflict (409: reload and redo), not_bound, readonly, refused or error.
+  // text is built from the daemon's message, never from the request.
   function iscsiOutcome(res, status) {
     res = res && typeof res === "object" ? res : {};
     status = coerceNumber(status);
@@ -1894,7 +1912,25 @@
     }
     if (status === 409 || result === "conflict" || code === "conflict") {
       out.kind = "conflict";
-      out.text = "fabrics.conf changed since it was read. The configuration was reloaded: check it and make the change again.";
+      switch (code) {
+        case "conflict":
+          out.text = "fabrics.conf changed since it was read. The configuration was reloaded: check it and make the change again.";
+          break;
+        case "apply_in_progress":
+        case "in_progress":
+          out.text = "Another change is being applied. Try again in a moment.";
+          break;
+        case "recovered":
+          out.text = "The helper first recovered a change that had been interrupted, and made none. The configuration was reloaded: check it and make the change again.";
+          break;
+        default:
+          out.text = "The change was refused" + (msg ? ": " + msg : ".") + " The configuration was reloaded: check it and try again.";
+      }
+      return out;
+    }
+    if (status >= 200 && status < 300 && result === "unchanged") {
+      out.kind = "unchanged";
+      out.text = "No change to fabrics.conf.";
       return out;
     }
     if (result === "rolled_back") {
@@ -2035,6 +2071,7 @@
     buildISCSISettingsBody: buildISCSISettingsBody,
     buildISCSIBindBody: buildISCSIBindBody,
     buildISCSIUnbindBody: buildISCSIUnbindBody,
+    iscsiApplyBody: iscsiApplyBody,
     chapText: chapText,
     iscsiRows: iscsiRows,
     iscsiNotes: iscsiNotes,
