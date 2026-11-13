@@ -704,3 +704,29 @@ func TestISCSIFieldAttribution(t *testing.T) {
 		t.Errorf("fieldOf double quote = %q", f)
 	}
 }
+
+// TestISCSIPreviewNoSecretOracle: a CHAP name equal to another target's
+// stored secret shows in the preview as sent, like any other guess
+// (architect review 2026-11-12).
+func TestISCSIPreviewNoSecretOracle(t *testing.T) {
+	e := iscsiEnv(t, fabricsSample, "reload", nil)
+	diff := func(name string) string {
+		t.Helper()
+		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
+			"chap": map[string]string{"name": name, "secret": "fresh-secret-0123"}, "dry_run": true})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body)
+		}
+		return decodeBody[iscsiWriteDTO](t, rec).Diff
+	}
+	wrong, right := diff("password1"), diff(chapSecret)
+	if right != strings.ReplaceAll(wrong, "password1", chapSecret) {
+		t.Errorf("preview depends on the name being a stored secret:\n%q\n%q", wrong, right)
+	}
+	if strings.Contains(wrong, "fresh-secret-0123") {
+		t.Errorf("own secret shown: %q", wrong)
+	}
+	// Removing target 10 still masks its secrets.
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 10, "dry_run": true})
+	noSecrets(t, "unbind preview", rec.Body.String())
+}

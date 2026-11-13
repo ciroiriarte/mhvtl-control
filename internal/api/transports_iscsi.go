@@ -307,6 +307,26 @@ func fieldOf(msg string, fields []string) string {
 // name run into its value can carry the start of the secret.
 var quotedSecret = regexp.MustCompile(`(?i)'[^']*secret[^']*'`)
 
+// previewDiff is the fabrics.conf diff to answer: secret lines are masked
+// by RedactFabrics, a removed line (from the file as read) also has every
+// known secret masked, and an added line only the request's own. Added
+// lines may quote values the client sent, and masking a stored secret
+// there would tell it which of them is one.
+func previewDiff(before, after []byte, own, stored []string) string {
+	all := append(append([]string(nil), own...), stored...)
+	lines := strings.SplitAfter(conffile.FabricsDiff(before, after), "\n")
+	for i, l := range lines {
+		switch {
+		case strings.HasPrefix(l, "---") || strings.HasPrefix(l, "+++"):
+		case strings.HasPrefix(l, "-"):
+			lines[i] = conffile.MaskSecrets(l, all)
+		case strings.HasPrefix(l, "+"):
+			lines[i] = conffile.MaskSecrets(l, own)
+		}
+	}
+	return strings.Join(lines, "")
+}
+
 // refusalText is msg with the given secrets masked and quoted names that
 // mention a secret cut. A refusal of the edit masks only the request's own
 // secrets: its message quotes values the client sent, and masking the
@@ -531,7 +551,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	}
 	status, code := applyStatus(resp)
 	out := iscsiWriteDTO{
-		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: conffile.MaskSecrets(conffile.FabricsDiff(f.data, next), secrets),
+		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: previewDiff(f.data, next, own, stored),
 		SHA256: f.sha, Result: resp.Result, Message: conffile.MaskSecrets(resp.Message, secrets), CurrentSHA256: resp.CurrentSHA256,
 		JournalTail: conffile.MaskSecrets(resp.JournalTail, secrets), RollbackDir: resp.RollbackDir,
 	}
