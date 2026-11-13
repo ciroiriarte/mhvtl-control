@@ -1,6 +1,8 @@
 package webui_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -639,4 +641,65 @@ func jsWord(s string, k int, w string) bool {
 
 func jsIdent(ch byte) bool {
 	return ch == '_' || ch == '$' || ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z'
+}
+
+// TestStaticRevalidates: the page and its assets are served with no-cache
+// and a content ETag, so a browser revalidates them on every load and runs
+// the new JS after an upgrade (#81); an unchanged file answers 304.
+func TestStaticRevalidates(t *testing.T) {
+	h := newServer()
+	tags := map[string]string{}
+	for _, p := range []string{"/", "/static/js/app.js", "/static/js/core.js", "/static/css/themes.css"} {
+		res, body := get(t, h, p)
+		if cc := res.Header.Get("Cache-Control"); cc != "no-cache" {
+			t.Errorf("GET %s Cache-Control = %q, want no-cache", p, cc)
+		}
+		tag := res.Header.Get("ETag")
+		if len(tag) != 34 || tag[0] != '"' || tag[33] != '"' {
+			t.Errorf("GET %s ETag = %q, want a quoted 32-hex-digit tag", p, tag)
+			continue
+		}
+		for q, other := range tags {
+			if other == tag {
+				t.Errorf("GET %s and %s share ETag %s", p, q, tag)
+			}
+		}
+		if sum := sha256.Sum256([]byte(body)); tag != `"`+hex.EncodeToString(sum[:16])+`"` {
+			t.Errorf("GET %s ETag %s is not the hash of the body served", p, tag)
+		}
+		tags[p] = tag
+
+		req := httptest.NewRequest(http.MethodHead, p, nil)
+		req.Header.Set("If-None-Match", tag)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotModified {
+			t.Errorf("HEAD %s with If-None-Match = %d, want 304", p, rec.Code)
+		}
+		for ifRange, want := range map[string]int{tag: http.StatusPartialContent, `"stale"`: http.StatusOK} {
+			req = httptest.NewRequest(http.MethodGet, p, nil)
+			req.Header.Set("Range", "bytes=0-9")
+			req.Header.Set("If-Range", ifRange)
+			rec = httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != want {
+				t.Errorf("GET %s Range with If-Range %s = %d, want %d", p, ifRange, rec.Code, want)
+			}
+		}
+
+		req = httptest.NewRequest(http.MethodGet, p, nil)
+		req.Header.Set("If-None-Match", tag)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotModified {
+			t.Errorf("GET %s with If-None-Match = %d, want 304", p, rec.Code)
+		}
+		req = httptest.NewRequest(http.MethodGet, p, nil)
+		req.Header.Set("If-None-Match", `"stale"`)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Body.Len() == 0 {
+			t.Errorf("GET %s with a stale ETag = %d (%d bytes), want 200 with the file", p, rec.Code, rec.Body.Len())
+		}
+	}
 }
