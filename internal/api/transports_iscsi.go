@@ -166,8 +166,7 @@ func (s *Server) handleISCSIConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 	stored := conffile.FabricsSecrets(f.data)
 	for _, p := range ps {
-		msg := quotedSecret.ReplaceAllString(conffile.MaskSecrets(p.Msg, stored), "'(not shown)'")
-		out.Problems = append(out.Problems, iscsiProblemDTO{Line: p.Line, Message: msg})
+		out.Problems = append(out.Problems, iscsiProblemDTO{Line: p.Line, Message: refusalText(p.Msg, stored)})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -338,7 +337,8 @@ func previewDiff(before, after []byte, own, stored []string) string {
 // secrets: its message quotes values the client sent, and masking the
 // secrets stored in fabrics.conf there would tell the client which of its
 // values is one (a stored secret it quotes is one the client typed). A
-// refusal of the file as read quotes no request value, so it masks those.
+// refusal of the file as read, like a problem GET config lists, quotes no
+// request value, so it masks those.
 func refusalText(msg string, secrets []string) string {
 	return quotedSecret.ReplaceAllString(conffile.MaskSecrets(msg, secrets), "'(not shown)'")
 }
