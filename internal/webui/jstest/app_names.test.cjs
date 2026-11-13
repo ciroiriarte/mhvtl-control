@@ -30,20 +30,12 @@ function skipQuoted(src, i) {
 }
 
 // skipTemplate returns the index after the template literal starting at i,
-// including any ${...} expressions.
+// including any ${...} expressions, which are scanned like code (strings,
+// regexes, comments and nesting) by scan.
 function skipTemplate(src, i) {
   for (i++; i < src.length && src[i] !== "`"; i++) {
     if (src[i] === "\\") i++;
-    else if (src[i] === "$" && src[i + 1] === "{") {
-      let depth = 0;
-      for (i++; i < src.length; i++) {
-        const c = src[i];
-        if (c === "\"" || c === "'") i = skipQuoted(src, i) - 1;
-        else if (c === "`") i = skipTemplate(src, i) - 1;
-        else if (c === "{") depth++;
-        else if (c === "}" && --depth === 0) break;
-      }
-    }
+    else if (src[i] === "$" && src[i + 1] === "{") i = scan(src, i + 2, true).end;
   }
   return i + 1;
 }
@@ -58,16 +50,32 @@ const BLOCK_AFTER = new Set(["else", "do", "try", "finally"]);
 // declaratorNames returns the declared names of the var/let/const statement
 // whose declarator list starts at index i, and the index where it ends.
 function declaratorNames(src, i) {
+  return scan(src, i, false);
+}
+
+// scan reads code from index i. Without interp it reads a declarator list
+// and returns its names and the index of the `;` (or line) ending it; with
+// interp it reads a template's ${...} expression and returns the index of
+// its closing }.
+//
+// To tell a regex from a division it keeps the last significant token
+// (last) and what each open bracket started (nest): "(", "[", an object
+// literal or a block. A { opens an object literal where an expression is
+// expected, and a block elsewhere: after ), ;, a block's }, else/do/try/
+// finally, and after the : of a case, default or label, which is a : inside
+// a block that no ? is waiting for.
+function scan(src, i, interp) {
   const names = [];
-  let depth = 0;
-  let want = true; // next identifier at depth 0 is a declarator name
-  let last = ""; // last significant character, to tell a regex from a division
-  const braces = []; // what each open { started: "object" or "block"
+  const nest = []; // open brackets: { k: "(" | "[" | "object" | "block", q: pending ? count }
+  let want = !interp; // next identifier at depth 0 is a declarator name
+  let last = ""; // last significant token, to tell a regex from a division
+  let colon = "object"; // what a { right after the last : opens
   while (i < src.length) {
     const c = src[i];
+    const depth = nest.length;
     if (/\s/.test(c)) {
       // A new closure-level line ends a statement that lacks its `;`.
-      if (depth === 0 && c === "\n" && /^  \S/.test(src.slice(i + 1, i + 4)) && last !== "," && last !== "=") break;
+      if (!interp && depth === 0 && c === "\n" && /^  \S/.test(src.slice(i + 1, i + 4)) && last !== "," && last !== "=") break;
       i++;
       continue;
     }
@@ -76,6 +84,7 @@ function declaratorNames(src, i) {
     if (c === "\"" || c === "'") { i = skipQuoted(src, i); last = "s"; continue; }
     if (c === "`") { i = skipTemplate(src, i); last = "s"; continue; }
     if ((c === "+" || c === "-") && src[i + 1] === c) { i += 2; last = "i"; continue; } // ++/--: a / after it divides
+    if (c === "?" && (src[i + 1] === "?" || (src[i + 1] === "." && !/\d/.test(src[i + 2] || "")))) { i += 2; last = "?"; continue; } // ?? and ?.
     if (depth !== 0 || !want) {
       // A word: after a keyword such as return a / starts a regex, after a
       // name or a property (.return) it divides.
@@ -97,22 +106,28 @@ function declaratorNames(src, i) {
       last = "s";
       continue;
     }
-    if (c === "{") {
-      // An object literal opens where an expression is expected; any other
-      // brace opens a block (function body, if, arrow body).
-      braces.push(last === "" || last === "k" || "=(,:[!&|?".includes(last) ? "object" : "block");
-      depth++;
+    const top = nest[depth - 1];
+    if (c === "?") {
+      if (top) top.q++;
+    } else if (c === ":") {
+      // Inside a block a : no ? waits for ends a case, default or label.
+      if (top && top.k === "block" && top.q === 0) colon = "block";
+      else { colon = "object"; if (top && top.q > 0) top.q--; }
+    } else if (c === "{") {
+      const object = last === ":" ? colon === "object"
+        : last === "" || last === "k" || "=(,[!&|?".includes(last);
+      nest.push({ k: object ? "object" : "block", q: 0 });
     } else if (c === "}") {
-      depth--;
+      if (interp && depth === 0) return { names, end: i };
       // A / after an object literal divides; after a block it starts a
       // statement, so a regex.
-      last = braces.pop() === "object" ? "i" : ";";
+      last = (nest.pop() || {}).k === "object" ? "i" : ";";
       i++;
       continue;
-    } else if (c === "(" || c === "[") depth++;
-    else if (c === ")" || c === "]") depth--;
-    else if (depth === 0 && c === ";") return { names, end: i };
-    else if (depth === 0 && c === ",") want = true;
+    } else if (c === "(" || c === "[") nest.push({ k: c, q: 0 });
+    else if (c === ")" || c === "]") nest.pop();
+    else if (!interp && depth === 0 && c === ";") return { names, end: i };
+    else if (!interp && depth === 0 && c === ",") want = true;
     else if (depth === 0 && want) {
       IDENT.lastIndex = i;
       const m = IDENT.exec(src);
@@ -203,5 +218,17 @@ test("closureNames tells a regex from a division after ++, a property, return an
   assert.deepStrictEqual(names("  var a = function () { if (x) {} else {} /,;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = function () { try {} finally {} /,;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = function () { if (x) y(); else /,;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () {\n    switch (x) { case 1: {} /}/.test(x); }\n  }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () { switch (x) { default: {} /,;/.test(x); } }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () { outer: {} /,;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () { var o = { k: {} } / 2, p = x ? {} : {} / 2; }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () { switch (x) { case y ? 1 : 2: {} /,;/.test(x); } }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = o?.p ?? {} / 2, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = { x: { y: 1 } } / 2, b = (function () {}) / 3, c = 1;\n  function c() {}\n").c, 2);
+});
+
+
+test("closureNames scans a template's ${...} like code", () => {
+  assert.deepStrictEqual(names("  var a = `${/\\{/.test(x)}`, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = `${ {x: '}'}.x } ${ `${ 1 }` }`, b = 1;\n  function b() {}\n").b, 2);
 });
