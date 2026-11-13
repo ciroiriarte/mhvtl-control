@@ -1041,7 +1041,9 @@ type fabDev struct {
 
 // fabTopology is fab_topology_parse
 // (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_conf.c#L466-L502),
-// which reads device.conf with its own sscanf calls, not conf_value.
+// which reads device.conf with its own sscanf calls, not conf_value. The
+// IDs are %ld into a long; the Slot is %d into an int, which glibc stores
+// by truncating the converted long to 32 bits (cInt).
 func fabTopology(dev *DeviceConf) ([]fabDev, string) {
 	var devs []fabDev
 	cur := -1
@@ -1062,7 +1064,7 @@ func fabTopology(dev *DeviceConf) ([]fabDev, string) {
 			cur = -1
 		case cur >= 0 && !devs[cur].isLib:
 			if n, v := cScan(b, " Library ID: %ld Slot: %d"); n == 2 {
-				devs[cur].libID, devs[cur].slot = v[0], v[1]
+				devs[cur].libID, devs[cur].slot = v[0], cInt(v[1])
 			}
 		}
 	}
@@ -1267,4 +1269,28 @@ func redactFabrics(data []byte) ([]byte, []string) {
 		}
 	}
 	return renderLines(lines), secrets
+}
+
+// secretPlaceholder stands for a secret in PlaceholdSecrets. It has a
+// blank, so no valid secret (validCHAP) equals it.
+const secretPlaceholder = "(previous secret)"
+
+// PlaceholdSecrets returns data with the value of each CHAP secret line
+// (chap) and Mutual CHAP secret line (mutual) of target id replaced by a
+// placeholder that no valid secret equals. A preview diffed against it
+// shows a secret line the edit sets as removed and added whether or not
+// the value changed, so it does not tell whether a sent secret is the
+// stored one. data that has Problems is returned as it is.
+func PlaceholdSecrets(data []byte, id int, chap, mutual bool) []byte {
+	c := ParseFabricsConf(data)
+	r := c.find(fabTarget, int64(id))
+	if len(c.Problems) > 0 || r == nil {
+		return data
+	}
+	for _, f := range r.fields {
+		if chap && f.name == chapFields[1] || mutual && f.name == chapFields[3] {
+			c.lines[f.line].Text = rewriteValue(c.lines[f.line].Text, secretPlaceholder)
+		}
+	}
+	return c.Render()
 }

@@ -5,9 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"mhvtl-control/internal/conffile"
@@ -101,11 +104,15 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	if cur.sha != f.BaseSHA256 {
 		return responseOf(&conffile.ConflictError{Path: filepath.Join(h.cfg.ConfigDir, fabricsConf), Current: cur.sha})
 	}
-	if bytes.Equal(cur.data, next) && cur.exists {
-		return Response{Result: ResultRefused, Error: ErrBadRequest, Message: fabricsConf + " is unchanged"}
-	}
-	if err := conffile.ParseFabricsConf(next).Writable(); err != nil {
+	// Content equal to the file is applied like any other: refusing it
+	// would tell the daemon's client that a CHAP secret it sent is the
+	// stored one.
+	conf := conffile.ParseFabricsConf(next)
+	if err := conf.Writable(); err != nil {
 		return responseOf(refuse(ErrInvalid, "%v", err))
+	}
+	if err := checkPlan(conf, files); err != nil {
+		return responseOf(err)
 	}
 	if err := h.checkBackend(files); err != nil {
 		return responseOf(err)
@@ -162,10 +169,13 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 
 // checkBackend refuses unless mhvtl-fabrics.service would run with
 // MHVTL_BACKEND=tcmu: the unit sets mhvtl and reads mhvtl.conf after it
-// (Environment=, EnvironmentFile=), and apply does nothing for any other
-// backend while still exiting 0 (markh794/mhvtl usr/cmd/mhvtl-fabrics.c
-// at 19b71bd,
-// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L255-L267).
+// (Environment=, EnvironmentFile=,
+// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/etc/mhvtl-fabrics.service.in#L16-L17),
+// and apply does nothing for any other value while still exiting 0
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L255-L260).
+// The value is the one systemd passes (conffile.EnvironmentFile), not the
+// shell's: systemd keeps text after an unquoted value, so
+// "MHVTL_BACKEND=tcmu # TCMU" passes "tcmu # TCMU".
 func (h *Helper) checkBackend(files *fileSet) error {
 	backend := "mhvtl"
 	mc, err := files.current(mhvtlConf)
@@ -173,14 +183,42 @@ func (h *Helper) checkBackend(files *fileSet) error {
 		return err
 	}
 	if mc.exists {
-		if v, ok := conffile.ParseMhvtlConf(mc.data).Get("MHVTL_BACKEND"); ok {
+		vars, err := conffile.EnvironmentFile(mc.data)
+		if err != nil {
+			return refuse(ErrFabricsBackend, "%s: %v, so %s does not start", mhvtlConf, err, FabricsUnit)
+		}
+		if v, ok := vars["MHVTL_BACKEND"]; ok {
 			backend = v
 		}
 	}
 	if backend != "tcmu" {
-		return refuse(ErrFabricsBackend, "MHVTL_BACKEND is %q in %s, not tcmu: mhvtl-fabrics exports only TCMU backstores", backend, mhvtlConf)
+		return refuse(ErrFabricsBackend, "systemd passes MHVTL_BACKEND=%q from %s to %s, not tcmu: mhvtl-fabrics exports only TCMU backstores (systemd keeps text after an unquoted value; write MHVTL_BACKEND=tcmu alone on its line)",
+			backend, mhvtlConf, FabricsUnit)
 	}
 	return nil
+}
+
+// checkPlan runs conffile.CheckPlan against device.conf, which
+// mhvtl-fabrics needs as well (load,
+// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L99-L118):
+// a file that would not plan is refused before anything is written.
+func checkPlan(conf *conffile.FabricsConf, files *fileSet) error {
+	dc, err := files.current(deviceConf)
+	switch {
+	case err != nil:
+		return refuse(ErrInvalid, "%s cannot be read (%v): mhvtl-fabrics needs it", deviceConf, err)
+	case !dc.exists:
+		return refuse(ErrInvalid, "%s does not exist: mhvtl-fabrics needs it", deviceConf)
+	}
+	ps := conf.CheckPlan(conffile.ParseDeviceConf(dc.data))
+	if len(ps) == 0 {
+		return nil
+	}
+	msgs := make([]string, len(ps))
+	for k, p := range ps {
+		msgs[k] = p.Error()
+	}
+	return refuse(ErrInvalid, "%s: %s", fabricsConf, strings.Join(msgs, "; "))
 }
 
 // fabricsAction decides how the edited file gets applied, from the state
@@ -213,7 +251,7 @@ func (h *Helper) fabricsAction(ctx context.Context, existed bool) (string, error
 		case st == "failed" && existed:
 			// The failed run's ExecStopPost=mhvtl-fabrics remove took its
 			// targets down, so no session is up.
-			return "", refuse(ErrFabricsState, "%s failed; check journalctl -u %s, fix the cause, then systemctl restart %s, which starts it again (the failed run removed its targets, so no session is up to drop)", FabricsUnit, FabricsUnit, FabricsUnit)
+			return "", refuse(ErrFabricsState, "%s failed; check journalctl -u %s, fix the cause, then systemctl restart %s, which starts it again and removes any target the failed run left behind", FabricsUnit, FabricsUnit, FabricsUnit)
 		case target["ActiveState"] != "active":
 			return FabricsDeferred, nil
 		case !existed:
@@ -306,7 +344,11 @@ func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string,
 	note, err := h.reconcileFabrics(ctx, removed)
 	if err != nil {
 		resp.Result, resp.Error = ResultError, ErrFabricsState
-		resp.Message = conffile.MaskSecrets(msg+"; "+reconcileAdvice(err, removed), secrets)
+		advice, ok := h.dropForLeftovers(err)
+		if !ok {
+			advice = reconcileAdvice(err, removed)
+		}
+		resp.Message = conffile.MaskSecrets(msg+"; "+advice, secrets)
 		return resp
 	}
 	msg += "; " + note
@@ -336,10 +378,16 @@ func (h *Helper) newFabricsRemoved(it *Intent) bool {
 // https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L80-L83),
 // while ExecStopPost=mhvtl-fabrics remove removes the targets
 // (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/etc/mhvtl-fabrics.service.in#L20),
-// and the unit was not running before that start. An inactive or failed
-// unit has no targets and is left alone. Any other state (a job still
-// running) and a failed systemctl are errors: the targets may not follow
-// the file. It runs to its end even when ctx ends.
+// and the unit was not running before that start. An inactive unit has no
+// targets and is left alone, and so is a failed one unless mhvtl-fabrics'
+// state file still lists targets: its ExecStopPost=remove can fail too
+// ("remove left targets behind",
+// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L270-L276),
+// and it then keeps the state file, which a clean remove deletes
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L530-L551);
+// that is a *fabricsLeftover. Any other state (a job still running) and a
+// failed systemctl are errors: the targets may not follow the file. It
+// runs to its end even when ctx ends.
 func (h *Helper) reconcileFabrics(ctx context.Context, removed bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricsTimeout)
 	defer cancel()
@@ -348,7 +396,12 @@ func (h *Helper) reconcileFabrics(ctx context.Context, removed bool) (string, er
 		return "", err
 	}
 	switch st {
-	case "inactive", "failed":
+	case "failed":
+		if owned, err := fabricsOwned(h.cfg.FabricsState); err != nil || len(owned) > 0 {
+			return "", &fabricsLeftover{path: h.cfg.FabricsState, owned: owned, err: err}
+		}
+		return FabricsUnit + " is " + st + ", not reloaded", nil
+	case "inactive":
 		return FabricsUnit + " is " + st + ", not reloaded", nil
 	case "active":
 	default:
@@ -362,6 +415,103 @@ func (h *Helper) reconcileFabrics(ctx context.Context, removed bool) (string, er
 		return "", fmt.Errorf("systemctl %s %s with it failed too: %s", verb, FabricsUnit, errText(err))
 	}
 	return done, nil
+}
+
+// fabricsLeftover is a failed mhvtl-fabrics.service whose state file
+// lists targets, or cannot be read: they may still be exported.
+type fabricsLeftover struct {
+	path  string
+	owned []string
+	err   error
+}
+
+func (e *fabricsLeftover) Error() string {
+	what := "lists targets the failed run exported (" + strings.Join(e.owned, ", ") + ")"
+	if e.err != nil {
+		what = "cannot be read (" + e.err.Error() + "), so targets the failed run exported may remain"
+	}
+	return fmt.Sprintf("%s failed and its state file %s %s: they stay exported until systemctl restart %s, whose apply removes the owned targets %s no longer names, or mhvtl-fabrics remove",
+		FabricsUnit, e.path, what, FabricsUnit, fabricsConf)
+}
+
+// dropForLeftovers answers a reconcile that found a *fabricsLeftover: the
+// intent is removed rather than kept for the next request to retry, as the
+// state file, not the intent, holds what to remove, and a kept intent
+// would block every request. ok is false for any other error.
+func (h *Helper) dropForLeftovers(err error) (msg string, ok bool) {
+	var lo *fabricsLeftover
+	if !errors.As(err, &lo) {
+		return "", false
+	}
+	msg = lo.Error() + "; the helper removed its intent rather than keep it for the next request: the state file holds what to remove"
+	if err := h.removeIntent(); err != nil {
+		msg += "; " + err.Error()
+	}
+	return msg, true
+}
+
+// fabricsMaxOwned is the size of struct owned's list: FAB_MAX_TARGETS * 2
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L410-L413,
+// include/fabrics.h L28).
+const fabricsMaxOwned = 32 * 2
+
+// fabricsOwned reads mhvtl-fabrics' state file as state_read does
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L435-L448):
+// fscanf "%31s %223s" pairs, at most fabricsMaxOwned, each kept when its
+// fabric is "iscsi" and its name a valid iSCSI name. Like open_nofollow it
+// does not follow a symlink. A file that does not exist owns nothing; any
+// other error opening or reading it is returned.
+func fabricsOwned(path string) ([]string, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if errors.Is(err, syscall.ENOENT) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	p := 0
+	// word is one %Ns conversion: white space skipped, then up to width
+	// bytes that are not white space. C compares it only up to a NUL.
+	word := func(width int) (string, bool) {
+		for p < len(data) && isCSpaceByte(data[p]) {
+			p++
+		}
+		if p == len(data) {
+			return "", false
+		}
+		start := p
+		for p < len(data) && p-start < width && !isCSpaceByte(data[p]) {
+			p++
+		}
+		w, _, _ := strings.Cut(string(data[start:p]), "\x00")
+		return w, true
+	}
+	var owned []string
+	for len(owned) < fabricsMaxOwned {
+		fabric, ok := word(31)
+		if !ok {
+			break
+		}
+		wwn, ok := word(223)
+		if !ok {
+			break
+		}
+		if fabric == "iscsi" && conffile.ValidISCSIName(wwn) {
+			owned = append(owned, wwn)
+		}
+	}
+	return owned, nil
+}
+
+// isCSpaceByte is C's isspace in the "C" locale.
+func isCSpaceByte(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r'
 }
 
 // reconcileAdvice is the message of a reconcile that failed: what to run
@@ -385,9 +535,11 @@ func errText(err error) string {
 	return err.Error()
 }
 
-// fabricsDiff is conffile.FabricsDiff capped like auditFiles' diffs.
+// fabricsDiff is conffile.FabricsDiff with every secret of either file
+// masked in every line, as a hand-written comment may quote one, capped
+// like auditFiles' diffs.
 func fabricsDiff(before, after []byte) (string, bool) {
-	d := conffile.FabricsDiff(before, after)
+	d := conffile.MaskSecrets(conffile.FabricsDiff(before, after), fabricsSecrets(before, after))
 	if len(d) > maxDiff {
 		return d[:maxDiff], true
 	}

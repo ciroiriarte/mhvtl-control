@@ -67,3 +67,43 @@ func TestMhvtlConfKeys(t *testing.T) {
 		t.Errorf("Keys = %s, want %s", got, want)
 	}
 }
+
+// TestEnvironmentFile: values as systemd's EnvironmentFile= passes them
+// (systemd v258 src/basic/env-file.c).
+func TestEnvironmentFile(t *testing.T) {
+	for _, c := range []struct {
+		in, want string
+		set      bool
+	}{
+		{"MHVTL_BACKEND=tcmu\n", "tcmu", true},
+		{"MHVTL_BACKEND=tcmu # c\n", "tcmu # c", true},
+		{"MHVTL_BACKEND=tcmu  \n", "tcmu", true},
+		{"MHVTL_BACKEND=tcmu\t\r\n", "tcmu", true},
+		{"MHVTL_BACKEND=\"tcmu\"\n", "tcmu", true},
+		{"MHVTL_BACKEND='tcmu'\n", "tcmu", true},
+		{"MHVTL_BACKEND=tcmu x\n", "tcmu x", true},
+		{"MHVTL_BACKEND=\"tcmu\" # c\n", "tcmu# c", true},
+		{"MHVTL_BACKEND=tc\\\nmu\n", "tcmu", true},
+		{"MHVTL_BACKEND=\"tc\\mu\"\n", "tc\\mu", true},
+		{"  MHVTL_BACKEND = tcmu\n", "tcmu", true},
+		{"MHVTL_BACKEND=tcmu", "tcmu", true},
+		{"MHVTL_BACKEND=\n", "", true},
+		{"MHVTL_BACKEND=tcmu\nMHVTL_BACKEND=mhvtl\n", "mhvtl", true},
+		{"MHVTL_BACKEND=mhvtl\n# MHVTL_BACKEND=tcmu\n", "mhvtl", true},
+		{"MHVTL_BACKEND=mhvtl\n ;MHVTL_BACKEND=tcmu\n", "mhvtl", true},
+		{"export MHVTL_BACKEND=tcmu\n", "", false},
+		{"MHVTL_BACKEND=tcmu\x00\nMHVTL_BACKEND=mhvtl\n", "tcmu", true},
+	} {
+		vars, err := EnvironmentFile([]byte(c.in))
+		if err != nil {
+			t.Errorf("%q: %v", c.in, err)
+			continue
+		}
+		if v, ok := vars["MHVTL_BACKEND"]; v != c.want || ok != c.set {
+			t.Errorf("%q: %q %v, want %q %v", c.in, v, ok, c.want, c.set)
+		}
+	}
+	if _, err := EnvironmentFile([]byte("MHVTL_BACKEND=tc\xffmu\n")); err == nil {
+		t.Error("invalid UTF-8 accepted")
+	}
+}

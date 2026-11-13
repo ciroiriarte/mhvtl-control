@@ -81,6 +81,7 @@ func newFabEnv(t *testing.T) *fabEnv {
 		return nil, nil
 	}
 	f.cfg.JournalTail = func(context.Context, string) ([]byte, error) { return []byte(f.tail), nil }
+	f.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
 	f.rebuild()
 	return f
 }
@@ -228,7 +229,8 @@ func TestFabricsRefusals(t *testing.T) {
 			f.writeConf("mhvtl.conf", strings.Replace(string(f.read("mhvtl.conf")), "MHVTL_BACKEND=tcmu\n", "", 1), 0o644)
 		}, "", ResultRefused, ErrFabricsBackend, `"mhvtl"`},
 		{"invalid content", nil, "iSCSI:\n Portal: 1.2.3.4:99999\n", ResultRefused, ErrInvalid, "fabrics.conf"},
-		{"unchanged", func(f *fabEnv) { f.writeConf(fabricsConf, fabConf, 0o600) }, fabConf, ResultRefused, ErrBadRequest, "unchanged"},
+		{"no device.conf", func(f *fabEnv) { os.Remove(filepath.Join(f.dir, deviceConf)) }, "", ResultRefused, ErrInvalid, "device.conf does not exist"},
+		{"plan fails", nil, strings.Replace(fabConf, "iSCSI target: 10", "iSCSI target: 99", 1), ResultRefused, ErrInvalid, "no Library or Drive 99"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFabEnv(t)
@@ -529,4 +531,218 @@ func TestFabricsRecovery(t *testing.T) {
 		t.Errorf("systemctl %v, want one reload", v)
 	}
 	f.noSecret(fabSecret, fabNewSecret)
+}
+
+// Content equal to fabrics.conf is applied like a change: a refusal would
+// tell the daemon's client that a secret it sent is the stored one.
+func TestFabricsUnchangedContent(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	if plan := f.do(f.fabricsReq(OpFabricsPlan, fabConf)); plan.Result != ResultValidated || plan.FabricsAction != FabricsReload {
+		t.Fatalf("plan = %+v, want validated reload", plan)
+	}
+	resp := f.do(f.fabricsReq(OpFabrics, fabConf))
+	if resp.Result != ResultApplied || resp.FabricsAction != FabricsReload {
+		t.Fatalf("apply = %+v, want applied reload", resp)
+	}
+	if string(f.read(fabricsConf)) != fabConf || f.intentExists() {
+		t.Errorf("file changed or intent left %v", f.intentExists())
+	}
+	if v := f.verbs(); len(v) != 1 || v[0] != "reload "+FabricsUnit {
+		t.Errorf("systemctl %v, want reload alone", v)
+	}
+	f.noSecret(fabSecret)
+}
+
+// A stored secret quoted outside a secret field, in a comment between two
+// changed lines, is masked in the audit diff too.
+func TestFabricsAuditMasksFileLines(t *testing.T) {
+	f := newFabEnv(t)
+	cur := strings.Replace(fabConf, " CHAP name: pbs1\n", "# old credential "+fabSecret+"\n CHAP name: pbs1\n", 1)
+	f.writeConf(fabricsConf, cur, 0o600)
+	next := strings.Replace(strings.Replace(cur, "example:pbs1\n", "example:pbs9\n", 1), "CHAP name: pbs1", "CHAP name: pbs9", 1)
+	if resp := f.do(f.fabricsReq(OpFabrics, next)); resp.Result != ResultApplied {
+		t.Fatalf("apply = %+v", resp)
+	}
+	audit := strings.Join(f.auditLines(), "\n")
+	if !strings.Contains(audit, "# old credential "+conffile.SecretMask) {
+		t.Fatalf("comment not in the audit diff, test does not cover the case: %s", audit)
+	}
+	f.noSecret(fabSecret)
+}
+
+// The backend is MHVTL_BACKEND as systemd's EnvironmentFile= passes it.
+func TestFabricsBackendValue(t *testing.T) {
+	for _, c := range []struct {
+		line, passes string
+		ok           bool
+	}{
+		{"MHVTL_BACKEND=tcmu # c", "tcmu # c", false},
+		{"MHVTL_BACKEND=tcmu  ", "tcmu", true},
+		{`MHVTL_BACKEND="tcmu"`, "tcmu", true},
+		{"MHVTL_BACKEND='tcmu'", "tcmu", true},
+		{"MHVTL_BACKEND=tcmu x", "tcmu x", false},
+	} {
+		t.Run(c.line, func(t *testing.T) {
+			f := newFabEnv(t)
+			f.writeConf("mhvtl.conf", strings.Replace(string(f.read("mhvtl.conf")), "MHVTL_BACKEND=tcmu\n", c.line+"\n", 1), 0o644)
+			resp := f.do(f.fabricsReq(OpFabricsPlan, fabConf))
+			switch {
+			case c.ok && resp.Result != ResultValidated:
+				t.Errorf("got %+v, want validated", resp)
+			case !c.ok && (resp.Error != ErrFabricsBackend || !strings.Contains(resp.Message, `MHVTL_BACKEND="`+c.passes+`"`)):
+				t.Errorf("got %s %q, want fabrics_backend naming %q", resp.Error, resp.Message, c.passes)
+			}
+		})
+	}
+}
+
+// The plan is checked against device.conf before anything is written, for
+// a plan, an apply and a deferred apply alike.
+func TestFabricsPlanChecked(t *testing.T) {
+	bad := strings.Replace(fabConf, "iSCSI target: 10", "iSCSI target: 11", 1) // a drive of library 10
+	for _, c := range []struct {
+		name string
+		op   string
+		fab  string
+		tgt  string
+	}{
+		{"plan", OpFabricsPlan, "active", "active"},
+		{"apply", OpFabrics, "active", "active"},
+		{"deferred", OpFabrics, "inactive", "inactive"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFabEnv(t)
+			f.fab, f.target = c.fab, c.tgt
+			resp := f.do(f.fabricsReq(c.op, bad))
+			if resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, "drive belongs to library 10") {
+				t.Fatalf("got %+v, want refused invalid", resp)
+			}
+			if _, err := os.Stat(filepath.Join(f.dir, fabricsConf)); !os.IsNotExist(err) || len(f.verbs()) != 0 {
+				t.Errorf("wrote fabrics.conf (%v) or ran %v", err, f.verbs())
+			}
+		})
+	}
+	t.Run("device.conf unreadable", func(t *testing.T) {
+		f := newFabEnv(t)
+		p := filepath.Join(f.dir, deviceConf)
+		os.Remove(p)
+		if err := os.Mkdir(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		resp := f.do(f.fabricsReq(OpFabricsPlan, fabConf))
+		if resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, "device.conf cannot be read") {
+			t.Fatalf("got %+v, want refused invalid", resp)
+		}
+	})
+}
+
+// A failed unit whose state file still lists targets is not reported as
+// clean, and the intent is not kept: the state file holds what to remove.
+func TestFabricsFailedUnitLeftovers(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		state func(path string) error
+		want  string
+	}{
+		{"owned", func(p string) error {
+			return os.WriteFile(p, []byte("iscsi iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10\n"), 0o600)
+		}, "(iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10)"},
+		{"unreadable", func(p string) error { return os.Mkdir(p, 0o700) }, "cannot be read"},
+		{"symlink", func(p string) error { return os.Symlink("/dev/null", p) }, "cannot be read"},
+	} {
+		t.Run(c.name+" rollback", func(t *testing.T) {
+			f := newFabEnv(t)
+			f.fab = "inactive"
+			f.fail[FabricsStart] = errors.New("exit status 1")
+			if err := c.state(f.cfg.FabricsState); err != nil {
+				t.Fatal(err)
+			}
+			resp := f.do(f.fabricsReq(OpFabrics, fabConf))
+			checkLeftovers(t, f, resp, c.want)
+		})
+		t.Run(c.name+" recovery", func(t *testing.T) {
+			f := newFabEnv(t)
+			f.writeConf(fabricsConf, fabConf, 0o600)
+			f.h.killPoint = func(step string) bool { return step == "applying" }
+			f.do(f.fabricsReq(OpFabrics, strings.Replace(fabConf, fabSecret, fabNewSecret, 1)))
+			f.h.killPoint = func(string) bool { return false }
+			f.fab = "failed"
+			if err := c.state(f.cfg.FabricsState); err != nil {
+				t.Fatal(err)
+			}
+			resp := f.do(Request{Op: OpRecover, Actor: "test"})
+			checkLeftovers(t, f, resp, c.want)
+			if string(f.read(fabricsConf)) != fabConf {
+				t.Error("file not restored")
+			}
+		})
+	}
+	// Without a state file the failed unit has no targets, as before.
+	f := newFabEnv(t)
+	f.fab = "inactive"
+	f.fail[FabricsStart] = errors.New("exit status 1")
+	if resp := f.do(f.fabricsReq(OpFabrics, fabConf)); resp.Result != ResultRolledBack || !strings.Contains(resp.Message, "is failed, not reloaded") {
+		t.Errorf("no state file: %+v", resp)
+	}
+}
+
+func checkLeftovers(t *testing.T, f *fabEnv, resp Response, want string) {
+	t.Helper()
+	if resp.Result != ResultError || resp.Error != ErrFabricsState {
+		t.Fatalf("got %+v, want error fabrics_recovery_required", resp)
+	}
+	for _, w := range []string{want, "systemctl restart " + FabricsUnit, "mhvtl-fabrics remove", "removed its intent"} {
+		if !strings.Contains(resp.Message, w) {
+			t.Errorf("message %q lacks %q", resp.Message, w)
+		}
+	}
+	if f.intentExists() {
+		t.Error("intent kept")
+	}
+	if v := f.verbs(); len(v) != 0 && v[len(v)-1] != "start "+FabricsUnit {
+		t.Errorf("systemctl %v after the failed unit", v)
+	}
+	f.noSecret(fabSecret, fabNewSecret)
+}
+
+// fabricsOwned parses the state file as state_read's fscanf "%31s %223s".
+func TestFabricsOwned(t *testing.T) {
+	w := "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	for _, c := range []struct {
+		name, in string
+		want     []string
+	}{
+		{"empty", "", nil},
+		{"one", "iscsi " + w + "\n", []string{w}},
+		{"other fabric and bad name skipped", "loopback " + w + "\niscsi not-a-name\niscsi " + w + "\n", []string{w}},
+		{"any white space", "  iscsi\t\t" + w + "\v\f", []string{w}},
+		{"odd token at the end", "iscsi " + w + "\niscsi", []string{w}},
+		{"long fabric splits", strings.Repeat("x", 31) + "iscsi " + w + "\n", nil},
+		{"NUL ends the compare", "iscsi\x00junk " + w + "\n", []string{w}},
+		{"capped", strings.Repeat("iscsi "+w+"\n", 70), nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "fabrics.state")
+			if err := os.WriteFile(p, []byte(c.in), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := fabricsOwned(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := c.want
+			if c.name == "capped" {
+				for len(want) < fabricsMaxOwned {
+					want = append(want, w)
+				}
+			}
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Errorf("got %q, want %q", got, want)
+			}
+		})
+	}
+	if got, err := fabricsOwned(filepath.Join(t.TempDir(), "absent")); got != nil || err != nil {
+		t.Errorf("absent: %v %v", got, err)
+	}
 }

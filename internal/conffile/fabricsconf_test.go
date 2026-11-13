@@ -343,6 +343,15 @@ func TestFabricsCheckPlan(t *testing.T) {
 	if len(ps) != 1 || !strings.Contains(ps[0].Msg, "two devices on LUN 1") {
 		t.Errorf("duplicate slot: %v", ps)
 	}
+	// Slot is read with %d into an int: glibc keeps the low 32 bits, so
+	// 4294967297 is Slot 1 to mhvtl-fabrics.
+	wide := ParseDeviceConf([]byte("Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00\n\n" +
+		"Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00\n Library ID: 10 Slot: 1\n\n" +
+		"Drive: 12 CHANNEL: 00 TARGET: 02 LUN: 00\n Library ID: 10 Slot: 4294967297\n"))
+	ps = mustFabrics(t, "iSCSI:\n Base name: "+fabBase+"\niSCSI target: 10\n").CheckPlan(wide)
+	if len(ps) != 1 || !strings.Contains(ps[0].Msg, "two devices on LUN 1") {
+		t.Errorf("slot 4294967297: %v, want LUN 1 twice", ps)
+	}
 	noSlot := ParseDeviceConf([]byte("Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00\n\n" +
 		"Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00\n Library ID: 10 Slot: 0\n"))
 	ps = mustFabrics(t, "iSCSI:\n Base name: "+fabBase+"\niSCSI target: 10\n").CheckPlan(noSlot)
@@ -690,5 +699,29 @@ func TestMaskSecrets(t *testing.T) {
 	}
 	if got := MaskSecrets("abc", []string{""}); got != "abc" {
 		t.Errorf("empty secret: %q", got)
+	}
+}
+
+// TestPlaceholdSecrets: the secret lines asked for get the placeholder,
+// with their spacing and comment; other lines and targets stay.
+func TestPlaceholdSecrets(t *testing.T) {
+	in := "iSCSI:\n Base name: " + fabBase + "\n" +
+		"iSCSI target: 10\n Initiator name: iqn.2024-01.com.example:pbs1\n CHAP name: a\n CHAP  secret:  s1-secret-0001 # kept\n" +
+		" Mutual CHAP name: b\n Mutual CHAP secret: s2-secret-0002\n" +
+		"iSCSI target: 30\n Target name: iqn.2024-01.com.example:t30\n Initiator name: iqn.2024-01.com.example:pbs1\n CHAP name: c\n CHAP secret: s3-secret-0003\n"
+	got := string(PlaceholdSecrets([]byte(in), 10, true, false))
+	want := strings.Replace(in, "s1-secret-0001", secretPlaceholder, 1)
+	if got != want {
+		t.Errorf("chap of 10:\n%s\nwant\n%s", got, want)
+	}
+	got = string(PlaceholdSecrets([]byte(in), 10, false, true))
+	if got != strings.Replace(in, "s2-secret-0002", secretPlaceholder, 1) {
+		t.Errorf("mutual of 10:\n%s", got)
+	}
+	if got := string(PlaceholdSecrets([]byte(in), 99, true, true)); got != in {
+		t.Errorf("no such target changed the file:\n%s", got)
+	}
+	if validCHAP(secretPlaceholder) {
+		t.Error("the placeholder is a valid secret")
 	}
 }
