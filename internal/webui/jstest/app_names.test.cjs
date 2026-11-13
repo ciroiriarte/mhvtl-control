@@ -43,6 +43,9 @@ function skipTemplate(src, i) {
 // REGEX_AFTER are the keywords after which a / starts a regex literal.
 const REGEX_AFTER = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "yield", "await"]);
 
+// CONTROL are the keywords whose (...) is followed by a statement.
+const CONTROL = new Set(["if", "while", "for", "with"]);
+
 // BLOCK_AFTER are the keywords a { after which opens a block, not an object
 // literal; a / after them starts a regex too.
 const BLOCK_AFTER = new Set(["else", "do", "try", "finally"]);
@@ -70,6 +73,7 @@ function scan(src, i, interp) {
   let want = !interp; // next identifier at depth 0 is a declarator name
   let last = ""; // last significant token, to tell a regex from a division
   let colon = "object"; // what a { right after the last : opens
+  let word = ""; // the last word read, to tell if (...) from a call
   while (i < src.length) {
     const c = src[i];
     const depth = nest.length;
@@ -84,7 +88,8 @@ function scan(src, i, interp) {
     if (c === "\"" || c === "'") { i = skipQuoted(src, i); last = "s"; continue; }
     if (c === "`") { i = skipTemplate(src, i); last = "s"; continue; }
     if ((c === "+" || c === "-") && src[i + 1] === c) { i += 2; last = "i"; continue; } // ++/--: a / after it divides
-    if (c === "?" && (src[i + 1] === "?" || (src[i + 1] === "." && !/\d/.test(src[i + 2] || "")))) { i += 2; last = "?"; continue; } // ?? and ?.
+    if (c === "?" && src[i + 1] === "?") { i += 2; last = "?"; continue; } // ??
+    if (c === "?" && src[i + 1] === "." && !/\d/.test(src[i + 2] || "")) { i += 2; last = "."; continue; } // ?. reads a property
     if (depth !== 0 || !want) {
       // A word: after a keyword such as return a / starts a regex, after a
       // name or a property (.return) it divides.
@@ -92,6 +97,7 @@ function scan(src, i, interp) {
       const w = /[A-Za-z_$]/.test(c) && IDENT.exec(src);
       if (w && w.index === i) {
         i += w[0].length;
+        word = last === "." ? "" : w[0];
         last = last === "." ? "i" : BLOCK_AFTER.has(w[0]) ? "b" : REGEX_AFTER.has(w[0]) ? "k" : "i";
         continue;
       }
@@ -124,8 +130,12 @@ function scan(src, i, interp) {
       last = (nest.pop() || {}).k === "object" ? "i" : ";";
       i++;
       continue;
-    } else if (c === "(" || c === "[") nest.push({ k: c, q: 0 });
-    else if (c === ")" || c === "]") nest.pop();
+    } else if (c === "(" || c === "[") nest.push({ k: c, q: 0, control: c === "(" && last === "i" && CONTROL.has(word) });
+    else if (c === ")" || c === "]") {
+      // A / after the condition of if, while, for or with starts the
+      // statement it controls, so a regex; after any other ) it divides.
+      if ((nest.pop() || {}).control) { last = ";"; i++; continue; }
+    }
     else if (!interp && depth === 0 && c === ";") return { names, end: i };
     else if (!interp && depth === 0 && c === ",") want = true;
     else if (depth === 0 && want) {
@@ -224,6 +234,10 @@ test("closureNames tells a regex from a division after ++, a property, return an
   assert.deepStrictEqual(names("  var a = function () { var o = { k: {} } / 2, p = x ? {} : {} / 2; }, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = function () { switch (x) { case y ? 1 : 2: {} /,;/.test(x); } }, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = o?.p ?? {} / 2, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = stats?.in / 1024, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function (x) { if (x) /\\}/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function (x) { while (f(x)) /,;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = f(x) / 2, b = (y) / 3, c = 1;\n  function c() {}\n").c, 2);
   assert.deepStrictEqual(names("  var a = { x: { y: 1 } } / 2, b = (function () {}) / 3, c = 1;\n  function c() {}\n").c, 2);
 });
 
