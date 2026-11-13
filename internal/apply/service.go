@@ -15,7 +15,7 @@ import (
 )
 
 // planning reports whether op only checks: plan or service_plan.
-func planning(op string) bool { return op == OpPlan || op == OpServicePlan }
+func planning(op string) bool { return op == OpPlan || op == OpServicePlan || op == OpFabricsPlan }
 
 // applying reports whether op carries out what it checks: apply or service.
 func applying(op string) bool { return op == OpApply || op == OpService }

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"mhvtl-control/internal/conffile"
 )
 
 // recover brings back the files of the apply that left it, which is dead:
@@ -61,10 +63,37 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 			return responseOf(fmt.Errorf("recovery: starting: %w", err))
 		}
 	}
+	// A fabrics apply that died may have half-applied the new file: the
+	// targets follow the restored one (reconcileFabrics). At boot the unit
+	// has not started yet and applies the restored file itself. When that
+	// fails the intent stays, so the next request's recovery retries it,
+	// unless the unit failed with targets left in its state file
+	// (dropForLeftovers).
+	var fabricsNote string
+	if it.Op == OpFabrics && !boot {
+		removed := h.newFabricsRemoved(it)
+		note, err := h.reconcileFabrics(ctx, removed)
+		if err != nil {
+			var originals [][]byte
+			for _, f := range it.Files {
+				originals = append(originals, f.Original)
+			}
+			advice, ok := h.dropForLeftovers(err)
+			if !ok {
+				advice = reconcileAdvice(err, removed)
+			}
+			return Response{Result: ResultError, Error: ErrFabricsState, Conflicts: conflicts,
+				Message: conffile.MaskSecrets("recovery: "+advice, fabricsSecrets(originals...))}
+		}
+		fabricsNote = note
+	}
 	if err := h.removeIntent(); err != nil {
 		return responseOf(err)
 	}
 	msg := fmt.Sprintf("recovered the %s of %s by %q; plan again", it.Op, it.Started.Format("2006-01-02 15:04:05Z07:00"), it.Actor)
+	if fabricsNote != "" {
+		msg += "; " + fabricsNote
+	}
 	if it.Op == OpService+":"+ActionStop && units && it.Exec != nil && (stoppedActive(it.Exec.Stops) || len(it.Exec.StandaloneStopped) > 0) {
 		// unwind starts again every unit the stop had stopped of a library
 		// that ran, and every standalone drive it had stopped (journaled

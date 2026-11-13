@@ -1619,6 +1619,364 @@
     return { tpgs: tpgs, unexported: unexported };
   }
 
+  /* ---- iSCSI export (fabrics.conf, /api/v1/transports/iscsi) ----------- *
+   * CHAP secrets live only in the dialog's password inputs: the request
+   * bodies carry them, nothing derived here (rows, outcome text) does.     */
+
+  // iscsiList splits a textarea into its non-empty trimmed lines.
+  function iscsiList(text) {
+    return String(text == null ? "" : text).split(/\r?\n/).map(function (l) { return l.trim(); })
+      .filter(function (l) { return l !== ""; });
+  }
+
+  function sameList(a, b) {
+    a = coerceArray(a); b = coerceArray(b);
+    return a.length === b.length && a.every(function (x, i) { return String(x) === String(b[i]); });
+  }
+
+  // buildISCSISettingsBody is the PATCH /transports/iscsi body for form
+  // {portals (one per line), base_name}: only the fields that differ from
+  // cur (GET /iscsi/config's iscsi), which the API leaves unchanged when
+  // omitted. Without cur both are sent.
+  function buildISCSISettingsBody(cur, form, dryRun) {
+    form = form || {};
+    var body = {};
+    var portals = iscsiList(form.portals);
+    var base = String(form.base_name == null ? "" : form.base_name).trim();
+    if (!cur || !sameList(portals, cur.portals)) { body.portals = portals; }
+    if (!cur || base !== String(cur.base_name || "")) { body.base_name = base; }
+    body.dry_run = !!dryRun;
+    return body;
+  }
+
+  // chapPart reads one CHAP pair of the form: null when both are empty
+  // (unchanged), {creds} when both are set, or {error} for half a pair.
+  function chapPart(name, secret, label) {
+    name = String(name == null ? "" : name).trim();
+    secret = String(secret == null ? "" : secret);
+    if (name === "" && secret === "") { return null; }
+    if (name === "" || secret === "") {
+      return { error: label + " needs both a name and a secret; leave both empty to keep it as it is." };
+    }
+    return { creds: { name: name, secret: secret } };
+  }
+
+  // buildISCSIBindBody is the POST /transports/iscsi/bind body exporting
+  // device.conf device id (a Library or a standalone Drive) from form
+  // {initiators (one per line), target_name, chap_name, chap_secret,
+  // mutual_name, mutual_secret, clear_chap, clear_mutual_chap}. existing is
+  // the device's fabrics.conf target (iscsiRows' target), or null for a new
+  // export. Omitted fields stay unchanged: empty CHAP fields keep the CHAP
+  // as it is, the initiators are sent when listed, and the target name when
+  // it differs from the record's. Emptying an existing list is refused here:
+  // a record without an initiator exports nothing (fabrics.conf(5)), and
+  // the API refuses an empty list.
+  // Returns {body} or {error, field}, field naming the request field.
+  function buildISCSIBindBody(id, form, existing, dryRun) {
+    form = form || {};
+    var n = Number(id);
+    if (!Number.isInteger(n) || n <= 0) { return { error: "No device to export.", field: "library" }; }
+    var body = { library: n };
+    var inits = iscsiList(form.initiators);
+    if (inits.length) {
+      body.initiators = inits;
+    } else if (existing && coerceArray(existing.initiators).length) {
+      return { error: "List at least one initiator: a record without one exports nothing. To stop exporting the device, use Stop exporting.", field: "initiators" };
+    }
+    var name = String(form.target_name == null ? "" : form.target_name).trim();
+    if (name !== (existing ? String(existing.target_name || "") : "")) { body.target_name = name; }
+    var pairs = [
+      ["chap", "clear_chap", form.chap_name, form.chap_secret, form.clear_chap, "CHAP"],
+      ["mutual_chap", "clear_mutual_chap", form.mutual_name, form.mutual_secret, form.clear_mutual_chap, "Mutual CHAP"],
+    ];
+    for (var i = 0; i < pairs.length; i++) {
+      var p = pairs[i];
+      if (p[4]) {
+        body[p[1]] = true;
+        continue;
+      }
+      var c = chapPart(p[2], p[3], p[5]);
+      if (c && c.error) { return { error: c.error, field: p[0] }; }
+      if (c) { body[p[0]] = c.creds; }
+    }
+    body.dry_run = !!dryRun;
+    return { body: body };
+  }
+
+  // buildISCSIUnbindBody is the POST /transports/iscsi/unbind body.
+  function buildISCSIUnbindBody(id, dryRun) {
+    return { library: coerceNumber(id), dry_run: !!dryRun };
+  }
+
+  // iscsiApplyBody is the apply of a previewed change: the very body that
+  // was previewed, with dry_run false and base_sha256 the sha256 the
+  // preview answered, so the daemon refuses it (409) if fabrics.conf
+  // changed in between. It is never rebuilt from the form.
+  function iscsiApplyBody(previewed, sha) {
+    var body = {};
+    Object.keys(previewed || {}).forEach(function (k) { body[k] = previewed[k]; });
+    body.dry_run = false;
+    body.base_sha256 = String(sha == null ? "" : sha);
+    return body;
+  }
+
+  // chapText is a target's CHAP state for display: on with the user name,
+  // or off. A secret is never part of it.
+  function chapText(on, name, label) {
+    if (!on) { return label + ": off"; }
+    return label + ": on" + (name ? " (" + String(name) + ")" : "");
+  }
+
+  // iscsiRows lists one row per device.conf library and standalone drive
+  // (config: GET /config), with its iSCSI export from fabrics.conf (cfg: GET
+  // /transports/iscsi/config) and whether configfs shows the target (m: GET
+  // /transports; null when not read), then the fabrics.conf targets whose
+  // device is not in device.conf. Rows carry no secret.
+  function iscsiRows(config, cfg, m) {
+    var byDev = {};
+    coerceArray(cfg && cfg.targets).forEach(function (t) {
+      if (!t) { return; }
+      var id = t.device ? coerceNumber(t.device.id) : coerceNumber(t.id);
+      byDev[id] = t;
+    });
+    var live = null;
+    if (m) {
+      live = {};
+      coerceArray(m.fabrics).forEach(function (f) {
+        coerceArray(f && f.targets).forEach(function (t) {
+          if (!t || !t.wwn) { return; }
+          var tpgs = coerceArray(t.tpgs);
+          live[String(t.wwn)] = {
+            enabled: tpgs.length ? tpgs.some(function (g) { return g && g.enabled; }) : null,
+            luns: tpgs.reduce(function (s, g) { return s + coerceArray(g && g.luns).length; }, 0),
+            sessions: tpgs.reduce(function (s, g) {
+              return s + coerceArray(g && g.acls).filter(function (a) { return a && a.session; }).length +
+                coerceArray(g && g.dynamic_sessions).length;
+            }, 0),
+          };
+        });
+      });
+    }
+    var row = function (kind, id, label, t) {
+      var r = { key: "iscsi-" + kind + "-" + id, kind: kind, id: id, label: label, exported: !!t, orphan: false,
+        wwn: "", targetName: "", initiators: [], chap: "", mutualChap: "", present: null, enabled: null, luns: 0, sessions: 0,
+        target: null };
+      if (!t) { return r; }
+      r.wwn = String(t.wwn || "");
+      r.targetName = String(t.target_name || "");
+      r.initiators = coerceArray(t.initiators).map(String);
+      r.chap = chapText(!!t.chap, t.chap_name, "CHAP");
+      r.mutualChap = chapText(!!t.mutual_chap, t.mutual_chap_name, "Mutual CHAP");
+      // The dialog's prefill: the non-secret fields only.
+      r.target = { target_name: r.targetName, initiators: r.initiators.slice(), chap: !!t.chap, mutual_chap: !!t.mutual_chap };
+      if (live) {
+        var l = r.wwn ? live[r.wwn] : null;
+        r.present = !!l;
+        if (l) { r.enabled = l.enabled; r.luns = l.luns; r.sessions = l.sessions; }
+      }
+      return r;
+    };
+    var rows = [], seen = {};
+    coerceArray(config && config.libraries).forEach(function (l) {
+      if (!l) { return; }
+      var id = coerceNumber(l.id);
+      seen[id] = true;
+      rows.push(row("library", id, "Library " + id, byDev[id]));
+    });
+    coerceArray(config && config.standalone_drives).forEach(function (d) {
+      if (!d) { return; }
+      var id = coerceNumber(d.id);
+      seen[id] = true;
+      rows.push(row("drive", id, "Drive " + id + " (standalone)", byDev[id]));
+    });
+    Object.keys(byDev).map(Number).sort(function (a, b) { return a - b; }).forEach(function (id) {
+      if (seen[id]) { return; }
+      var t = byDev[id];
+      var kind = t.device && t.device.kind === "drive" ? "drive" : "library";
+      var r = row(kind, id, (kind === "drive" ? "Drive " : "Library ") + id + " (not in device.conf)", t);
+      r.orphan = true;
+      rows.push(r);
+    });
+    return rows;
+  }
+
+  // iscsiNotes are the panel status lines for GET /iscsi/config's problems
+  // and warnings.
+  function iscsiNotes(cfg) {
+    var out = [];
+    coerceArray(cfg && cfg.problems).forEach(function (p) {
+      out.push("fabrics.conf:" + coerceNumber(p && p.line) + ": " + String((p && p.message) || ""));
+    });
+    coerceArray(cfg && cfg.warnings).forEach(function (w) {
+      out.push("fabrics.conf: " + String(w && typeof w === "object" ? (w.message || "") : w));
+    });
+    return out;
+  }
+
+  var ISCSI_WRITES = {
+    helper_absent: "the apply helper is not enabled (see the Configuration panel)",
+    tls_required: "this daemon listens without TLS on a non-loopback address",
+    token_required: "this daemon has no API token",
+    helper_blocked: "the apply helper refuses changes (see the Configuration panel)",
+  };
+
+  // iscsiAllowed says whether the iSCSI export actions are offered: s is
+  // {caps, reachable (mutationsEnabled), cfg, cfgError ({status, message}
+  // when GET /iscsi/config failed), busy}. hide is true when the section
+  // cannot show actions at all (no config read); reason says why.
+  function iscsiAllowed(s) {
+    s = s || {};
+    var no = function (reason, hide) { return { ok: false, hide: !!hide, reason: reason }; };
+    if (s.cfgError) {
+      if (s.cfgError.status === 404) { return no("This mhvtl-control does not offer the iSCSI export API.", true); }
+      return no("fabrics.conf not read: " + String(s.cfgError.message || "no reason given"), true);
+    }
+    if (!s.cfg) { return no("fabrics.conf not read yet.", true); }
+    if (!s.reachable) { return no("The node is not reachable."); }
+    if (!s.caps) { return no("The write capabilities were not read."); }
+    if (s.caps.writes !== "ok") {
+      var w = String(s.caps.writes || "");
+      return no("Read-only: " + (ISCSI_WRITES[w] || ("writes are " + (w || "off"))) + ".");
+    }
+    if (coerceArray(s.cfg.problems).length) { return no("fabrics.conf has lines mhvtl-fabrics would not read; fix them first."); }
+    if (s.busy) { return no("An iSCSI change is in progress."); }
+    return { ok: true, hide: false, reason: "" };
+  }
+
+  // iscsiActionText says what applying a change does to the export
+  // service, from a write response's action.
+  function iscsiActionText(action) {
+    switch (String(action || "")) {
+      case "reload": return "reload: sessions to other targets stay up";
+      case "start": return "start: the export service starts and exports the targets";
+      case "none": return "none: applied when mhVTL starts";
+      default: return action ? String(action) : "";
+    }
+  }
+
+  // iscsiDiffLines classifies a write response's diff text (secrets already
+  // masked by the daemon) for display with the stage panel's diff colours.
+  function iscsiDiffLines(text) {
+    var t = String(text == null ? "" : text);
+    if (t === "") { return []; }
+    var lines = t.split("\n");
+    if (lines[lines.length - 1] === "") { lines.pop(); }
+    return lines.map(function (l) {
+      var cls = "diff-ctx";
+      if (/^@@/.test(l)) { cls = "diff-hunk"; }
+      else if (/^(\+\+\+|---)( |$)/.test(l)) { cls = "diff-hunk"; }
+      else if (l.charAt(0) === "+") { cls = "diff-add"; }
+      else if (l.charAt(0) === "-") { cls = "diff-del"; }
+      return { cls: cls, text: l };
+    });
+  }
+
+  var ISCSI_INPUTS = {
+    initiators: "iscsi-initiators", target_name: "iscsi-target-name",
+    chap: "iscsi-chap-name", clear_chap: "iscsi-clear-chap",
+    mutual_chap: "iscsi-mutual-name", clear_mutual_chap: "iscsi-clear-mutual",
+    portals: "iscsi-portals", base_name: "iscsi-base-name",
+  };
+
+  // iscsiFieldInput is the dialog input id for a request field named by a
+  // 422's error.field ("chap", "chap.secret", "initiators[1]" ...), or "".
+  function iscsiFieldInput(field) {
+    var f = String(field || "").replace(/[.[].*$/, "");
+    if (/secret/.test(String(field || ""))) {
+      if (f === "chap") { return "iscsi-chap-secret"; }
+      if (f === "mutual_chap") { return "iscsi-mutual-secret"; }
+    }
+    return Object.prototype.hasOwnProperty.call(ISCSI_INPUTS, f) ? ISCSI_INPUTS[f] : "";
+  }
+
+  var ISCSI_READONLY = { helper_absent: 1, helper_unreachable: 1, tls_required: 1, token_required: 1, helper_blocked: 1, legacy_env: 1 };
+
+  // iscsiOutcome maps a write's answer to what the UI does: res is the
+  // response body (any status), status its HTTP status (0: no answer). kind
+  // is validated (a preview to confirm), unchanged (nothing to apply),
+  // applied, rolled_back, invalid (field: the request field to fix),
+  // conflict (409: reload and redo), not_bound, readonly, refused or error.
+  // text is built from the daemon's message, never from the request.
+  function iscsiOutcome(res, status) {
+    res = res && typeof res === "object" ? res : {};
+    status = coerceNumber(status);
+    var err = res.error && typeof res.error === "object" ? res.error : {};
+    var code = String(err.code || "");
+    var msg = String(err.message || res.message || "");
+    var out = { kind: "error", text: "", field: "", tail: "", diff: String(res.diff || ""),
+      action: String(res.action || ""), actionText: iscsiActionText(res.action), rollbackDir: String(res.rollback_dir || "") };
+    var result = String(res.result || "");
+    if (!status) {
+      out.text = "No answer from the node" + (msg ? ": " + msg : "") + ". Reload the iSCSI configuration to see whether the change was made.";
+      return out;
+    }
+    if (status === 409 || result === "conflict" || code === "conflict") {
+      out.kind = "conflict";
+      switch (code) {
+        case "conflict":
+          out.text = "fabrics.conf changed since it was read. The configuration was reloaded: check it and make the change again.";
+          break;
+        case "apply_in_progress":
+        case "in_progress":
+          out.text = "Another change is being applied. Try again in a moment.";
+          break;
+        case "recovered":
+          out.text = "The helper first recovered a change that had been interrupted, and made none. The configuration was reloaded: check it and make the change again.";
+          break;
+        default:
+          out.text = "The change was refused" + (msg ? ": " + msg : ".") + " The configuration was reloaded: check it and try again.";
+      }
+      return out;
+    }
+    if (status >= 200 && status < 300 && result === "unchanged") {
+      out.kind = "unchanged";
+      out.text = "No change to fabrics.conf.";
+      return out;
+    }
+    if (result === "rolled_back") {
+      out.kind = "rolled_back";
+      out.text = "The change was rolled back" + (msg ? ": " + msg : ".") + (out.rollbackDir ? " The files it replaced are in " + out.rollbackDir + "." : "");
+      out.tail = String(res.journal_tail || "");
+      return out;
+    }
+    if (status === 422 || err.field) {
+      out.kind = "invalid";
+      out.field = String(err.field || "");
+      out.text = msg || "The request was refused as invalid.";
+      return out;
+    }
+    if (status === 404 && code === "not_bound") {
+      out.kind = "not_bound";
+      out.text = "This device is not exported over iSCSI (any more).";
+      return out;
+    }
+    if (status === 401 || status === 403 || Object.prototype.hasOwnProperty.call(ISCSI_READONLY, code)) {
+      out.kind = "readonly";
+      out.text = "Read-only now: " + (msg || ("HTTP " + status));
+      return out;
+    }
+    if (status >= 200 && status < 300) {
+      if (result === "applied" || (!res.dry_run && result === "")) {
+        out.kind = "applied";
+        out.text = "Applied" + (out.action ? " (" + out.actionText + ")" : "") + ".";
+        return out;
+      }
+      if (result === "validated" || res.dry_run) {
+        out.kind = "validated";
+        out.text = msg || "Checked: apply to make this change.";
+        return out;
+      }
+    }
+    if (result === "refused") {
+      out.kind = "refused";
+      out.text = msg || "The change was refused.";
+      return out;
+    }
+    out.text = msg || ("The change failed" + (result ? " (" + result + ")" : "") + ": HTTP " + status + ".");
+    if (res.journal_tail) { out.tail = String(res.journal_tail); }
+    return out;
+  }
+
   var API = {
     POLL_SECONDS: POLL_SECONDS,
     pollPanels: pollPanels,
@@ -1709,6 +2067,19 @@
     transportDeviceText: transportDeviceText,
     transportSessionText: transportSessionText,
     transportView: transportView,
+    iscsiList: iscsiList,
+    buildISCSISettingsBody: buildISCSISettingsBody,
+    buildISCSIBindBody: buildISCSIBindBody,
+    buildISCSIUnbindBody: buildISCSIUnbindBody,
+    iscsiApplyBody: iscsiApplyBody,
+    chapText: chapText,
+    iscsiRows: iscsiRows,
+    iscsiNotes: iscsiNotes,
+    iscsiAllowed: iscsiAllowed,
+    iscsiActionText: iscsiActionText,
+    iscsiDiffLines: iscsiDiffLines,
+    iscsiFieldInput: iscsiFieldInput,
+    iscsiOutcome: iscsiOutcome,
   };
 
   /* ---- UMD tail ------------------------------------------------------- */

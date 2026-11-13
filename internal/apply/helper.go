@@ -95,6 +95,9 @@ type Config struct {
 	JournalTail func(ctx context.Context, unit string) ([]byte, error)
 	// ReadTimeout bounds reading the request.
 	ReadTimeout time.Duration
+	// FabricsState is mhvtl-fabrics' state file, the targets it owns
+	// (fabricsOwned).
+	FabricsState string
 }
 
 // DefaultHome is the installed helper's media home of a library when
@@ -147,6 +150,9 @@ func DefaultConfig(configDir, version string) Config {
 		},
 		Logf:        logf,
 		ReadTimeout: 30 * time.Second,
+		// fab_state_path, markh794/mhvtl usr/fabrics_cfs.c at 19b71bd,
+		// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L43
+		FabricsState: "/run/mhvtl/fabrics.state",
 	}
 }
 
@@ -267,7 +273,12 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 	if it != nil {
 		return h.recover(ctx, it, false, req.Actor, peer)
 	}
-	resp := h.handle(ctx, req, &rec)
+	var resp Response
+	if fabricsOp(req.Op) {
+		resp = h.fabrics(ctx, req, &rec)
+	} else {
+		resp = h.handle(ctx, req, &rec)
+	}
 	if !planning(req.Op) || resp.Result != ResultValidated {
 		h.auditResponse(rec, resp)
 	}

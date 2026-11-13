@@ -134,6 +134,9 @@
         <header>Transport Map <span class="count" id="transport-count"></span></header>
         <div class="panel-status" id="transport-status" data-panel-status role="alert" aria-live="polite"></div>
         <div class="body" id="transport-map"><p class="muted">Loading transports…</p></div>
+        <!-- iSCSI export: fabrics.conf, written through the apply helper
+             (preview, then apply) while capabilities.writes is "ok". -->
+        <div class="body" id="iscsi-export"></div>
       </section>
     </div>
   </main>
@@ -301,6 +304,50 @@
       <div class="dialog-buttons">
         <button class="btn" value="cancel">Cancel</button>
         <button class="btn primary" id="confirm-ok" value="confirm">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- iSCSI export: export/edit a device, the shared settings, or stop
+       exporting. Every change is previewed (dry run) before Apply. CHAP
+       secrets are never pre-filled and are cleared when the dialog closes. -->
+  <dialog id="iscsi-dialog" class="wide" aria-labelledby="iscsi-dialog-title">
+    <form method="dialog" id="iscsi-form" autocomplete="off">
+      <h3 id="iscsi-dialog-title" style="margin:0 0 6px">iSCSI export</h3>
+      <p class="muted" id="iscsi-dialog-intro" style="margin:0 0 12px"></p>
+      <div class="form-grid" id="iscsi-bind-fields" hidden>
+        <label>Initiators allowed (one IQN per line)
+          <textarea id="iscsi-initiators" rows="3" spellcheck="false" style="width:100%"></textarea>
+        </label>
+        <label>Target name (optional)
+          <input type="text" id="iscsi-target-name" spellcheck="false" placeholder="derived from the base name" style="width:100%">
+        </label>
+        <p class="muted" id="iscsi-chap-note"></p>
+        <div class="range-grid">
+          <label>CHAP name <input type="text" id="iscsi-chap-name" spellcheck="false" autocomplete="off"></label>
+          <label>CHAP secret <input type="password" id="iscsi-chap-secret" autocomplete="new-password"></label>
+        </div>
+        <label class="inline-check" id="iscsi-clear-chap-label"><input type="checkbox" id="iscsi-clear-chap"> Remove CHAP</label>
+        <div class="range-grid">
+          <label>Mutual CHAP name <input type="text" id="iscsi-mutual-name" spellcheck="false" autocomplete="off"></label>
+          <label>Mutual CHAP secret <input type="password" id="iscsi-mutual-secret" autocomplete="new-password"></label>
+        </div>
+        <label class="inline-check" id="iscsi-clear-mutual-label"><input type="checkbox" id="iscsi-clear-mutual"> Remove mutual CHAP</label>
+      </div>
+      <div class="form-grid" id="iscsi-settings-fields" hidden>
+        <label>Portals (one address:port per line)
+          <textarea id="iscsi-portals" rows="3" spellcheck="false" style="width:100%"></textarea>
+        </label>
+        <label>Base name
+          <input type="text" id="iscsi-base-name" spellcheck="false" placeholder="iqn.2026-01.org.example" style="width:100%">
+        </label>
+      </div>
+      <div id="iscsi-preview" class="stage-block" aria-live="polite"></div>
+      <p class="dialog-error" id="iscsi-error" role="alert"></p>
+      <div class="dialog-buttons">
+        <button class="btn" value="cancel">Close</button>
+        <button class="btn" type="button" id="iscsi-preview-btn">Preview</button>
+        <button class="btn primary" type="button" id="iscsi-apply-btn" disabled>Apply</button>
       </div>
     </form>
   </dialog>

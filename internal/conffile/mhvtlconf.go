@@ -1,8 +1,11 @@
 package conffile
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // ModelledKeys are the mhvtl.conf keys MhvtlConf.Set accepts.
@@ -236,4 +239,165 @@ func (c *MhvtlConf) Set(key, value string) error {
 	c.lines = insertLines(c.lines, len(c.lines), []Line{{Text: key + "=" + value, EOL: eol(c.lines)}})
 	c.index()
 	return nil
+}
+
+// EnvironmentFile returns the variables systemd's EnvironmentFile= takes
+// from data, the last assignment of each key winning. It mirrors
+// parse_env_file_internal and load_env_file_push (systemd v258
+// src/basic/env-file.c,
+// https://github.com/systemd/systemd/blob/v258/src/basic/env-file.c#L28-L290),
+// the rules systemd.exec(5) states
+// (https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#EnvironmentFile=):
+// a line whose first non-blank byte is '#' or ';' is a comment, and
+// nowhere else does either start one; blanks around the key and before the
+// value are dropped, and trailing blanks of an unquoted value; quotes are
+// removed and the text after a closing quote is appended (`"a" b` is
+// "ab"); a backslash escapes the next byte, and before a newline continues
+// the line. Parsing stops at a NUL byte, as the C loop does. A key or value
+// that is not UTF-8 makes systemd refuse the whole file: that is the
+// error.
+func EnvironmentFile(data []byte) (map[string]string, error) {
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		data = data[:i]
+	}
+	const (
+		preKey = iota
+		key
+		preValue
+		value
+		valueEscape
+		singleQuote
+		doubleQuote
+		doubleQuoteEscape
+		comment
+		commentEscape
+	)
+	isWhite := func(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+	isNewline := func(c byte) bool { return c == '\n' || c == '\r' }
+	vars := map[string]string{}
+	var k, v []byte
+	kWhite, vWhite := -1, -1
+	state := preKey
+	push := func(chompValue bool) error {
+		if kWhite >= 0 {
+			k = k[:kWhite]
+		}
+		if chompValue && vWhite >= 0 {
+			v = v[:vWhite]
+		}
+		if !utf8.Valid(k) || !utf8.Valid(v) {
+			return errors.New("an assignment is not UTF-8: systemd refuses the file")
+		}
+		vars[string(k)] = string(v)
+		k, v = nil, nil
+		return nil
+	}
+	for _, c := range data {
+		switch state {
+		case preKey:
+			switch {
+			case c == '#' || c == ';':
+				state = comment
+			case !isWhite(c):
+				state, kWhite = key, -1
+				k = append(k, c)
+			}
+		case key:
+			switch {
+			case isNewline(c):
+				state, k = preKey, nil
+			case c == '=':
+				state, vWhite = preValue, -1
+			default:
+				if !isWhite(c) {
+					kWhite = -1
+				} else if kWhite < 0 {
+					kWhite = len(k)
+				}
+				k = append(k, c)
+			}
+		case preValue:
+			switch {
+			case isNewline(c):
+				state = preKey
+				if err := push(false); err != nil {
+					return nil, err
+				}
+			case c == '\'':
+				state = singleQuote
+			case c == '"':
+				state = doubleQuote
+			case c == '\\':
+				state = valueEscape
+			case !isWhite(c):
+				state = value
+				v = append(v, c)
+			}
+		case value:
+			switch {
+			case isNewline(c):
+				state = preKey
+				if err := push(true); err != nil {
+					return nil, err
+				}
+			case c == '\\':
+				state, vWhite = valueEscape, -1
+			default:
+				if !isWhite(c) {
+					vWhite = -1
+				} else if vWhite < 0 {
+					vWhite = len(v)
+				}
+				v = append(v, c)
+			}
+		case valueEscape:
+			state = value
+			if !isNewline(c) {
+				v = append(v, c)
+			}
+		case singleQuote:
+			if c == '\'' {
+				state = preValue
+			} else {
+				v = append(v, c)
+			}
+		case doubleQuote:
+			switch c {
+			case '"':
+				state = preValue
+			case '\\':
+				state = doubleQuoteEscape
+			default:
+				v = append(v, c)
+			}
+		case doubleQuoteEscape:
+			state = doubleQuote
+			switch {
+			case strings.IndexByte("\"\\`$", c) >= 0:
+				v = append(v, c)
+			case c != '\n':
+				v = append(v, '\\', c)
+			}
+		case comment:
+			switch {
+			case c == '\\':
+				state = commentEscape
+			case isNewline(c):
+				state = preKey
+			}
+		case commentEscape:
+			if isNewline(c) {
+				state = preKey
+			} else {
+				state = comment
+			}
+		}
+	}
+	switch state {
+	case preValue, value, valueEscape, singleQuote, doubleQuote, doubleQuoteEscape:
+		if err := push(state == value); err != nil {
+			return nil, err
+		}
+	}
+	return vars, nil
 }

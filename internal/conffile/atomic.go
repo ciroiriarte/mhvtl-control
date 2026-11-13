@@ -173,13 +173,32 @@ func WriteAtomic(dir, name string, data []byte, mode fs.FileMode, uid, gid int) 
 // 0644 with the caller's ids, by link(2), which fails rather than overwrite
 // a file that appeared in the meantime, so that case has no window at all.
 func ReplaceIfHash(dir, name, expectSHA string, data []byte) error {
+	return replaceIfHash(dir, name, expectSHA, data, nil)
+}
+
+// ReplaceIfHashAs is ReplaceIfHash writing the file with mode, uid and gid
+// whether it exists or not: for a file that may hold secrets, whose new
+// content must never be readable by others even for an instant.
+func ReplaceIfHashAs(dir, name, expectSHA string, data []byte, mode fs.FileMode, uid, gid int) error {
+	return replaceIfHash(dir, name, expectSHA, data, &owner{mode, uid, gid})
+}
+
+type owner struct {
+	mode     fs.FileMode
+	uid, gid int
+}
+
+func replaceIfHash(dir, name, expectSHA string, data []byte, as *owner) error {
 	path := filepath.Join(dir, name)
 	mode, uid, gid := fs.FileMode(0o644), -1, -1
 	st, err := regularTarget(path)
 	if err != nil {
 		return err
 	}
-	if st != nil {
+	switch {
+	case as != nil:
+		mode, uid, gid = as.mode, as.uid, as.gid
+	case st != nil:
 		mode = st.Mode().Perm()
 		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
 			uid, gid = int(sys.Uid), int(sys.Gid)

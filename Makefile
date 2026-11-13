@@ -51,6 +51,8 @@ install:
 		$(DESTDIR)$(UNITDIR)/vtllibrary@.service.d/50-mhvtl-control-apply-recover.conf
 	install -D -m 0644 $(MODDIR)dist/vtltape@.service.d/50-mhvtl-control-apply-recover.conf \
 		$(DESTDIR)$(UNITDIR)/vtltape@.service.d/50-mhvtl-control-apply-recover.conf
+	install -D -m 0644 $(MODDIR)dist/mhvtl-fabrics.service.d/50-mhvtl-control-reload.conf \
+		$(DESTDIR)$(UNITDIR)/mhvtl-fabrics.service.d/50-mhvtl-control-reload.conf
 	install -D -m 0644 $(MODDIR)dist/mhvtl-control.tmpfiles $(DESTDIR)$(TMPFILESDIR)/mhvtl-control.conf
 	install -d -m 0700 $(DESTDIR)$(LOCALSTATEDIR)/lib/mhvtl-control-apply
 	install -d -m 0750 $(DESTDIR)$(SYSCONFDIR)/mhvtl-control
