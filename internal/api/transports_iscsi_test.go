@@ -730,3 +730,24 @@ func TestISCSIPreviewNoSecretOracle(t *testing.T) {
 	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 10, "dry_run": true})
 	noSecrets(t, "unbind preview", rec.Body.String())
 }
+
+// TestISCSIPreviewMasksFileLines: a line of the file as read that shows on
+// the added side, between two changed lines, has stored secrets masked
+// even outside a secret field, such as a hand-written comment.
+func TestISCSIPreviewMasksFileLines(t *testing.T) {
+	content := strings.Replace(fabricsSample, " Target name: iqn.2026-11.lan.example:custom30\n",
+		"# was: "+chapSecret+"\n Target name: iqn.2026-11.lan.example:custom30\n", 1)
+	e := iscsiEnv(t, content, "reload", nil)
+	// The initiator (above the comment) and the target name (below it)
+	// change, so the comment is inside the diff.
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
+		"initiators": []string{"iqn.2024-01.com.example:other"}, "target_name": "iqn.2026-11.lan.example:renamed30",
+		"dry_run": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if d := decodeBody[iscsiWriteDTO](t, rec).Diff; !strings.Contains(d, "# was: ") {
+		t.Fatalf("comment not in the diff, test does not cover the case: %q", d)
+	}
+	noSecrets(t, "bind preview", rec.Body.String())
+}

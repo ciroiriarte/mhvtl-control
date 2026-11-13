@@ -308,17 +308,23 @@ func fieldOf(msg string, fields []string) string {
 var quotedSecret = regexp.MustCompile(`(?i)'[^']*secret[^']*'`)
 
 // previewDiff is the fabrics.conf diff to answer: secret lines are masked
-// by RedactFabrics, a removed line (from the file as read) also has every
-// known secret masked, and an added line only the request's own. Added
-// lines may quote values the client sent, and masking a stored secret
-// there would tell it which of them is one.
+// by RedactFabrics, a line from the file as read (removed, or added but
+// already in it, as unchanged lines between two changes are) also has
+// every known secret masked, and any other added line only the request's
+// own. Those lines may quote values the client sent, and masking a stored
+// secret there would tell it which of them is one.
 func previewDiff(before, after []byte, own, stored []string) string {
 	all := append(append([]string(nil), own...), stored...)
+	old := make(map[string]bool)
+	for _, l := range strings.Split(string(before), "\n") {
+		old[string(conffile.RedactFabrics([]byte(l)))] = true
+	}
 	lines := strings.SplitAfter(conffile.FabricsDiff(before, after), "\n")
 	for i, l := range lines {
 		switch {
 		case strings.HasPrefix(l, "---") || strings.HasPrefix(l, "+++"):
-		case strings.HasPrefix(l, "-"):
+		case strings.HasPrefix(l, "-"),
+			strings.HasPrefix(l, "+") && old[strings.TrimSuffix(l[1:], "\n")]:
 			lines[i] = conffile.MaskSecrets(l, all)
 		case strings.HasPrefix(l, "+"):
 			lines[i] = conffile.MaskSecrets(l, own)
