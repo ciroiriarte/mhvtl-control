@@ -97,6 +97,7 @@ function scan(src, i, interp) {
       const w = /[A-Za-z_$]/.test(c) && IDENT.exec(src);
       if (w && w.index === i) {
         i += w[0].length;
+        if (w[0] === "await" && word === "for" && last === "i") continue; // for await (...) is still a for
         word = last === "." ? "" : w[0];
         last = last === "." ? "i" : BLOCK_AFTER.has(w[0]) ? "b" : REGEX_AFTER.has(w[0]) ? "k" : "i";
         continue;
@@ -237,6 +238,7 @@ test("closureNames tells a regex from a division after ++, a property, return an
   assert.deepStrictEqual(names("  var a = stats?.in / 1024, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = function (x) { if (x) /\\}/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = function (x) { while (f(x)) /,;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = async function (xs) { for await (const x of xs) /\\}/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = f(x) / 2, b = (y) / 3, c = 1;\n  function c() {}\n").c, 2);
   assert.deepStrictEqual(names("  var a = { x: { y: 1 } } / 2, b = (function () {}) / 3, c = 1;\n  function c() {}\n").c, 2);
 });
