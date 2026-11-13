@@ -725,3 +725,18 @@ func TestPlaceholdSecrets(t *testing.T) {
 		t.Error("the placeholder is a valid secret")
 	}
 }
+
+// TestRedactFabricsLeadingSpace: indentation is any isspace() byte to the
+// parser, so " \vCHAP secret:" and "#\fCHAP secret:" are secret lines
+// (Codex re-review 2026-11-13).
+func TestRedactFabricsLeadingSpace(t *testing.T) {
+	for _, lead := range []string{"\v", " \v", "\f", "\r ", "#\v", " #\f"} {
+		in := "iSCSI target: 10\n" + lead + "CHAP secret: OLDSECRET11\n"
+		if got := string(RedactFabrics([]byte(in))); strings.Contains(got, "OLDSECRET11") {
+			t.Errorf("lead %q: not masked: %q", lead, got)
+		}
+		if s := FabricsSecrets([]byte(in)); len(s) == 0 || s[0] != "OLDSECRET11" {
+			t.Errorf("lead %q: FabricsSecrets = %q", lead, s)
+		}
+	}
+}

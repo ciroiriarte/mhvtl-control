@@ -746,3 +746,26 @@ func TestFabricsOwned(t *testing.T) {
 		t.Errorf("absent: %v %v", got, err)
 	}
 }
+
+// mhvtl.conf outside the subset all supported systemd versions read alike
+// is refused rather than guessed (Codex re-review 2026-11-13): a continued
+// comment (v252 keeps MHVTL_BACKEND=mhvtl, v258 reads tcmu), a Unicode
+// noncharacter (systemd rejects the file, the unit keeps mhvtl), a
+// vertical tab.
+func TestFabricsBackendSubset(t *testing.T) {
+	for name, text := range map[string]string{
+		"continued comment": "MHVTL_BACKEND=mhvtl\n# comment \\\nMHVTL_BACKEND=tcmu\n",
+		"noncharacter":      "MHVTL_BACKEND=tcmu\nOTHER=\uffff\n",
+		"vertical tab":      "MHVTL_BACKEND=tcmu\v\n",
+		"CRLF":              "MHVTL_BACKEND=tcmu\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFabEnv(t)
+			f.writeConf("mhvtl.conf", text, 0o644)
+			resp := f.do(f.fabricsReq(OpFabricsPlan, fabConf))
+			if resp.Error != ErrFabricsBackend || !strings.Contains(resp.Message, "plain ASCII") {
+				t.Errorf("got %s %q, want fabrics_backend", resp.Error, resp.Message)
+			}
+		})
+	}
+}

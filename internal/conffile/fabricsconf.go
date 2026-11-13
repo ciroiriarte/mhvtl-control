@@ -1184,10 +1184,11 @@ func MaskSecrets(s string, secrets []string) string {
 }
 
 // fabSecretField matches the start of a line naming a CHAP or mutual CHAP
-// secret, commented out or not, in any case and spacing. Between the words
+// secret, commented out or not, in any case and spacing. Before and between
+// the words
 // it takes any isspace() byte, since split_field collapses them all to one
 // blank (" CHAP\vsecret:" is a CHAP secret to mhvtl-fabrics).
-var fabSecretField = regexp.MustCompile(`^[ \t#]*(?i:(?:mutual[ \t\v\f\r]*)?chap[ \t\v\f\r]*secret)`)
+var fabSecretField = regexp.MustCompile(`^[ \t\v\f\r#]*(?i:(?:mutual[ \t\v\f\r]*)?chap[ \t\v\f\r]*secret)`)
 
 // RedactFabrics returns data with the value of every CHAP secret and
 // Mutual CHAP secret line replaced by "********", every other byte as it

@@ -183,6 +183,10 @@ func (h *Helper) checkBackend(files *fileSet) error {
 		return err
 	}
 	if mc.exists {
+		if line, what := envSubsetViolation(mc.data); what != "" {
+			return refuse(ErrFabricsBackend, "%s line %d has %s; systemd versions read that differently (an escaped newline in a comment, Unicode validation), so the helper cannot tell what MHVTL_BACKEND %s gets: keep %s to plain ASCII lines without backslashes",
+				mhvtlConf, line, what, FabricsUnit, mhvtlConf)
+		}
 		vars, err := conffile.EnvironmentFile(mc.data)
 		if err != nil {
 			return refuse(ErrFabricsBackend, "%s: %v, so %s does not start", mhvtlConf, err, FabricsUnit)
@@ -196,6 +200,29 @@ func (h *Helper) checkBackend(files *fileSet) error {
 			backend, mhvtlConf, FabricsUnit)
 	}
 	return nil
+}
+
+// envSubsetViolation returns the first line of an EnvironmentFile= file
+// outside the subset every supported systemd reads the same way, and what
+// is there: a backslash (escapes and continuations; v252 and v258 differ
+// on a continued comment), or a byte other than printable ASCII and tab
+// (control characters systemd counts as blanks, and UTF-8, which systemd
+// validates more strictly than Go: a file it rejects is ignored and the
+// unit keeps MHVTL_BACKEND=mhvtl). Inside the subset conffile.EnvironmentFile
+// matches systemd. what is "" when the whole file is inside.
+func envSubsetViolation(data []byte) (int, string) {
+	line := 1
+	for _, b := range data {
+		switch {
+		case b == '\n':
+			line++
+		case b == '\\':
+			return line, "a backslash"
+		case b != '\t' && (b < 0x20 || b > 0x7e):
+			return line, fmt.Sprintf("byte 0x%02x", b)
+		}
+	}
+	return 0, ""
 }
 
 // checkPlan runs conffile.CheckPlan against device.conf, which

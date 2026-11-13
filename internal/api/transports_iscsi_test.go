@@ -804,3 +804,15 @@ func TestISCSIBindTargetStateEdited(t *testing.T) {
 		t.Errorf("renamed target: %d %s", rec.Code, rec.Body)
 	}
 }
+
+// TestISCSIPreviewLeadingSpaceSecret: a secret line indented " \v" is
+// masked in the unbind preview (Codex re-review 2026-11-13).
+func TestISCSIPreviewLeadingSpaceSecret(t *testing.T) {
+	odd := strings.Replace(fabricsSample, " CHAP secret: ", " \vCHAP secret: ", 1)
+	e := iscsiEnv(t, odd, "reload", nil)
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 10, "dry_run": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	noSecrets(t, "unbind preview", rec.Body.String())
+}

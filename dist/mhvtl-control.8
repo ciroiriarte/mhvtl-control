@@ -124,7 +124,9 @@ passes it from
 .I mhvtl.conf
 (text after an unquoted value stays part of it, so
 .B "MHVTL_BACKEND=tcmu # c"
-is refused), and when the unit is missing, cannot reload, has failed with the file in
+is refused, as is a
+.I mhvtl.conf
+with a backslash or a byte other than printable ASCII and tab), and when the unit is missing, cannot reload, has failed with the file in
 place (check the journal, fix the cause, then
 .BR "systemctl restart mhvtl-fabrics" )
 or was stopped while mhVTL runs.
