@@ -510,8 +510,9 @@ the journal, then `systemctl start mhvtl-fabrics`), both
 `EnvironmentFile=` passes it to the unit: quotes and trailing blanks go, but
 text after an unquoted value stays, so `MHVTL_BACKEND=tcmu # TCMU` passes
 `tcmu # TCMU` and is refused; write `MHVTL_BACKEND=tcmu` alone on its line.
-A `mhvtl.conf` with a backslash or a byte other than printable ASCII and
-tab is refused too, since systemd versions read those differently.
+A `mhvtl.conf` with a backslash, a byte other than printable ASCII and tab,
+or a line over 4096 bytes is refused too: the helper checks only what every
+supported systemd reads the same way.
 
 An initiator name is not a credential: any host can claim one. Without CHAP
 a listed initiator can read and write every tape, so use CHAP unless the

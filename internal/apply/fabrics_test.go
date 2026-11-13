@@ -751,13 +751,14 @@ func TestFabricsOwned(t *testing.T) {
 // is refused rather than guessed (Codex re-review 2026-11-13): a continued
 // comment (v252 keeps MHVTL_BACKEND=mhvtl, v258 reads tcmu), a Unicode
 // noncharacter (systemd rejects the file, the unit keeps mhvtl), a
-// vertical tab.
+// vertical tab, an oversized line.
 func TestFabricsBackendSubset(t *testing.T) {
 	for name, text := range map[string]string{
 		"continued comment": "MHVTL_BACKEND=mhvtl\n# comment \\\nMHVTL_BACKEND=tcmu\n",
 		"noncharacter":      "MHVTL_BACKEND=tcmu\nOTHER=\uffff\n",
 		"vertical tab":      "MHVTL_BACKEND=tcmu\v\n",
 		"CRLF":              "MHVTL_BACKEND=tcmu\r\n",
+		"long line":         "MHVTL_BACKEND=tcmu\nMHVTL_BACKEND=" + strings.Repeat("x", 5000) + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFabEnv(t)

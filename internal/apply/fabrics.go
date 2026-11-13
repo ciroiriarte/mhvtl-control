@@ -184,7 +184,7 @@ func (h *Helper) checkBackend(files *fileSet) error {
 	}
 	if mc.exists {
 		if line, what := envSubsetViolation(mc.data); what != "" {
-			return refuse(ErrFabricsBackend, "%s line %d has %s; systemd versions read that differently (an escaped newline in a comment, Unicode validation), so the helper cannot tell what MHVTL_BACKEND %s gets: keep %s to plain ASCII lines without backslashes",
+			return refuse(ErrFabricsBackend, "%s line %d has %s; the helper checks only what every supported systemd reads the same way, so it cannot tell what MHVTL_BACKEND %s gets: keep %s to plain ASCII lines without backslashes, under 4096 bytes",
 				mhvtlConf, line, what, FabricsUnit, mhvtlConf)
 		}
 		vars, err := conffile.EnvironmentFile(mc.data)
@@ -203,27 +203,37 @@ func (h *Helper) checkBackend(files *fileSet) error {
 }
 
 // envSubsetViolation returns the first line of an EnvironmentFile= file
-// outside the subset every supported systemd reads the same way, and what
-// is there: a backslash (escapes and continuations; v252 and v258 differ
-// on a continued comment), or a byte other than printable ASCII and tab
-// (control characters systemd counts as blanks, and UTF-8, which systemd
-// validates more strictly than Go: a file it rejects is ignored and the
-// unit keeps MHVTL_BACKEND=mhvtl). Inside the subset conffile.EnvironmentFile
-// matches systemd. what is "" when the whole file is inside.
+// outside the subset every supported systemd (v249 to v258) reads the same
+// way, and what is there: a backslash (escapes and continuations; v252 and
+// v258 differ on a continued comment), a byte other than printable ASCII
+// and tab (UTF-8, which systemd validates more strictly than Go: a file it
+// rejects is ignored and the unit keeps MHVTL_BACKEND=mhvtl; other control
+// bytes are refused to keep the subset small), or a line longer than
+// envMaxLine (systemd drops an assignment over its ARG_MAX-derived limit).
+// Inside the subset conffile.EnvironmentFile matches systemd. what is ""
+// when the whole file is inside.
 func envSubsetViolation(data []byte) (int, string) {
-	line := 1
+	line, n := 1, 0
 	for _, b := range data {
 		switch {
 		case b == '\n':
-			line++
+			line, n = line+1, 0
+			continue
 		case b == '\\':
 			return line, "a backslash"
 		case b != '\t' && (b < 0x20 || b > 0x7e):
 			return line, fmt.Sprintf("byte 0x%02x", b)
 		}
+		if n++; n > envMaxLine {
+			return line, fmt.Sprintf("a line over %d bytes", envMaxLine)
+		}
 	}
 	return 0, ""
 }
+
+// envMaxLine is far below any systemd assignment limit and far above any
+// line mhvtl.conf needs.
+const envMaxLine = 4096
 
 // checkPlan runs conffile.CheckPlan against device.conf, which
 // mhvtl-fabrics needs as well (load,

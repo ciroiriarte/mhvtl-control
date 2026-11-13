@@ -126,7 +126,8 @@ passes it from
 .B "MHVTL_BACKEND=tcmu # c"
 is refused, as is a
 .I mhvtl.conf
-with a backslash or a byte other than printable ASCII and tab), and when the unit is missing, cannot reload, has failed with the file in
+with a backslash, a byte other than printable ASCII and tab, or a line over
+4096 bytes), and when the unit is missing, cannot reload, has failed with the file in
 place (check the journal, fix the cause, then
 .BR "systemctl restart mhvtl-fabrics" )
 or was stopped while mhVTL runs.
