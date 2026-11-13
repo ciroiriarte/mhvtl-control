@@ -49,7 +49,11 @@ function skipTemplate(src, i) {
 }
 
 // REGEX_AFTER are the keywords after which a / starts a regex literal.
-const REGEX_AFTER = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"]);
+const REGEX_AFTER = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "yield", "await"]);
+
+// BLOCK_AFTER are the keywords a { after which opens a block, not an object
+// literal; a / after them starts a regex too.
+const BLOCK_AFTER = new Set(["else", "do", "try", "finally"]);
 
 // declaratorNames returns the declared names of the var/let/const statement
 // whose declarator list starts at index i, and the index where it ends.
@@ -77,9 +81,13 @@ function declaratorNames(src, i) {
       // name or a property (.return) it divides.
       IDENT.lastIndex = i;
       const w = /[A-Za-z_$]/.test(c) && IDENT.exec(src);
-      if (w && w.index === i) { i += w[0].length; last = last !== "." && REGEX_AFTER.has(w[0]) ? "k" : "i"; continue; }
+      if (w && w.index === i) {
+        i += w[0].length;
+        last = last === "." ? "i" : BLOCK_AFTER.has(w[0]) ? "b" : REGEX_AFTER.has(w[0]) ? "k" : "i";
+        continue;
+      }
     }
-    if (c === "/" && (last === "" || last === "k" || "=(,:[!&|?{;+-*%<>~^".includes(last))) {
+    if (c === "/" && (last === "" || last === "k" || last === "b" || "=(,:[!&|?{;+-*%<>~^".includes(last))) {
       // regex literal
       for (i++; i < src.length && src[i] !== "/" && src[i] !== "\n"; i++) {
         if (src[i] === "\\") i++;
@@ -192,5 +200,8 @@ test("closureNames tells a regex from a division after ++, a property, return an
   assert.deepStrictEqual(names("  var a = {} / 2, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = function () { if (x) {} /}/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = function () { if (x) {y();} /;/.test(z); }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () { if (x) {} else {} /,;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () { try {} finally {} /,;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () { if (x) y(); else /,;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = { x: { y: 1 } } / 2, b = (function () {}) / 3, c = 1;\n  function c() {}\n").c, 2);
 });
