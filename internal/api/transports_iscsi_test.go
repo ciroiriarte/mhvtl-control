@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -750,4 +751,56 @@ func TestISCSIPreviewMasksFileLines(t *testing.T) {
 		t.Fatalf("comment not in the diff, test does not cover the case: %q", d)
 	}
 	noSecrets(t, "bind preview", rec.Body.String())
+}
+
+// TestISCSISecretGuessNoOracle: a bind that sends a CHAP or mutual CHAP
+// secret gets the same answer whether or not it is the stored one, dry run
+// or not: no "unchanged", and the same preview.
+func TestISCSISecretGuessNoOracle(t *testing.T) {
+	for _, c := range []struct{ field, name, stored string }{
+		{"chap", "pbs", chapSecret},
+		{"mutual_chap", "vtl", mutualSecret},
+	} {
+		for _, dry := range []bool{true, false} {
+			e := iscsiEnv(t, fabricsSample, "reload", nil)
+			answer := func(secret string) *httptest.ResponseRecorder {
+				t.Helper()
+				return e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
+					c.field: map[string]string{"name": c.name, "secret": secret}, "dry_run": dry})
+			}
+			rightRec, wrongRec := answer(c.stored), answer("WrongGuess-0123")
+			right, wrong := rightRec.Body.String(), wrongRec.Body.String()
+			if rightRec.Code != wrongRec.Code || right != wrong {
+				t.Errorf("%s dry run %v: answers differ:\nright %d %s\nwrong %d %s", c.field, dry, rightRec.Code, right, wrongRec.Code, wrong)
+			}
+			got := decodeBody[iscsiWriteDTO](t, rightRec)
+			if rightRec.Code != http.StatusOK || got.Result == "unchanged" || !strings.Contains(got.Diff, "\n-") || len(e.fabricsReqs()) != 2 {
+				t.Errorf("%s dry run %v: %d %s, %d helper requests", c.field, dry, rightRec.Code, right, len(e.fabricsReqs()))
+			}
+			noSecrets(t, c.field, right+wrong, "WrongGuess-0123")
+		}
+	}
+}
+
+// TestISCSIBindTargetStateEdited: the target state is read by the name the
+// applied file gives: a new target's derived name, a renamed target's new
+// name.
+func TestISCSIBindTargetStateEdited(t *testing.T) {
+	const renamed = "iqn.2026-11.lan.example:renamed10"
+	root := filepath.Join(t.TempDir(), "target")
+	for _, wwn := range []string{baseName + ".lib30", renamed} {
+		if err := os.MkdirAll(filepath.Join(root, "iscsi", wwn, "tpgt_1", "lun", "lun_0"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	no30 := fabricsSample[:strings.Index(fabricsSample, "\niSCSI target: 30")+1]
+	e := iscsiEnv(t, no30, "reload", func(c *Config) { c.TargetRoot = root })
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30, "initiators": []string{pbsIQN}})
+	if tr := decodeBody[iscsiWriteDTO](t, rec).Target; rec.Code != http.StatusOK || tr == nil || tr.WWN != baseName+".lib30" || !tr.Present || tr.LUNs != 1 {
+		t.Errorf("new target: %d %s", rec.Code, rec.Body)
+	}
+	rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10, "target_name": renamed})
+	if tr := decodeBody[iscsiWriteDTO](t, rec).Target; rec.Code != http.StatusOK || tr == nil || tr.WWN != renamed || !tr.Present {
+		t.Errorf("renamed target: %d %s", rec.Code, rec.Body)
+	}
 }

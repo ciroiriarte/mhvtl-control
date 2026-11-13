@@ -389,7 +389,8 @@ func (s *Server) handleISCSIBind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fields := []string{"library", "initiators", "target_name", "chap", "mutual_chap"}
-	q := fabricsWriteReq{dryRun: req.DryRun, base: req.BaseSHA256, secrets: secrets, fields: fields, target: &id, bind: true}
+	q := fabricsWriteReq{dryRun: req.DryRun, base: req.BaseSHA256, secrets: secrets, fields: fields, target: &id, bind: true,
+		setsCHAP: req.CHAP != nil, setsMutualCHAP: req.MutualCHAP != nil}
 	s.fabricsWrite(w, r, q, func(f fabricsFiles) *fabricsInvalid {
 		bound := false
 		for _, t := range f.conf.Targets() {
@@ -457,23 +458,28 @@ func (s *Server) handleTransportUnsupported(w http.ResponseWriter, r *http.Reque
 // fabricsWriteReq is what fabricsWrite needs of an iSCSI write: base is
 // the request's base_sha256 (nil when absent); secrets are the request's
 // own; fields are the request fields a refusal may name; target is the
-// library the request binds or unbinds, and bind is set for a bind.
+// library the request binds or unbinds, and bind is set for a bind;
+// setsCHAP and setsMutualCHAP are set when it sends that secret.
 type fabricsWriteReq struct {
-	dryRun  bool
-	base    *string
-	secrets []string
-	fields  []string
-	target  *int
-	bind    bool
+	dryRun                   bool
+	base                     *string
+	secrets                  []string
+	fields                   []string
+	target                   *int
+	bind                     bool
+	setsCHAP, setsMutualCHAP bool
 }
 
 // fabricsWrite reads fabrics.conf and device.conf, runs edit on the
 // former, checks the result as mhvtl-fabrics would plan it, and sends it
 // to the helper: fabrics_plan with dryRun, else fabrics. A base_sha256
 // other than the file read is a conflict, and an edit that leaves the file
-// as it is answers unchanged; neither reaches the helper. With bind set, a
-// real apply that reloads or starts the unit answers the target's state in
-// configfs.
+// as it is answers unchanged; neither reaches the helper. An edit that
+// sends a CHAP or mutual CHAP secret never answers unchanged, and its
+// preview shows the secret line as removed and added even when the value
+// is the stored one (conffile.PlaceholdSecrets): either would tell the
+// client whether its secret is the stored one. With bind set, a real apply
+// that reloads or starts the unit answers the target's state in configfs.
 func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsWriteReq, edit func(fabricsFiles) *fabricsInvalid) {
 	f, err := s.readFabricsFiles()
 	if err != nil {
@@ -525,7 +531,8 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		return
 	}
 	next := f.conf.Render()
-	if f.exists && bytes.Equal(next, f.data) {
+	setsSecret := q.setsCHAP || q.setsMutualCHAP
+	if f.exists && bytes.Equal(next, f.data) && !setsSecret {
 		writeJSON(w, http.StatusOK, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.sha, Result: resultUnchanged})
 		return
 	}
@@ -556,8 +563,12 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		return
 	}
 	status, code := applyStatus(resp)
+	before := f.data
+	if setsSecret {
+		before = conffile.PlaceholdSecrets(before, *q.target, q.setsCHAP, q.setsMutualCHAP)
+	}
 	out := iscsiWriteDTO{
-		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: previewDiff(f.data, next, own, stored),
+		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: previewDiff(before, next, own, stored),
 		SHA256: f.sha, Result: resp.Result, Message: conffile.MaskSecrets(resp.Message, secrets), CurrentSHA256: resp.CurrentSHA256,
 		JournalTail: conffile.MaskSecrets(resp.JournalTail, secrets), RollbackDir: resp.RollbackDir,
 	}
@@ -570,7 +581,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	}
 	if q.bind && !q.dryRun && resp.Result == apply.ResultApplied &&
 		(resp.FabricsAction == apply.FabricsReload || resp.FabricsAction == apply.FabricsStart) {
-		out.Target = s.boundTarget(f, *q.target)
+		out.Target = s.boundTarget(conffile.ParseFabricsConf(next), f.dev, *q.target)
 	}
 	writeJSON(w, status, out)
 }
@@ -601,13 +612,14 @@ func aboutTarget(c *conffile.FabricsConf, p conffile.Problem, target *int) bool 
 }
 
 // boundTarget reads target id's state from configfs, by the name
-// mhvtl-fabrics gives it; nil when the name cannot be derived.
-func (s *Server) boundTarget(f fabricsFiles, id int) *iscsiTargetStateDTO {
-	_, base, _ := f.conf.ISCSI()
+// mhvtl-fabrics gives it in conf, the file as applied; nil when the name
+// cannot be derived.
+func (s *Server) boundTarget(conf *conffile.FabricsConf, dev *conffile.DeviceConf, id int) *iscsiTargetStateDTO {
+	_, base, _ := conf.ISCSI()
 	var wwn string
-	for _, t := range f.conf.Targets() {
+	for _, t := range conf.Targets() {
 		if t.ID == id {
-			wwn = fabricsWWN(t, base, deviceOf(f.dev, id))
+			wwn = fabricsWWN(t, base, deviceOf(dev, id))
 		}
 	}
 	if wwn == "" {

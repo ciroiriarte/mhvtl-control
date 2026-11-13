@@ -457,7 +457,10 @@ previewed, send the same body with `"dry_run": false` and
 `"base_sha256"` set to the preview's `sha256`: if `fabrics.conf` changed in
 between, the answer is 409 with `error.code` `conflict` and
 `current_sha256`, and nothing is written. A change that leaves the file as
-it is answers `"result": "unchanged"`. A bind with `"initiators": []` is
+it is answers `"result": "unchanged"`, except a bind that sends a CHAP or
+mutual CHAP secret: it always goes to the helper, and its diff shows the
+secret line removed and added, so the answer is the same whether or not the
+secret sent is the one stored. A bind with `"initiators": []` is
 refused: a record without an initiator exports nothing; use unbind.
 
 The helper writes `fabrics.conf` mode 0600 (it may hold CHAP secrets), keeps
@@ -475,6 +478,12 @@ secrets masked. Then:
 - while `mhvtl.target` is stopped, it only writes the file, applied when
   mhVTL starts.
 
+Before it writes anything, for a dry run too, the helper checks the new
+file against `device.conf` as `mhvtl-fabrics` plans it (each target names a
+library or standalone drive, names are unique, drive slots give distinct
+LUNs) and refuses with `invalid` if it would not plan, or if `device.conf`
+is missing or unreadable.
+
 If the reload fails, the previous file is put back and the unit reloaded
 with it. If a first start fails, the new file is removed and the unit is
 left failed, its targets removed by its `ExecStopPost`; the next export
@@ -482,7 +491,14 @@ starts it again. Either way the answer is `rolled_back` and carries the
 unit's last journal lines. When the reload of the restored file fails too,
 configfs may not match `fabrics.conf`: the answer is
 `fabrics_recovery_required`; check `journalctl -u mhvtl-fabrics`, then run
-`systemctl reload mhvtl-fabrics` (the helper's next request retries it). The
+`systemctl reload mhvtl-fabrics` (the helper's next request retries it).
+When the unit is left failed and its state file `/run/mhvtl/fabrics.state`
+still lists targets (its `ExecStopPost=mhvtl-fabrics remove` failed too) or
+cannot be read, the answer is also `fabrics_recovery_required`: targets from
+the failed run are still exported until `systemctl restart mhvtl-fabrics`
+(its apply removes the targets it owns that the file no longer names) or
+`mhvtl-fabrics remove`. The helper does not keep that apply's intent: the
+state file holds what to remove. The
 helper refuses, changing nothing, when `MHVTL_BACKEND` is not `tcmu`
 (`mhvtl-fabrics` would do nothing), when `mhvtl-fabrics.service` is
 missing, has no reload, has failed with `fabrics.conf` in place (check
@@ -490,7 +506,10 @@ missing, has no reload, has failed with `fabrics.conf` in place (check
 `systemctl restart mhvtl-fabrics`) or was stopped while mhVTL runs (check
 the journal, then `systemctl start mhvtl-fabrics`), both
 `fabrics_recovery_required`, and when `base_sha256` is not the file's
-(409).
+(409). `MHVTL_BACKEND` is read from `mhvtl.conf` as systemd's
+`EnvironmentFile=` passes it to the unit: quotes and trailing blanks go, but
+text after an unquoted value stays, so `MHVTL_BACKEND=tcmu # TCMU` passes
+`tcmu # TCMU` and is refused; write `MHVTL_BACKEND=tcmu` alone on its line.
 
 An initiator name is not a credential: any host can claim one. Without CHAP
 a listed initiator can read and write every tape, so use CHAP unless the

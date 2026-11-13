@@ -67,7 +67,18 @@ with every secret left out.
 and
 .I /api/v1/transports/iscsi/unbind
 edit it; each takes a dry run that shows the change with secrets masked.
+A bind that sends a CHAP or mutual CHAP secret is never answered
+.I unchanged
+and its diff always shows the secret line replaced, so the answer does not
+tell whether the secret sent is the stored one.
 They are writes, so they need the token and the helper.
+Before writing, the helper checks the file against
+.I device.conf
+as
+.B mhvtl-fabrics
+plans it, and refuses if it would not plan or
+.I device.conf
+cannot be read.
 .B mhvtl-control-apply
 writes the file mode 0600 and runs
 .BR "systemctl reload mhvtl-fabrics.service" ,
@@ -88,6 +99,16 @@ reload of the restored file fails too, the answer is
 .BR "journalctl -u mhvtl-fabrics" ,
 then run
 .BR "systemctl reload mhvtl-fabrics" .
+When the unit is left failed and its state file
+.I /run/mhvtl/fabrics.state
+still lists targets, or cannot be read, the answer is
+.B fabrics_recovery_required
+too: targets from the failed run stay exported until
+.B "systemctl restart mhvtl-fabrics"
+(its apply removes owned targets the file no longer names) or
+.BR "mhvtl-fabrics remove" ;
+the helper does not keep the apply's intent, as the state file holds what to
+remove.
 An apply that sends
 .I base_sha256
 (the
@@ -96,8 +117,14 @@ of a preview) is refused with 409 if the file changed since.
 The helper refuses when
 .B MHVTL_BACKEND
 is not
-.BR tcmu ,
-and when the unit is missing, cannot reload, has failed with the file in
+.B tcmu
+as systemd's
+.B EnvironmentFile=
+passes it from
+.I mhvtl.conf
+(text after an unquoted value stays part of it, so
+.B "MHVTL_BACKEND=tcmu # c"
+is refused), and when the unit is missing, cannot reload, has failed with the file in
 place (check the journal, fix the cause, then
 .BR "systemctl restart mhvtl-fabrics" )
 or was stopped while mhVTL runs.
