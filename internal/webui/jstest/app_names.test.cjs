@@ -48,6 +48,9 @@ function skipTemplate(src, i) {
   return i + 1;
 }
 
+// REGEX_AFTER are the keywords after which a / starts a regex literal.
+const REGEX_AFTER = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"]);
+
 // declaratorNames returns the declared names of the var/let/const statement
 // whose declarator list starts at index i, and the index where it ends.
 function declaratorNames(src, i) {
@@ -67,7 +70,15 @@ function declaratorNames(src, i) {
     if (c === "/" && src[i + 1] === "*") { const e = src.indexOf("*/", i + 2); i = e < 0 ? src.length : e + 2; continue; }
     if (c === "\"" || c === "'") { i = skipQuoted(src, i); last = "s"; continue; }
     if (c === "`") { i = skipTemplate(src, i); last = "s"; continue; }
-    if (c === "/" && (last === "" || "=(,:[!&|?{};+-*%<>~^".includes(last))) {
+    if ((c === "+" || c === "-") && src[i + 1] === c) { i += 2; last = "i"; continue; } // ++/--: a / after it divides
+    if (depth !== 0 || !want) {
+      // A word: after a keyword such as return a / starts a regex, after a
+      // name it divides.
+      IDENT.lastIndex = i;
+      const w = /[A-Za-z_$]/.test(c) && IDENT.exec(src);
+      if (w && w.index === i) { i += w[0].length; last = REGEX_AFTER.has(w[0]) ? "k" : "i"; continue; }
+    }
+    if (c === "/" && (last === "" || last === "k" || "=(,:[!&|?{};+-*%<>~^".includes(last))) {
       // regex literal
       for (i++; i < src.length && src[i] !== "/" && src[i] !== "\n"; i++) {
         if (src[i] === "\\") i++;
@@ -111,12 +122,21 @@ function closureNames(src) {
   return seen;
 }
 
+// Names each file is known to declare at closure level, functions and var
+// declarators (also later in a comma list), so a pattern or tokenizer that
+// stops matching fails here rather than passing with fewer names.
+const KNOWN = {
+  "app.js": ["renderMedia", "drawMediaList", "core", "buildMountBody", "isStale"],
+  "core.js": ["coerceArray", "HTML_ESCAPE", "HELPER_ENABLE", "HELPER_STATE"],
+};
+
 for (const file of ["app.js", "core.js"]) {
   test(file + " declares each closure-level name once", () => {
     const seen = closureNames(fs.readFileSync(path.join(__dirname, "../assets/static/js", file), "utf8"));
     assert.ok(seen.size > 50, "found only " + seen.size + " declarations; the pattern no longer matches " + file);
     const dups = [...seen].filter(([, n]) => n > 1).map(([name]) => name);
     assert.deepStrictEqual(dups, []);
+    for (const name of KNOWN[file]) assert.ok(seen.has(name), file + ": " + name + " not found; the pattern no longer matches");
   });
 }
 
@@ -150,4 +170,9 @@ test("closureNames counts let and const, and a name reused across kinds", () => 
 
 test("closureNames skips deeper declarations and ends a statement lacking its semicolon", () => {
   assert.deepStrictEqual(names("  var a = 1\n  var b = 2;\n    var inner = 3;\n  function f() {\n    var a = 1;\n  }\n"), { a: 1, b: 1, f: 1 });
+});
+
+test("closureNames reads a / after ++ as division and after return as a regex", () => {
+  assert.deepStrictEqual(names("  var i = 0;\n  var a = i++ / 2, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () { return /;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
 });
