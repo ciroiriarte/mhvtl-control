@@ -58,6 +58,7 @@ function declaratorNames(src, i) {
   let depth = 0;
   let want = true; // next identifier at depth 0 is a declarator name
   let last = ""; // last significant character, to tell a regex from a division
+  const braces = []; // what each open { started: "object" or "block"
   while (i < src.length) {
     const c = src[i];
     if (/\s/.test(c)) {
@@ -73,9 +74,7 @@ function declaratorNames(src, i) {
     if ((c === "+" || c === "-") && src[i + 1] === c) { i += 2; last = "i"; continue; } // ++/--: a / after it divides
     if (depth !== 0 || !want) {
       // A word: after a keyword such as return a / starts a regex, after a
-      // name or a property (.return) it divides. After a closing } (an
-      // object literal or function expression in an initializer) it
-      // divides too.
+      // name or a property (.return) it divides.
       IDENT.lastIndex = i;
       const w = /[A-Za-z_$]/.test(c) && IDENT.exec(src);
       if (w && w.index === i) { i += w[0].length; last = last !== "." && REGEX_AFTER.has(w[0]) ? "k" : "i"; continue; }
@@ -90,8 +89,20 @@ function declaratorNames(src, i) {
       last = "s";
       continue;
     }
-    if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") depth--;
+    if (c === "{") {
+      // An object literal opens where an expression is expected; any other
+      // brace opens a block (function body, if, arrow body).
+      braces.push(last === "" || last === "k" || "=(,:[!&|?".includes(last) ? "object" : "block");
+      depth++;
+    } else if (c === "}") {
+      depth--;
+      // A / after an object literal divides; after a block it starts a
+      // statement, so a regex.
+      last = braces.pop() === "object" ? "i" : ";";
+      i++;
+      continue;
+    } else if (c === "(" || c === "[") depth++;
+    else if (c === ")" || c === "]") depth--;
     else if (depth === 0 && c === ";") return { names, end: i };
     else if (depth === 0 && c === ",") want = true;
     else if (depth === 0 && want) {
@@ -174,9 +185,12 @@ test("closureNames skips deeper declarations and ends a statement lacking its se
   assert.deepStrictEqual(names("  var a = 1\n  var b = 2;\n    var inner = 3;\n  function f() {\n    var a = 1;\n  }\n"), { a: 1, b: 1, f: 1 });
 });
 
-test("closureNames reads a / after ++, a property or } as division and after return as a regex", () => {
+test("closureNames tells a regex from a division after ++, a property, return and a closing brace", () => {
   assert.deepStrictEqual(names("  var i = 0;\n  var a = i++ / 2, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = function () { return /;/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = o.return / 2, b = 1;\n  function b() {}\n").b, 2);
   assert.deepStrictEqual(names("  var a = {} / 2, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () { if (x) {} /}/.test(x); }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = function () { if (x) {y();} /;/.test(z); }, b = 1;\n  function b() {}\n").b, 2);
+  assert.deepStrictEqual(names("  var a = { x: { y: 1 } } / 2, b = (function () {}) / 3, c = 1;\n  function c() {}\n").c, 2);
 });
