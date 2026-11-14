@@ -991,3 +991,104 @@ func TestFabricsRollBackMaskKeepsClearValues(t *testing.T) {
 		}
 	}
 }
+
+// TestFabricsRecoveryKillPoints: an apply that died after its intent was
+// saved, before or after the file was written, is recovered by the next
+// request: the original file, a reload so the targets follow it, no intent.
+func TestFabricsRecoveryKillPoints(t *testing.T) {
+	for _, step := range []string{"intent", "wrote " + fabricsConf} {
+		t.Run(step, func(t *testing.T) {
+			f := newFabEnv(t)
+			f.writeConf(fabricsConf, fabConf, 0o600)
+			next := strings.Replace(fabConf, fabSecret, fabNewSecret, 1)
+			f.h.killPoint = func(s string) bool { return s == step }
+			if resp := f.do(f.fabricsReq(OpFabrics, next)); resp.Result != ResultError || !f.intentExists() {
+				t.Fatalf("killed apply: %+v, intent %v", resp, f.intentExists())
+			}
+			wantFile := fabConf
+			if step != "intent" {
+				wantFile = next
+			}
+			if got := string(f.read(fabricsConf)); got != wantFile || len(f.verbs()) != 0 {
+				t.Fatalf("after the kill: file %q, systemctl %v", got, f.verbs())
+			}
+			f.h.killPoint = func(string) bool { return false }
+			resp := f.do(Request{Op: OpRecover, Actor: "test"})
+			if resp.Result != ResultRecovered || !strings.Contains(resp.Message, "reloaded "+FabricsUnit) {
+				t.Fatalf("recover: %+v", resp)
+			}
+			if string(f.read(fabricsConf)) != fabConf || f.intentExists() || f.markerExists() {
+				t.Errorf("file not restored, or intent %v / marker %v left", f.intentExists(), f.markerExists())
+			}
+			if v := f.verbs(); len(v) != 1 || v[0] != "reload "+FabricsUnit {
+				t.Errorf("systemctl %v, want one reload", v)
+			}
+			f.noSecret(fabSecret, fabNewSecret)
+		})
+	}
+}
+
+// TestFabricsRecoverBoot: a fabrics apply that died in an earlier boot is
+// recovered by --recover-boot before mhVTL starts: the file is restored and
+// the unit, which has not started yet, is left alone to apply it.
+func TestFabricsRecoverBoot(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	next := strings.Replace(fabConf, fabSecret, fabNewSecret, 1)
+	f.h.killPoint = func(s string) bool { return s == "applying" }
+	f.do(f.fabricsReq(OpFabrics, next))
+	if !f.intentExists() || string(f.read(fabricsConf)) != next {
+		t.Fatal("want the intent and the new file left by the dead apply")
+	}
+	if err := os.WriteFile(f.cfg.BootIDPath, []byte("99999999-2222-3333-4444-555555555555\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.h.killPoint = func(string) bool { return false }
+	f.systemctl = nil
+	msg, err := f.h.RecoverBoot(context.Background())
+	if err != nil || !strings.Contains(msg, "recovered the "+OpFabrics) {
+		t.Fatalf("RecoverBoot: %q, %v", msg, err)
+	}
+	if string(f.read(fabricsConf)) != fabConf || f.intentExists() || f.markerExists() {
+		t.Errorf("file not restored, or intent %v / marker %v left", f.intentExists(), f.markerExists())
+	}
+	for _, v := range f.verbs() {
+		if strings.HasSuffix(v, " "+FabricsUnit) {
+			t.Errorf("boot recovery ran %q", v)
+		}
+	}
+	f.noSecret(fabSecret, fabNewSecret)
+}
+
+// TestFabricsReloadTimeoutStillReloading: a reload whose systemctl call
+// times out while the unit is still reloading: the file is restored, and
+// the intent is kept (no marker), so that the next request reconciles once
+// the job ends; recovery only reads the unit's state meanwhile.
+func TestFabricsReloadTimeoutStillReloading(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	f.fail[FabricsReload] = context.DeadlineExceeded
+	f.onRun = func(verb string) {
+		if verb == FabricsReload {
+			f.fab = "reloading"
+		}
+	}
+	resp := f.do(f.fabricsReq(OpFabrics, strings.Replace(fabConf, fabSecret, fabNewSecret, 1)))
+	if resp.Result != ResultError || resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "reloading") {
+		t.Fatalf("apply: %+v", resp)
+	}
+	if string(f.read(fabricsConf)) != fabConf || !f.intentExists() || f.markerExists() {
+		t.Fatalf("want the file restored and the intent kept, without the marker (intent %v, marker %v)", f.intentExists(), f.markerExists())
+	}
+	f.onRun, f.systemctl = nil, nil
+	if resp := f.do(Request{Op: OpRecover, Actor: "test"}); resp.Error != ErrFabricsState || !f.intentExists() || len(f.verbs()) != 0 {
+		t.Fatalf("recover while reloading: %+v, intent %v, systemctl %v", resp, f.intentExists(), f.verbs())
+	}
+	f.fab = "active"
+	if resp := f.do(Request{Op: OpRecover, Actor: "test"}); resp.Result != ResultRecovered || f.intentExists() {
+		t.Fatalf("recover once the job ended: %+v", resp)
+	}
+	if v := f.verbs(); len(v) != 1 || v[0] != "reload "+FabricsUnit {
+		t.Errorf("systemctl %v, want one reload", v)
+	}
+}
