@@ -1544,9 +1544,12 @@
       (d.library_id != null ? " (library " + coerceNumber(d.library_id) + ")" : " (standalone)");
   }
 
-  // transportSessionText summarizes an ACL's iSCSI session: "none", or its
-  // state and the addresses it connects from.
-  function transportSessionText(s) {
+  // transportSessionText summarizes an ACL's iSCSI session: "not reported"
+  // when the fabric reports no sessions (reported false: only iSCSI ACLs
+  // have the info attribute), "none", or its state and the addresses it
+  // connects from.
+  function transportSessionText(s, reported) {
+    if (!s && reported === false) { return "not reported"; }
     if (!s) { return "none"; }
     // The kernel prints TARG_SESS_STATE_<X>, and TARG_SESS_FREE for a
     // session being freed (iscsi_target_configfs.c lio_target_nacl_info_show).
@@ -1554,6 +1557,14 @@
     var addrs = coerceArray(s.connections).map(function (c) { return String(c.address || ""); })
       .filter(function (a) { return a; });
     return (state || "session") + (addrs.length ? " from " + addrs.join(", ") : "");
+  }
+
+  // transportsUnsupportedText is the Transport Map's content when GET
+  // /api/v1/transports failed because the node predates it (404), or ""
+  // for any other failure, which stays an error.
+  function transportsUnsupportedText(err) {
+    return err && err.status === 404
+      ? "This node does not report transports (mhvtl-control older than this version)" : "";
   }
 
   // transportView flattens GET /api/v1/transports for the Transport Map:
@@ -1569,6 +1580,11 @@
     coerceArray(m.fabrics).forEach(function (f) {
       coerceArray(f.targets).forEach(function (t) {
         coerceArray(t.tpgs).forEach(function (g) {
+          // A LUN whose number the map cannot carry exactly is listed by
+          // name only; its backstore is still on a LUN.
+          coerceArray(g.hidden_luns).forEach(function (h) {
+            if (h && h.backstore) { linked[bsKey(h.hba, h.backstore)] = true; }
+          });
           var luns = coerceArray(g.luns).map(function (l) {
             var key = bsKey(l.hba, l.backstore);
             var b = byKey[key];
@@ -1591,8 +1607,13 @@
                 if (to === "→" + n) { to = ""; }
                 return String(n) + to + (ml.write_protect ? " (ro)" : "");
               }),
-              session: transportSessionText(a.session),
-              active: !!a.session,
+              session: transportSessionText(a.session, !!(a.session || a.session_reported)),
+              // Only a logged-in session is active: the kernel also prints
+              // TARG_SESS_FREE, TARG_SESS_STATE_ACTIVE (login in progress),
+              // _FAILED and _IN_CONTINUE (iscsi_target_configfs.c
+              // lio_target_nacl_info_show,
+              // https://github.com/torvalds/linux/blob/master/drivers/target/iscsi/iscsi_target_configfs.c).
+              active: !!a.session && a.session.state === "TARG_SESS_STATE_LOGGED_IN",
             };
           });
           tpgs.push({
@@ -1604,6 +1625,7 @@
             enabled: g.enabled != null ? !!g.enabled : null,
             portals: coerceArray(g.portals).map(String),
             luns: luns,
+            hidden: coerceArray(g.hidden_luns).map(function (h) { return String(h && h.name || ""); }),
             acls: acls,
             dynamic: coerceArray(g.dynamic_sessions).map(String),
           });
@@ -2109,6 +2131,7 @@
     iscsiDiffLines: iscsiDiffLines,
     iscsiFieldInput: iscsiFieldInput,
     iscsiOutcome: iscsiOutcome,
+    transportsUnsupportedText: transportsUnsupportedText,
   };
 
   /* ---- UMD tail ------------------------------------------------------- */

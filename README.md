@@ -411,10 +411,16 @@ from the LIO configuration in configfs (`/sys/kernel/config/target`):
   `other`, with its portal groups named `tpgt_<N>` as targetcli creates them
   (a group named otherwise is not read). Each target lists its portal groups with `enabled`, `portals`,
   `luns` (the backstore each links to), `acls` (each initiator's mapped LUNs
-  and, for iSCSI, its session from the ACL's `info`) and `dynamic_sessions`
+  and, for iSCSI, its session from the ACL's `info`; `session_reported` is
+  false on the other fabrics, which have no `info`, and the dashboard shows
+  their session as "not reported" rather than "none") and `dynamic_sessions`
   (initiators logged in without an ACL). A LUN or mapped LUN not linked yet
-  has no backstore or `tpg_lun`; one removed while it is read (an apply in
-  progress) is left out.
+  has no backstore or `tpg_lun`. A LUN, mapped LUN, ACL, portal group,
+  target or backstore removed while it is read (an apply in progress) is
+  left out. A LUN numbered above 2^53-1 (the kernel takes any u64; JSON
+  readers hold numbers exactly only up to that) is not in `luns` but in
+  `hidden_luns`, by entry name with its backstore, with a warning; a mapped
+  LUN linked to one is left out.
 - `active_transports`: `local` while `mhvtl.ko` is loaded, then each
   transport with an enabled portal group that has a LUN linked to a
   backstore. `GET /api/v1/system` reports the same list.

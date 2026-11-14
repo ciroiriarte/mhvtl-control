@@ -4,10 +4,12 @@
 // its node:test cases in this process.
 //
 // This file contains no tests of its own; the suites live in core.test.cjs,
-// config_edit.test.cjs, config_create.test.cjs, view_state.test.cjs, service.test.cjs and iscsi.test.cjs.
+// config_edit.test.cjs, config_create.test.cjs, view_state.test.cjs, service.test.cjs,
+// app_names.test.cjs and iscsi.test.cjs.
 require("./core.test.cjs");
 require("./config_edit.test.cjs");
 require("./config_create.test.cjs");
 require("./view_state.test.cjs");
 require("./service.test.cjs");
+require("./app_names.test.cjs");
 require("./iscsi.test.cjs");

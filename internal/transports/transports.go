@@ -21,7 +21,9 @@ package transports
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -119,6 +121,18 @@ type TPG struct {
 	// DynamicSessions are the initiators logged in without an ACL
 	// (generate_node_acls); iSCSI and qla2xxx only.
 	DynamicSessions []string `json:"dynamic_sessions"`
+	// HiddenLUNs are LUNs left out of LUNs because their number is above
+	// what the map carries exactly (see maxLUN): their entry name, so the
+	// number stays exact as text, and their backstore. A linked one still
+	// makes the transport active.
+	HiddenLUNs []HiddenLUN `json:"hidden_luns,omitempty"`
+}
+
+// HiddenLUN is a lun/lun_<N> entry whose N is above maxLUN.
+type HiddenLUN struct {
+	Name      string `json:"name"`
+	HBA       string `json:"hba,omitempty"`
+	Backstore string `json:"backstore,omitempty"`
 }
 
 // LUN is lun/lun_<LUN>, linked to a backstore.
@@ -132,8 +146,13 @@ type LUN struct {
 type ACL struct {
 	Initiator  string      `json:"initiator"`
 	MappedLUNs []MappedLUN `json:"mapped_luns"`
+	// SessionReported is whether the fabric reports the initiator's
+	// session: only iSCSI has the ACL info attribute
+	// (iscsi_target_configfs.c lio_target_nacl_info_show); Fibre Channel,
+	// USB and the others do not, and their Session is always nil.
+	SessionReported bool `json:"session_reported"`
 	// Session is the initiator's iSCSI session, nil when it has none or
-	// the fabric does not report one.
+	// SessionReported is false.
 	Session *Session `json:"session,omitempty"`
 }
 
@@ -214,6 +233,15 @@ func (r *reader) list(p string) (ents []fs.DirEntry, gone bool) {
 	return ents, false
 }
 
+// gone reports whether directory p no longer exists. Checked after an
+// object's attributes are read, it leaves out a backstore, target or TPG
+// removed meanwhile instead of reporting it empty. It warns about nothing:
+// the reads before it already did.
+func (r *reader) gone(p string) bool {
+	_, err := readDir(p)
+	return errors.Is(err, fs.ErrNotExist)
+}
+
 // dirs lists the subdirectories of p, sorted by name.
 func (r *reader) dirs(p string) []string {
 	ents, _ := r.list(p)
@@ -228,7 +256,7 @@ func (r *reader) dirs(p string) []string {
 
 // link returns the target of the first symlink in p ("" when it has none):
 // configfs names it as the user chose, so it is found by type. gone is true
-// when p itself was removed while it was read.
+// when p, or the link found in it, was removed while it was read.
 func (r *reader) link(p string) (target string, gone bool) {
 	ents, gone := r.list(p)
 	for _, e := range ents {
@@ -237,9 +265,10 @@ func (r *reader) link(p string) (target string, gone bool) {
 		}
 		t, err := os.Readlink(filepath.Join(p, e.Name()))
 		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				r.warn(filepath.Join(p, e.Name()), err)
+			if errors.Is(err, fs.ErrNotExist) {
+				return "", true
 			}
+			r.warn(filepath.Join(p, e.Name()), err)
 			continue
 		}
 		return t, false
@@ -280,6 +309,52 @@ func numbered(name, prefix string) (int, bool) {
 	return n, err == nil && n >= 0
 }
 
+// lunNumber parses "lun_<N>" as the kernel does: target_fabric_make_lun and
+// target_fabric_make_mappedlun read N with kstrtoull(name + 4, 0, ...), so
+// base 0 into a u64, after one optional leading + (lun_0x10 is LUN 16,
+// lun_010 is LUN 8, lun_+5 is LUN 5)
+// (drivers/target/target_core_fabric_configfs.c,
+// https://github.com/torvalds/linux/blob/master/drivers/target/target_core_fabric_configfs.c;
+// kstrtoull, lib/kstrtox.c,
+// https://github.com/torvalds/linux/blob/master/lib/kstrtox.c).
+func lunNumber(name string) (uint64, bool) {
+	s, ok := strings.CutPrefix(name, "lun_")
+	if !ok {
+		return 0, false
+	}
+	s = strings.TrimPrefix(s, "+")
+	if s == "" || s[0] == '+' || s[0] == '-' {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(s, 0, 64)
+	return n, err == nil
+}
+
+// maxLUN is the largest LUN number reported: JSON readers such as the
+// dashboard hold numbers as float64, exact only up to 2^53-1, and int must
+// hold it.
+var maxLUN = func() uint64 {
+	if strconv.IntSize == 32 {
+		return math.MaxInt32
+	}
+	return 1<<53 - 1
+}()
+
+// lun parses the lun_<N> entry name under dir for the map. A number the
+// kernel accepts but the map cannot carry exactly (above maxLUN) is left out
+// with a warning, rather than shown as a different LUN.
+func (r *reader) lun(dir, name string) (int, bool) {
+	n, ok := lunNumber(name)
+	if !ok {
+		return 0, false
+	}
+	if n > maxLUN {
+		r.warn(filepath.Join(dir, name), fmt.Errorf("LUN %d is above %d and not shown", n, maxLUN))
+		return 0, false
+	}
+	return int(n), true
+}
+
 // Read reads the LIO configuration under root (DefaultRoot when empty). A
 // missing root is an empty Map, not an error; unreadable files are left out
 // and named in Warnings.
@@ -303,7 +378,9 @@ func Read(root string) Map {
 			continue
 		}
 		for _, name := range r.dirs(filepath.Join(core, hba)) {
-			m.Backstores = append(m.Backstores, r.backstore(filepath.Join(core, hba, name), hba, name))
+			if b, ok := r.backstore(filepath.Join(core, hba, name), hba, name); ok {
+				m.Backstores = append(m.Backstores, b)
+			}
 		}
 	}
 	for _, f := range r.fabricDirs(root) {
@@ -318,10 +395,14 @@ func Read(root string) Map {
 			t := Target{WWN: wwn, TPGs: []TPG{}}
 			for _, tp := range r.dirs(filepath.Join(dir, wwn)) {
 				if tag, ok := numbered(tp, "tpgt_"); ok {
-					t.TPGs = append(t.TPGs, r.tpg(filepath.Join(dir, wwn, tp), tag))
+					if g, ok := r.tpg(filepath.Join(dir, wwn, tp), tag); ok {
+						t.TPGs = append(t.TPGs, g)
+					}
 				}
 			}
-			fab.Targets = append(fab.Targets, t)
+			if !r.gone(filepath.Join(dir, wwn)) {
+				fab.Targets = append(fab.Targets, t)
+			}
 		}
 		m.Fabrics = append(m.Fabrics, fab)
 	}
@@ -331,8 +412,10 @@ func Read(root string) Map {
 	return m
 }
 
-func (r *reader) backstore(p, hba, name string) Backstore {
-	b := Backstore{HBA: hba, Name: name, Enabled: r.boolAttr(filepath.Join(p, "enable"))}
+// backstore reads a TCMU backstore; ok is false when it was removed while
+// it was read.
+func (r *reader) backstore(p, hba, name string) (b Backstore, ok bool) {
+	b = Backstore{HBA: hba, Name: name, Enabled: r.boolAttr(filepath.Join(p, "enable"))}
 	b.DevConfig, _ = r.attr(filepath.Join(p, "attrib", "dev_config"))
 	// target_wwn_vpd_unit_serial_show() prints "T10 VPD Unit Serial Number: %s"
 	serial, _ := r.attr(filepath.Join(p, "wwn", "vpd_unit_serial"))
@@ -341,24 +424,33 @@ func (r *reader) backstore(p, hba, name string) Backstore {
 	if n, ok := numbered(b.DevConfig, "mhvtl/"); ok {
 		b.Minor = &n
 	}
-	return b
+	return b, !r.gone(p)
 }
 
-func (r *reader) tpg(p string, tag int) TPG {
+// tpg reads a target portal group; ok is false when it was removed while
+// it was read.
+func (r *reader) tpg(p string, tag int) (TPG, bool) {
 	t := TPG{Tag: tag, Enabled: r.boolAttr(filepath.Join(p, "enable")),
 		Portals: []string{}, LUNs: []LUN{}, ACLs: []ACL{}, DynamicSessions: []string{}}
 	t.Portals = append(t.Portals, r.dirs(filepath.Join(p, "np"))...)
 	for _, name := range r.dirs(filepath.Join(p, "lun")) {
-		n, ok := numbered(name, "lun_")
-		if !ok {
-			continue
-		}
-		l := LUN{LUN: n}
+		n, ok := r.lun(filepath.Join(p, "lun"), name)
 		// .../core/<hba>/<backstore>
 		dst, gone := r.link(filepath.Join(p, "lun", name))
 		if gone {
 			continue
 		}
+		if !ok {
+			if big, isLUN := lunNumber(name); isLUN && big > maxLUN {
+				h := HiddenLUN{Name: name}
+				if dst != "" {
+					h.HBA, h.Backstore = filepath.Base(filepath.Dir(dst)), filepath.Base(dst)
+				}
+				t.HiddenLUNs = append(t.HiddenLUNs, h)
+			}
+			continue
+		}
+		l := LUN{LUN: n}
 		if dst != "" {
 			l.HBA, l.Backstore = filepath.Base(filepath.Dir(dst)), filepath.Base(dst)
 		}
@@ -378,7 +470,7 @@ func (r *reader) tpg(p string, tag int) TPG {
 			}
 		}
 	}
-	return t
+	return t, !r.gone(p)
 }
 
 // acl reads an initiator's node ACL; ok is false when it was removed while
@@ -390,8 +482,11 @@ func (r *reader) acl(p, init string) (a ACL, ok bool) {
 		return a, false
 	}
 	for _, e := range ents {
-		n, ok := numbered(e.Name(), "lun_")
-		if !ok || !e.IsDir() {
+		if !e.IsDir() {
+			continue
+		}
+		n, ok := r.lun(p, e.Name())
+		if !ok {
 			continue
 		}
 		name := e.Name()
@@ -401,16 +496,25 @@ func (r *reader) acl(p, init string) (a ACL, ok bool) {
 		if gone {
 			continue
 		}
-		if tl, ok := numbered(filepath.Base(dst), "lun_"); ok {
-			ml.TPGLUN = &tl
+		// The TPG LUN it links to; one above maxLUN was left out of the TPG
+		// with a warning already, so this mapping is left out with it rather
+		// than shown as unlinked.
+		if tl, ok := lunNumber(filepath.Base(dst)); ok && tl > maxLUN {
+			continue
+		} else if ok {
+			n := int(tl)
+			ml.TPGLUN = &n
 		}
 		a.MappedLUNs = append(a.MappedLUNs, ml)
 	}
 	sort.Slice(a.MappedLUNs, func(i, j int) bool { return a.MappedLUNs[i].LUN < a.MappedLUNs[j].LUN })
 	if info, ok := r.attr(filepath.Join(p, "info")); ok {
+		a.SessionReported = true
 		a.Session = parseSession(info)
 	}
-	return a, true
+	// Removed while it was read: its reads found nothing, so it would show
+	// as an initiator allowed in with no LUNs.
+	return a, !r.gone(p)
 }
 
 // parseSession parses an iSCSI ACL's info file (lio_target_nacl_info_show):
@@ -550,10 +654,12 @@ func (r *reader) fabricExports(dir string) bool {
 				continue
 			}
 			for _, l := range r.dirs(filepath.Join(p, "lun")) {
-				if _, ok := numbered(l, "lun_"); !ok {
+				if _, ok := lunNumber(l); !ok {
 					continue
 				}
-				if dst, _ := r.link(filepath.Join(p, "lun", l)); dst != "" {
+				// Read leaves out a TPG or target removed meanwhile.
+				if dst, _ := r.link(filepath.Join(p, "lun", l)); dst != "" &&
+					!r.gone(p) && !r.gone(filepath.Join(dir, wwn)) {
 					return true
 				}
 			}
@@ -567,6 +673,11 @@ func (f Fabric) exports() bool {
 		for _, tp := range t.TPGs {
 			if tp.Enabled != nil && !*tp.Enabled {
 				continue
+			}
+			for _, h := range tp.HiddenLUNs {
+				if h.Backstore != "" {
+					return true
+				}
 			}
 			for _, l := range tp.LUNs {
 				if l.Backstore != "" {

@@ -148,6 +148,11 @@ func TestReadISCSI(t *testing.T) {
 	if tpg.ACLs[1].Session != nil {
 		t.Errorf("acl 1 session = %+v, want none", tpg.ACLs[1].Session)
 	}
+	for _, a := range tpg.ACLs {
+		if !a.SessionReported {
+			t.Errorf("acl %s: session_reported = false, want true (it has info)", a.Initiator)
+		}
+	}
 	if len(tpg.DynamicSessions) != 0 {
 		t.Errorf("dynamic sessions = %q, want none", tpg.DynamicSessions)
 	}
@@ -239,16 +244,29 @@ func TestDynamicSessions(t *testing.T) {
 	}
 }
 
+// An FC ACL has no info attribute (only iSCSI's has one,
+// iscsi_target_configfs.c lio_target_nacl_info_show): its session is not
+// reported, which is not the same as having none.
 func TestReadFCAndUSB(t *testing.T) {
+	const fcACL = "qla2xxx/21:00:00:24:ff:31:4c:48/tpgt_1/acls/21:00:00:24:ff:31:4c:49"
 	root := fakeTree(t, map[string]string{
 		"qla2xxx/21:00:00:24:ff:31:4c:48/tpgt_1/enable": "1\n",
 		"usb_gadget/naa.6001405c3214b06a/tpgt_1/enable": "1\n",
+		fcACL + "/lun_0/write_protect":                  "0\n",
 	}, map[string]string{
 		"qla2xxx/21:00:00:24:ff:31:4c:48/tpgt_1/lun/lun_0/x": "../../../../../../target/core/user_0/lib10",
+		fcACL + "/lun_0/m": "../../../../../../qla2xxx/21:00:00:24:ff:31:4c:48/tpgt_1/lun/lun_0",
 	})
 	m := Read(root)
 	if len(m.Fabrics) != 2 || m.Fabrics[0].Transport != "fc" || m.Fabrics[1].Transport != "usb" {
 		t.Fatalf("fabrics = %+v", m.Fabrics)
+	}
+	acls := m.Fabrics[0].Targets[0].TPGs[0].ACLs
+	if len(acls) != 1 || acls[0].Initiator != "21:00:00:24:ff:31:4c:49" || len(acls[0].MappedLUNs) != 1 {
+		t.Fatalf("fc acls = %+v, want one with lun 0", acls)
+	}
+	if acls[0].SessionReported || acls[0].Session != nil {
+		t.Errorf("fc acl = %+v, want session not reported", acls[0])
 	}
 	if got := m.Active(); !reflect.DeepEqual(got, []string{"fc"}) {
 		t.Errorf("active = %q, want fc (the USB TPG has no LUN)", got)
@@ -320,35 +338,74 @@ func TestEmptyUnitSerial(t *testing.T) {
 	}
 }
 
-// A LUN, mapped LUN or ACL removed while it is read (an mhvtl-fabrics apply)
-// is left out, without a warning, and does not count as exported.
+// A LUN, mapped LUN, ACL, TPG, target or backstore removed while it is read
+// (an mhvtl-fabrics apply) is left out, without a warning, and does not
+// count as exported.
 func TestRemovedMidRead(t *testing.T) {
 	root := iscsiTree(t)
 	tpg := filepath.Join(root, "iscsi", iqn, "tpgt_1")
+	// A second target, removed after it is listed.
+	goneTarget := filepath.Join(root, "iscsi", "iqn.2003-01.org.linux-iscsi.vtl:gone")
+	if err := os.MkdirAll(filepath.Join(goneTarget, "tpgt_1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(goneTarget, "tpgt_1", "enable"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	gone := map[string]bool{
-		filepath.Join(tpg, "lun", "lun_2"):                                                true,
-		filepath.Join(tpg, "acls", "iqn.1993-08.org.debian:01:backup1", "lun_3"):          true,
-		filepath.Join(tpg, "acls", "iqn.1993-08.org.debian:01:backup2"):                   true,
-		filepath.Join(root, "loopback", "naa.5001405000000001", "tpgt_1", "lun", "lun_0"): true,
+		filepath.Join(tpg, "lun", "lun_2"):                                       true,
+		filepath.Join(tpg, "acls", "iqn.1993-08.org.debian:01:backup1", "lun_3"): true,
+		filepath.Join(tpg, "acls", "iqn.1993-08.org.debian:01:backup2"):          true,
+		// The whole loopback TPG: its lun/ is still listed, then the
+		// TPG directory is found gone.
+		filepath.Join(root, "loopback", "naa.5001405000000001", "tpgt_1"): true,
+		filepath.Join(root, "core", "user_0", "tape14"):                   true,
+		goneTarget: true,
+	}
+	// lun_1's link is removed after its directory is listed: the entry is
+	// there, os.Readlink finds nothing.
+	lun1 := filepath.Join(tpg, "lun", "lun_1")
+	// An ACL removed right after its own directory is listed: its info and
+	// LUN reads find nothing.
+	lateACL := filepath.Join(tpg, "acls", "iqn.2026-11.org.example:late")
+	if err := os.MkdirAll(filepath.Join(lateACL, "lun_0"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	readDir = func(p string) ([]os.DirEntry, error) {
 		if gone[p] {
 			return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
 		}
-		return os.ReadDir(p)
+		ents, err := os.ReadDir(p)
+		switch p {
+		case lun1:
+			_ = os.Remove(filepath.Join(lun1, "tape11link"))
+		case lateACL:
+			_ = os.RemoveAll(lateACL)
+		}
+		return ents, err
 	}
 	t.Cleanup(func() { readDir = os.ReadDir })
 	m := Read(root)
 	if len(m.Warnings) != 0 {
 		t.Errorf("warnings = %q, want none", m.Warnings)
 	}
+	var names []string
+	for _, b := range m.Backstores {
+		names = append(names, b.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"lib10", "tape11", "tape12", "tape13"}) {
+		t.Errorf("backstores = %q, want tape14 left out", names)
+	}
+	if n := len(m.Fabrics[1].Targets); n != 1 || m.Fabrics[1].Targets[0].WWN != iqn {
+		t.Fatalf("iscsi targets = %+v, want %s only", m.Fabrics[1].Targets, iqn)
+	}
 	tp := m.Fabrics[1].Targets[0].TPGs[0]
 	var luns []int
 	for _, l := range tp.LUNs {
 		luns = append(luns, l.LUN)
 	}
-	if !reflect.DeepEqual(luns, []int{0, 1, 3, 4}) {
-		t.Errorf("luns = %v, want 0 1 3 4", luns)
+	if !reflect.DeepEqual(luns, []int{0, 3, 4}) {
+		t.Errorf("luns = %v, want 0 3 4", luns)
 	}
 	if len(tp.ACLs) != 1 || tp.ACLs[0].Initiator != "iqn.1993-08.org.debian:01:backup1" {
 		t.Fatalf("acls = %+v, want backup1 only", tp.ACLs)
@@ -360,8 +417,8 @@ func TestRemovedMidRead(t *testing.T) {
 	if !reflect.DeepEqual(mapped, []int{0, 1, 2, 4}) {
 		t.Errorf("mapped luns = %v, want 0 1 2 4", mapped)
 	}
-	if lb := m.Fabrics[0].Targets[0].TPGs[0]; len(lb.LUNs) != 0 {
-		t.Errorf("loopback luns = %+v, want none", lb.LUNs)
+	if lb := m.Fabrics[0].Targets[0].TPGs; len(lb) != 0 {
+		t.Errorf("loopback tpgs = %+v, want none", lb)
 	}
 	want := []string{"iscsi"}
 	if got := m.Active(); !reflect.DeepEqual(got, want) {
@@ -437,5 +494,71 @@ func TestOtherFabric(t *testing.T) {
 	}
 	if got := Active(root); !reflect.DeepEqual(got, []string{"other"}) {
 		t.Errorf("Active = %q, want other", got)
+	}
+}
+
+// The kernel reads lun_<N> with kstrtoull(..., 0, ...)
+// (target_fabric_make_lun, target_fabric_make_mappedlun): lun_0x10 is LUN
+// 16, lun_010 is LUN 8.
+func TestLUNNumberBase(t *testing.T) {
+	root := fakeTree(t, map[string]string{
+		"iscsi/" + iqn + "/tpgt_1/enable":                                "1\n",
+		"iscsi/" + iqn + "/tpgt_1/acls/iqn.a:one/lun_0x10/write_protect": "0\n",
+	}, map[string]string{
+		"iscsi/" + iqn + "/tpgt_1/lun/lun_0x10/x":            "../../../../../../target/core/user_0/lib10",
+		"iscsi/" + iqn + "/tpgt_1/lun/lun_010/x":             "../../../../../../target/core/user_0/tape11",
+		"iscsi/" + iqn + "/tpgt_1/acls/iqn.a:one/lun_0x10/m": "../../../../../../iscsi/" + iqn + "/tpgt_1/lun/lun_010",
+	})
+	tp := Read(root).Fabrics[0].Targets[0].TPGs[0]
+	if len(tp.LUNs) != 2 || tp.LUNs[0].LUN != 8 || tp.LUNs[0].Backstore != "tape11" ||
+		tp.LUNs[1].LUN != 16 || tp.LUNs[1].Backstore != "lib10" {
+		t.Errorf("luns = %+v, want 8 tape11, 16 lib10", tp.LUNs)
+	}
+	ml := tp.ACLs[0].MappedLUNs
+	if len(ml) != 1 || ml[0].LUN != 16 || ml[0].TPGLUN == nil || *ml[0].TPGLUN != 8 {
+		t.Errorf("mapped luns = %+v, want 16 -> 8", ml)
+	}
+	for name, want := range map[string]uint64{"lun_+5": 5, "lun_0x10": 16, "lun_18446744073709551615": 1<<64 - 1} {
+		if n, ok := lunNumber(name); !ok || n != want {
+			t.Errorf("lunNumber(%q) = %d %v, want %d", name, n, ok, want)
+		}
+	}
+	for _, bad := range []string{"lun_", "lun_x", "lun_-1", "lun_+", "lun_++1", "lun_+-1", "lun_18446744073709551616", "tpgt_1"} {
+		if _, ok := lunNumber(bad); ok {
+			t.Errorf("lunNumber(%q) ok, want refused", bad)
+		}
+	}
+}
+
+// TestLUNAboveMax: a LUN number the kernel takes (a u64) but JSON cannot
+// carry exactly is left out with a warning, not shown as another LUN, and
+// the export it belongs to still counts for Active.
+func TestLUNAboveMax(t *testing.T) {
+	root := fakeTree(t, map[string]string{
+		"iscsi/" + iqn + "/tpgt_1/enable":                             "1\n",
+		"iscsi/" + iqn + "/tpgt_1/acls/iqn.a:one/lun_0/write_protect": "0\n",
+	}, map[string]string{
+		"iscsi/" + iqn + "/tpgt_1/lun/lun_0x8000000000000000/x": "../../../../../../target/core/user_0/lib10",
+		"iscsi/" + iqn + "/tpgt_1/acls/iqn.a:one/lun_0/m":       "../../../../../../iscsi/" + iqn + "/tpgt_1/lun/lun_0x8000000000000000",
+	})
+	m := Read(root)
+	tp := m.Fabrics[0].Targets[0].TPGs[0]
+	if len(tp.LUNs) != 0 {
+		t.Errorf("luns = %+v, want none", tp.LUNs)
+	}
+	if len(m.Warnings) != 1 || !strings.Contains(m.Warnings[0], "lun_0x8000000000000000") || !strings.Contains(m.Warnings[0], "not shown") {
+		t.Errorf("warnings = %q, want one naming lun_0x8000000000000000", m.Warnings)
+	}
+	if got := Active(root); !reflect.DeepEqual(got, []string{"iscsi"}) {
+		t.Errorf("Active = %q, want [iscsi]", got)
+	}
+	if got := m.Active(); !reflect.DeepEqual(got, []string{"iscsi"}) {
+		t.Errorf("Read().Active = %q, want [iscsi] like Active", got)
+	}
+	if want := []HiddenLUN{{Name: "lun_0x8000000000000000", HBA: "user_0", Backstore: "lib10"}}; !reflect.DeepEqual(tp.HiddenLUNs, want) {
+		t.Errorf("hidden_luns = %+v, want %+v", tp.HiddenLUNs, want)
+	}
+	if len(tp.ACLs) != 1 || len(tp.ACLs[0].MappedLUNs) != 0 {
+		t.Errorf("acls = %+v, want one with its mapping to the hidden LUN left out", tp.ACLs)
 	}
 }
