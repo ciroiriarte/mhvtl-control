@@ -436,7 +436,9 @@ configuration editor needs (see [Turn writes on](#turn-writes-on)).
 - `GET /api/v1/transports/iscsi/config`: the file as parsed: the portals, the
   base name, and per exported library its initiators, target name and
   derived IQN (`wwn`), whether CHAP and mutual CHAP are set, and the
-  `device.conf` device. Secrets are never returned. `problems` lists what
+  `device.conf` device. Secrets are never returned, and without
+  `-api-token`, when any local user can read the route, neither are the
+  CHAP names (`chap_name`, `mutual_chap_name`). `problems` lists what
   `mhvtl-fabrics` would refuse, each with a `kind`: `parse`, a line it would
   not read, which blocks every change until fixed by hand; or `plan`, a
   target it reads but would not export against `device.conf` (`target` is

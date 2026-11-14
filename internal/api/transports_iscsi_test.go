@@ -126,6 +126,23 @@ func TestISCSIConfigSample(t *testing.T) {
 	}
 }
 
+// TestISCSIConfigNoTokenNoCHAPNames: without an API token anyone local
+// reads GET config, so it answers whether CHAP is set but not the names.
+func TestISCSIConfigNoTokenNoCHAPNames(t *testing.T) {
+	e := iscsiEnv(t, fabricsSample, "reload", func(c *Config) { c.Token = "" })
+	rec := e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if b := rec.Body.String(); strings.Contains(b, "chap_name") || strings.Contains(b, `"pbs"`) || strings.Contains(b, `"vtl"`) {
+		t.Errorf("CHAP names answered without a token: %s", b)
+	}
+	got := decodeBody[iscsiConfigDTO](t, rec)
+	if len(got.Targets) != 2 || !got.Targets[0].CHAP || !got.Targets[0].MutualCHAP || got.Targets[1].CHAP {
+		t.Errorf("targets = %+v", got.Targets)
+	}
+}
+
 // Targets naming a drive of a library, a standalone drive and no device:
 // the device mapping, the derived names and CheckPlan's problems.
 func TestISCSIConfigDevicesAndProblems(t *testing.T) {

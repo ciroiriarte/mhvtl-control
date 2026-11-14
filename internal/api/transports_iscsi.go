@@ -40,7 +40,8 @@ type iscsiDeviceDTO struct {
 }
 
 // iscsiTargetDTO is one "iSCSI target:" record, CHAP as booleans and
-// names only.
+// names only. Without an API token any local user can read it, so the CHAP
+// names, half of each credential, are then left out.
 type iscsiTargetDTO struct {
 	ID         int    `json:"id"`
 	TargetName string `json:"target_name"`
@@ -50,9 +51,9 @@ type iscsiTargetDTO struct {
 	WWN            string          `json:"wwn"`
 	Initiators     []string        `json:"initiators"`
 	CHAP           bool            `json:"chap"`
-	CHAPName       string          `json:"chap_name"`
+	CHAPName       string          `json:"chap_name,omitempty"`
 	MutualCHAP     bool            `json:"mutual_chap"`
-	MutualCHAPName string          `json:"mutual_chap_name"`
+	MutualCHAPName string          `json:"mutual_chap_name,omitempty"`
 	Device         *iscsiDeviceDTO `json:"device"`
 }
 
@@ -160,11 +161,14 @@ func (s *Server) handleISCSIConfig(w http.ResponseWriter, _ *http.Request) {
 		if inits == nil {
 			inits = []string{}
 		}
-		out.Targets = append(out.Targets, iscsiTargetDTO{
+		dto := iscsiTargetDTO{
 			ID: t.ID, TargetName: t.TargetName, WWN: fabricsWWN(t, base, d), Initiators: inits,
-			CHAP: t.HasCHAP, CHAPName: t.CHAPName, MutualCHAP: t.HasMutualCHAP, MutualCHAPName: t.MutualCHAPName,
-			Device: d,
-		})
+			CHAP: t.HasCHAP, MutualCHAP: t.HasMutualCHAP, Device: d,
+		}
+		if s.cfg.Token != "" {
+			dto.CHAPName, dto.MutualCHAPName = t.CHAPName, t.MutualCHAPName
+		}
+		out.Targets = append(out.Targets, dto)
 	}
 	ps, kind := f.conf.Problems, "parse"
 	if len(ps) == 0 {

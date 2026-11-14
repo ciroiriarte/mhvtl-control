@@ -60,7 +60,9 @@ users log in to, set
 .I /api/v1/transports/iscsi/config
 reads mhVTL's
 .BR fabrics.conf (5)
-with every secret left out.
+with every secret left out, and without
+.B \-api\-token
+the CHAP names too.
 .I /api/v1/transports/iscsi
 (PATCH: portals, base name),
 .I /api/v1/transports/iscsi/bind
