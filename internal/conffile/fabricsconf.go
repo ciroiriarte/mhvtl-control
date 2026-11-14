@@ -1082,13 +1082,27 @@ func fabTopology(dev *DeviceConf) ([]fabDev, string) {
 // file's target header lines; a device.conf limit has Line 0. Upstream
 // stops at the first; this goes on with the next target.
 func (c *FabricsConf) CheckPlan(dev *DeviceConf) []Problem {
+	ps, _ := c.plan(dev)
+	return ps
+}
+
+// PlannedWWNs returns the target names mhvtl-fabrics apply would create or
+// adopt for this file and device.conf, as fab_plan derives them: the
+// Target name, else the Base name and ".lib<ID>" or ".tape<ID>". Targets
+// CheckPlan refuses are left out.
+func (c *FabricsConf) PlannedWWNs(dev *DeviceConf) []string {
+	_, wwns := c.plan(dev)
+	return wwns
+}
+
+func (c *FabricsConf) plan(dev *DeviceConf) ([]Problem, []string) {
 	devs, msg := fabTopology(dev)
 	if msg != "" {
-		return []Problem{{Msg: msg}}
+		return []Problem{{Msg: msg}}, nil
 	}
 	_, base, _ := c.ISCSI()
 	var ps []Problem
-	var names []string
+	var names, wwns []string
 	for _, t := range c.records {
 		if t.kind != fabTarget {
 			continue
@@ -1136,6 +1150,7 @@ func (c *FabricsConf) CheckPlan(dev *DeviceConf) []Problem {
 			problem("target name %s is used twice", wwn)
 			continue
 		}
+		wwns = append(wwns, wwn)
 		if !d.isLib {
 			continue // one LUN, 0
 		}
@@ -1160,7 +1175,7 @@ func (c *FabricsConf) CheckPlan(dev *DeviceConf) []Problem {
 			luns[drv.slot] = true
 		}
 	}
-	return ps
+	return ps, wwns
 }
 
 // ---- redaction ----

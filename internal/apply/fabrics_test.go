@@ -82,8 +82,17 @@ func newFabEnv(t *testing.T) *fabEnv {
 	}
 	f.cfg.JournalTail = func(context.Context, string) ([]byte, error) { return []byte(f.tail), nil }
 	f.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
+	f.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
 	f.rebuild()
 	return f
+}
+
+// mkTarget makes target wwn in the fake configfs.
+func (f *fabEnv) mkTarget(wwn string) {
+	f.t.Helper()
+	if err := os.MkdirAll(filepath.Join(f.cfg.TargetRoot, "iscsi", wwn, "tpgt_1"), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 func (f *fabEnv) writeConf(name, data string, mode os.FileMode) {
@@ -768,5 +777,77 @@ func TestFabricsBackendSubset(t *testing.T) {
 				t.Errorf("got %s %q, want fabrics_backend", resp.Error, resp.Message)
 			}
 		})
+	}
+}
+
+// TestFabricsForeignTarget: a file that plans a target configfs already has
+// but mhvtl-fabrics' state file does not list is refused, plan and apply,
+// before anything is written: mhvtl-fabrics apply would adopt it, prune its
+// ACLs and LUNs, and delete it on unbind. A target the state file lists is
+// mhvtl-fabrics' own.
+func TestFabricsForeignTarget(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	const foreign = "iqn.2026-11.lan.example:somebody-else"
+	renamed := strings.Replace(fabConf, " CHAP name:", " Target name: "+foreign+"\n CHAP name:", 1)
+	for _, c := range []struct {
+		name, cur, next, wwn string
+	}{
+		{"new file, derived name", "", fabConf, lib10},
+		{"Target name set", fabConf, renamed, foreign},
+		{"Base name changed", strings.Replace(fabConf, "vtl1:mhvtl", "vtl1:old", 1), fabConf, lib10},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFabEnv(t)
+			if c.cur != "" {
+				f.writeConf(fabricsConf, c.cur, 0o600)
+			} else {
+				f.fab = "inactive"
+			}
+			f.mkTarget(c.wwn)
+			// The state file lists another target only.
+			if err := os.WriteFile(f.cfg.FabricsState, []byte("iscsi iqn.2003-01.org.linux-iscsi.vtl1:other\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, op := range []string{OpFabricsPlan, OpFabrics} {
+				resp := f.do(f.fabricsReq(op, c.next))
+				if resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, c.wwn) ||
+					!strings.Contains(resp.Message, "does not own") {
+					t.Fatalf("%s = %+v, want refused naming %s", op, resp, c.wwn)
+				}
+			}
+			if len(f.verbs()) != 0 || f.intentExists() {
+				t.Errorf("ran %v, intent %v", f.verbs(), f.intentExists())
+			}
+			if b, _ := os.ReadFile(filepath.Join(f.dir, fabricsConf)); string(b) != c.cur {
+				t.Errorf("fabrics.conf written: %q", b)
+			}
+
+			// Owned by mhvtl-fabrics: applied.
+			if err := os.WriteFile(f.cfg.FabricsState, []byte("iscsi "+c.wwn+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if resp := f.do(f.fabricsReq(OpFabrics, c.next)); resp.Result != ResultApplied {
+				t.Fatalf("owned target: %+v", resp)
+			}
+		})
+	}
+}
+
+// TestFabricsForeignTargetUnrelated: a target configfs has that the file
+// does not plan is no concern of the check, and an unreadable state file is
+// read only when a planned target exists.
+func TestFabricsForeignTargetUnrelated(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	f.mkTarget("iqn.2026-11.lan.example:somebody-else")
+	if err := os.Mkdir(f.cfg.FabricsState, 0o700); err != nil { // read fails with EISDIR
+		t.Fatal(err)
+	}
+	if resp := f.do(f.fabricsReq(OpFabrics, strings.Replace(fabConf, fabSecret, fabNewSecret, 1))); resp.Result != ResultApplied {
+		t.Fatalf("apply = %+v", resp)
+	}
+	f.mkTarget("iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10")
+	if resp := f.do(f.fabricsReq(OpFabricsPlan, fabConf)); resp.Result != ResultError || !strings.Contains(resp.Message, "state file cannot be read") {
+		t.Fatalf("plan with an unreadable state file = %+v", resp)
 	}
 }

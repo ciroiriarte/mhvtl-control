@@ -482,7 +482,11 @@ Before it writes anything, for a dry run too, the helper checks the new
 file against `device.conf` as `mhvtl-fabrics` plans it (each target names a
 library or standalone drive, names are unique, drive slots give distinct
 LUNs) and refuses with `invalid` if it would not plan, or if `device.conf`
-is missing or unreadable.
+is missing or unreadable. It also refuses with `invalid` a file that names a
+target already in configfs that `mhvtl-fabrics` does not own (not listed in
+`/run/mhvtl/fabrics.state`), such as one made with targetcli:
+`mhvtl-fabrics apply` would take it over, remove the ACLs and LUNs the
+record does not list, and delete it on unbind.
 
 If the reload fails, the previous file is put back and the unit reloaded
 with it. If a first start fails, the new file is removed and the unit is

@@ -360,6 +360,21 @@ func TestFabricsCheckPlan(t *testing.T) {
 	}
 }
 
+// TestFabricsPlannedWWNs: the names fab_plan gives, derived or set, in
+// file order, without the targets CheckPlan refuses.
+func TestFabricsPlannedWWNs(t *testing.T) {
+	dev := ParseDeviceConf([]byte(fabDeviceConf))
+	got := mustFabrics(t, "iSCSI:\n Base name: "+fabBase+"\n"+
+		"iSCSI target: 10\n"+
+		"iSCSI target: 30\n Target name: iqn.2024-01.com.example:custom\n"+
+		"iSCSI target: 50\n"+
+		"iSCSI target: 99\n").PlannedWWNs(dev)
+	want := []string{fabW10, "iqn.2024-01.com.example:custom", fabBase + ".tape50"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("PlannedWWNs = %q, want %q", got, want)
+	}
+}
+
 func TestFabricsEditCreate(t *testing.T) {
 	const want = "VERSION: 1\n\n" +
 		"iSCSI:\n Portal: 192.0.2.10:3260\n Base name: iqn.2003-01.org.linux-iscsi.vtl1:mhvtl\n\n" +

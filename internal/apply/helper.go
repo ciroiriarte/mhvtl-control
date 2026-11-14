@@ -98,6 +98,9 @@ type Config struct {
 	// FabricsState is mhvtl-fabrics' state file, the targets it owns
 	// (fabricsOwned).
 	FabricsState string
+	// TargetRoot is LIO's configfs directory, read for targets that exist
+	// but mhvtl-fabrics does not own (checkForeignTargets).
+	TargetRoot string
 }
 
 // DefaultHome is the installed helper's media home of a library when
@@ -153,6 +156,9 @@ func DefaultConfig(configDir, version string) Config {
 		// fab_state_path, markh794/mhvtl usr/fabrics_cfs.c at 19b71bd,
 		// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L43
 		FabricsState: "/run/mhvtl/fabrics.state",
+		// cfs_root,
+		// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L40
+		TargetRoot: "/sys/kernel/config/target",
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -112,6 +113,9 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 		return responseOf(refuse(ErrInvalid, "%v", err))
 	}
 	if err := checkPlan(conf, files); err != nil {
+		return responseOf(err)
+	}
+	if err := h.checkForeignTargets(conf, files); err != nil {
 		return responseOf(err)
 	}
 	if err := h.checkBackend(files); err != nil {
@@ -256,6 +260,57 @@ func checkPlan(conf *conffile.FabricsConf, files *fileSet) error {
 		msgs[k] = p.Error()
 	}
 	return refuse(ErrInvalid, "%s: %s", fabricsConf, strings.Join(msgs, "; "))
+}
+
+// checkForeignTargets refuses a file that plans a target which exists in
+// configfs but is not in mhvtl-fabrics' state file: a target someone else
+// made, with targetcli or another tool. mhvtl-fabrics apply would adopt it:
+// cfs_mkdir accepts EEXIST
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L138-L154),
+// state_write records every configured name as owned
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L461-L483),
+// apply_target removes the ACLs the record does not list and the LUNs it
+// does not map
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L576-L688),
+// and a later unbind or remove deletes the target
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L690-L710).
+// A target mhvtl-fabrics already owns is its own to change.
+func (h *Helper) checkForeignTargets(conf *conffile.FabricsConf, files *fileSet) error {
+	dc, err := files.current(deviceConf)
+	if err != nil {
+		return err
+	}
+	var foreign []string
+	var owned map[string]bool
+	for _, wwn := range conf.PlannedWWNs(conffile.ParseDeviceConf(dc.data)) {
+		st, err := os.Lstat(filepath.Join(h.cfg.TargetRoot, "iscsi", wwn))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		case err != nil:
+			return err
+		case !st.IsDir():
+			continue
+		}
+		if owned == nil {
+			list, err := fabricsOwned(h.cfg.FabricsState)
+			if err != nil {
+				return fmt.Errorf("%s exists in configfs and the state file cannot be read to tell whether mhvtl-fabrics owns it: %w", wwn, err)
+			}
+			owned = map[string]bool{}
+			for _, o := range list {
+				owned[o] = true
+			}
+		}
+		if !owned[wwn] {
+			foreign = append(foreign, wwn)
+		}
+	}
+	if len(foreign) > 0 {
+		return refuse(ErrInvalid, "iSCSI target %s already exists in configfs and mhvtl-fabrics does not own it (not in %s): applying %s would take it over, remove the ACLs and LUNs it does not list, and delete it on unbind; choose another Target name or Base name, or remove that target first",
+			strings.Join(foreign, ", "), h.cfg.FabricsState, fabricsConf)
+	}
+	return nil
 }
 
 // fabricsAction decides how the edited file gets applied, from the state

@@ -410,6 +410,8 @@ func TestISCSIHelperAnswers(t *testing.T) {
 			RollbackDir: "/var/lib/x"}, 500, apply.ResultRolledBack},
 		{"error", apply.Response{Result: apply.ResultError, Error: apply.ErrInternal, Message: "boom " + chapSecret}, 500, apply.ErrInternal},
 		{"in progress", apply.Response{Result: apply.ResultInProgress}, 409, apply.ResultInProgress},
+		{"foreign target", apply.Response{Result: apply.ResultRefused, Error: apply.ErrInvalid,
+			Message: "iSCSI target iqn.2026-11.lan.example:x already exists in configfs and mhvtl-fabrics does not own it"}, 422, apply.ErrInvalid},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := iscsiEnv(t, fabricsSample, "reload", nil)
@@ -428,6 +430,10 @@ func TestISCSIHelperAnswers(t *testing.T) {
 			case "conflict":
 				if got.CurrentSHA256 == nil || *got.CurrentSHA256 != cur || !strings.Contains(got.Error.Message, "read it again") {
 					t.Errorf("conflict = %+v", got)
+				}
+			case "foreign target":
+				if got.Error.Message != c.resp.Message {
+					t.Errorf("foreign target message = %q", got.Error.Message)
 				}
 			case "rolled back":
 				if got.JournalTail != "chap "+conffile.SecretMask+" rejected" || got.RollbackDir != "/var/lib/x" || got.Action != "reload" {
