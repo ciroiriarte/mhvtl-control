@@ -491,7 +491,11 @@ is missing or unreadable. It also refuses with `invalid` a file that names a
 target already in configfs that `mhvtl-fabrics` does not own (not listed in
 `/run/mhvtl/fabrics.state`), such as one made with targetcli:
 `mhvtl-fabrics apply` would take it over, remove the ACLs and LUNs the
-record does not list, and delete it on unbind.
+record does not list, and delete it on unbind. The other way round, a
+configuration apply that changes `device.conf` so that a target of
+`fabrics.conf` would no longer plan (its library deleted, two of its drives
+given the same Slot) is refused with `invalid`, naming the target: stop
+exporting it first.
 
 If the reload fails, the previous file is put back and the unit reloaded
 with it. If a first start fails, the new file is removed and the unit is

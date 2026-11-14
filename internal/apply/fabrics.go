@@ -267,6 +267,63 @@ func checkPlan(conf *conffile.FabricsConf, files *fileSet) error {
 	return refuse(ErrInvalid, "%s: %s", fabricsConf, strings.Join(msgs, "; "))
 }
 
+// checkFabricsDevices refuses a device.conf change that leaves an iSCSI
+// target of fabrics.conf without a plan: mhvtl-fabrics plans against
+// device.conf on every apply (load,
+// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L99-L118),
+// so deleting an exported library, or giving two of its drives the same
+// Slot, would make the next reload or start of mhvtl-fabrics.service fail.
+// Only problems the change brings are refused; without fabrics.conf, or
+// with one mhvtl-fabrics cannot parse, there is nothing to check.
+func checkFabricsDevices(files, next *fileSet) error {
+	cur, err := files.current(deviceConf)
+	if err != nil {
+		return err
+	}
+	nd, err := next.next(deviceConf)
+	if err != nil {
+		return err
+	}
+	if nd.sha == cur.sha {
+		return nil
+	}
+	fc, err := files.current(fabricsConf)
+	if err != nil || !fc.exists {
+		return err
+	}
+	conf := conffile.ParseFabricsConf(fc.data)
+	if len(conf.Problems) > 0 {
+		return nil
+	}
+	had := map[string]bool{}
+	for _, p := range conf.CheckPlan(conffile.ParseDeviceConf(cur.data)) {
+		had[p.Error()] = true
+	}
+	ids := map[int]int{}
+	for _, t := range conf.Targets() {
+		ids[t.Line] = t.ID
+	}
+	var targets, msgs []string
+	for _, p := range conf.CheckPlan(conffile.ParseDeviceConf(nd.data)) {
+		if had[p.Error()] {
+			continue
+		}
+		msgs = append(msgs, p.Error())
+		if id, ok := ids[p.Line]; ok {
+			targets = append(targets, fmt.Sprint(id))
+		}
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	what := "fabrics.conf"
+	if len(targets) > 0 {
+		what = "the iSCSI target(s) " + strings.Join(targets, ", ") + " of " + fabricsConf
+	}
+	return refuse(ErrInvalid, "%s: the change would leave %s without a plan, and the next reload or start of %s would fail (%s: %s); stop exporting them first (iSCSI unbind), or keep the devices they export",
+		deviceConf, what, FabricsUnit, fabricsConf, strings.Join(msgs, "; "))
+}
+
 // checkForeignTargets refuses a file that plans a target which exists in
 // configfs but is not in mhvtl-fabrics' state file: a target someone else
 // made, with targetcli or another tool. mhvtl-fabrics apply would adopt it:

@@ -871,3 +871,52 @@ func TestFabricsLegacyEnv(t *testing.T) {
 		t.Errorf("wrote or ran %v", f.verbs())
 	}
 }
+
+// TestDeviceConfLeavesFabricsTarget: a config apply that changes
+// device.conf so that a fabrics.conf target no longer plans (its library
+// deleted, two of its drives on one Slot) is refused, naming the target;
+// an unrelated device.conf edit, or any edit without fabrics.conf, is not.
+func TestDeviceConfLeavesFabricsTarget(t *testing.T) {
+	const exports30 = "VERSION: 1\n\niSCSI:\n Base name: iqn.2003-01.org.linux-iscsi.vtl1:mhvtl\n\n" +
+		"iSCSI target: 10\n Initiator name: iqn.2024-01.com.example:pbs1\n\n" +
+		"iSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs1\n"
+	drop30 := func(e *env) Request {
+		dc := string(e.read(deviceConf))
+		cut := strings.Index(dc, "Library: 30 ")
+		return Request{Op: OpPlan, Actor: "test",
+			Files:  []File{{Name: deviceConf, BaseSHA256: e.sha(deviceConf), Content: []byte(dc[:cut])}},
+			Delete: []Delete{{Name: "library_contents.30", BaseSHA256: e.sha("library_contents.30")}}}
+	}
+	refused := func(resp Response) bool {
+		return resp.Result == ResultRefused && resp.Error == ErrInvalid && strings.Contains(resp.Message, "without a plan")
+	}
+
+	e := newEnv(t)
+	if err := os.WriteFile(filepath.Join(e.dir, fabricsConf), []byte(exports30), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if resp := e.do(drop30(e)); !refused(resp) || !strings.Contains(resp.Message, "target(s) 30 ") ||
+		!strings.Contains(resp.Message, "no Library or Drive 30 in device.conf") {
+		t.Errorf("library 30 deleted: %+v", resp)
+	}
+	sameSlot := Request{Op: OpPlan, Actor: "test", Files: []File{e.edit(deviceConf, " Library ID: 10 Slot: 02", " Library ID: 10 Slot: 01")}}
+	if resp := e.do(sameSlot); !refused(resp) || !strings.Contains(resp.Message, "target(s) 10 ") || !strings.Contains(resp.Message, "two devices on LUN 1") {
+		t.Errorf("two drives on one slot: %+v", resp)
+	}
+	unrelated := Request{Op: OpPlan, Actor: "test", Files: []File{e.edit(deviceConf, "# Each 'record'", "# Every 'record'")}}
+	if resp := e.do(unrelated); resp.Result != ResultValidated {
+		t.Errorf("unrelated edit: %+v", resp)
+	}
+
+	e = newEnv(t)
+	if resp := e.do(drop30(e)); resp.Result != ResultValidated {
+		t.Errorf("no fabrics.conf: %+v", resp)
+	}
+	// A fabrics.conf that does not parse is mhvtl-fabrics' problem already.
+	if err := os.WriteFile(filepath.Join(e.dir, fabricsConf), []byte(exports30+"bogus\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if resp := e.do(drop30(e)); resp.Result != ResultValidated {
+		t.Errorf("unparsable fabrics.conf: %+v", resp)
+	}
+}
