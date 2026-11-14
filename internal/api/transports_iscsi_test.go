@@ -159,13 +159,36 @@ func TestISCSIConfigDevicesAndProblems(t *testing.T) {
 		got.Problems[1].Line != 8 || !strings.Contains(got.Problems[1].Message, "no Library or Drive 99") {
 		t.Errorf("problems = %+v", got.Problems)
 	}
+	for k, id := range []int{11, 99} {
+		if p := got.Problems[k]; p.Kind != "plan" || p.Target == nil || *p.Target != id {
+			t.Errorf("problem %d: kind %q target %v, want plan %d", k, p.Kind, p.Target, id)
+		}
+	}
+
+	// Unbinding a target that does not plan is accepted when it leaves the
+	// file planning; binding another while one does not plan is refused.
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 11, "dry_run": true})
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "no Library or Drive 99") {
+		t.Errorf("unbind 11 with 99 left: %d %s", rec.Code, rec.Body)
+	}
+	data, err := os.ReadFile(filepath.Join(e.dir, "fabrics.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "fabrics.conf"), []byte(strings.Replace(string(data), "iSCSI target: 11\n Initiator name: "+pbsIQN+"\n", "", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 99})
+	if rec.Code != http.StatusOK || decodeBody[iscsiWriteDTO](t, rec).Result != apply.ResultApplied {
+		t.Errorf("unbind 99, the target that does not plan: %d %s", rec.Code, rec.Body)
+	}
 
 	// A parse problem is reported as it is, without CheckPlan.
 	if err := os.WriteFile(filepath.Join(e.dir, "fabrics.conf"), []byte("VERSION: 1\nbogus\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got = decodeBody[iscsiConfigDTO](t, e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil))
-	if len(got.Problems) != 1 || got.Problems[0].Line != 2 {
+	if len(got.Problems) != 1 || got.Problems[0].Line != 2 || got.Problems[0].Kind != "parse" || got.Problems[0].Target != nil {
 		t.Errorf("parse problems = %+v", got.Problems)
 	}
 }

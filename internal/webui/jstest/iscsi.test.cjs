@@ -101,7 +101,7 @@ const iscsiCfg = {
 };
 const transports = {
   configfs: true,
-  fabrics: [{ name: "iscsi", transport: "iSCSI", targets: [
+  fabrics: [{ name: "iscsi", transport: "iscsi", targets: [
     { wwn: "iqn.2026-01.org.example:lib10", tpgs: [{ tag: 1, enabled: true, luns: [{ lun: 0 }, { lun: 1 }],
       acls: [{ initiator: "iqn.a", session: { state: "TARG_SESS_STATE_LOGGED_IN" } }, { initiator: "iqn.b" }], dynamic_sessions: [] }] },
   ] }],
@@ -131,6 +131,22 @@ test("iscsiRows merges device.conf, fabrics.conf targets and configfs", () => {
   assert.strictEqual(d50.targetName, "iqn.custom:d50");
   assert.strictEqual(d50.mutualChap, "Mutual CHAP: on (tgt)");
   assert.strictEqual(o70.present, false);
+});
+
+test("iscsiRows reads configfs state only from iSCSI fabrics", () => {
+  // A loopback and an FC target with the WWN of library 10's iSCSI target,
+  // listed before the iSCSI fabric: neither may stand for it.
+  const tpg = (luns) => ({ tag: 1, enabled: true, luns: luns.map((n) => ({ lun: n })), acls: [], dynamic_sessions: [] });
+  const wwn = "iqn.2026-01.org.example:lib10";
+  const mixed = { configfs: true, fabrics: [
+    { name: "loopback", transport: "local", targets: [{ wwn: wwn, tpgs: [tpg([0, 1, 2, 3, 4])] }] },
+    { name: "qla2xxx", transport: "fc", targets: [{ wwn: wwn, tpgs: [tpg([0, 1, 2])] }] },
+    { name: "iscsi", transport: "iscsi", targets: [{ wwn: wwn, tpgs: [tpg([0])] }] },
+  ] };
+  assert.strictEqual(core.iscsiRows(config, iscsiCfg, mixed)[0].luns, 1);
+  // Without the iSCSI fabric, the target is not in configfs.
+  mixed.fabrics.pop();
+  assert.strictEqual(core.iscsiRows(config, iscsiCfg, mixed)[0].present, false);
 });
 
 test("iscsiRows without the transport map or device.conf", () => {
@@ -176,6 +192,38 @@ test("iscsiAllowed follows the write gate and hides actions without a config", (
   assert.strictEqual(core.iscsiAllowed({ caps: ok, reachable: false, cfg: clean }).reason, "The node is not reachable.");
   assert.ok(/fix them first/.test(core.iscsiAllowed({ caps: ok, reachable: true, cfg: iscsiCfg }).reason));
   assert.strictEqual(core.iscsiAllowed({ caps: ok, reachable: true, cfg: clean, busy: true }).ok, false);
+});
+
+test("iscsiAllowed: plan problems leave Stop exporting open for their targets", () => {
+  const ok = { writes: "ok" };
+  const row = (id) => ({ id: id, key: "iscsi-library-" + id });
+  const plan = { targets: [], problems: [
+    { line: 7, kind: "plan", target: 11, message: "iSCSI target 11: drive belongs to library 10; export the library" },
+  ] };
+  const g = core.iscsiAllowed({ caps: ok, reachable: true, cfg: plan });
+  assert.deepStrictEqual([g.ok, g.hide], [false, false]);
+  assert.ok(/would not export/.test(g.reason));
+  assert.deepStrictEqual(core.iscsiUnbindAllowed(g, row(11)), { ok: true, hide: false, reason: "" });
+  assert.strictEqual(core.iscsiUnbindAllowed(g, row(10)).ok, false);
+  // A plan problem without a target (a device.conf limit) opens every unbind.
+  const limit = { targets: [], problems: [{ line: 0, kind: "plan", message: "device.conf has more than 256 devices" }] };
+  assert.strictEqual(core.iscsiUnbindAllowed(core.iscsiAllowed({ caps: ok, reachable: true, cfg: limit }), row(10)).ok, true);
+  // Any parse problem, or a problem without a kind (an older daemon),
+  // blocks every action, Stop exporting included.
+  for (const problems of [
+    [{ line: 7, kind: "plan", target: 11, message: "m" }, { line: 2, kind: "parse", message: "expected 'Name: value'" }],
+    [{ line: 7, target: 11, message: "m" }],
+  ]) {
+    const p = core.iscsiAllowed({ caps: ok, reachable: true, cfg: { targets: [], problems: problems } });
+    assert.ok(/fix them first/.test(p.reason));
+    assert.strictEqual(core.iscsiUnbindAllowed(p, row(11)).ok, false);
+  }
+  // Busy, read-only or unreachable close it as well.
+  assert.strictEqual(core.iscsiUnbindAllowed(core.iscsiAllowed({ caps: ok, reachable: true, cfg: plan, busy: true }), row(11)).ok, false);
+  assert.strictEqual(core.iscsiUnbindAllowed(core.iscsiAllowed({ caps: { writes: "helper_absent" }, reachable: true, cfg: plan }), row(11)).ok, false);
+  assert.strictEqual(core.iscsiUnbindAllowed(core.iscsiAllowed({ caps: ok, reachable: false, cfg: plan }), row(11)).ok, false);
+  // No problem: the gate as it is.
+  assert.strictEqual(core.iscsiUnbindAllowed(core.iscsiAllowed({ caps: ok, reachable: true, cfg: { targets: [], problems: [] } }), row(10)).ok, true);
 });
 
 test("iscsiActionText", () => {

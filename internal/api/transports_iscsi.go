@@ -56,9 +56,16 @@ type iscsiTargetDTO struct {
 	Device         *iscsiDeviceDTO `json:"device"`
 }
 
+// iscsiProblemDTO is one problem of fabrics.conf. Kind "parse" is a line
+// mhvtl-fabrics would not read: no edit can be made until it is fixed by
+// hand. Kind "plan" is a target it reads but would not export against
+// device.conf (CheckPlan); Target is that target's ID, absent for a
+// device.conf limit. An edit that removes or fixes the target is accepted.
 type iscsiProblemDTO struct {
 	Line    int    `json:"line"`
 	Message string `json:"message"`
+	Kind    string `json:"kind"`
+	Target  *int   `json:"target,omitempty"`
 }
 
 // iscsiConfigDTO is GET /transports/iscsi/config.
@@ -159,14 +166,22 @@ func (s *Server) handleISCSIConfig(w http.ResponseWriter, _ *http.Request) {
 			Device: d,
 		})
 	}
-	ps := f.conf.Problems
+	ps, kind := f.conf.Problems, "parse"
 	if len(ps) == 0 {
 		// CheckPlan is for a file without parse problems.
-		ps = f.conf.CheckPlan(f.dev)
+		ps, kind = f.conf.CheckPlan(f.dev), "plan"
+	}
+	ids := map[int]int{}
+	for _, t := range f.conf.Targets() {
+		ids[t.Line] = t.ID
 	}
 	stored := conffile.FabricsSecrets(f.data)
 	for _, p := range ps {
-		out.Problems = append(out.Problems, iscsiProblemDTO{Line: p.Line, Message: refusalText(p.Msg, stored)})
+		dto := iscsiProblemDTO{Line: p.Line, Message: refusalText(p.Msg, stored), Kind: kind}
+		if id, ok := ids[p.Line]; ok && kind == "plan" && p.Line > 0 {
+			dto.Target = &id
+		}
+		out.Problems = append(out.Problems, dto)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

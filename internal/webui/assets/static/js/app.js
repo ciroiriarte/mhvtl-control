@@ -1199,6 +1199,12 @@
     return core.iscsiAllowed({ caps: lastCfg && lastCfg.caps, reachable: mutationsEnabled, cfg: iscsiState.cfg,
       cfgError: iscsiState.error, busy: iscsiState.busy });
   }
+  // iscsiGateFor is the gate of one action: Stop exporting may stay open
+  // for a target with a plan problem while the others are closed.
+  function iscsiGateFor(mode, row) {
+    var gate = iscsiGate();
+    return mode === "unbind" ? core.iscsiUnbindAllowed(gate, row) : gate;
+  }
   function iscsiRowList() {
     return core.iscsiRows(lastCfg && lastCfg.config, iscsiState.cfg, lastTransports);
   }
@@ -1261,7 +1267,8 @@
         if (!r.orphan) {
           acts.push(iscsiButton("Edit…", "Edit the iSCSI export of " + r.label, r.key + "-edit", gate, function () { iscsiOpen("bind", r); }));
         }
-        acts.push(iscsiButton("Stop exporting", "Stop exporting " + r.label + " over iSCSI", r.key + "-unbind", gate, function () { iscsiUnbind(r); }));
+        acts.push(iscsiButton("Stop exporting", "Stop exporting " + r.label + " over iSCSI", r.key + "-unbind",
+          iscsiGateFor("unbind", r), function () { iscsiUnbind(r); }));
       }
       var chap = mk("td");
       if (r.exported) {
@@ -1299,7 +1306,7 @@
   // refuses unless the gate is open, and answers {res, status} for every
   // answer, the error ones included (their body carries the result).
   function iscsiWrite(mode, body) {
-    var gate = iscsiGate();
+    var gate = iscsiGateFor(mode, iscsiCtx && iscsiCtx.row);
     if (!gate.ok) { return Promise.resolve({ res: { error: { code: "refused", message: gate.reason } }, status: 403 }); }
     iscsiState.busy = true;
     redrawISCSI();
@@ -1372,7 +1379,7 @@
   }
 
   function iscsiOpen(mode, row) {
-    var gate = iscsiGate();
+    var gate = iscsiGateFor(mode, row);
     if (!gate.ok) { transportStatus.error(gate.reason); return; }
     iscsiCtx = { mode: mode, row: row, gen: NodeState.generation, previewed: false, preview: null };
     var title = { bind: row && row.exported ? "Edit iSCSI export" : "Export over iSCSI", settings: "iSCSI settings", unbind: "Stop exporting" }[mode];
@@ -1421,7 +1428,7 @@
       return;
     }
     if (!dryRun && (!ctx.previewed || !ctx.preview)) { iscsiShow({ error: "Preview the change first." }); return; }
-    var gate = iscsiGate();
+    var gate = iscsiGateFor(ctx.mode, ctx.row);
     if (!gate.ok) { iscsiShow({ error: gate.reason }); return; }
     var b = dryRun ? iscsiBody(ctx, true) : { body: core.iscsiApplyBody(ctx.preview.body, ctx.preview.sha) };
     if (b.error) {

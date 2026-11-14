@@ -1730,8 +1730,10 @@
   // iscsiRows lists one row per device.conf library and standalone drive
   // (config: GET /config), with its iSCSI export from fabrics.conf (cfg: GET
   // /transports/iscsi/config) and whether configfs shows the target (m: GET
-  // /transports; null when not read), then the fabrics.conf targets whose
-  // device is not in device.conf. Rows carry no secret.
+  // /transports; null when not read; only its fabrics of transport "iscsi",
+  // as a loopback or FC target may have the same name), then the
+  // fabrics.conf targets whose device is not in device.conf. Rows carry no
+  // secret.
   function iscsiRows(config, cfg, m) {
     var byDev = {};
     coerceArray(cfg && cfg.targets).forEach(function (t) {
@@ -1743,7 +1745,8 @@
     if (m) {
       live = {};
       coerceArray(m.fabrics).forEach(function (f) {
-        coerceArray(f && f.targets).forEach(function (t) {
+        if (!f || f.transport !== "iscsi") { return; }
+        coerceArray(f.targets).forEach(function (t) {
           if (!t || !t.wwn) { return; }
           var tpgs = coerceArray(t.tpgs);
           live[String(t.wwn)] = {
@@ -1823,7 +1826,12 @@
   // iscsiAllowed says whether the iSCSI export actions are offered: s is
   // {caps, reachable (mutationsEnabled), cfg, cfgError ({status, message}
   // when GET /iscsi/config failed), busy}. hide is true when the section
-  // cannot show actions at all (no config read); reason says why.
+  // cannot show actions at all (no config read); reason says why. A parse
+  // problem of fabrics.conf blocks every action. When every problem is a
+  // plan problem (kind "plan": a target mhvtl-fabrics reads but would not
+  // export), only Stop exporting stays open, for the targets named (unbind:
+  // {ids, all}; all when a problem names no target), and the daemon decides
+  // whether the result plans (iscsiUnbindAllowed).
   function iscsiAllowed(s) {
     s = s || {};
     var no = function (reason, hide) { return { ok: false, hide: !!hide, reason: reason }; };
@@ -1838,9 +1846,29 @@
       var w = String(s.caps.writes || "");
       return no("Read-only: " + (ISCSI_WRITES[w] || ("writes are " + (w || "off"))) + ".");
     }
-    if (coerceArray(s.cfg.problems).length) { return no("fabrics.conf has lines mhvtl-fabrics would not read; fix them first."); }
     if (s.busy) { return no("An iSCSI change is in progress."); }
+    var problems = coerceArray(s.cfg.problems);
+    if (problems.length) {
+      var plan = problems.every(function (p) { return p && p.kind === "plan"; });
+      if (!plan) { return no("fabrics.conf has lines mhvtl-fabrics would not read; fix them first."); }
+      var unbind = { ids: {}, all: false };
+      problems.forEach(function (p) {
+        if (p.target === undefined || p.target === null) { unbind.all = true; } else { unbind.ids[coerceNumber(p.target)] = true; }
+      });
+      var r = no("fabrics.conf has targets mhvtl-fabrics would not export against device.conf: stop exporting them, or fix device.conf.");
+      r.unbind = unbind;
+      return r;
+    }
     return { ok: true, hide: false, reason: "" };
+  }
+
+  // iscsiUnbindAllowed is the gate of a row's Stop exporting: gate (from
+  // iscsiAllowed) itself, or, when only plan problems block the actions,
+  // open for a target they name.
+  function iscsiUnbindAllowed(gate, row) {
+    if (gate.ok || !gate.unbind || !row) { return gate; }
+    if (gate.unbind.all || gate.unbind.ids[coerceNumber(row.id)]) { return { ok: true, hide: false, reason: "" }; }
+    return gate;
   }
 
   // iscsiActionText says what applying a change does to the export
@@ -2076,6 +2104,7 @@
     iscsiRows: iscsiRows,
     iscsiNotes: iscsiNotes,
     iscsiAllowed: iscsiAllowed,
+    iscsiUnbindAllowed: iscsiUnbindAllowed,
     iscsiActionText: iscsiActionText,
     iscsiDiffLines: iscsiDiffLines,
     iscsiFieldInput: iscsiFieldInput,

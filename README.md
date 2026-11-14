@@ -437,7 +437,10 @@ configuration editor needs (see [Turn writes on](#turn-writes-on)).
   base name, and per exported library its initiators, target name and
   derived IQN (`wwn`), whether CHAP and mutual CHAP are set, and the
   `device.conf` device. Secrets are never returned. `problems` lists what
-  `mhvtl-fabrics` would refuse.
+  `mhvtl-fabrics` would refuse, each with a `kind`: `parse`, a line it would
+  not read, which blocks every change until fixed by hand; or `plan`, a
+  target it reads but would not export against `device.conf` (`target` is
+  its ID), which an unbind of that target can fix.
 - `PATCH /api/v1/transports/iscsi` `{"portals": [...], "base_name": "..."}`:
   the settings every target shares. `[]` removes every portal (targets then
   listen on `0.0.0.0:3260`), `""` removes the base name.
