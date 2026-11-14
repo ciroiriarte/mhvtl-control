@@ -851,3 +851,23 @@ func TestFabricsForeignTargetUnrelated(t *testing.T) {
 		t.Fatalf("plan with an unreadable state file = %+v", resp)
 	}
 }
+
+// TestFabricsLegacyEnv: the fabrics ops refuse, like every other write,
+// while the daemon's options file is still at its 0.2.0 path in the
+// directory the helper writes.
+func TestFabricsLegacyEnv(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	if err := os.WriteFile(f.legacy, []byte("MHVTL_CONTROL_TOKEN=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	next := strings.Replace(fabConf, fabSecret, fabNewSecret, 1)
+	for _, op := range []string{OpFabricsPlan, OpFabrics} {
+		if resp := f.do(f.fabricsReq(op, next)); resp.Result != ResultRefused || resp.Error != ErrLegacyEnv {
+			t.Errorf("%s = %+v, want refused %s", op, resp, ErrLegacyEnv)
+		}
+	}
+	if string(f.read(fabricsConf)) != fabConf || len(f.verbs()) != 0 {
+		t.Errorf("wrote or ran %v", f.verbs())
+	}
+}

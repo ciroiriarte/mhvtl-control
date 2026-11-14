@@ -93,6 +93,11 @@ func checkFabricsRequest(req *Request) error {
 // fabrics checks fabrics.conf and, for OpFabrics, writes it and has the
 // unit apply it. The caller holds exclusive.lock and found no intent.
 func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Response {
+	// As for every other write: the daemon's options file, which holds the
+	// API token, must not sit in the directory the helper writes.
+	if err := h.checkLegacyEnv(); err != nil {
+		return responseOf(err)
+	}
 	f := req.Files[0]
 	files := newFileSet(h.cfg.ConfigDir)
 	cur, err := files.current(fabricsConf)
