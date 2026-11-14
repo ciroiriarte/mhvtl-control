@@ -417,7 +417,10 @@ from the LIO configuration in configfs (`/sys/kernel/config/target`):
   (initiators logged in without an ACL). A LUN or mapped LUN not linked yet
   has no backstore or `tpg_lun`. A LUN, mapped LUN, ACL, portal group,
   target or backstore removed while it is read (an apply in progress) is
-  left out.
+  left out. A LUN numbered above 2^53-1 (the kernel takes any u64; JSON
+  readers hold numbers exactly only up to that) is not in `luns` but in
+  `hidden_luns`, by entry name with its backstore, with a warning; a mapped
+  LUN linked to one is left out.
 - `active_transports`: `local` while `mhvtl.ko` is loaded, then each
   transport with an enabled portal group that has a LUN linked to a
   backstore. `GET /api/v1/system` reports the same list.

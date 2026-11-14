@@ -121,6 +121,18 @@ type TPG struct {
 	// DynamicSessions are the initiators logged in without an ACL
 	// (generate_node_acls); iSCSI and qla2xxx only.
 	DynamicSessions []string `json:"dynamic_sessions"`
+	// HiddenLUNs are LUNs left out of LUNs because their number is above
+	// what the map carries exactly (see maxLUN): their entry name, so the
+	// number stays exact as text, and their backstore. A linked one still
+	// makes the transport active.
+	HiddenLUNs []HiddenLUN `json:"hidden_luns,omitempty"`
+}
+
+// HiddenLUN is a lun/lun_<N> entry whose N is above maxLUN.
+type HiddenLUN struct {
+	Name      string `json:"name"`
+	HBA       string `json:"hba,omitempty"`
+	Backstore string `json:"backstore,omitempty"`
 }
 
 // LUN is lun/lun_<LUN>, linked to a backstore.
@@ -423,15 +435,22 @@ func (r *reader) tpg(p string, tag int) (TPG, bool) {
 	t.Portals = append(t.Portals, r.dirs(filepath.Join(p, "np"))...)
 	for _, name := range r.dirs(filepath.Join(p, "lun")) {
 		n, ok := r.lun(filepath.Join(p, "lun"), name)
-		if !ok {
-			continue
-		}
-		l := LUN{LUN: n}
 		// .../core/<hba>/<backstore>
 		dst, gone := r.link(filepath.Join(p, "lun", name))
 		if gone {
 			continue
 		}
+		if !ok {
+			if big, isLUN := lunNumber(name); isLUN && big > maxLUN {
+				h := HiddenLUN{Name: name}
+				if dst != "" {
+					h.HBA, h.Backstore = filepath.Base(filepath.Dir(dst)), filepath.Base(dst)
+				}
+				t.HiddenLUNs = append(t.HiddenLUNs, h)
+			}
+			continue
+		}
+		l := LUN{LUN: n}
 		if dst != "" {
 			l.HBA, l.Backstore = filepath.Base(filepath.Dir(dst)), filepath.Base(dst)
 		}
@@ -477,8 +496,14 @@ func (r *reader) acl(p, init string) (a ACL, ok bool) {
 		if gone {
 			continue
 		}
-		if tl, ok := r.lun(filepath.Dir(dst), filepath.Base(dst)); ok {
-			ml.TPGLUN = &tl
+		// The TPG LUN it links to; one above maxLUN was left out of the TPG
+		// with a warning already, so this mapping is left out with it rather
+		// than shown as unlinked.
+		if tl, ok := lunNumber(filepath.Base(dst)); ok && tl > maxLUN {
+			continue
+		} else if ok {
+			n := int(tl)
+			ml.TPGLUN = &n
 		}
 		a.MappedLUNs = append(a.MappedLUNs, ml)
 	}
@@ -648,6 +673,11 @@ func (f Fabric) exports() bool {
 		for _, tp := range t.TPGs {
 			if tp.Enabled != nil && !*tp.Enabled {
 				continue
+			}
+			for _, h := range tp.HiddenLUNs {
+				if h.Backstore != "" {
+					return true
+				}
 			}
 			for _, l := range tp.LUNs {
 				if l.Backstore != "" {

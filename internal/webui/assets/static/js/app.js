@@ -1156,6 +1156,9 @@
           ] }),
         ] }));
       }
+      if (g.hidden.length) {
+        sec.appendChild(mk("p", { class: "muted mono cap-line", text: "LUNs not shown (number too large): " + g.hidden.join(", ") }));
+      }
       if (g.dynamic.length) {
         sec.appendChild(mk("p", { class: "muted mono cap-line", text: "Sessions without an ACL: " + g.dynamic.join(", ") }));
       }

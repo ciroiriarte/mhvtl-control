@@ -1580,6 +1580,11 @@
     coerceArray(m.fabrics).forEach(function (f) {
       coerceArray(f.targets).forEach(function (t) {
         coerceArray(t.tpgs).forEach(function (g) {
+          // A LUN whose number the map cannot carry exactly is listed by
+          // name only; its backstore is still on a LUN.
+          coerceArray(g.hidden_luns).forEach(function (h) {
+            if (h && h.backstore) { linked[bsKey(h.hba, h.backstore)] = true; }
+          });
           var luns = coerceArray(g.luns).map(function (l) {
             var key = bsKey(l.hba, l.backstore);
             var b = byKey[key];
@@ -1620,6 +1625,7 @@
             enabled: g.enabled != null ? !!g.enabled : null,
             portals: coerceArray(g.portals).map(String),
             luns: luns,
+            hidden: coerceArray(g.hidden_luns).map(function (h) { return String(h && h.name || ""); }),
             acls: acls,
             dynamic: coerceArray(g.dynamic_sessions).map(String),
           });

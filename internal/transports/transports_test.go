@@ -535,9 +535,11 @@ func TestLUNNumberBase(t *testing.T) {
 // the export it belongs to still counts for Active.
 func TestLUNAboveMax(t *testing.T) {
 	root := fakeTree(t, map[string]string{
-		"iscsi/" + iqn + "/tpgt_1/enable": "1\n",
+		"iscsi/" + iqn + "/tpgt_1/enable":                             "1\n",
+		"iscsi/" + iqn + "/tpgt_1/acls/iqn.a:one/lun_0/write_protect": "0\n",
 	}, map[string]string{
 		"iscsi/" + iqn + "/tpgt_1/lun/lun_0x8000000000000000/x": "../../../../../../target/core/user_0/lib10",
+		"iscsi/" + iqn + "/tpgt_1/acls/iqn.a:one/lun_0/m":       "../../../../../../iscsi/" + iqn + "/tpgt_1/lun/lun_0x8000000000000000",
 	})
 	m := Read(root)
 	tp := m.Fabrics[0].Targets[0].TPGs[0]
@@ -549,5 +551,14 @@ func TestLUNAboveMax(t *testing.T) {
 	}
 	if got := Active(root); !reflect.DeepEqual(got, []string{"iscsi"}) {
 		t.Errorf("Active = %q, want [iscsi]", got)
+	}
+	if got := m.Active(); !reflect.DeepEqual(got, []string{"iscsi"}) {
+		t.Errorf("Read().Active = %q, want [iscsi] like Active", got)
+	}
+	if want := []HiddenLUN{{Name: "lun_0x8000000000000000", HBA: "user_0", Backstore: "lib10"}}; !reflect.DeepEqual(tp.HiddenLUNs, want) {
+		t.Errorf("hidden_luns = %+v, want %+v", tp.HiddenLUNs, want)
+	}
+	if len(tp.ACLs) != 1 || len(tp.ACLs[0].MappedLUNs) != 0 {
+		t.Errorf("acls = %+v, want one with its mapping to the hidden LUN left out", tp.ACLs)
 	}
 }

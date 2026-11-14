@@ -610,4 +610,15 @@ test("transportView resolves LUNs to devices and lists backstores on no LUN", ()
   assert.strictEqual(g.acls[1].session, "none");
   assert.deepStrictEqual(v.unexported, ["tape12"]);
   assert.deepStrictEqual(core.transportView({}), { tpgs: [], unexported: [] });
+  // A hidden LUN (number above what JSON carries exactly) keeps its
+  // backstore off the "on no LUN" list and is listed by name.
+  const h = core.transportView({
+    backstores: [{ hba: "user_0", name: "lib10" }, { hba: "user_0", name: "tape12" }],
+    fabrics: [{ name: "iscsi", transport: "iscsi", targets: [{ wwn: "iqn.x:vtl", tpgs: [{
+      tag: 1, enabled: true, portals: [], luns: [], acls: [], dynamic_sessions: [],
+      hidden_luns: [{ name: "lun_0x8000000000000000", hba: "user_0", backstore: "lib10" }],
+    }] }] }],
+  });
+  assert.deepStrictEqual(h.unexported, ["tape12"]);
+  assert.deepStrictEqual(h.tpgs[0].hidden, ["lun_0x8000000000000000"]);
 });
