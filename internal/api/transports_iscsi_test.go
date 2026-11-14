@@ -344,10 +344,12 @@ func TestISCSIBindInvalid(t *testing.T) {
 		{"not in device.conf", map[string]any{"library": 77, "initiators": []string{pbsIQN}}, 422, "library"},
 		{"drive of a library", map[string]any{"library": 11, "initiators": []string{pbsIQN}}, 422, "library"},
 		{"bad target name", map[string]any{"library": 10, "target_name": "nope"}, 422, "target_name"},
-		{"chap without secret", map[string]any{"library": 10, "chap": map[string]string{"name": "a"}}, 422, "chap"},
-		{"mutual same secret", map[string]any{"library": 10, "mutual_chap": map[string]string{"name": "m", "secret": chapSecret}}, 422, "mutual_chap"},
+		{"chap without secret", map[string]any{"library": 30, "chap": map[string]string{"name": "a"}}, 422, "chap"},
+		{"mutual same secret", map[string]any{"library": 30, "chap": map[string]string{"name": "a", "secret": "Same-secret-01"},
+			"mutual_chap": map[string]string{"name": "m", "secret": "Same-secret-01"}}, 422, "mutual_chap"},
+		{"mutual only, chap stored", map[string]any{"library": 10, "mutual_chap": map[string]string{"name": "m", "secret": chapSecret}}, 422, "chap"},
 		{"chap set and cleared", map[string]any{"library": 10, "clear_chap": true, "chap": map[string]string{"name": "a", "secret": "abcdefghijkl"}}, 422, "chap"},
-		{"blank in secret", map[string]any{"library": 10, "chap": map[string]string{"name": "a", "secret": "Leaky Secret9"}}, 422, "chap"},
+		{"blank in secret", map[string]any{"library": 30, "chap": map[string]string{"name": "a", "secret": "Leaky Secret9"}}, 422, "chap"},
 		{"negative library", map[string]any{"library": -1, "initiators": []string{pbsIQN}}, 400, ""},
 		{"no library", map[string]any{"initiators": []string{pbsIQN}}, 400, ""},
 	} {
@@ -761,18 +763,20 @@ func TestISCSIPreviewMasksFileLines(t *testing.T) {
 
 // TestISCSISecretGuessNoOracle: a bind that sends a CHAP or mutual CHAP
 // secret gets the same answer whether or not it is the stored one, dry run
-// or not: no "unchanged", and the same preview.
+// or not: no "unchanged", and the same preview. Target 10 has both, so the
+// bind sends both (TestISCSISecretPair).
 func TestISCSISecretGuessNoOracle(t *testing.T) {
-	for _, c := range []struct{ field, name, stored string }{
-		{"chap", "pbs", chapSecret},
-		{"mutual_chap", "vtl", mutualSecret},
+	for _, c := range []struct{ field, name, stored, other, otherName string }{
+		{"chap", "pbs", chapSecret, "mutual_chap", "vtl"},
+		{"mutual_chap", "vtl", mutualSecret, "chap", "pbs"},
 	} {
 		for _, dry := range []bool{true, false} {
 			e := iscsiEnv(t, fabricsSample, "reload", nil)
 			answer := func(secret string) *httptest.ResponseRecorder {
 				t.Helper()
 				return e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
-					c.field: map[string]string{"name": c.name, "secret": secret}, "dry_run": dry})
+					c.field: map[string]string{"name": c.name, "secret": secret},
+					c.other: map[string]string{"name": c.otherName, "secret": "Other-fresh-0123"}, "dry_run": dry})
 			}
 			rightRec, wrongRec := answer(c.stored), answer("WrongGuess-0123")
 			right, wrong := rightRec.Body.String(), wrongRec.Body.String()
@@ -783,8 +787,64 @@ func TestISCSISecretGuessNoOracle(t *testing.T) {
 			if rightRec.Code != http.StatusOK || got.Result == "unchanged" || !strings.Contains(got.Diff, "\n-") || len(e.fabricsReqs()) != 2 {
 				t.Errorf("%s dry run %v: %d %s, %d helper requests", c.field, dry, rightRec.Code, right, len(e.fabricsReqs()))
 			}
-			noSecrets(t, c.field, right+wrong, "WrongGuess-0123")
+			noSecrets(t, c.field, right+wrong, "WrongGuess-0123", "Other-fresh-0123")
 		}
+	}
+}
+
+// TestISCSISecretPair: a bind that sets one CHAP secret of a target whose
+// other-direction secret is stored, without sending that one, is refused
+// whatever the value, so the "must differ" rule of fabrics.conf(5) never
+// compares a sent secret with a stored one: a guess equal to the stored
+// secret and a wrong one get byte-identical answers, dry run or not.
+// Clearing mutual CHAP still works, and so does a CHAP change where no
+// mutual CHAP is stored.
+func TestISCSISecretPair(t *testing.T) {
+	chapOnly := strings.Replace(fabricsSample, " Mutual CHAP name: vtl\n Mutual CHAP secret: "+mutualSecret+"\n", "", 1)
+	for _, c := range []struct {
+		name, content, field, secretName, stored, missing string
+	}{
+		{"chap with mutual stored", fabricsSample, "chap", "pbs", mutualSecret, "mutual_chap"},
+		{"mutual with chap stored", fabricsSample, "mutual_chap", "vtl", chapSecret, "chap"},
+		{"mutual added to chap", chapOnly, "mutual_chap", "vtl", chapSecret, "chap"},
+	} {
+		for _, dry := range []bool{true, false} {
+			e := iscsiEnv(t, c.content, "reload", nil)
+			answer := func(secret string) *httptest.ResponseRecorder {
+				t.Helper()
+				return e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
+					c.field: map[string]string{"name": c.secretName, "secret": secret}, "dry_run": dry})
+			}
+			rightRec, wrongRec := answer(c.stored), answer("WrongGuess-0123")
+			right, wrong := rightRec.Body.String(), wrongRec.Body.String()
+			if rightRec.Code != http.StatusUnprocessableEntity || rightRec.Code != wrongRec.Code || right != wrong {
+				t.Errorf("%s dry run %v: answers differ or not 422:\nright %d %s\nwrong %d %s", c.name, dry, rightRec.Code, right, wrongRec.Code, wrong)
+			}
+			if got := decodeBody[fieldErrBody](t, rightRec).Error; got.Field != c.missing || !strings.Contains(got.Message, "send both CHAP secrets") {
+				t.Errorf("%s: error %+v", c.name, got)
+			}
+			if n := len(e.fabricsReqs()); n != 0 {
+				t.Errorf("%s: %d helper requests", c.name, n)
+			}
+			noSecrets(t, c.name, right, "WrongGuess-0123")
+		}
+	}
+
+	e := iscsiEnv(t, fabricsSample, "reload", nil)
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
+		"chap": map[string]string{"name": "pbs", "secret": "New-chap-0123"}, "clear_mutual_chap": true, "dry_run": true})
+	if d := decodeBody[iscsiWriteDTO](t, rec).Diff; rec.Code != http.StatusOK || !strings.Contains(d, "-  Mutual CHAP name: vtl") && !strings.Contains(d, "- Mutual CHAP name: vtl") {
+		t.Errorf("chap with clear_mutual_chap: %d %s", rec.Code, rec.Body)
+	}
+	rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10, "clear_mutual_chap": true, "dry_run": true})
+	if rec.Code != http.StatusOK {
+		t.Errorf("clear_mutual_chap alone: %d %s", rec.Code, rec.Body)
+	}
+	e = iscsiEnv(t, chapOnly, "reload", nil)
+	rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
+		"chap": map[string]string{"name": "pbs", "secret": "New-chap-0123"}, "dry_run": true})
+	if rec.Code != http.StatusOK {
+		t.Errorf("chap alone without mutual stored: %d %s", rec.Code, rec.Body)
 	}
 }
 

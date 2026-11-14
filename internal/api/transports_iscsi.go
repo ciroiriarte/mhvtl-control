@@ -394,7 +394,13 @@ func (s *Server) handleISCSIBind(w http.ResponseWriter, r *http.Request) {
 	s.fabricsWrite(w, r, q, func(f fabricsFiles) *fabricsInvalid {
 		bound := false
 		for _, t := range f.conf.Targets() {
-			bound = bound || t.ID == id
+			if t.ID != id {
+				continue
+			}
+			bound = true
+			if inv := secretPair(req, t); inv != nil {
+				return inv
+			}
 		}
 		if !bound && len(req.Initiators) == 0 {
 			return &fabricsInvalid{http.StatusUnprocessableEntity, apply.ErrInvalid, "initiators",
@@ -415,6 +421,31 @@ func (s *Server) handleISCSIBind(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
+}
+
+// secretPair refuses a bind that sets one CHAP secret of a target whose
+// other-direction secret is stored, without sending that one too.
+// fabrics.conf(5) requires the mutual CHAP secret to differ from the CHAP
+// secret (check_target,
+// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_conf.c#L321-L348),
+// so such a bind would be refused exactly when the secret sent equals the
+// stored one: a dry run would tell the client a stored secret. The refusal
+// depends only on which fields the request sends, so the two secrets are
+// compared only when both come in the same request. Clearing mutual CHAP,
+// or CHAP with it, compares nothing.
+func secretPair(req iscsiBindRequest, t conffile.FabricsTarget) *fabricsInvalid {
+	if req.ClearCHAP {
+		return nil
+	}
+	switch {
+	case req.CHAP != nil && req.MutualCHAP == nil && !req.ClearMutualCHAP && t.HasMutualCHAP:
+		return &fabricsInvalid{http.StatusUnprocessableEntity, apply.ErrInvalid, "mutual_chap", fmt.Sprintf(
+			"library %d has mutual CHAP: send both CHAP secrets when changing either while mutual CHAP is set (chap and mutual_chap), or set clear_mutual_chap", t.ID)}
+	case req.MutualCHAP != nil && req.CHAP == nil && t.HasCHAP:
+		return &fabricsInvalid{http.StatusUnprocessableEntity, apply.ErrInvalid, "chap", fmt.Sprintf(
+			"library %d has CHAP: send both CHAP secrets when setting mutual CHAP (chap and mutual_chap)", t.ID)}
+	}
+	return nil
 }
 
 func (s *Server) handleISCSIUnbind(w http.ResponseWriter, r *http.Request) {

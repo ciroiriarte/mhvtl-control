@@ -71,6 +71,10 @@ A bind that sends a CHAP or mutual CHAP secret is never answered
 .I unchanged
 and its diff always shows the secret line replaced, so the answer does not
 tell whether the secret sent is the stored one.
+A bind that sets the CHAP or the mutual CHAP secret of a target where the
+other one is set must send both, or clear mutual CHAP: the two must differ
+.RB ( fabrics.conf (5)),
+and they are compared only within one request.
 They are writes, so they need the token and the helper.
 Before writing, the helper checks the file against
 .I device.conf

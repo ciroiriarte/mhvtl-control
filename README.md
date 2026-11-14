@@ -460,8 +460,13 @@ between, the answer is 409 with `error.code` `conflict` and
 it is answers `"result": "unchanged"`, except a bind that sends a CHAP or
 mutual CHAP secret: it always goes to the helper, and its diff shows the
 secret line removed and added, so the answer is the same whether or not the
-secret sent is the one stored. A bind with `"initiators": []` is
-refused: a record without an initiator exports nothing; use unbind.
+secret sent is the one stored. `fabrics.conf(5)` requires the mutual CHAP
+secret to differ from the CHAP secret; so that this never compares a secret
+sent with one stored, a bind that sets one of the two on a target where the
+other is set must send both (`chap` and `mutual_chap`), or
+`clear_mutual_chap`, and is otherwise refused (422) whatever the values. A
+bind with `"initiators": []` is refused: a record without an initiator
+exports nothing; use unbind.
 
 The helper writes `fabrics.conf` mode 0600 (it may hold CHAP secrets), keeps
 the previous copy for rollback, and records the change in its audit log with
