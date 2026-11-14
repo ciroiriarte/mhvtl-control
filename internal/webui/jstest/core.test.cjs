@@ -537,6 +537,8 @@ test("transportDeviceText names libraries, drives and standalone drives", () => 
 
 test("transportSessionText gives the session state and addresses", () => {
   assert.strictEqual(core.transportSessionText(null), "none");
+  assert.strictEqual(core.transportSessionText(null, true), "none");
+  assert.strictEqual(core.transportSessionText(null, false), "not reported");
   assert.strictEqual(core.transportSessionText({ state: "TARG_SESS_STATE_LOGGED_IN",
     connections: [{ cid: 0, address: "192.0.2.10" }] }), "logged in from 192.0.2.10");
   assert.strictEqual(core.transportSessionText({ connections: [] }), "session");
@@ -548,6 +550,13 @@ test("transportView marks a mapped LUN without its link as unlinked", () => {
     tpgs: [{ tag: 1, luns: [], acls: [{ initiator: "iqn.a",
       mapped_luns: [{ lun: 3 }, { lun: 0, tpg_lun: 0 }, { lun: 1, tpg_lun: 2, write_protect: true }] }] }] }] }] });
   assert.deepStrictEqual(v.tpgs[0].acls[0].luns, ["3 (unlinked)", "0", "1→2 (ro)"]);
+});
+
+test("transportView says an FC ACL's session is not reported, not none", () => {
+  const v = core.transportView({ backstores: [], fabrics: [{ name: "qla2xxx", transport: "fc", targets: [{ wwn: "21:00:00:24:ff:31:4c:48",
+    tpgs: [{ tag: 1, luns: [], acls: [{ initiator: "21:00:00:24:ff:31:4c:49", mapped_luns: [], session_reported: false }] }] }] }] });
+  assert.strictEqual(v.tpgs[0].acls[0].session, "not reported");
+  assert.strictEqual(v.tpgs[0].acls[0].active, false);
 });
 
 test("transportView resolves LUNs to devices and lists backstores on no LUN", () => {
@@ -564,7 +573,7 @@ test("transportView resolves LUNs to devices and lists backstores on no LUN", ()
       acls: [
         { initiator: "iqn.a", mapped_luns: [{ lun: 0, tpg_lun: 0 }, { lun: 1, tpg_lun: 3, write_protect: true }],
           session: { state: "TARG_SESS_STATE_LOGGED_IN", connections: [] } },
-        { initiator: "iqn.b", mapped_luns: [] },
+        { initiator: "iqn.b", mapped_luns: [], session_reported: true },
       ],
       dynamic_sessions: [],
     }] }] }],

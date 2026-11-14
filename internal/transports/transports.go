@@ -132,8 +132,13 @@ type LUN struct {
 type ACL struct {
 	Initiator  string      `json:"initiator"`
 	MappedLUNs []MappedLUN `json:"mapped_luns"`
+	// SessionReported is whether the fabric reports the initiator's
+	// session: only iSCSI has the ACL info attribute
+	// (iscsi_target_configfs.c lio_target_nacl_info_show); Fibre Channel,
+	// USB and the others do not, and their Session is always nil.
+	SessionReported bool `json:"session_reported"`
 	// Session is the initiator's iSCSI session, nil when it has none or
-	// the fabric does not report one.
+	// SessionReported is false.
 	Session *Session `json:"session,omitempty"`
 }
 
@@ -408,6 +413,7 @@ func (r *reader) acl(p, init string) (a ACL, ok bool) {
 	}
 	sort.Slice(a.MappedLUNs, func(i, j int) bool { return a.MappedLUNs[i].LUN < a.MappedLUNs[j].LUN })
 	if info, ok := r.attr(filepath.Join(p, "info")); ok {
+		a.SessionReported = true
 		a.Session = parseSession(info)
 	}
 	return a, true

@@ -411,7 +411,9 @@ from the LIO configuration in configfs (`/sys/kernel/config/target`):
   `other`, with its portal groups named `tpgt_<N>` as targetcli creates them
   (a group named otherwise is not read). Each target lists its portal groups with `enabled`, `portals`,
   `luns` (the backstore each links to), `acls` (each initiator's mapped LUNs
-  and, for iSCSI, its session from the ACL's `info`) and `dynamic_sessions`
+  and, for iSCSI, its session from the ACL's `info`; `session_reported` is
+  false on the other fabrics, which have no `info`, and the dashboard shows
+  their session as "not reported" rather than "none") and `dynamic_sessions`
   (initiators logged in without an ACL). A LUN or mapped LUN not linked yet
   has no backstore or `tpg_lun`; one removed while it is read (an apply in
   progress) is left out.

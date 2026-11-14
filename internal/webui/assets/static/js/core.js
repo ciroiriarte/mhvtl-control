@@ -1544,9 +1544,12 @@
       (d.library_id != null ? " (library " + coerceNumber(d.library_id) + ")" : " (standalone)");
   }
 
-  // transportSessionText summarizes an ACL's iSCSI session: "none", or its
-  // state and the addresses it connects from.
-  function transportSessionText(s) {
+  // transportSessionText summarizes an ACL's iSCSI session: "not reported"
+  // when the fabric reports no sessions (reported false: only iSCSI ACLs
+  // have the info attribute), "none", or its state and the addresses it
+  // connects from.
+  function transportSessionText(s, reported) {
+    if (!s && reported === false) { return "not reported"; }
     if (!s) { return "none"; }
     // The kernel prints TARG_SESS_STATE_<X>, and TARG_SESS_FREE for a
     // session being freed (iscsi_target_configfs.c lio_target_nacl_info_show).
@@ -1591,7 +1594,7 @@
                 if (to === "→" + n) { to = ""; }
                 return String(n) + to + (ml.write_protect ? " (ro)" : "");
               }),
-              session: transportSessionText(a.session),
+              session: transportSessionText(a.session, !!(a.session || a.session_reported)),
               active: !!a.session,
             };
           });

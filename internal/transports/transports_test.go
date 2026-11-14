@@ -148,6 +148,11 @@ func TestReadISCSI(t *testing.T) {
 	if tpg.ACLs[1].Session != nil {
 		t.Errorf("acl 1 session = %+v, want none", tpg.ACLs[1].Session)
 	}
+	for _, a := range tpg.ACLs {
+		if !a.SessionReported {
+			t.Errorf("acl %s: session_reported = false, want true (it has info)", a.Initiator)
+		}
+	}
 	if len(tpg.DynamicSessions) != 0 {
 		t.Errorf("dynamic sessions = %q, want none", tpg.DynamicSessions)
 	}
@@ -239,16 +244,29 @@ func TestDynamicSessions(t *testing.T) {
 	}
 }
 
+// An FC ACL has no info attribute (only iSCSI's has one,
+// iscsi_target_configfs.c lio_target_nacl_info_show): its session is not
+// reported, which is not the same as having none.
 func TestReadFCAndUSB(t *testing.T) {
+	const fcACL = "qla2xxx/21:00:00:24:ff:31:4c:48/tpgt_1/acls/21:00:00:24:ff:31:4c:49"
 	root := fakeTree(t, map[string]string{
 		"qla2xxx/21:00:00:24:ff:31:4c:48/tpgt_1/enable": "1\n",
 		"usb_gadget/naa.6001405c3214b06a/tpgt_1/enable": "1\n",
+		fcACL + "/lun_0/write_protect":                  "0\n",
 	}, map[string]string{
 		"qla2xxx/21:00:00:24:ff:31:4c:48/tpgt_1/lun/lun_0/x": "../../../../../../target/core/user_0/lib10",
+		fcACL + "/lun_0/m": "../../../../../../qla2xxx/21:00:00:24:ff:31:4c:48/tpgt_1/lun/lun_0",
 	})
 	m := Read(root)
 	if len(m.Fabrics) != 2 || m.Fabrics[0].Transport != "fc" || m.Fabrics[1].Transport != "usb" {
 		t.Fatalf("fabrics = %+v", m.Fabrics)
+	}
+	acls := m.Fabrics[0].Targets[0].TPGs[0].ACLs
+	if len(acls) != 1 || acls[0].Initiator != "21:00:00:24:ff:31:4c:49" || len(acls[0].MappedLUNs) != 1 {
+		t.Fatalf("fc acls = %+v, want one with lun 0", acls)
+	}
+	if acls[0].SessionReported || acls[0].Session != nil {
+		t.Errorf("fc acl = %+v, want session not reported", acls[0])
 	}
 	if got := m.Active(); !reflect.DeepEqual(got, []string{"fc"}) {
 		t.Errorf("active = %q, want fc (the USB TPG has no LUN)", got)
