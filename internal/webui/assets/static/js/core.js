@@ -1595,7 +1595,12 @@
                 return String(n) + to + (ml.write_protect ? " (ro)" : "");
               }),
               session: transportSessionText(a.session, !!(a.session || a.session_reported)),
-              active: !!a.session,
+              // Only a logged-in session is active: the kernel also prints
+              // TARG_SESS_FREE, TARG_SESS_STATE_ACTIVE (login in progress),
+              // _FAILED and _IN_CONTINUE (iscsi_target_configfs.c
+              // lio_target_nacl_info_show,
+              // https://github.com/torvalds/linux/blob/master/drivers/target/iscsi/iscsi_target_configfs.c).
+              active: !!a.session && a.session.state === "TARG_SESS_STATE_LOGGED_IN",
             };
           });
           tpgs.push({

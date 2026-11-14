@@ -545,6 +545,15 @@ test("transportSessionText gives the session state and addresses", () => {
   assert.strictEqual(core.transportSessionText({ state: "TARG_SESS_FREE", connections: [] }), "free");
 });
 
+test("transportView marks only a logged-in session active", () => {
+  const states = ["TARG_SESS_STATE_LOGGED_IN", "TARG_SESS_FREE", "TARG_SESS_STATE_FAILED", "TARG_SESS_STATE_ACTIVE", "TARG_SESS_STATE_IN_CONTINUE", ""];
+  const v = core.transportView({ backstores: [], fabrics: [{ name: "iscsi", transport: "iscsi", targets: [{ wwn: "iqn.t",
+    tpgs: [{ tag: 1, luns: [], acls: states.map((st, i) => ({ initiator: "iqn." + i, mapped_luns: [], session_reported: true,
+      session: { state: st, connections: [] } })) }] }] }] });
+  assert.deepStrictEqual(v.tpgs[0].acls.map((a) => a.active), [true, false, false, false, false, false]);
+  assert.strictEqual(v.tpgs[0].acls[1].session, "free");
+});
+
 test("transportView marks a mapped LUN without its link as unlinked", () => {
   var v = core.transportView({ backstores: [], fabrics: [{ name: "iscsi", transport: "iscsi", targets: [{ wwn: "iqn.t",
     tpgs: [{ tag: 1, luns: [], acls: [{ initiator: "iqn.a",
