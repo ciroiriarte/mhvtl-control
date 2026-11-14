@@ -3275,6 +3275,22 @@
     }).catch(function (e) {
       if (!bg) { busy("transport-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      // A node older than GET /transports: say so in the panel, as the
+      // Service table does for one older than GET /service, instead of
+      // raising the same error on every poll.
+      var unsupported = core.transportsUnsupportedText(e);
+      if (unsupported) {
+        if (drawPanel("transports", $("transport-map"), bg, { unsupported: unsupported }, [gen], function () {
+          $("transport-count").textContent = "";
+          var box = $("transport-map");
+          clear(box);
+          box.appendChild(mk("p", { class: "muted", text: unsupported }));
+        })) {
+          setPanelGrey("transport-map", false);
+        }
+        (bg ? transportStatus.quietOk() : transportStatus.ok());
+        return;
+      }
       transportStatus.error("transports: " + e.message, bg ? "poll" : "load");
     });
   }

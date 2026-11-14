@@ -554,6 +554,16 @@ test("transportView marks only a logged-in session active", () => {
   assert.strictEqual(v.tpgs[0].acls[1].session, "free");
 });
 
+test("transportsUnsupportedText: a 404 is a node older than GET /transports, other failures are errors", () => {
+  const err = (status) => Object.assign(new Error("x"), { status });
+  assert.strictEqual(core.transportsUnsupportedText(err(404)),
+    "This node does not report transports (mhvtl-control older than this version)");
+  assert.strictEqual(core.transportsUnsupportedText(err(500)), "");
+  assert.strictEqual(core.transportsUnsupportedText(err(401)), "");
+  assert.strictEqual(core.transportsUnsupportedText(new Error("network")), "");
+  assert.strictEqual(core.transportsUnsupportedText(null), "");
+});
+
 test("transportView marks a mapped LUN without its link as unlinked", () => {
   var v = core.transportView({ backstores: [], fabrics: [{ name: "iscsi", transport: "iscsi", targets: [{ wwn: "iqn.t",
     tpgs: [{ tag: 1, luns: [], acls: [{ initiator: "iqn.a",

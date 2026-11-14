@@ -1559,6 +1559,14 @@
     return (state || "session") + (addrs.length ? " from " + addrs.join(", ") : "");
   }
 
+  // transportsUnsupportedText is the Transport Map's content when GET
+  // /api/v1/transports failed because the node predates it (404), or ""
+  // for any other failure, which stays an error.
+  function transportsUnsupportedText(err) {
+    return err && err.status === 404
+      ? "This node does not report transports (mhvtl-control older than this version)" : "";
+  }
+
   // transportView flattens GET /api/v1/transports for the Transport Map:
   // one entry per TPG with its LUNs resolved to their backstore and device,
   // and the TCMU backstores no LUN exports.
@@ -1717,6 +1725,7 @@
     transportDeviceText: transportDeviceText,
     transportSessionText: transportSessionText,
     transportView: transportView,
+    transportsUnsupportedText: transportsUnsupportedText,
   };
 
   /* ---- UMD tail ------------------------------------------------------- */
