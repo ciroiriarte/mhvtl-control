@@ -440,6 +440,12 @@ select, input[type="text"], input[type="password"], input[type="number"], input[
 .disk .tag.status.err { background: var(--err-bg); color: var(--err); border-color: var(--err-border); }
 .disk .tag.status.inuse { background: var(--drive-load); color: var(--text); border-color: var(--accent); }
 .disk .tag.status.none { background: var(--bg-elev-2); color: var(--text-dim); }
+/* ---- Transport Map (read-only LIO exports) ---------------------------- */
+.transport-tpg { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
+.transport-tpg:last-of-type { border-bottom: 0; }
+.transport-tpg .head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 4px; }
+.transport-tpg .name { font-family: var(--font-mono); font-weight: 700; overflow-wrap: anywhere; }
+.transport-tpg .svc-table + .svc-table, .transport-tpg .svc-scroll + .svc-scroll { margin-top: 8px; }
 .bar { height: 8px; border-radius: 999px; background: var(--bar-track); overflow: hidden; margin-top: 6px; }
 .bar > span { display: block; height: 100%; background: var(--bar-fill); }
 

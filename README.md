@@ -11,7 +11,7 @@ It is a single self-contained binary with the dashboard built in, and uses only
 the Go standard library.
 
 The dashboard refreshes itself while its tab is visible: libraries and system
-every 10 seconds, media and disks every 30, the configuration every minute. A
+every 10 seconds, media, disks and transports every 30, the configuration every minute. A
 cartridge an application loads or moves shows up without clicking Refresh.
 It skips a refresh while a dialog is open or a change is still running, keeps
 scroll position, focus and expanded lists across refreshes, and redraws a panel
@@ -394,6 +394,46 @@ moves and other queue commands for them wait for it to end. An action
 waits at most a minute for a library a move or queue command holds, then
 answers `503 busy`. The dashboard
 offers the actions on the Service table's target and library rows.
+
+## Transport map
+
+`GET /api/v1/transports` reports how mhVTL's devices are exported, read-only
+from the LIO configuration in configfs (`/sys/kernel/config/target`):
+
+- `backstores`: the TCMU user backstores (`core/user_*/<name>`), each with
+  `enabled`, `dev_config` and `unit_serial`. mhVTL's TCMU handler names them
+  `lib<id>` and `tape<id>` with `dev_config` `mhvtl/<id>`; `minor` is that
+  id and `device` the library or drive of `device.conf` it names.
+- `fabrics`: `loopback` (the devices on this host, transport `local`),
+  `iscsi`, `qla2xxx`, `qla2xxx_npiv`, `efct`, `efct_npiv` and `fc` (FCoE)
+  (transport `fc`) and `usb_gadget` (`usb`), the ones present. Any other
+  fabric module's directory (`srpt`, `vhost`, ...) is listed with transport
+  `other`, with its portal groups named `tpgt_<N>` as targetcli creates them
+  (a group named otherwise is not read). Each target lists its portal groups with `enabled`, `portals`,
+  `luns` (the backstore each links to), `acls` (each initiator's mapped LUNs
+  and, for iSCSI, its session from the ACL's `info`; `session_reported` is
+  false on the other fabrics, which have no `info`, and the dashboard shows
+  their session as "not reported" rather than "none") and `dynamic_sessions`
+  (initiators logged in without an ACL). A LUN or mapped LUN not linked yet
+  has no backstore or `tpg_lun`. A LUN, mapped LUN, ACL, portal group,
+  target or backstore removed while it is read (an apply in progress) is
+  left out. A LUN numbered above 2^53-1 (the kernel takes any u64; JSON
+  readers hold numbers exactly only up to that) is not in `luns` but in
+  `hidden_luns`, by entry name with its backstore, with a warning; a mapped
+  LUN linked to one is left out.
+- `active_transports`: `local` while `mhvtl.ko` is loaded, then each
+  transport with an enabled portal group that has a LUN linked to a
+  backstore. `GET /api/v1/system` reports the same list.
+- `warnings`: the files that could not be read; what they hold is left out.
+
+Without configfs or LIO the answer is empty (`"configfs": false`). Changing
+the exports is mhVTL's `mhvtl-fabrics`' job; mhvtl-control does not write to
+configfs. The dashboard shows it as the Transport Map panel.
+
+The map names the initiators allowed in, the sessions logged in and the
+addresses they connect from. Without `-api-token` any local user can read it
+(and every other `/api/v1` route), so set a token on a host other users log
+in to.
 
 ## The kernel ch driver
 

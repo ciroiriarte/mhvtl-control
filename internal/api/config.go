@@ -965,11 +965,7 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 	if len(liveP) > 0 {
 		live = &validate.Live{Libraries: liveP}
 	}
-	sysRoot := s.cfg.SysRoot
-	if sysRoot == "" {
-		sysRoot = "/sys"
-	}
-	host, hostErr := hostids.Read(sysRoot)
+	host, hostErr := hostids.Read(s.sysRoot())
 	res := validate.Validate(cur, next, live, host, validate.Options{
 		TargetApps:   req.TargetApps,
 		Dispositions: req.Dispositions,
