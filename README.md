@@ -507,7 +507,9 @@ starts it again. Either way the answer is `rolled_back` and carries the
 unit's last journal lines. When the reload of the restored file fails too,
 configfs may not match `fabrics.conf`: the answer is
 `fabrics_recovery_required`; check `journalctl -u mhvtl-fabrics`, then run
-`systemctl reload mhvtl-fabrics` (the helper's next request retries it).
+`systemctl reload mhvtl-fabrics`. Until a reload succeeds or the unit is
+stopped (`systemctl stop mhvtl-fabrics`), each iSCSI change retries the
+reload first and is refused while it fails; other requests go ahead.
 When the unit is left failed and its state file `/run/mhvtl/fabrics.state`
 still lists targets (its `ExecStopPost=mhvtl-fabrics remove` failed too) or
 cannot be read, the answer is also `fabrics_recovery_required`: targets from

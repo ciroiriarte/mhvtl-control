@@ -87,6 +87,11 @@ func newFabEnv(t *testing.T) *fabEnv {
 	return f
 }
 
+func (f *fabEnv) markerExists() bool {
+	_, err := os.Stat(filepath.Join(f.state, fabricsMarkerFile))
+	return err == nil
+}
+
 // mkTarget makes target wwn in the fake configfs.
 func (f *fabEnv) mkTarget(wwn string) {
 	f.t.Helper()
@@ -422,7 +427,8 @@ func TestFabricsReconcileFailure(t *testing.T) {
 	if resp.Result != ResultError || resp.Error != ErrFabricsState {
 		t.Fatalf("got %+v, want error fabrics_recovery_required", resp)
 	}
-	for _, want := range []string{"configfs may not match", "journalctl -u " + FabricsUnit, "systemctl reload " + FabricsUnit} {
+	for _, want := range []string{"configfs may not match", "journalctl -u " + FabricsUnit, "systemctl reload " + FabricsUnit,
+		"systemctl stop " + FabricsUnit + " or a successful reload clears this"} {
 		if !strings.Contains(resp.Message, want) {
 			t.Errorf("message %q lacks %q", resp.Message, want)
 		}
@@ -430,24 +436,66 @@ func TestFabricsReconcileFailure(t *testing.T) {
 	if strings.Contains(resp.Message, fabNewSecret) {
 		t.Errorf("message %q holds the secret", resp.Message)
 	}
-	if string(f.read(fabricsConf)) != fabConf || !f.intentExists() {
-		t.Fatalf("want the original back and the intent kept (intent %v)", f.intentExists())
+	// The file is back; the intent is gone and the marker records the
+	// condition instead.
+	if string(f.read(fabricsConf)) != fabConf || f.intentExists() || !f.markerExists() {
+		t.Fatalf("want the original back, no intent (%v) and the marker (%v)", f.intentExists(), f.markerExists())
 	}
 
-	// Recovery while the reload still fails keeps the intent.
-	if resp := f.do(Request{Op: OpRecover, Actor: "test"}); resp.Result != ResultError || resp.Error != ErrFabricsState || !f.intentExists() {
-		t.Fatalf("recover with reload failing: %+v, intent %v", resp, f.intentExists())
-	}
-	delete(f.failAlways, FabricsReload)
+	// Requests other than fabrics ones go ahead without a reload.
 	f.systemctl = nil
-	resp = f.do(Request{Op: OpRecover, Actor: "test"})
-	if resp.Result != ResultRecovered || !strings.Contains(resp.Message, "reloaded "+FabricsUnit) || f.intentExists() {
-		t.Fatalf("recover: %+v, intent %v", resp, f.intentExists())
+	if resp := f.do(service(OpServicePlan, ActionRestart)); resp.Error == ErrFabricsState || resp.Result == ResultRecovered {
+		t.Errorf("service_plan restart blocked: %+v", resp)
+	}
+	if resp := f.do(Request{Op: OpPlan, Actor: "test", Files: []File{f.edit(deviceConf, "# Each 'record'", "# Every 'record'")}}); resp.Result != ResultValidated {
+		t.Errorf("config plan blocked: %+v", resp)
+	}
+	if v := f.verbs(); len(v) != 0 {
+		t.Errorf("other requests ran %v", v)
+	}
+
+	// A fabrics op retries the reload first; it still fails: refused, and
+	// the marker stays.
+	resp = f.do(f.fabricsReq(OpFabricsPlan, next))
+	if resp.Result != ResultRefused || resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "retrying failed") ||
+		!f.markerExists() {
+		t.Fatalf("fabrics plan with reload failing: %+v, marker %v", resp, f.markerExists())
 	}
 	if v := f.verbs(); len(v) != 1 || v[0] != "reload "+FabricsUnit {
 		t.Errorf("systemctl %v, want one reload", v)
 	}
+
+	// Once the reload works, the retry clears the marker and the op goes on.
+	delete(f.failAlways, FabricsReload)
+	f.systemctl = nil
+	resp = f.do(f.fabricsReq(OpFabrics, next))
+	if resp.Result != ResultApplied || f.markerExists() {
+		t.Fatalf("fabrics apply after the reload works: %+v, marker %v", resp, f.markerExists())
+	}
+	if v := f.verbs(); len(v) != 2 || v[0] != "reload "+FabricsUnit || v[1] != "reload "+FabricsUnit {
+		t.Errorf("systemctl %v, want the retried reload and the apply's", v)
+	}
+	if !strings.Contains(strings.Join(f.auditLines(), "\n"), "possibly out of step") {
+		t.Error("the successful retry was not audited")
+	}
 	f.noSecret(fabSecret, fabNewSecret)
+}
+
+// TestFabricsMarkerUnitStopped: a unit stopped by hand clears the marker
+// on the next fabrics op, with no reload.
+func TestFabricsMarkerUnitStopped(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	f.fail[FabricsReload] = errors.New("job failed")
+	f.failAlways[FabricsReload] = errors.New("job failed")
+	f.do(f.fabricsReq(OpFabrics, strings.Replace(fabConf, fabSecret, fabNewSecret, 1)))
+	if !f.markerExists() {
+		t.Fatal("no marker")
+	}
+	f.fab, f.target, f.systemctl = "inactive", "inactive", nil
+	if resp := f.do(f.fabricsReq(OpFabricsPlan, fabConf)); resp.Result != ResultValidated || f.markerExists() || len(f.verbs()) != 0 {
+		t.Fatalf("plan with the unit stopped: %+v, marker %v, systemctl %v", resp, f.markerExists(), f.verbs())
+	}
 }
 
 // SIGTERM during the reload ends the request's context: the rollback and

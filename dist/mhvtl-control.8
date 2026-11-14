@@ -110,6 +110,10 @@ reload of the restored file fails too, the answer is
 .BR "journalctl -u mhvtl-fabrics" ,
 then run
 .BR "systemctl reload mhvtl-fabrics" .
+Until a reload succeeds or
+.B "systemctl stop mhvtl-fabrics"
+stops the unit, each iSCSI change retries the reload first and is refused
+while it fails; other requests go ahead.
 When the unit is left failed and its state file
 .I /run/mhvtl/fabrics.state
 still lists targets, or cannot be read, the answer is

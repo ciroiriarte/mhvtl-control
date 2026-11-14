@@ -66,9 +66,8 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 	// A fabrics apply that died may have half-applied the new file: the
 	// targets follow the restored one (reconcileFabrics). At boot the unit
 	// has not started yet and applies the restored file itself. When that
-	// fails the intent stays, so the next request's recovery retries it,
-	// unless the unit failed with targets left in its state file
-	// (dropForLeftovers).
+	// fails, reconcileFailed keeps the intent for a busy unit and otherwise
+	// records the fabrics marker for the next fabrics request.
 	var fabricsNote string
 	if it.Op == OpFabrics && !boot {
 		removed := h.newFabricsRemoved(it)
@@ -78,12 +77,8 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 			for _, f := range it.Files {
 				originals = append(originals, f.Original)
 			}
-			advice, ok := h.dropForLeftovers(err)
-			if !ok {
-				advice = reconcileAdvice(err, removed)
-			}
 			return Response{Result: ResultError, Error: ErrFabricsState, Conflicts: conflicts,
-				Message: conffile.MaskSecrets("recovery: "+advice, fabricsSecrets(originals...))}
+				Message: conffile.MaskSecrets("recovery: "+h.reconcileFailed(err, removed), fabricsSecrets(originals...))}
 		}
 		fabricsNote = note
 	}

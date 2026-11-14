@@ -3,6 +3,7 @@ package apply
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -96,6 +97,9 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	// As for every other write: the daemon's options file, which holds the
 	// API token, must not sit in the directory the helper writes.
 	if err := h.checkLegacyEnv(); err != nil {
+		return responseOf(err)
+	}
+	if err := h.retryReconcile(ctx, rec); err != nil {
 		return responseOf(err)
 	}
 	f := req.Files[0]
@@ -469,9 +473,10 @@ func (h *Helper) runFabrics(ctx context.Context, action string) error {
 // and has the targets follow the restored file (reconcileFabrics): apply
 // is incremental, so the failed run may have changed some of them. It runs
 // to its end even when ctx ends (the helper got SIGTERM during the reload
-// or start). The intent is kept when the restore or the reconcile fails,
-// so that recovery retries them; a failed reconcile answers
-// fabrics_recovery_required, as configfs may then not match the file.
+// or start). The intent is kept when the restore fails, so that recovery
+// retries it. A failed reconcile answers fabrics_recovery_required, as
+// configfs may then not match the file; reconcileFailed says what is kept
+// for the retry.
 func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string, runErr error, secrets []string) Response {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricsTimeout)
 	defer cancel()
@@ -498,11 +503,7 @@ func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string,
 	note, err := h.reconcileFabrics(ctx, removed)
 	if err != nil {
 		resp.Result, resp.Error = ResultError, ErrFabricsState
-		advice, ok := h.dropForLeftovers(err)
-		if !ok {
-			advice = reconcileAdvice(err, removed)
-		}
-		resp.Message = conffile.MaskSecrets(msg+"; "+advice, secrets)
+		resp.Message = conffile.MaskSecrets(msg+"; "+h.reconcileFailed(err, removed), secrets)
 		return resp
 	}
 	msg += "; " + note
@@ -559,7 +560,7 @@ func (h *Helper) reconcileFabrics(ctx context.Context, removed bool) (string, er
 		return FabricsUnit + " is " + st + ", not reloaded", nil
 	case "active":
 	default:
-		return "", fmt.Errorf("%s is %s", FabricsUnit, orUnknown(st))
+		return "", &fabricsBusy{state: orUnknown(st)}
 	}
 	verb, done := FabricsReload, "reloaded "+FabricsUnit+" with it"
 	if removed {
@@ -569,6 +570,132 @@ func (h *Helper) reconcileFabrics(ctx context.Context, removed bool) (string, er
 		return "", fmt.Errorf("systemctl %s %s with it failed too: %s", verb, FabricsUnit, errText(err))
 	}
 	return done, nil
+}
+
+// fabricsBusy is a unit in a state other than active, inactive or failed:
+// a job (the timed-out reload, a start or stop) still runs, and the
+// targets follow whatever file that job read.
+type fabricsBusy struct{ state string }
+
+func (e *fabricsBusy) Error() string { return FabricsUnit + " is " + e.state }
+
+// reconcileFailed answers a reconcile that failed after the file restore
+// succeeded, and decides what the helper keeps for the retry:
+//
+//   - a *fabricsLeftover: nothing (dropForLeftovers);
+//   - a *fabricsBusy unit: the intent, so that the next request's recovery
+//     reconciles once the job ends; recovery then only reads the unit's
+//     state while it stays busy;
+//   - any other error (the reload or stop of the restored file failed):
+//     the fabrics marker, and the intent is removed. A kept intent would
+//     make every request, config applies and service actions included,
+//     run the reload again first, each up to fabricsTimeout, and fail. The
+//     marker is read only by fabrics ops (retryReconcile).
+func (h *Helper) reconcileFailed(err error, removed bool) string {
+	if msg, ok := h.dropForLeftovers(err); ok {
+		return msg
+	}
+	var busy *fabricsBusy
+	if errors.As(err, &busy) {
+		return reconcileAdvice(err, removed)
+	}
+	msg := markerAdvice(err, removed)
+	if merr := h.markFabrics(removed); merr != nil {
+		return msg + "; recording that failed (" + merr.Error() + "), so the intent is kept and the next helper request retries it"
+	}
+	if rerr := h.removeIntent(); rerr != nil {
+		msg += "; " + rerr.Error()
+	}
+	return msg
+}
+
+// fabricsMarkerFile, in StateDir, records that a rollback restored
+// fabrics.conf but could not make the targets follow it: configfs may not
+// match the file. Only fabrics ops read it.
+const fabricsMarkerFile = "fabrics-reconcile.json"
+
+type fabricsMarker struct {
+	V     int       `json:"v"`
+	Since time.Time `json:"since"`
+	// Removed: the restore removed a fabrics.conf the apply had created,
+	// and the reconcile is a stop.
+	Removed bool `json:"removed"`
+}
+
+func (h *Helper) markFabrics(removed bool) error {
+	b, err := json.Marshal(fabricsMarker{V: Version, Since: h.cfg.Now().UTC(), Removed: removed})
+	if err != nil {
+		return err
+	}
+	return conffile.WriteAtomic(h.cfg.StateDir, fabricsMarkerFile, b, 0o600, -1, -1)
+}
+
+// readFabricsMarker returns the marker, nil when there is none. It does
+// not follow a symbolic link.
+func (h *Helper) readFabricsMarker() (*fabricsMarker, error) {
+	path := filepath.Join(h.cfg.StateDir, fabricsMarkerFile)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, 4096))
+	if err != nil {
+		return nil, err
+	}
+	var m fabricsMarker
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return &m, nil
+}
+
+func (h *Helper) clearFabricsMarker() error {
+	if err := os.Remove(filepath.Join(h.cfg.StateDir, fabricsMarkerFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return syncDir(h.cfg.StateDir)
+}
+
+// retryReconcile runs before a fabrics plan or apply while the fabrics
+// marker exists: it has the targets follow fabrics.conf as it is now
+// (reconcileFabrics) and removes the marker when that succeeds, an
+// inactive unit included. Otherwise the op is refused with
+// fabrics_recovery_required and the marker stays; a *fabricsLeftover
+// removes it, as the state file then holds what to remove. Each retry is
+// audited, as it may reload or stop the unit.
+func (h *Helper) retryReconcile(ctx context.Context, rec *AuditRecord) error {
+	m, err := h.readFabricsMarker()
+	if err != nil || m == nil {
+		return err
+	}
+	cur, err := readTarget(h.cfg.ConfigDir, fabricsConf)
+	if err != nil {
+		return err
+	}
+	secrets := fabricsSecrets(cur.data)
+	audit := AuditRecord{TS: h.cfg.Now(), Actor: rec.Actor, Peer: rec.Peer, Op: OpRecover, Result: ResultRecovered}
+	note, err := h.reconcileFabrics(ctx, m.Removed)
+	var lo *fabricsLeftover
+	switch {
+	case err == nil:
+		if err := h.clearFabricsMarker(); err != nil {
+			return err
+		}
+		audit.Message = conffile.MaskSecrets("an earlier rollback left configfs possibly out of step with "+fabricsConf+": "+note, secrets)
+		h.audit(audit)
+		return nil
+	case errors.As(err, &lo):
+		err = errors.Join(refuse(ErrFabricsState, "%s", conffile.MaskSecrets(lo.Error(), secrets)), h.clearFabricsMarker())
+	default:
+		err = refuse(ErrFabricsState, "%s", conffile.MaskSecrets("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and retrying failed: "+markerAdvice(err, m.Removed), secrets))
+	}
+	audit.Result, audit.Error, audit.Message = ResultError, ErrFabricsState, err.Error()
+	h.audit(audit)
+	return err
 }
 
 // fabricsLeftover is a failed mhvtl-fabrics.service whose state file
@@ -677,6 +804,18 @@ func reconcileAdvice(err error, removed bool) string {
 	}
 	return fmt.Sprintf("%v; configfs may not match %s: check journalctl -u %s, then systemctl %s %s; the next helper request retries it",
 		err, fabricsConf, FabricsUnit, verb, FabricsUnit)
+}
+
+// markerAdvice is the message of a reconcile that failed with the fabrics
+// marker recorded: what to run by hand, and that only fabrics requests
+// wait for it.
+func markerAdvice(err error, removed bool) string {
+	verb := FabricsReload
+	if removed {
+		verb = fabricsStop
+	}
+	return fmt.Sprintf("%v; configfs may not match %s: check journalctl -u %s, then systemctl %s %s; systemctl stop %s or a successful reload clears this; until then each iSCSI change retries it first, and other requests go ahead",
+		err, fabricsConf, FabricsUnit, verb, FabricsUnit, FabricsUnit)
 }
 
 // errText is err with the stderr of a failed command, which Output keeps
