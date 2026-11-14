@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-
-	"mhvtl-control/internal/conffile"
 )
 
 // recover brings back the files of the apply that left it, which is dead:
@@ -78,7 +76,7 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 				originals = append(originals, f.Original)
 			}
 			return Response{Result: ResultError, Error: ErrFabricsState, Conflicts: conflicts,
-				Message: conffile.MaskSecrets("recovery: "+h.reconcileFailed(err, removed), fabricsSecrets(originals...))}
+				Message: maskFabrics("recovery: "+h.reconcileFailed(err, removed), originals...)}
 		}
 		fabricsNote = note
 	}

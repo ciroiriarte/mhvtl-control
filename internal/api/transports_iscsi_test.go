@@ -905,3 +905,91 @@ func TestISCSIPreviewLeadingSpaceSecret(t *testing.T) {
 	}
 	noSecrets(t, "unbind preview", rec.Body.String())
 }
+
+// TestISCSIPreviewStoredCHAPNameNoOracle: a CHAP name an earlier apply set
+// to a guess shows in a later preview's removed line as it is, whether or
+// not the guess is a stored secret (review 2026-11-13: masking it would
+// answer the guess).
+func TestISCSIPreviewStoredCHAPNameNoOracle(t *testing.T) {
+	diff := func(guess string) string {
+		t.Helper()
+		applied := strings.Replace(fabricsSample, " Target name: iqn.2026-11.lan.example:custom30\n",
+			" Target name: iqn.2026-11.lan.example:custom30\n CHAP name: x"+guess+"y\n CHAP secret: Other-secret-0123\n", 1)
+		e := iscsiEnv(t, applied, "reload", nil)
+		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30, "clear_chap": true, "dry_run": true})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body)
+		}
+		d := decodeBody[iscsiWriteDTO](t, rec).Diff
+		if !strings.Contains(d, "\n- CHAP name: x") {
+			t.Fatalf("CHAP name line not removed, test does not cover the case: %q", d)
+		}
+		return d
+	}
+	wrong, right := diff("password1"), diff(chapSecret)
+	if right != strings.ReplaceAll(wrong, "password1", chapSecret) {
+		t.Errorf("preview depends on the stored CHAP name holding a secret:\n%q\n%q", wrong, right)
+	}
+	if strings.Contains(wrong, "Other-secret-0123") {
+		t.Errorf("secret shown: %q", wrong)
+	}
+}
+
+// TestISCSIPreviewTrailingCommentMasked: a line rewriteValue changes keeps
+// its trailing comment from the file; a stored secret there is masked on
+// the added line as on the removed one.
+func TestISCSIPreviewTrailingCommentMasked(t *testing.T) {
+	content := strings.Replace(fabricsSample, " Target name: iqn.2026-11.lan.example:custom30\n",
+		" Target name: iqn.2026-11.lan.example:custom30 # was "+chapSecret+"\n", 1)
+	e := iscsiEnv(t, content, "reload", nil)
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
+		"target_name": "iqn.2026-11.lan.example:renamed30", "dry_run": true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	d := decodeBody[iscsiWriteDTO](t, rec).Diff
+	if !strings.Contains(d, "\n+ Target name: iqn.2026-11.lan.example:renamed30 # was "+conffile.SecretMask+"\n") {
+		t.Errorf("added line not masked as expected: %q", d)
+	}
+	noSecrets(t, "bind preview", rec.Body.String())
+}
+
+// TestISCSIProblemSecretName: a malformed secret line that runs the secret
+// into the field name shows in GET config under the canonical name.
+func TestISCSIProblemSecretName(t *testing.T) {
+	for _, line := range []string{" CHAP secret hunter2-Pw:", " CHAP\vsecret hunter2-Pw:"} {
+		bad := strings.Replace(fabricsSample, " CHAP secret: "+chapSecret, line, 1)
+		e := iscsiEnv(t, bad, "reload", nil)
+		rec := e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil)
+		got := decodeBody[iscsiConfigDTO](t, rec)
+		if len(got.Problems) == 0 || strings.Contains(rec.Body.String(), "hunter2") ||
+			!strings.Contains(got.Problems[0].Message, "chap secret has no value") {
+			t.Errorf("%q: %s", line, rec.Body)
+		}
+	}
+}
+
+// TestISCSIMessageCHAPNameNoOracle: the helper's journal tail quotes the
+// CHAP name the request sets; a name that contains a stored secret shows as
+// sent, like any other, while the stored secret alone is still masked.
+func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
+	answer := func(name string) string {
+		t.Helper()
+		e := iscsiEnv(t, fabricsSample, "reload", nil)
+		e.h.answer = func(apply.Request) apply.Response {
+			return apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrFabricsApply, FabricsAction: "reload",
+				Message:     "reload failed for CHAP name x" + name + "y",
+				JournalTail: "login of x" + name + "y refused; stored " + chapSecret}
+		}
+		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
+			"chap": map[string]string{"name": "x" + name + "y", "secret": "Fresh-secret-0123"}})
+		return rec.Body.String()
+	}
+	wrong, right := answer("password1"), answer(chapSecret)
+	if right != strings.ReplaceAll(wrong, "password1", chapSecret) {
+		t.Errorf("answer depends on the CHAP name holding a stored secret:\n%s\n%s", wrong, right)
+	}
+	if !strings.Contains(wrong, "stored "+conffile.SecretMask) || strings.Contains(wrong, "Fresh-secret-0123") {
+		t.Errorf("secrets not masked: %s", wrong)
+	}
+}

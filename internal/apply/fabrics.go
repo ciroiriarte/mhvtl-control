@@ -166,9 +166,9 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	if h.killPoint(it.Step) {
 		return responseOf(errKilled)
 	}
-	secrets := fabricsSecrets(cur.data, next)
+	mask := func(s string) string { return maskFabrics(s, cur.data, next) }
 	if err := h.runFabrics(ctx, action); err != nil {
-		resp := h.rollBackFabrics(ctx, it, action, err, secrets)
+		resp := h.rollBackFabrics(ctx, it, action, err, mask)
 		if it.RollbackDir != "" {
 			resp.RollbackDir = filepath.Join(h.cfg.StateDir, rollbackDir, it.RollbackDir)
 		}
@@ -477,14 +477,14 @@ func (h *Helper) runFabrics(ctx context.Context, action string) error {
 // retries it. A failed reconcile answers fabrics_recovery_required, as
 // configfs may then not match the file; reconcileFailed says what is kept
 // for the retry.
-func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string, runErr error, secrets []string) Response {
+func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string, runErr error, mask func(string) string) Response {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricsTimeout)
 	defer cancel()
 	resp := Response{Result: ResultRolledBack, Error: ErrFabricsApply, FailedUnit: FabricsUnit, FabricsAction: action}
-	msg := fmt.Sprintf("systemctl %s %s failed: %s", action, FabricsUnit, conffile.MaskSecrets(errText(runErr), secrets))
+	msg := fmt.Sprintf("systemctl %s %s failed: %s", action, FabricsUnit, mask(errText(runErr)))
 	if h.cfg.JournalTail != nil {
 		if tail, err := h.cfg.JournalTail(ctx, FabricsUnit); err == nil {
-			resp.JournalTail = conffile.MaskSecrets(string(tail), secrets)
+			resp.JournalTail = mask(string(tail))
 		}
 	}
 	conflicts, err := h.restore(it)
@@ -503,14 +503,14 @@ func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string,
 	note, err := h.reconcileFabrics(ctx, removed)
 	if err != nil {
 		resp.Result, resp.Error = ResultError, ErrFabricsState
-		resp.Message = conffile.MaskSecrets(msg+"; "+h.reconcileFailed(err, removed), secrets)
+		resp.Message = mask(msg + "; " + h.reconcileFailed(err, removed))
 		return resp
 	}
 	msg += "; " + note
 	if err := h.removeIntent(); err != nil {
 		msg += "; " + err.Error()
 	}
-	resp.Message = conffile.MaskSecrets(msg, secrets)
+	resp.Message = mask(msg)
 	return resp
 }
 
@@ -676,7 +676,6 @@ func (h *Helper) retryReconcile(ctx context.Context, rec *AuditRecord) error {
 	if err != nil {
 		return err
 	}
-	secrets := fabricsSecrets(cur.data)
 	audit := AuditRecord{TS: h.cfg.Now(), Actor: rec.Actor, Peer: rec.Peer, Op: OpRecover, Result: ResultRecovered}
 	note, err := h.reconcileFabrics(ctx, m.Removed)
 	var lo *fabricsLeftover
@@ -685,13 +684,13 @@ func (h *Helper) retryReconcile(ctx context.Context, rec *AuditRecord) error {
 		if err := h.clearFabricsMarker(); err != nil {
 			return err
 		}
-		audit.Message = conffile.MaskSecrets("an earlier rollback left configfs possibly out of step with "+fabricsConf+": "+note, secrets)
+		audit.Message = maskFabrics("an earlier rollback left configfs possibly out of step with "+fabricsConf+": "+note, cur.data)
 		h.audit(audit)
 		return nil
 	case errors.As(err, &lo):
-		err = errors.Join(refuse(ErrFabricsState, "%s", conffile.MaskSecrets(lo.Error(), secrets)), h.clearFabricsMarker())
+		err = errors.Join(refuse(ErrFabricsState, "%s", maskFabrics(lo.Error(), cur.data)), h.clearFabricsMarker())
 	default:
-		err = refuse(ErrFabricsState, "%s", conffile.MaskSecrets("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and retrying failed: "+markerAdvice(err, m.Removed), secrets))
+		err = refuse(ErrFabricsState, "%s", maskFabrics("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and retrying failed: "+markerAdvice(err, m.Removed), cur.data))
 	}
 	audit.Result, audit.Error, audit.Message = ResultError, ErrFabricsState, err.Error()
 	h.audit(audit)
@@ -839,8 +838,23 @@ func fabricsDiff(before, after []byte) (string, bool) {
 	return d, false
 }
 
-// fabricsSecrets lists the CHAP secret values of both files, for masking
-// output the helper did not write itself (systemctl, the journal).
+// maskFabrics masks the CHAP secrets of files in s, output the helper did
+// not write itself (systemctl, the journal), except inside values a client
+// sets and reads in clear, such as an initiator or target name
+// (conffile.MaskSecretsExcept): masking a stored secret there would tell
+// the daemon's client that a value it chose contains one. Every value of
+// either file is kept that way, so the answer is the same whether or not
+// a secret the request sends is the stored one.
+func maskFabrics(s string, files ...[]byte) string {
+	var keep []string
+	for _, f := range files {
+		keep = append(keep, conffile.FabricsClearValues(f)...)
+	}
+	return conffile.MaskSecretsExcept(s, fabricsSecrets(files...), keep)
+}
+
+// fabricsSecrets lists the CHAP secret values of both files, for the audit
+// diff.
 func fabricsSecrets(files ...[]byte) []string {
 	var out []string
 	for _, f := range files {

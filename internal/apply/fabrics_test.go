@@ -968,3 +968,26 @@ func TestDeviceConfLeavesFabricsTarget(t *testing.T) {
 		t.Errorf("unparsable fabrics.conf: %+v", resp)
 	}
 }
+
+// TestFabricsRollBackMaskKeepsClearValues: the journal tail and message of
+// a rollback mask the files' secrets, but not inside a value the client set
+// in clear, such as a CHAP name that contains a stored secret: masking it
+// there would answer whether the name holds one.
+func TestFabricsRollBackMaskKeepsClearValues(t *testing.T) {
+	for _, guess := range []string{"password1", fabSecret} {
+		f := newFabEnv(t)
+		f.writeConf(fabricsConf, fabConf, 0o600)
+		name := "x" + guess + "y"
+		next := fabConf + "\niSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs1\n CHAP name: " + name + "\n CHAP secret: " + fabNewSecret + "\n"
+		f.fail[FabricsReload] = &exec.ExitError{Stderr: []byte("login of " + name + " refused")}
+		f.tail = "login of " + name + " refused; secret " + fabSecret + " and " + fabNewSecret
+		resp := f.do(f.fabricsReq(OpFabrics, next))
+		if resp.Result != ResultRolledBack {
+			t.Fatalf("%s: %+v", guess, resp)
+		}
+		want := "login of " + name + " refused; secret " + conffile.SecretMask + " and " + conffile.SecretMask
+		if resp.JournalTail != want || !strings.Contains(resp.Message, "login of "+name+" refused") {
+			t.Errorf("%s: journal %q message %q", guess, resp.JournalTail, resp.Message)
+		}
+	}
+}

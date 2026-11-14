@@ -452,7 +452,10 @@ configuration editor needs (see [Turn writes on](#turn-writes-on)).
 - `POST /api/v1/transports/iscsi/unbind` `{"library": 10}`: stop exporting it.
 
 Each takes `"dry_run": true` to see the change first: the diff of
-`fabrics.conf`, with every secret shown as `********`, what the apply would
+`fabrics.conf`, with secrets shown as `********` (in secret lines and
+comments; a value the client sets and reads in clear, such as a CHAP name or
+an initiator, is shown as it is even if it contains a stored secret, so the
+diff does not answer guesses), what the apply would
 do, and `sha256`, the hash of the file the change was made against (`""`
 when there is none). An apply answers with the same, and for a bind the
 target as configfs shows it afterwards. To apply exactly what was

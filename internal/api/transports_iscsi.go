@@ -321,27 +321,26 @@ func fieldOf(msg string, fields []string) string {
 // name run into its value can carry the start of the secret.
 var quotedSecret = regexp.MustCompile(`(?i)'[^']*secret[^']*'`)
 
-// previewDiff is the fabrics.conf diff to answer: secret lines are masked
-// by RedactFabrics, a line from the file as read (removed, or added but
-// already in it, as unchanged lines between two changes are) also has
-// every known secret masked, and any other added line only the request's
-// own. Those lines may quote values the client sent, and masking a stored
-// secret there would tell it which of them is one.
+// previewDiff is the fabrics.conf diff to answer. Secret lines are masked
+// by RedactFabrics. In every line the request's own secrets are masked,
+// and the stored ones (stored) by conffile.MaskFileLine: in comments,
+// trailing comments (also those rewriteValue keeps on a changed line) and
+// lines of any other kind, but not in the value of a field the client sets
+// and GET config shows in clear, such as a CHAP name or an initiator.
+// Masking a stored secret there would tell the client that a value it
+// chose, now or in an earlier apply, contains one.
 func previewDiff(before, after []byte, own, stored []string) string {
-	all := append(append([]string(nil), own...), stored...)
-	old := make(map[string]bool)
-	for _, l := range strings.Split(string(before), "\n") {
-		old[string(conffile.RedactFabrics([]byte(l)))] = true
-	}
 	lines := strings.SplitAfter(conffile.FabricsDiff(before, after), "\n")
-	for i, l := range lines {
-		switch {
-		case strings.HasPrefix(l, "---") || strings.HasPrefix(l, "+++"):
-		case strings.HasPrefix(l, "-"),
-			strings.HasPrefix(l, "+") && old[strings.TrimSuffix(l[1:], "\n")]:
-			lines[i] = conffile.MaskSecrets(l, all)
-		case strings.HasPrefix(l, "+"):
-			lines[i] = conffile.MaskSecrets(l, own)
+	// The first three lines are FabricsDiff's header.
+	for i := 3; i < len(lines); i++ {
+		l := lines[i]
+		if l == "" {
+			continue
+		}
+		body, nl := strings.CutSuffix(l[1:], "\n")
+		lines[i] = l[:1] + conffile.MaskSecrets(conffile.MaskFileLine(body, stored), own)
+		if nl {
+			lines[i] += "\n"
 		}
 	}
 	return strings.Join(lines, "")
@@ -539,7 +538,6 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		return
 	}
 	own, stored := q.secrets, conffile.FabricsSecrets(f.data)
-	secrets := append(append([]string(nil), own...), stored...)
 	refuseWith := func(inv *fabricsInvalid, mask []string) {
 		writeJSON(w, inv.status, struct {
 			Error  fieldErrorDetail `json:"error"`
@@ -582,7 +580,15 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		writeJSON(w, http.StatusOK, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.sha, Result: resultUnchanged})
 		return
 	}
-	secrets = append(secrets, conffile.FabricsSecrets(next)...)
+	// The helper's message and journal tail quote values the client set
+	// (initiator and target names) as well as secrets: the request's own
+	// are masked everywhere, the files' everywhere but inside those values
+	// (conffile.MaskSecretsExcept), as previewDiff does in the diff.
+	keep := append(conffile.FabricsClearValues(f.data), conffile.FabricsClearValues(next)...)
+	fileSecrets := append(append([]string(nil), stored...), conffile.FabricsSecrets(next)...)
+	mask := func(s string) string {
+		return conffile.MaskSecrets(conffile.MaskSecretsExcept(s, fileSecrets, keep), own)
+	}
 
 	hreq := apply.Request{Op: apply.OpFabricsPlan,
 		Files: []apply.File{{Name: fabricsConfName, BaseSHA256: f.sha, Content: next}},
@@ -605,7 +611,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusBadGateway, helperUnreachable, conffile.MaskSecrets(err.Error(), secrets))
+		writeError(w, http.StatusBadGateway, helperUnreachable, mask(err.Error()))
 		return
 	}
 	status, code := applyStatus(resp)
@@ -615,15 +621,15 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	}
 	out := iscsiWriteDTO{
 		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: previewDiff(before, next, own, stored),
-		SHA256: f.sha, Result: resp.Result, Message: conffile.MaskSecrets(resp.Message, secrets), CurrentSHA256: resp.CurrentSHA256,
-		JournalTail: conffile.MaskSecrets(resp.JournalTail, secrets), RollbackDir: resp.RollbackDir,
+		SHA256: f.sha, Result: resp.Result, Message: mask(resp.Message), CurrentSHA256: resp.CurrentSHA256,
+		JournalTail: mask(resp.JournalTail), RollbackDir: resp.RollbackDir,
 	}
 	if code != "" {
 		msg := applyMessage(resp)
 		if resp.Result == apply.ResultConflict {
 			msg = fabricsChanged
 		}
-		out.Error = &errorDetail{Code: code, Message: conffile.MaskSecrets(msg, secrets)}
+		out.Error = &errorDetail{Code: code, Message: mask(msg)}
 	}
 	if q.bind && !q.dryRun && resp.Result == apply.ResultApplied &&
 		(resp.FabricsAction == apply.FabricsReload || resp.FabricsAction == apply.FabricsStart) {

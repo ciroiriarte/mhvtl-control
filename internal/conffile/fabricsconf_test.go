@@ -717,6 +717,88 @@ func TestMaskSecrets(t *testing.T) {
 	}
 }
 
+// TestMaskFileLine: stored secrets are masked in comments, trailing
+// comments and lines of unknown kind, not in the value of a field a client
+// sets and reads in clear.
+func TestMaskFileLine(t *testing.T) {
+	const sec = "hunter2-Secret"
+	secrets := []string{sec}
+	for _, c := range []struct{ in, want string }{
+		{" CHAP name: x" + sec + "y", " CHAP name: x" + sec + "y"},
+		{" Initiator name: iqn.2024-01.com.example:" + sec, " Initiator name: iqn.2024-01.com.example:" + sec},
+		{" Target name: iqn.2024-01.com.example:t # was " + sec, " Target name: iqn.2024-01.com.example:t # was " + SecretMask},
+		{"\tMutual CHAP name:\t" + sec + "\t# " + sec, "\tMutual CHAP name:\t" + sec + "\t# " + SecretMask},
+		{"iSCSI target: 10 # " + sec, "iSCSI target: 10 # " + SecretMask},
+		{"# CHAP name: " + sec, "# CHAP name: " + SecretMask},
+		{" Unknown field: " + sec, " Unknown field: " + SecretMask},
+		{" CHAP secret: " + sec, " CHAP secret: " + SecretMask},
+		{"Portal: " + sec, "Portal: " + SecretMask}, // column 1: not a field
+		{"garbage " + sec, "garbage " + SecretMask},
+	} {
+		if got := MaskFileLine(c.in, secrets); got != c.want {
+			t.Errorf("MaskFileLine(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestMaskSecretsExcept: a secret inside a kept value stays, any other
+// occurrence is masked, also one that contains a kept value.
+func TestMaskSecretsExcept(t *testing.T) {
+	const sec = "hunter2-Secret"
+	keep := []string{"name-" + sec + "-x", "iqn.x:foo"}
+	for _, c := range []struct {
+		in, want string
+		secrets  []string
+	}{
+		{"user name-" + sec + "-x refused", "user name-" + sec + "-x refused", []string{sec}},
+		{"secret " + sec + " refused", "secret " + SecretMask + " refused", []string{sec}},
+		{"name-" + sec + "-x and " + sec, "name-" + sec + "-x and " + SecretMask, []string{sec}},
+		{"secret a-iqn.x:foo-b", "secret " + SecretMask, []string{"a-iqn.x:foo-b"}},
+		{"ab abcd", SecretMask + " " + SecretMask, []string{"ab", "abcd"}},
+		{"plain", "plain", nil},
+	} {
+		if got := MaskSecretsExcept(c.in, c.secrets, keep); got != c.want {
+			t.Errorf("MaskSecretsExcept(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	vals := FabricsClearValues([]byte("iSCSI:\n Base name: iqn.b\niSCSI target: 10\n CHAP name: n1 # c\n CHAP secret: s\n# Initiator name: iqn.c\n"))
+	if strings.Join(vals, ",") != "iqn.b,10,n1" {
+		t.Errorf("FabricsClearValues = %q", vals)
+	}
+}
+
+// TestFabricsProblemSecretName: a malformed secret line whose secret runs
+// into the field name is reported under the canonical name, with a colon
+// or blanks of any kind between the words.
+func TestFabricsProblemSecretName(t *testing.T) {
+	for _, line := range []string{
+		" CHAP secret hunter2:",
+		" CHAP\vsecret hunter2:",
+		" CHAP secret hunter2: more",
+		" Mutual CHAP secret hunter2:",
+		" mutual\vchap\fsecret hunter2: x",
+	} {
+		c := ParseFabricsConf([]byte("iSCSI:\niSCSI target: 10\n" + line + "\n"))
+		if len(c.Problems) == 0 {
+			t.Errorf("%q: no problem", line)
+			continue
+		}
+		for _, p := range c.Problems {
+			if strings.Contains(p.Msg, "hunter2") || !strings.Contains(p.Msg, "chap secret") {
+				t.Errorf("%q: problem %q", line, p.Msg)
+			}
+		}
+	}
+	// Outside a target too.
+	for _, in := range []string{"CHAP secret hunter2: x\n", " CHAP secret hunter2: x\n", "iSCSI:\n CHAP secret hunter2: x\n"} {
+		for _, p := range ParseFabricsConf([]byte(in)).Problems {
+			if strings.Contains(p.Msg, "hunter2") {
+				t.Errorf("%q: problem %q", in, p.Msg)
+			}
+		}
+	}
+}
+
 // TestPlaceholdSecrets: the secret lines asked for get the placeholder,
 // with their spacing and comment; other lines and targets stay.
 func TestPlaceholdSecrets(t *testing.T) {

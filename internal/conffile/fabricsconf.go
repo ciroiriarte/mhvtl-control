@@ -457,6 +457,16 @@ func (c *FabricsConf) index() {
 			problem(i, "expected 'Name: value'")
 			continue
 		}
+		// A malformed secret line can run the secret into the name
+		// (" CHAP secret hunter2:"): problems name such a field by its
+		// canonical name.
+		problem := func(i int, format string, a ...any) {
+			msg := fmt.Sprintf(format, a...)
+			if shown := shownName(name); shown != name {
+				msg = strings.ReplaceAll(msg, name, shown)
+			}
+			problem(i, "%s", msg)
+		}
 		if p == 0 { // column 1: a new record (L377-L423)
 			r := fabRecord{kind: fabBad, header: i}
 			switch {
@@ -1204,6 +1214,127 @@ func MaskSecrets(s string, secrets []string) string {
 // it takes any isspace() byte, since split_field collapses them all to one
 // blank (" CHAP\vsecret:" is a CHAP secret to mhvtl-fabrics).
 var fabSecretField = regexp.MustCompile(`^[ \t\v\f\r#]*(?i:(?:mutual[ \t\v\f\r]*)?chap[ \t\v\f\r]*secret)`)
+
+// shownName is the field name a Problem shows: the canonical "chap secret"
+// or "mutual chap secret" for a name fabSecretField matches, which may hold
+// the start of a secret, else the name.
+func shownName(name string) string {
+	m := fabSecretField.FindStringIndex(name)
+	if m == nil {
+		return name
+	}
+	if strings.Contains(strings.ToLower(name[:m[1]]), "mutual") {
+		return chapFields[3]
+	}
+	return chapFields[1]
+}
+
+// clearFields are the fields whose values GET /transports/iscsi/config
+// shows as they are, and that a client sets: the record headers (by their
+// column-1 names) and the indented fields other than the secrets.
+var clearFields = map[bool]map[string]bool{
+	true:  {"version": true, "iscsi": true, "iscsi target": true},
+	false: {"portal": true, "base name": true, "initiator name": true, "target name": true, "chap name": true, "mutual chap name": true},
+}
+
+// clearValueSpan locates the value of line when it is one of clearFields;
+// ok is false for any other line: a comment, a secret, an unknown field, a
+// line that is not "Name: value".
+func clearValueSpan(line string) (vs, ve int, ok bool) {
+	p := fabIndent(line)
+	rest := strings.TrimRightFunc(line[p:], isCSpace)
+	if rest == "" || rest[0] == '#' {
+		return 0, 0, false
+	}
+	name, _, ok := splitFabField(rest)
+	if !ok || !clearFields[p == 0][name] {
+		return 0, 0, false
+	}
+	_, vs, ve = fabValueSpan(line)
+	return vs, ve, true
+}
+
+// MaskFileLine masks secrets in one fabrics.conf line except in the value
+// of a field the client sets and reads in clear (clearFields): there a
+// masked guess would tell the client that a stored secret is part of its
+// value. Comments, trailing comments and lines of any other kind are
+// masked whole, as they may quote a secret.
+func MaskFileLine(line string, secrets []string) string {
+	_, ve, ok := clearValueSpan(line)
+	if !ok {
+		return MaskSecrets(line, secrets)
+	}
+	return line[:ve] + MaskSecrets(line[ve:], secrets)
+}
+
+// FabricsClearValues returns the values of the clearFields lines of data,
+// the text MaskSecretsExcept leaves alone.
+func FabricsClearValues(data []byte) []string {
+	var out []string
+	for _, l := range splitLines(data) {
+		if vs, ve, ok := clearValueSpan(l.Text); ok && ve > vs {
+			out = append(out, l.Text[vs:ve])
+		}
+	}
+	return out
+}
+
+// MaskSecretsExcept is MaskSecrets for free text, such as a journal tail,
+// that may quote both secrets and values the client set in clear (keep):
+// an occurrence of a secret that lies wholly inside an occurrence of a
+// keep value is left as it is, so the answer does not depend on whether a
+// value the client chose contains a stored secret. Any other occurrence is
+// masked, a secret that contains a keep value included.
+func MaskSecretsExcept(s string, secrets, keep []string) string {
+	var kept [][2]int
+	for _, k := range keep {
+		for i := 0; k != "" && i < len(s); {
+			j := strings.Index(s[i:], k)
+			if j < 0 {
+				break
+			}
+			kept = append(kept, [2]int{i + j, i + j + len(k)})
+			i += j + 1
+		}
+	}
+	masked := make([]bool, len(s))
+	hit := false
+	for _, v := range secrets {
+		for i := 0; v != "" && i < len(s); {
+			j := strings.Index(s[i:], v)
+			if j < 0 {
+				break
+			}
+			a, b := i+j, i+j+len(v)
+			inside := false
+			for _, k := range kept {
+				inside = inside || (k[0] <= a && b <= k[1])
+			}
+			if !inside {
+				for x := a; x < b; x++ {
+					masked[x] = true
+				}
+				hit = true
+			}
+			i = a + 1
+		}
+	}
+	if !hit {
+		return s
+	}
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if !masked[i] {
+			out.WriteByte(s[i])
+			continue
+		}
+		out.WriteString(SecretMask)
+		for i+1 < len(s) && masked[i+1] {
+			i++
+		}
+	}
+	return out.String()
+}
 
 // RedactFabrics returns data with the value of every CHAP secret and
 // Mutual CHAP secret line replaced by "********", every other byte as it
