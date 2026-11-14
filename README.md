@@ -415,8 +415,9 @@ from the LIO configuration in configfs (`/sys/kernel/config/target`):
   false on the other fabrics, which have no `info`, and the dashboard shows
   their session as "not reported" rather than "none") and `dynamic_sessions`
   (initiators logged in without an ACL). A LUN or mapped LUN not linked yet
-  has no backstore or `tpg_lun`; one removed while it is read (an apply in
-  progress) is left out.
+  has no backstore or `tpg_lun`. A LUN, mapped LUN, ACL, portal group,
+  target or backstore removed while it is read (an apply in progress) is
+  left out.
 - `active_transports`: `local` while `mhvtl.ko` is loaded, then each
   transport with an enabled portal group that has a LUN linked to a
   backstore. `GET /api/v1/system` reports the same list.

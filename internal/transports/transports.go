@@ -219,6 +219,15 @@ func (r *reader) list(p string) (ents []fs.DirEntry, gone bool) {
 	return ents, false
 }
 
+// gone reports whether directory p no longer exists. Checked after an
+// object's attributes are read, it leaves out a backstore, target or TPG
+// removed meanwhile instead of reporting it empty. It warns about nothing:
+// the reads before it already did.
+func (r *reader) gone(p string) bool {
+	_, err := readDir(p)
+	return errors.Is(err, fs.ErrNotExist)
+}
+
 // dirs lists the subdirectories of p, sorted by name.
 func (r *reader) dirs(p string) []string {
 	ents, _ := r.list(p)
@@ -233,7 +242,7 @@ func (r *reader) dirs(p string) []string {
 
 // link returns the target of the first symlink in p ("" when it has none):
 // configfs names it as the user chose, so it is found by type. gone is true
-// when p itself was removed while it was read.
+// when p, or the link found in it, was removed while it was read.
 func (r *reader) link(p string) (target string, gone bool) {
 	ents, gone := r.list(p)
 	for _, e := range ents {
@@ -242,9 +251,10 @@ func (r *reader) link(p string) (target string, gone bool) {
 		}
 		t, err := os.Readlink(filepath.Join(p, e.Name()))
 		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				r.warn(filepath.Join(p, e.Name()), err)
+			if errors.Is(err, fs.ErrNotExist) {
+				return "", true
 			}
+			r.warn(filepath.Join(p, e.Name()), err)
 			continue
 		}
 		return t, false
@@ -308,7 +318,9 @@ func Read(root string) Map {
 			continue
 		}
 		for _, name := range r.dirs(filepath.Join(core, hba)) {
-			m.Backstores = append(m.Backstores, r.backstore(filepath.Join(core, hba, name), hba, name))
+			if b, ok := r.backstore(filepath.Join(core, hba, name), hba, name); ok {
+				m.Backstores = append(m.Backstores, b)
+			}
 		}
 	}
 	for _, f := range r.fabricDirs(root) {
@@ -323,10 +335,14 @@ func Read(root string) Map {
 			t := Target{WWN: wwn, TPGs: []TPG{}}
 			for _, tp := range r.dirs(filepath.Join(dir, wwn)) {
 				if tag, ok := numbered(tp, "tpgt_"); ok {
-					t.TPGs = append(t.TPGs, r.tpg(filepath.Join(dir, wwn, tp), tag))
+					if g, ok := r.tpg(filepath.Join(dir, wwn, tp), tag); ok {
+						t.TPGs = append(t.TPGs, g)
+					}
 				}
 			}
-			fab.Targets = append(fab.Targets, t)
+			if !r.gone(filepath.Join(dir, wwn)) {
+				fab.Targets = append(fab.Targets, t)
+			}
 		}
 		m.Fabrics = append(m.Fabrics, fab)
 	}
@@ -336,8 +352,10 @@ func Read(root string) Map {
 	return m
 }
 
-func (r *reader) backstore(p, hba, name string) Backstore {
-	b := Backstore{HBA: hba, Name: name, Enabled: r.boolAttr(filepath.Join(p, "enable"))}
+// backstore reads a TCMU backstore; ok is false when it was removed while
+// it was read.
+func (r *reader) backstore(p, hba, name string) (b Backstore, ok bool) {
+	b = Backstore{HBA: hba, Name: name, Enabled: r.boolAttr(filepath.Join(p, "enable"))}
 	b.DevConfig, _ = r.attr(filepath.Join(p, "attrib", "dev_config"))
 	// target_wwn_vpd_unit_serial_show() prints "T10 VPD Unit Serial Number: %s"
 	serial, _ := r.attr(filepath.Join(p, "wwn", "vpd_unit_serial"))
@@ -346,10 +364,12 @@ func (r *reader) backstore(p, hba, name string) Backstore {
 	if n, ok := numbered(b.DevConfig, "mhvtl/"); ok {
 		b.Minor = &n
 	}
-	return b
+	return b, !r.gone(p)
 }
 
-func (r *reader) tpg(p string, tag int) TPG {
+// tpg reads a target portal group; ok is false when it was removed while
+// it was read.
+func (r *reader) tpg(p string, tag int) (TPG, bool) {
 	t := TPG{Tag: tag, Enabled: r.boolAttr(filepath.Join(p, "enable")),
 		Portals: []string{}, LUNs: []LUN{}, ACLs: []ACL{}, DynamicSessions: []string{}}
 	t.Portals = append(t.Portals, r.dirs(filepath.Join(p, "np"))...)
@@ -383,7 +403,7 @@ func (r *reader) tpg(p string, tag int) TPG {
 			}
 		}
 	}
-	return t
+	return t, !r.gone(p)
 }
 
 // acl reads an initiator's node ACL; ok is false when it was removed while
@@ -559,7 +579,9 @@ func (r *reader) fabricExports(dir string) bool {
 				if _, ok := numbered(l, "lun_"); !ok {
 					continue
 				}
-				if dst, _ := r.link(filepath.Join(p, "lun", l)); dst != "" {
+				// Read leaves out a TPG or target removed meanwhile.
+				if dst, _ := r.link(filepath.Join(p, "lun", l)); dst != "" &&
+					!r.gone(p) && !r.gone(filepath.Join(dir, wwn)) {
 					return true
 				}
 			}

@@ -338,35 +338,65 @@ func TestEmptyUnitSerial(t *testing.T) {
 	}
 }
 
-// A LUN, mapped LUN or ACL removed while it is read (an mhvtl-fabrics apply)
-// is left out, without a warning, and does not count as exported.
+// A LUN, mapped LUN, ACL, TPG, target or backstore removed while it is read
+// (an mhvtl-fabrics apply) is left out, without a warning, and does not
+// count as exported.
 func TestRemovedMidRead(t *testing.T) {
 	root := iscsiTree(t)
 	tpg := filepath.Join(root, "iscsi", iqn, "tpgt_1")
-	gone := map[string]bool{
-		filepath.Join(tpg, "lun", "lun_2"):                                                true,
-		filepath.Join(tpg, "acls", "iqn.1993-08.org.debian:01:backup1", "lun_3"):          true,
-		filepath.Join(tpg, "acls", "iqn.1993-08.org.debian:01:backup2"):                   true,
-		filepath.Join(root, "loopback", "naa.5001405000000001", "tpgt_1", "lun", "lun_0"): true,
+	// A second target, removed after it is listed.
+	goneTarget := filepath.Join(root, "iscsi", "iqn.2003-01.org.linux-iscsi.vtl:gone")
+	if err := os.MkdirAll(filepath.Join(goneTarget, "tpgt_1"), 0o755); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(goneTarget, "tpgt_1", "enable"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gone := map[string]bool{
+		filepath.Join(tpg, "lun", "lun_2"):                                       true,
+		filepath.Join(tpg, "acls", "iqn.1993-08.org.debian:01:backup1", "lun_3"): true,
+		filepath.Join(tpg, "acls", "iqn.1993-08.org.debian:01:backup2"):          true,
+		// The whole loopback TPG: its lun/ is still listed, then the
+		// TPG directory is found gone.
+		filepath.Join(root, "loopback", "naa.5001405000000001", "tpgt_1"): true,
+		filepath.Join(root, "core", "user_0", "tape14"):                   true,
+		goneTarget: true,
+	}
+	// lun_1's link is removed after its directory is listed: the entry is
+	// there, os.Readlink finds nothing.
+	lun1 := filepath.Join(tpg, "lun", "lun_1")
 	readDir = func(p string) ([]os.DirEntry, error) {
 		if gone[p] {
 			return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
 		}
-		return os.ReadDir(p)
+		ents, err := os.ReadDir(p)
+		if p == lun1 {
+			_ = os.Remove(filepath.Join(lun1, "tape11link"))
+		}
+		return ents, err
 	}
 	t.Cleanup(func() { readDir = os.ReadDir })
 	m := Read(root)
 	if len(m.Warnings) != 0 {
 		t.Errorf("warnings = %q, want none", m.Warnings)
 	}
+	var names []string
+	for _, b := range m.Backstores {
+		names = append(names, b.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"lib10", "tape11", "tape12", "tape13"}) {
+		t.Errorf("backstores = %q, want tape14 left out", names)
+	}
+	if n := len(m.Fabrics[1].Targets); n != 1 || m.Fabrics[1].Targets[0].WWN != iqn {
+		t.Fatalf("iscsi targets = %+v, want %s only", m.Fabrics[1].Targets, iqn)
+	}
 	tp := m.Fabrics[1].Targets[0].TPGs[0]
 	var luns []int
 	for _, l := range tp.LUNs {
 		luns = append(luns, l.LUN)
 	}
-	if !reflect.DeepEqual(luns, []int{0, 1, 3, 4}) {
-		t.Errorf("luns = %v, want 0 1 3 4", luns)
+	if !reflect.DeepEqual(luns, []int{0, 3, 4}) {
+		t.Errorf("luns = %v, want 0 3 4", luns)
 	}
 	if len(tp.ACLs) != 1 || tp.ACLs[0].Initiator != "iqn.1993-08.org.debian:01:backup1" {
 		t.Fatalf("acls = %+v, want backup1 only", tp.ACLs)
@@ -378,8 +408,8 @@ func TestRemovedMidRead(t *testing.T) {
 	if !reflect.DeepEqual(mapped, []int{0, 1, 2, 4}) {
 		t.Errorf("mapped luns = %v, want 0 1 2 4", mapped)
 	}
-	if lb := m.Fabrics[0].Targets[0].TPGs[0]; len(lb.LUNs) != 0 {
-		t.Errorf("loopback luns = %+v, want none", lb.LUNs)
+	if lb := m.Fabrics[0].Targets[0].TPGs; len(lb) != 0 {
+		t.Errorf("loopback tpgs = %+v, want none", lb)
 	}
 	want := []string{"iscsi"}
 	if got := m.Active(); !reflect.DeepEqual(got, want) {
