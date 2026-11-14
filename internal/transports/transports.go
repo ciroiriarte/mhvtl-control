@@ -295,6 +295,19 @@ func numbered(name, prefix string) (int, bool) {
 	return n, err == nil && n >= 0
 }
 
+// lunNumber parses "lun_<N>" as the kernel does: target_fabric_make_lun and
+// target_fabric_make_mappedlun read N with kstrtoull(name + 4, 0, ...), so
+// base 0: lun_0x10 is LUN 16 and lun_010 is LUN 8
+// (drivers/target/target_core_fabric_configfs.c,
+// https://github.com/torvalds/linux/blob/master/drivers/target/target_core_fabric_configfs.c).
+func lunNumber(name string) (int, bool) {
+	if !strings.HasPrefix(name, "lun_") {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(name[len("lun_"):], 0, strconv.IntSize-1)
+	return int(n), err == nil
+}
+
 // Read reads the LIO configuration under root (DefaultRoot when empty). A
 // missing root is an empty Map, not an error; unreadable files are left out
 // and named in Warnings.
@@ -374,7 +387,7 @@ func (r *reader) tpg(p string, tag int) (TPG, bool) {
 		Portals: []string{}, LUNs: []LUN{}, ACLs: []ACL{}, DynamicSessions: []string{}}
 	t.Portals = append(t.Portals, r.dirs(filepath.Join(p, "np"))...)
 	for _, name := range r.dirs(filepath.Join(p, "lun")) {
-		n, ok := numbered(name, "lun_")
+		n, ok := lunNumber(name)
 		if !ok {
 			continue
 		}
@@ -415,7 +428,7 @@ func (r *reader) acl(p, init string) (a ACL, ok bool) {
 		return a, false
 	}
 	for _, e := range ents {
-		n, ok := numbered(e.Name(), "lun_")
+		n, ok := lunNumber(e.Name())
 		if !ok || !e.IsDir() {
 			continue
 		}
@@ -426,7 +439,7 @@ func (r *reader) acl(p, init string) (a ACL, ok bool) {
 		if gone {
 			continue
 		}
-		if tl, ok := numbered(filepath.Base(dst), "lun_"); ok {
+		if tl, ok := lunNumber(filepath.Base(dst)); ok {
 			ml.TPGLUN = &tl
 		}
 		a.MappedLUNs = append(a.MappedLUNs, ml)
@@ -576,7 +589,7 @@ func (r *reader) fabricExports(dir string) bool {
 				continue
 			}
 			for _, l := range r.dirs(filepath.Join(p, "lun")) {
-				if _, ok := numbered(l, "lun_"); !ok {
+				if _, ok := lunNumber(l); !ok {
 					continue
 				}
 				// Read leaves out a TPG or target removed meanwhile.

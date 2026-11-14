@@ -487,3 +487,31 @@ func TestOtherFabric(t *testing.T) {
 		t.Errorf("Active = %q, want other", got)
 	}
 }
+
+// The kernel reads lun_<N> with kstrtoull(..., 0, ...)
+// (target_fabric_make_lun, target_fabric_make_mappedlun): lun_0x10 is LUN
+// 16, lun_010 is LUN 8.
+func TestLUNNumberBase(t *testing.T) {
+	root := fakeTree(t, map[string]string{
+		"iscsi/" + iqn + "/tpgt_1/enable":                                "1\n",
+		"iscsi/" + iqn + "/tpgt_1/acls/iqn.a:one/lun_0x10/write_protect": "0\n",
+	}, map[string]string{
+		"iscsi/" + iqn + "/tpgt_1/lun/lun_0x10/x":            "../../../../../../target/core/user_0/lib10",
+		"iscsi/" + iqn + "/tpgt_1/lun/lun_010/x":             "../../../../../../target/core/user_0/tape11",
+		"iscsi/" + iqn + "/tpgt_1/acls/iqn.a:one/lun_0x10/m": "../../../../../../iscsi/" + iqn + "/tpgt_1/lun/lun_010",
+	})
+	tp := Read(root).Fabrics[0].Targets[0].TPGs[0]
+	if len(tp.LUNs) != 2 || tp.LUNs[0].LUN != 8 || tp.LUNs[0].Backstore != "tape11" ||
+		tp.LUNs[1].LUN != 16 || tp.LUNs[1].Backstore != "lib10" {
+		t.Errorf("luns = %+v, want 8 tape11, 16 lib10", tp.LUNs)
+	}
+	ml := tp.ACLs[0].MappedLUNs
+	if len(ml) != 1 || ml[0].LUN != 16 || ml[0].TPGLUN == nil || *ml[0].TPGLUN != 8 {
+		t.Errorf("mapped luns = %+v, want 16 -> 8", ml)
+	}
+	for _, bad := range []string{"lun_", "lun_x", "lun_-1", "tpgt_1"} {
+		if _, ok := lunNumber(bad); ok {
+			t.Errorf("lunNumber(%q) ok, want refused", bad)
+		}
+	}
+}
