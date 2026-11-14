@@ -527,3 +527,98 @@ test("encryptionBadge marks simulated, explains a pre-AES-GCM mhVTL, hides none"
   assert.strictEqual(core.encryptionBadge({}), null);
   assert.strictEqual(core.encryptionBadge(null), null);
 });
+
+test("transportDeviceText names libraries, drives and standalone drives", () => {
+  assert.strictEqual(core.transportDeviceText(null), "");
+  assert.strictEqual(core.transportDeviceText({ kind: "library", id: 10 }), "Library 10");
+  assert.strictEqual(core.transportDeviceText({ kind: "drive", id: 11, library_id: 10 }), "Drive 11 (library 10)");
+  assert.strictEqual(core.transportDeviceText({ kind: "drive", id: 13 }), "Drive 13 (standalone)");
+});
+
+test("transportSessionText gives the session state and addresses", () => {
+  assert.strictEqual(core.transportSessionText(null), "none");
+  assert.strictEqual(core.transportSessionText(null, true), "none");
+  assert.strictEqual(core.transportSessionText(null, false), "not reported");
+  assert.strictEqual(core.transportSessionText({ state: "TARG_SESS_STATE_LOGGED_IN",
+    connections: [{ cid: 0, address: "192.0.2.10" }] }), "logged in from 192.0.2.10");
+  assert.strictEqual(core.transportSessionText({ connections: [] }), "session");
+  assert.strictEqual(core.transportSessionText({ state: "TARG_SESS_FREE", connections: [] }), "free");
+});
+
+test("transportView marks only a logged-in session active", () => {
+  const states = ["TARG_SESS_STATE_LOGGED_IN", "TARG_SESS_FREE", "TARG_SESS_STATE_FAILED", "TARG_SESS_STATE_ACTIVE", "TARG_SESS_STATE_IN_CONTINUE", ""];
+  const v = core.transportView({ backstores: [], fabrics: [{ name: "iscsi", transport: "iscsi", targets: [{ wwn: "iqn.t",
+    tpgs: [{ tag: 1, luns: [], acls: states.map((st, i) => ({ initiator: "iqn." + i, mapped_luns: [], session_reported: true,
+      session: { state: st, connections: [] } })) }] }] }] });
+  assert.deepStrictEqual(v.tpgs[0].acls.map((a) => a.active), [true, false, false, false, false, false]);
+  assert.strictEqual(v.tpgs[0].acls[1].session, "free");
+});
+
+test("transportsUnsupportedText: a 404 is a node older than GET /transports, other failures are errors", () => {
+  const err = (status) => Object.assign(new Error("x"), { status });
+  assert.strictEqual(core.transportsUnsupportedText(err(404)),
+    "This node does not report transports (mhvtl-control older than this version)");
+  assert.strictEqual(core.transportsUnsupportedText(err(500)), "");
+  assert.strictEqual(core.transportsUnsupportedText(err(401)), "");
+  assert.strictEqual(core.transportsUnsupportedText(new Error("network")), "");
+  assert.strictEqual(core.transportsUnsupportedText(null), "");
+});
+
+test("transportView marks a mapped LUN without its link as unlinked", () => {
+  var v = core.transportView({ backstores: [], fabrics: [{ name: "iscsi", transport: "iscsi", targets: [{ wwn: "iqn.t",
+    tpgs: [{ tag: 1, luns: [], acls: [{ initiator: "iqn.a",
+      mapped_luns: [{ lun: 3 }, { lun: 0, tpg_lun: 0 }, { lun: 1, tpg_lun: 2, write_protect: true }] }] }] }] }] });
+  assert.deepStrictEqual(v.tpgs[0].acls[0].luns, ["3 (unlinked)", "0", "1→2 (ro)"]);
+});
+
+test("transportView says an FC ACL's session is not reported, not none", () => {
+  const v = core.transportView({ backstores: [], fabrics: [{ name: "qla2xxx", transport: "fc", targets: [{ wwn: "21:00:00:24:ff:31:4c:48",
+    tpgs: [{ tag: 1, luns: [], acls: [{ initiator: "21:00:00:24:ff:31:4c:49", mapped_luns: [], session_reported: false }] }] }] }] });
+  assert.strictEqual(v.tpgs[0].acls[0].session, "not reported");
+  assert.strictEqual(v.tpgs[0].acls[0].active, false);
+});
+
+test("transportView resolves LUNs to devices and lists backstores on no LUN", () => {
+  const v = core.transportView({
+    configfs: true,
+    backstores: [
+      { hba: "user_0", name: "lib10", enabled: true, device: { kind: "library", id: 10 } },
+      { hba: "user_0", name: "tape11", enabled: false, device: { kind: "drive", id: 11, library_id: 10 } },
+      { hba: "user_0", name: "tape12" },
+    ],
+    fabrics: [{ name: "iscsi", transport: "iscsi", targets: [{ wwn: "iqn.x:vtl", tpgs: [{
+      tag: 1, enabled: true, portals: ["0.0.0.0:3260"],
+      luns: [{ lun: 0, hba: "user_0", backstore: "lib10" }, { lun: 1, hba: "user_0", backstore: "tape11" }],
+      acls: [
+        { initiator: "iqn.a", mapped_luns: [{ lun: 0, tpg_lun: 0 }, { lun: 1, tpg_lun: 3, write_protect: true }],
+          session: { state: "TARG_SESS_STATE_LOGGED_IN", connections: [] } },
+        { initiator: "iqn.b", mapped_luns: [], session_reported: true },
+      ],
+      dynamic_sessions: [],
+    }] }] }],
+  });
+  assert.strictEqual(v.tpgs.length, 1);
+  const g = v.tpgs[0];
+  assert.strictEqual(g.key, "iscsi/iqn.x:vtl/1");
+  assert.strictEqual(g.enabled, true);
+  assert.deepStrictEqual(g.luns, [
+    { lun: 0, backstore: "lib10", device: "Library 10", enabled: true },
+    { lun: 1, backstore: "tape11", device: "Drive 11 (library 10)", enabled: false },
+  ]);
+  assert.deepStrictEqual(g.acls[0].luns, ["0", "1→3 (ro)"]);
+  assert.strictEqual(g.acls[0].active, true);
+  assert.strictEqual(g.acls[1].session, "none");
+  assert.deepStrictEqual(v.unexported, ["tape12"]);
+  assert.deepStrictEqual(core.transportView({}), { tpgs: [], unexported: [] });
+  // A hidden LUN (number above what JSON carries exactly) keeps its
+  // backstore off the "on no LUN" list and is listed by name.
+  const h = core.transportView({
+    backstores: [{ hba: "user_0", name: "lib10" }, { hba: "user_0", name: "tape12" }],
+    fabrics: [{ name: "iscsi", transport: "iscsi", targets: [{ wwn: "iqn.x:vtl", tpgs: [{
+      tag: 1, enabled: true, portals: [], luns: [], acls: [], dynamic_sessions: [],
+      hidden_luns: [{ name: "lun_0x8000000000000000", hba: "user_0", backstore: "lib10" }],
+    }] }] }],
+  });
+  assert.deepStrictEqual(h.unexported, ["tape12"]);
+  assert.deepStrictEqual(h.tpgs[0].hidden, ["lun_0x8000000000000000"]);
+});

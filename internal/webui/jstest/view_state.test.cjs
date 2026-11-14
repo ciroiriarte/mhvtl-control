@@ -119,12 +119,12 @@ test("restoreView focuses only the first element of a duplicated key", () => {
   assert.strictEqual(b.focusCalls.length, 0);
 });
 
-test("pollPanels: system and libraries every tick, media and disks every third, config every sixth", () => {
+test("pollPanels: system and libraries every tick, media, disks and transports every third, config every sixth", () => {
   assert.deepStrictEqual(core.pollPanels(1), ["system", "libraries"]);
   assert.deepStrictEqual(core.pollPanels(2), ["system", "libraries"]);
-  assert.deepStrictEqual(core.pollPanels(3), ["system", "libraries", "media", "disks"]);
-  assert.deepStrictEqual(core.pollPanels(6), ["system", "libraries", "media", "disks", "config"]);
-  assert.deepStrictEqual(core.pollPanels(12), ["system", "libraries", "media", "disks", "config"]);
+  assert.deepStrictEqual(core.pollPanels(3), ["system", "libraries", "media", "disks", "transports"]);
+  assert.deepStrictEqual(core.pollPanels(6), ["system", "libraries", "media", "disks", "transports", "config"]);
+  assert.deepStrictEqual(core.pollPanels(12), ["system", "libraries", "media", "disks", "transports", "config"]);
   assert.strictEqual(core.POLL_SECONDS, 10);
 });
 
