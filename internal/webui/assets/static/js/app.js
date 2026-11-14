@@ -1170,9 +1170,9 @@
 
   // renderMedia draws the cached /media payload of the selected library.
   function renderMedia() {
-    preserve($("media-list"), drawMedia);
+    preserve($("media-list"), drawMediaList);
   }
-  function drawMedia() {
+  function drawMediaList() {
     var box = $("media-list");
     clear(box);
     var newBtn = $("media-new-btn");
