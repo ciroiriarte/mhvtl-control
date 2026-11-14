@@ -157,7 +157,7 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 			return responseOf(err)
 		}
 		return Response{Result: ResultApplied, FabricsAction: action,
-			Message: targetUnit + " is not running; " + FabricsUnit + " applies " + fabricsConf + " when it starts"}
+			Message: targetUnit + " is not running; " + FabricsUnit + " applies " + fabricsConf + " when it starts" + h.pruneFabricsCopies(it.RollbackDir)}
 	}
 	it.Step = "applying"
 	if err := h.saveIntent(it); err != nil {
@@ -177,7 +177,34 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	if err := h.removeIntent(); err != nil {
 		return responseOf(err)
 	}
-	return Response{Result: ResultApplied, FabricsAction: action}
+	return Response{Result: ResultApplied, FabricsAction: action, Message: strings.TrimPrefix(h.pruneFabricsCopies(it.RollbackDir), "; ")}
+}
+
+// pruneFabricsCopies removes the fabrics.conf copies of every rollback
+// directory but keep, this apply's, after a successful apply: they hold
+// CHAP secrets the file may no longer have, and recovery never reads them
+// (it restores from intent.json). keep's copy, the file just replaced,
+// stays for a manual undo until the next fabrics apply succeeds. It
+// returns "" or a note on what it could not remove.
+func (h *Helper) pruneFabricsCopies(keep string) string {
+	dir := filepath.Join(h.cfg.StateDir, rollbackDir)
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return "; listing " + dir + ": " + err.Error()
+	}
+	var errs []string
+	for _, e := range ents {
+		if !e.IsDir() || e.Name() == keep {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name(), fabricsConf)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return "; removing older " + fabricsConf + " rollback copies: " + strings.Join(errs, "; ")
+	}
+	return ""
 }
 
 // checkBackend refuses unless mhvtl-fabrics.service would run with

@@ -475,8 +475,9 @@ bind with `"initiators": []` is refused: a record without an initiator
 exports nothing; use unbind.
 
 The helper writes `fabrics.conf` mode 0600 (it may hold CHAP secrets), keeps
-the previous copy for rollback, and records the change in its audit log with
-secrets masked. Then:
+the previous copy for rollback (only the latest: a successful apply removes
+older copies of `fabrics.conf`, which may hold secrets since rotated), and
+records the change in its audit log with secrets masked. Then:
 
 - with `mhvtl-fabrics.service` active, it runs `systemctl reload`, which runs
   `mhvtl-fabrics apply`: targets, LUNs and ACLs follow the file, and sessions

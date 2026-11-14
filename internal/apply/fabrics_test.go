@@ -1092,3 +1092,43 @@ func TestFabricsReloadTimeoutStillReloading(t *testing.T) {
 		t.Errorf("systemctl %v, want one reload", v)
 	}
 }
+
+// TestFabricsPruneRollbackCopies: a successful fabrics apply removes the
+// fabrics.conf copies of earlier applies, so rotated secrets do not stay in
+// the rollback directories; its own copy (the file it replaced) and other
+// files' copies stay.
+func TestFabricsPruneRollbackCopies(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	secrets := []string{fabSecret, "rot1-secret-0001", "rot2-secret-0002", "rot3-secret-0003"}
+	other := filepath.Join(f.state, rollbackDir, "20200101T000000.000000000Z")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, deviceConf), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for k := 1; k < len(secrets); k++ {
+		if k == len(secrets)-1 {
+			f.fab, f.target = "inactive", "inactive" // the deferred path prunes too
+		}
+		next := strings.Replace(fabConf, fabSecret, secrets[k], 1)
+		if resp := f.do(f.fabricsReq(OpFabrics, next)); resp.Result != ResultApplied || resp.Message != strings.TrimSpace(resp.Message) {
+			t.Fatalf("apply %d: %+v", k, resp)
+		}
+	}
+	var copies []string
+	filepath.WalkDir(filepath.Join(f.state, rollbackDir), func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.Name() == fabricsConf {
+			b, _ := os.ReadFile(p)
+			copies = append(copies, string(b))
+		}
+		return nil
+	})
+	if len(copies) != 1 || !strings.Contains(copies[0], secrets[len(secrets)-2]) {
+		t.Errorf("fabrics.conf copies %q, want only the one the last apply replaced", copies)
+	}
+	if _, err := os.Stat(filepath.Join(other, deviceConf)); err != nil {
+		t.Errorf("another file's copy removed: %v", err)
+	}
+}
