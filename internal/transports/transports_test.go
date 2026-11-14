@@ -365,13 +365,22 @@ func TestRemovedMidRead(t *testing.T) {
 	// lun_1's link is removed after its directory is listed: the entry is
 	// there, os.Readlink finds nothing.
 	lun1 := filepath.Join(tpg, "lun", "lun_1")
+	// An ACL removed right after its own directory is listed: its info and
+	// LUN reads find nothing.
+	lateACL := filepath.Join(tpg, "acls", "iqn.2026-11.org.example:late")
+	if err := os.MkdirAll(filepath.Join(lateACL, "lun_0"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	readDir = func(p string) ([]os.DirEntry, error) {
 		if gone[p] {
 			return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrNotExist}
 		}
 		ents, err := os.ReadDir(p)
-		if p == lun1 {
+		switch p {
+		case lun1:
 			_ = os.Remove(filepath.Join(lun1, "tape11link"))
+		case lateACL:
+			_ = os.RemoveAll(lateACL)
 		}
 		return ents, err
 	}
@@ -509,9 +518,36 @@ func TestLUNNumberBase(t *testing.T) {
 	if len(ml) != 1 || ml[0].LUN != 16 || ml[0].TPGLUN == nil || *ml[0].TPGLUN != 8 {
 		t.Errorf("mapped luns = %+v, want 16 -> 8", ml)
 	}
-	for _, bad := range []string{"lun_", "lun_x", "lun_-1", "tpgt_1"} {
+	for name, want := range map[string]uint64{"lun_+5": 5, "lun_0x10": 16, "lun_18446744073709551615": 1<<64 - 1} {
+		if n, ok := lunNumber(name); !ok || n != want {
+			t.Errorf("lunNumber(%q) = %d %v, want %d", name, n, ok, want)
+		}
+	}
+	for _, bad := range []string{"lun_", "lun_x", "lun_-1", "lun_+", "lun_++1", "lun_+-1", "lun_18446744073709551616", "tpgt_1"} {
 		if _, ok := lunNumber(bad); ok {
 			t.Errorf("lunNumber(%q) ok, want refused", bad)
 		}
+	}
+}
+
+// TestLUNAboveMax: a LUN number the kernel takes (a u64) but JSON cannot
+// carry exactly is left out with a warning, not shown as another LUN, and
+// the export it belongs to still counts for Active.
+func TestLUNAboveMax(t *testing.T) {
+	root := fakeTree(t, map[string]string{
+		"iscsi/" + iqn + "/tpgt_1/enable": "1\n",
+	}, map[string]string{
+		"iscsi/" + iqn + "/tpgt_1/lun/lun_0x8000000000000000/x": "../../../../../../target/core/user_0/lib10",
+	})
+	m := Read(root)
+	tp := m.Fabrics[0].Targets[0].TPGs[0]
+	if len(tp.LUNs) != 0 {
+		t.Errorf("luns = %+v, want none", tp.LUNs)
+	}
+	if len(m.Warnings) != 1 || !strings.Contains(m.Warnings[0], "lun_0x8000000000000000") || !strings.Contains(m.Warnings[0], "not shown") {
+		t.Errorf("warnings = %q, want one naming lun_0x8000000000000000", m.Warnings)
+	}
+	if got := Active(root); !reflect.DeepEqual(got, []string{"iscsi"}) {
+		t.Errorf("Active = %q, want [iscsi]", got)
 	}
 }

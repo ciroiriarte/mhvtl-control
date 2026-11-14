@@ -21,7 +21,9 @@ package transports
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -297,15 +299,48 @@ func numbered(name, prefix string) (int, bool) {
 
 // lunNumber parses "lun_<N>" as the kernel does: target_fabric_make_lun and
 // target_fabric_make_mappedlun read N with kstrtoull(name + 4, 0, ...), so
-// base 0: lun_0x10 is LUN 16 and lun_010 is LUN 8
+// base 0 into a u64, after one optional leading + (lun_0x10 is LUN 16,
+// lun_010 is LUN 8, lun_+5 is LUN 5)
 // (drivers/target/target_core_fabric_configfs.c,
-// https://github.com/torvalds/linux/blob/master/drivers/target/target_core_fabric_configfs.c).
-func lunNumber(name string) (int, bool) {
-	if !strings.HasPrefix(name, "lun_") {
+// https://github.com/torvalds/linux/blob/master/drivers/target/target_core_fabric_configfs.c;
+// kstrtoull, lib/kstrtox.c,
+// https://github.com/torvalds/linux/blob/master/lib/kstrtox.c).
+func lunNumber(name string) (uint64, bool) {
+	s, ok := strings.CutPrefix(name, "lun_")
+	if !ok {
 		return 0, false
 	}
-	n, err := strconv.ParseUint(name[len("lun_"):], 0, strconv.IntSize-1)
-	return int(n), err == nil
+	s = strings.TrimPrefix(s, "+")
+	if s == "" || s[0] == '+' || s[0] == '-' {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(s, 0, 64)
+	return n, err == nil
+}
+
+// maxLUN is the largest LUN number reported: JSON readers such as the
+// dashboard hold numbers as float64, exact only up to 2^53-1, and int must
+// hold it.
+var maxLUN = func() uint64 {
+	if strconv.IntSize == 32 {
+		return math.MaxInt32
+	}
+	return 1<<53 - 1
+}()
+
+// lun parses the lun_<N> entry name under dir for the map. A number the
+// kernel accepts but the map cannot carry exactly (above maxLUN) is left out
+// with a warning, rather than shown as a different LUN.
+func (r *reader) lun(dir, name string) (int, bool) {
+	n, ok := lunNumber(name)
+	if !ok {
+		return 0, false
+	}
+	if n > maxLUN {
+		r.warn(filepath.Join(dir, name), fmt.Errorf("LUN %d is above %d and not shown", n, maxLUN))
+		return 0, false
+	}
+	return int(n), true
 }
 
 // Read reads the LIO configuration under root (DefaultRoot when empty). A
@@ -387,7 +422,7 @@ func (r *reader) tpg(p string, tag int) (TPG, bool) {
 		Portals: []string{}, LUNs: []LUN{}, ACLs: []ACL{}, DynamicSessions: []string{}}
 	t.Portals = append(t.Portals, r.dirs(filepath.Join(p, "np"))...)
 	for _, name := range r.dirs(filepath.Join(p, "lun")) {
-		n, ok := lunNumber(name)
+		n, ok := r.lun(filepath.Join(p, "lun"), name)
 		if !ok {
 			continue
 		}
@@ -428,8 +463,11 @@ func (r *reader) acl(p, init string) (a ACL, ok bool) {
 		return a, false
 	}
 	for _, e := range ents {
-		n, ok := lunNumber(e.Name())
-		if !ok || !e.IsDir() {
+		if !e.IsDir() {
+			continue
+		}
+		n, ok := r.lun(p, e.Name())
+		if !ok {
 			continue
 		}
 		name := e.Name()
@@ -439,7 +477,7 @@ func (r *reader) acl(p, init string) (a ACL, ok bool) {
 		if gone {
 			continue
 		}
-		if tl, ok := lunNumber(filepath.Base(dst)); ok {
+		if tl, ok := r.lun(filepath.Dir(dst), filepath.Base(dst)); ok {
 			ml.TPGLUN = &tl
 		}
 		a.MappedLUNs = append(a.MappedLUNs, ml)
@@ -449,7 +487,9 @@ func (r *reader) acl(p, init string) (a ACL, ok bool) {
 		a.SessionReported = true
 		a.Session = parseSession(info)
 	}
-	return a, true
+	// Removed while it was read: its reads found nothing, so it would show
+	// as an initiator allowed in with no LUNs.
+	return a, !r.gone(p)
 }
 
 // parseSession parses an iSCSI ACL's info file (lio_target_nacl_info_show):
