@@ -555,7 +555,11 @@ These `device.conf` checks apply only while iSCSI export is in use
 (`MHVTL_BACKEND=tcmu` and `mhvtl-fabrics.service` installed): otherwise
 nothing applies `fabrics.conf`. A configuration apply that sets
 `MHVTL_BACKEND=tcmu` has every target `fabrics.conf` plans checked for
-ownership, as `device.conf` may have changed unchecked meanwhile. A start
+ownership, as `device.conf` may have changed unchecked meanwhile. A
+restart of `mhvtl.target` through `POST /api/v1/service/{action}`, and a start of it while
+`mhvtl-fabrics.service` is not active, start that unit, so they are refused
+with `invalid`, naming the target, when `fabrics.conf` plans one that
+exists in configfs and `mhvtl-fabrics` does not own. A start
 of `mhvtl-fabrics.service` outside the helper (at boot, or by hand) is not
 checked at all. The ownership checks look at configfs when
 the helper checks, not when `mhvtl-fabrics` applies: a target someone

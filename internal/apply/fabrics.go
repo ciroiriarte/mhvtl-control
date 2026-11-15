@@ -530,6 +530,48 @@ func (h *Helper) checkForeignTargets(conf *conffile.FabricsConf, files *fileSet)
 	return nil
 }
 
+// checkTargetFabrics refuses a start or restart of mhvtl.target through
+// the helper that would start mhvtl-fabrics.service with a fabrics.conf
+// planning a target that exists in configfs and mhvtl-fabrics does not
+// own: its apply would adopt it (checkForeignTargets). A restart restarts
+// the unit; a start starts it unless it is active. Nothing is checked when
+// fabrics are not in use (MHVTL_BACKEND is not tcmu, or the unit is not
+// installed: fabricsInUse), or when fabrics.conf does not exist or
+// mhvtl-fabrics cannot parse it (foreignOnDisk). A start outside the
+// helper (at boot, or by hand) is not guarded.
+func (h *Helper) checkTargetFabrics(ctx context.Context, files *fileSet, restart bool) error {
+	if inUse, err := h.fabricsInUse(ctx, files, files); err != nil || !inUse {
+		return err
+	}
+	if !restart {
+		st, err := showProp(ctx, &h.cfg, FabricsUnit, "ActiveState")
+		if err != nil || st == "active" {
+			return err
+		}
+	}
+	fc, err := files.current(fabricsConf)
+	if err != nil || !fc.exists {
+		return err
+	}
+	conf := conffile.ParseFabricsConf(fc.data)
+	if len(conf.Problems) > 0 {
+		return nil
+	}
+	dc, err := files.current(deviceConf)
+	if err != nil {
+		return err
+	}
+	foreign, err := h.foreignTargets(conf.PlannedWWNs(conffile.ParseDeviceConf(dc.data)))
+	if err != nil {
+		return err
+	}
+	if len(foreign) > 0 {
+		return refuse(ErrInvalid, "%s names iSCSI target %s, which exists in configfs and mhvtl-fabrics does not own (not in %s): starting %s with %s would take it over, remove the ACLs and LUNs it does not list, and delete it on unbind; remove that target first, or stop exporting it in %s (iSCSI unbind)",
+			fabricsConf, strings.Join(foreign, ", "), h.cfg.FabricsState, FabricsUnit, mhvtlTarget, fabricsConf)
+	}
+	return nil
+}
+
 // foreignTargets returns the names of wwns that exist in configfs as
 // targets mhvtl-fabrics' state file does not list. The state file is read
 // only when one of them exists.

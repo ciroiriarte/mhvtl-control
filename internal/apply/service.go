@@ -353,8 +353,14 @@ func (h *Helper) checkService(ctx context.Context, req *Request, files *fileSet)
 		if plan, err = h.targetStartPlan(ctx, cur); err != nil {
 			return nil, err
 		}
+		if err := h.checkTargetFabrics(ctx, files, false); err != nil {
+			return nil, err
+		}
 	case req.Target && req.Action == ActionRestart:
 		if plan, err = h.targetRestartPlan(ctx, cur); err != nil {
+			return nil, err
+		}
+		if err := h.checkTargetFabrics(ctx, files, true); err != nil {
 			return nil, err
 		}
 	case req.Target:

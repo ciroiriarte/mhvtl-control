@@ -108,6 +108,13 @@ and
 is installed; one that sets
 .B MHVTL_BACKEND=tcmu
 has every target the file plans checked for ownership.
+A restart of
+.B mhvtl.target
+through the service routes, and a start of it while the unit is not
+active, which start the unit, are refused the same way when the file plans
+a target that exists in configfs and
+.B mhvtl-fabrics
+does not own.
 A start of the unit outside the helper (at boot, or by hand) is not
 checked.
 .B mhvtl-control-apply

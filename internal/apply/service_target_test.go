@@ -1,6 +1,7 @@
 package apply
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -849,5 +850,78 @@ func TestServiceTargetLibraryAddedAfterPlan(t *testing.T) {
 		if strings.HasPrefix(c, "stop ") || strings.HasPrefix(c, "start ") {
 			t.Errorf("refused action ran %q", c)
 		}
+	}
+}
+
+// A target start or restart through the helper starts
+// mhvtl-fabrics.service, whose apply would adopt a target fabrics.conf
+// plans that exists in configfs and mhvtl-fabrics does not own: the plan
+// and the action are refused, naming it, and nothing is stopped or
+// started. A start with the unit active leaves it alone, and a target the
+// state file lists is mhvtl-fabrics' own.
+func TestServiceTargetForeignFabricsTarget(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	setup := func(t *testing.T, fabricsState string) (*env, *fakeSystem) {
+		t.Helper()
+		e, s := newExecEnv(t)
+		e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
+		e.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
+		sysctl := e.cfg.Systemctl
+		e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) == 4 && args[0] == "show" && args[1] == "--property=LoadState" && args[3] == FabricsUnit {
+				return []byte("loaded\n"), nil
+			}
+			return sysctl(ctx, args...)
+		}
+		e.rebuild()
+		for name, data := range map[string]string{
+			mhvtlConf:   string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n",
+			fabricsConf: fabConf,
+		} {
+			if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", lib10, "tpgt_1"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if fabricsState != "" {
+			if err := os.WriteFile(e.cfg.FabricsState, []byte(fabricsState), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return e, s
+	}
+	for _, c := range []struct {
+		name, action, fabrics, state string
+		refused                      bool
+	}{
+		{"restart", ActionRestart, "active", "", true},
+		{"start with the unit inactive", ActionStart, "inactive", "", true},
+		{"start with the unit failed", ActionStart, "failed", "", true},
+		{"start with the unit active", ActionStart, "active", "", false},
+		{"restart of an owned target", ActionRestart, "active", "iscsi " + lib10 + "\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, s := setup(t, c.state)
+			s.state[FabricsUnit] = c.fabrics
+			pr := e.do(target(OpServicePlan, c.action, nil))
+			if !c.refused {
+				if pr.Result != ResultValidated {
+					t.Fatalf("service_plan: %+v", pr)
+				}
+				return
+			}
+			if pr.Result != ResultRefused || pr.Error != ErrInvalid || !strings.Contains(pr.Message, lib10) || !strings.Contains(pr.Message, "does not own") {
+				t.Fatalf("service_plan: %+v", pr)
+			}
+			resp := e.do(target(OpService, c.action, targetUnits))
+			if resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, lib10) {
+				t.Errorf("service: %+v", resp)
+			}
+			if got := filterPrefix(s.calls, "start ", "stop "); len(got) != 0 {
+				t.Errorf("calls %v", got)
+			}
+		})
 	}
 }
