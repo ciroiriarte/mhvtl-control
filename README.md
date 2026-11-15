@@ -499,9 +499,11 @@ sends; applies are never queued. A preview during which an apply started
 or finished gets 409 `conflict` with no version and no diff. Read
 `GET .../config` again, or preview again, once it has finished.
 `GET /api/v1/transports/iscsi/config` answers it too, but only with
-`-api-token`. An apply answers with the version it was made against, which
-is stale once it has been sent, and for a bind the
-target as configfs shows it afterwards. To apply exactly what was
+`-api-token`. An answer from the helper (a preview's or an apply's)
+holds the version of the file as read again after that answer: an apply's
+is the one the next change takes as `base_sha256`. It is left out when
+another request to the helper started or finished in between. A bind's
+apply also answers the target as configfs shows it afterwards. To apply exactly what was
 previewed, send the same body with `"dry_run": false` and
 `"base_sha256"` set to the preview's `sha256`: if `fabrics.conf` changed in
 between, the answer is 409 with `error.code` `conflict` and

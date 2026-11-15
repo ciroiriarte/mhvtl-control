@@ -226,6 +226,19 @@ func (s *Server) currentFabricsVersion() *string {
 	return f.versionOf()
 }
 
+// versionSince is the version of fabrics.conf as it is now, read after a
+// helper call: "" when it does not exist, nil when it cannot be read, or
+// when the sequence is not seq, the one a read before the call was made
+// at advanced by the call's own steps: another call that may have changed
+// the file started or ended meanwhile, or is in flight.
+func (s *Server) versionSince(seq uint64) *string {
+	g, err := s.readFabricsFiles()
+	if err != nil || g.seq != seq {
+		return nil
+	}
+	return g.versionOf()
+}
+
 // deviceOf finds device.conf's Library or Drive id.
 func deviceOf(dev *conffile.DeviceConf, id int) *iscsiDeviceDTO {
 	for _, st := range dev.Stanzas() {
@@ -379,11 +392,14 @@ type iscsiTargetStateDTO struct {
 
 // iscsiWriteDTO answers the iSCSI writes: the helper's answer and the
 // change, its diff with every secret masked. SHA256 is the version of
-// fabrics.conf as the daemon read it ("" when absent), what an apply of the
-// previewed change sends as base_sha256; CurrentSHA256 that of the file a
-// conflict found. Both are left out while a write of the file is in
-// flight (fabricsFiles.busy). Result "unchanged" is an edit that leaves the file
-// as it is, not sent to the helper.
+// fabrics.conf ("" when absent): for an answer of the helper, as the daemon
+// read it again after that answer, what an apply of the previewed change
+// sends as base_sha256; else as read for the request. CurrentSHA256 is
+// that of the file a conflict found. Both are left out while a write of
+// the file is in flight (fabricsFiles.busy), and from a helper's answer
+// when another call that may have changed the file started or ended since
+// the request read it (versionSince). Result "unchanged" is an edit that
+// leaves the file as it is, not sent to the helper.
 type iscsiWriteDTO struct {
 	DryRun        bool                 `json:"dry_run"`
 	Action        string               `json:"action"`
@@ -843,15 +859,18 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	if setsSecret {
 		before = conffile.PlaceholdSecrets(before, *q.target, q.setsCHAP, q.setsMutualCHAP)
 	}
+	// The version answered is the file's after the call, read anew: the
+	// one read before it is stale once a write reached the helper.
+	now := s.versionSince(f.seq + seqSteps(hreq.Op))
 	out := iscsiWriteDTO{
 		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: previewDiff(before, next, own, stored),
-		SHA256: f.versionOf(), Result: resp.Result, Message: mask(resp.Message),
+		SHA256: now, Result: resp.Result, Message: mask(resp.Message),
 		JournalTail: external(resp.JournalTail), RollbackDir: resp.RollbackDir,
 	}
 	if resp.Result == apply.ResultConflict {
 		// The helper answers the file's real hash, in current_sha256 and
 		// in its message; the client gets its version.
-		out.CurrentSHA256 = s.currentFabricsVersion()
+		out.CurrentSHA256 = now
 		out.Message = fabricsChanged
 	}
 	if code != "" {

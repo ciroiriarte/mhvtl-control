@@ -1502,3 +1502,47 @@ func TestISCSIWriteRacingWriteNoOracle(t *testing.T) {
 		t.Errorf("W1 = %s, want applied", w1Right)
 	}
 }
+
+// TestISCSIWriteAnswersVersionAfter: a write's answer holds the version
+// of the file after the helper answered, the one GET config answers next
+// and a following apply takes as base, not the one it was made against.
+// A dry run's answer holds the same version as GET config. When another
+// call that may change the file reached the helper meanwhile, no version
+// is answered.
+func TestISCSIWriteAnswersVersionAfter(t *testing.T) {
+	e := iscsiEnv(t, fabricsSample, "reload", nil)
+	helperLikeFabrics(e)
+	get := func() string {
+		t.Helper()
+		return str(decodeBody[iscsiConfigDTO](t, e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil)).SHA256)
+	}
+	pre := get()
+	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30, "dry_run": true, "base_sha256": pre})
+	if dry := str(decodeBody[iscsiWriteDTO](t, rec).SHA256); rec.Code != http.StatusOK || dry != get() {
+		t.Fatalf("dry run: %d %s, GET answers %s", rec.Code, rec.Body, get())
+	}
+	rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30, "base_sha256": get()})
+	applied := str(decodeBody[iscsiWriteDTO](t, rec).SHA256)
+	if rec.Code != http.StatusOK || applied == "<absent>" || applied == pre || applied != get() {
+		t.Fatalf("apply: %d %s; before %s, GET after %s", rec.Code, rec.Body, pre, get())
+	}
+	rec = e.call(http.MethodPatch, "/api/v1/transports/iscsi", map[string]any{"base_name": baseName + "x", "base_sha256": applied})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply on the answered version: %d %s", rec.Code, rec.Body)
+	}
+
+	// Another call that may change the file reaches the helper while the
+	// write is in it.
+	inner := e.h.answer
+	e.answer(func(req apply.Request) apply.Response {
+		e.srv.fabricsMu.Lock()
+		e.srv.fabricsSeq += 2
+		e.srv.fabricsRev++
+		e.srv.fabricsMu.Unlock()
+		return inner(req)
+	})
+	rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30, "initiators": []string{pbsIQN}})
+	if got := decodeBody[iscsiWriteDTO](t, rec); got.SHA256 != nil || got.CurrentSHA256 != nil {
+		t.Errorf("apply that another call overlapped: %d %s, want no version", rec.Code, rec.Body)
+	}
+}
