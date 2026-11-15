@@ -430,8 +430,8 @@ func TestFabricsReconcileFailure(t *testing.T) {
 	if resp.Result != ResultError || resp.Error != ErrFabricsState {
 		t.Fatalf("got %+v, want error fabrics_recovery_required", resp)
 	}
-	for _, want := range []string{"configfs may not match", "journalctl -u " + FabricsUnit, "systemctl reload " + FabricsUnit,
-		"systemctl stop " + FabricsUnit + " or a successful reload clears this"} {
+	for _, want := range []string{"configfs may not match", "journalctl -u " + FabricsUnit, "retries systemctl reload " + FabricsUnit,
+		"cleared when that retry succeeds or finds the unit stopped, or by a reboot"} {
 		if !strings.Contains(resp.Message, want) {
 			t.Errorf("message %q lacks %q", resp.Message, want)
 		}
@@ -1356,5 +1356,35 @@ func TestFabricsMarkerRemovedFileBack(t *testing.T) {
 	}
 	if v := f.verbs(); len(v) != 2 || v[0] != "reload "+FabricsUnit || v[1] != "reload "+FabricsUnit {
 		t.Errorf("systemctl %v, want the retry's reload and the apply's, no stop", v)
+	}
+}
+
+// TestFabricsMarkerEarlierBoot: a marker records its boot; after a reboot
+// (configfs starts empty and the unit applies the file when mhVTL starts)
+// it no longer holds: a plan ignores it, and an apply removes it without a
+// retry.
+func TestFabricsMarkerEarlierBoot(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	f.fail[FabricsReload] = errors.New("job failed")
+	f.failAlways[FabricsReload] = errors.New("job failed")
+	f.do(f.fabricsReq(OpFabrics, strings.Replace(fabConf, fabSecret, fabNewSecret, 1)))
+	m, err := f.h.readFabricsMarker()
+	if err != nil || m == nil || m.BootID != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("marker %+v, %v; want one with this boot's ID", m, err)
+	}
+	if err := os.WriteFile(f.cfg.BootIDPath, []byte("99999999-2222-3333-4444-555555555555\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	delete(f.failAlways, FabricsReload)
+	f.systemctl = nil
+	if plan := f.do(f.fabricsReq(OpFabricsPlan, fabConf)); plan.Result != ResultValidated || plan.Message != "" || !f.markerExists() {
+		t.Fatalf("plan after a reboot: %+v, marker %v; want validated without a note, the marker left", plan, f.markerExists())
+	}
+	if resp := f.do(f.fabricsReq(OpFabrics, fabConf)); resp.Result != ResultApplied || f.markerExists() {
+		t.Fatalf("apply after a reboot: %+v, marker %v", resp, f.markerExists())
+	}
+	if v := f.verbs(); len(v) != 1 || v[0] != "reload "+FabricsUnit {
+		t.Errorf("systemctl %v, want the apply's reload alone", v)
 	}
 }

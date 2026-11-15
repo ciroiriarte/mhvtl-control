@@ -547,11 +547,14 @@ names the change brings (a new initiator, target or CHAP name, portal or
 base name) are shown as `********` too, so that the answer does not tell
 whether a name the client chose is, or contains, a stored secret. When the reload of the restored file fails too,
 configfs may not match `fabrics.conf`: the answer is
-`fabrics_recovery_required`; check `journalctl -u mhvtl-fabrics`, then run
-`systemctl reload mhvtl-fabrics`. Until a reload succeeds or the unit is
-stopped (`systemctl stop mhvtl-fabrics`), each iSCSI change retries the
-reload first and is refused while it fails; other requests go ahead. A dry
-run does not retry: it says that the apply will.
+`fabrics_recovery_required`; check `journalctl -u mhvtl-fabrics` and fix
+the cause. The helper records this, and the next iSCSI change retries the
+reload first (a stop, if the rollback removed a file the change had
+created and there is still none) and is refused while it fails; other
+requests go ahead. A dry run does not retry: it says that the apply will.
+The record is cleared when that retry succeeds or finds the unit stopped,
+and ignored after a reboot (mhVTL then applies the file afresh); a reload
+or stop by hand does not clear it, the next iSCSI change does.
 When the unit is left failed and its state file `/run/mhvtl/fabrics.state`
 still lists targets (its `ExecStopPost=mhvtl-fabrics remove` failed too) or
 cannot be read, the answer is also `fabrics_recovery_required`: targets from

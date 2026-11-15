@@ -127,13 +127,11 @@ and leaves the unit failed; the next export starts it again. When the
 reload of the restored file fails too, the answer is
 .B fabrics_recovery_required
 (configfs may not match the file): check
-.BR "journalctl -u mhvtl-fabrics" ,
-then run
-.BR "systemctl reload mhvtl-fabrics" .
-Until a reload succeeds or
-.B "systemctl stop mhvtl-fabrics"
-stops the unit, each iSCSI change retries the reload first and is refused
-while it fails (a dry run only says so); other requests go ahead.
+.B "journalctl -u mhvtl-fabrics"
+and fix the cause. The next iSCSI change retries the reload first and is
+refused while it fails (a dry run only says so); other requests go ahead.
+That record is cleared when the retry succeeds or finds the unit stopped,
+and ignored after a reboot; a reload by hand does not clear it.
 When the unit is left failed and its state file
 .I /run/mhvtl/fabrics.state
 still lists targets, or cannot be read, the answer is

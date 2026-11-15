@@ -791,23 +791,52 @@ func (h *Helper) reconcileFailed(err error, removed bool) string {
 
 // fabricsMarkerFile, in StateDir, records that a rollback restored
 // fabrics.conf but could not make the targets follow it: configfs may not
-// match the file. Only fabrics ops read it.
+// match the file. Only fabrics ops read it. It holds for the boot it was
+// written in: configfs starts empty at boot, and mhvtl-fabrics.service
+// applies the file when mhVTL starts.
 const fabricsMarkerFile = "fabrics-reconcile.json"
 
 type fabricsMarker struct {
 	V     int       `json:"v"`
 	Since time.Time `json:"since"`
+	// BootID is the boot the marker was written in
+	// (/proc/sys/kernel/random/boot_id).
+	BootID string `json:"boot_id"`
 	// Removed: the restore removed a fabrics.conf the apply had created,
 	// and the reconcile is a stop.
 	Removed bool `json:"removed"`
 }
 
 func (h *Helper) markFabrics(removed bool) error {
-	b, err := json.Marshal(fabricsMarker{V: Version, Since: h.cfg.Now().UTC(), Removed: removed})
+	boot, err := h.bootID()
+	if err != nil {
+		return err
+	}
+	b, err := json.Marshal(fabricsMarker{V: Version, Since: h.cfg.Now().UTC(), BootID: boot, Removed: removed})
 	if err != nil {
 		return err
 	}
 	return conffile.WriteAtomic(h.cfg.StateDir, fabricsMarkerFile, b, 0o600, -1, -1)
+}
+
+// liveMarker returns the marker of this boot, nil when there is none. A
+// marker of an earlier boot is ignored, and removed when remove is set.
+func (h *Helper) liveMarker(remove bool) (*fabricsMarker, error) {
+	m, err := h.readFabricsMarker()
+	if err != nil || m == nil {
+		return nil, err
+	}
+	boot, err := h.bootID()
+	if err != nil {
+		return nil, err
+	}
+	if m.BootID == boot {
+		return m, nil
+	}
+	if remove {
+		return nil, h.clearFabricsMarker()
+	}
+	return nil, nil
 }
 
 // readFabricsMarker returns the marker, nil when there is none. It does
@@ -843,12 +872,13 @@ func (h *Helper) clearFabricsMarker() error {
 // retryReconcile runs before a fabrics apply (a plan only reads the
 // marker, peekMarker) while the fabrics marker exists: it has the targets follow fabrics.conf as it is now
 // (reconcileFabrics) and removes the marker when that succeeds, an
-// inactive unit included. Otherwise the op is refused with
+// inactive unit included. A marker of an earlier boot is removed without a
+// retry. Otherwise the op is refused with
 // fabrics_recovery_required and the marker stays; a *fabricsLeftover
 // removes it, as the state file then holds what to remove. Each retry is
 // audited, as it may reload or stop the unit.
 func (h *Helper) retryReconcile(ctx context.Context, rec *AuditRecord) error {
-	m, err := h.readFabricsMarker()
+	m, err := h.liveMarker(true)
 	if err != nil || m == nil {
 		return err
 	}
@@ -884,7 +914,7 @@ func (h *Helper) retryReconcile(ctx context.Context, rec *AuditRecord) error {
 // target (foreignOnDisk), the plan is refused the same way, with
 // fabrics_recovery_required.
 func (h *Helper) peekMarker() (string, error) {
-	m, err := h.readFabricsMarker()
+	m, err := h.liveMarker(false)
 	if err != nil || m == nil {
 		return "", err
 	}
@@ -1018,20 +1048,20 @@ func reconcileAdvice(err error, removed bool) string {
 }
 
 // markerAdvice is the message of a reconcile that failed with the fabrics
-// marker recorded: what to run by hand, and that only fabrics requests
-// wait for it.
+// marker recorded: what to check, what clears the marker, and that only
+// fabrics requests wait for it.
 func markerAdvice(err error, removed bool) string {
 	var foreign *fabricsForeign
 	if errors.As(err, &foreign) {
-		return fmt.Sprintf("%v; remove that target from configfs, or change %s by hand so that it no longer names it; until then each iSCSI change retries it first and is refused, and other requests go ahead",
+		return fmt.Sprintf("%v; remove that target from configfs, or change %s by hand so that it no longer names it: the next iSCSI change retries the reload first and is refused while the target is there; this is cleared when that retry succeeds or finds the unit stopped, or by a reboot; other requests go ahead",
 			err, fabricsConf)
 	}
 	verb := FabricsReload
 	if removed {
 		verb = fabricsStop
 	}
-	return fmt.Sprintf("%v; configfs may not match %s: check journalctl -u %s, then systemctl %s %s; systemctl stop %s or a successful reload clears this; until then each iSCSI change retries it first, and other requests go ahead",
-		err, fabricsConf, FabricsUnit, verb, FabricsUnit, FabricsUnit)
+	return fmt.Sprintf("%v; configfs may not match %s: check journalctl -u %s and fix the cause; the next iSCSI change retries systemctl %s %s first and is refused while it fails; this is cleared when that retry succeeds or finds the unit stopped, or by a reboot; other requests go ahead",
+		err, fabricsConf, FabricsUnit, verb, FabricsUnit)
 }
 
 // errText is err with the stderr of a failed command, which Output keeps
