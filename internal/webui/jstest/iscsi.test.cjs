@@ -286,6 +286,9 @@ test("iscsiOutcome maps write responses", () => {
   const c = core.iscsiOutcome({ result: "conflict", error: { code: "conflict", message: "changed" } }, 409);
   assert.strictEqual(c.kind, "conflict");
   assert.ok(/changed since it was read/.test(c.text));
+  const unk = core.iscsiOutcome({ dry_run: false, result: "unknown", error: { code: "conflict", message: "another request reached the apply helper" } }, 409);
+  assert.strictEqual(unk.kind, "conflict");
+  assert.ok(/may have been made/.test(unk.text) && !/changed since it was read/.test(unk.text), unk.text);
   const busy = core.iscsiOutcome({ result: "apply_in_progress", error: { code: "apply_in_progress", message: "another apply is running" } }, 409);
   assert.deepStrictEqual([busy.kind, /Another change is being applied/.test(busy.text)], ["conflict", true]);
   const rec = core.iscsiOutcome({ result: "recovered", error: { code: "recovered", message: "m" } }, 409);

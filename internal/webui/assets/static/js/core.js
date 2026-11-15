@@ -1972,6 +1972,12 @@
     }
     if (status === 409 || result === "conflict" || code === "conflict") {
       out.kind = "conflict";
+      if (result === "unknown") {
+        // An apply another request to the helper overlapped: its answer is
+        // not passed on, and the change may have been made.
+        out.text = "Another request reached the apply helper while this change was sent, so the change may have been made. The configuration was reloaded: check it before making the change again.";
+        return out;
+      }
       switch (code) {
         case "conflict":
           out.text = "fabrics.conf changed since it was read. The configuration was reloaded: check it and make the change again.";
