@@ -124,6 +124,12 @@ active, which start the unit, are refused the same way when the file plans
 a target that exists in configfs and
 .B mhvtl-fabrics
 does not own.
+A rollback or crash recovery of a target restart or stop that would start
+.B mhvtl.target
+again is checked the same way: it then leaves the target and the bay
+monitor stopped, completes, and answers
+.B fabrics_recovery_required
+naming the target.
 A start of the unit outside the helper (at boot, or by hand) is not
 checked.
 .B mhvtl-control-apply

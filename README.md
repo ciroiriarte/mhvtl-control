@@ -583,7 +583,12 @@ helper cannot tell the backend. A
 restart of `mhvtl.target` through `POST /api/v1/service/{action}`, and a start of it while
 `mhvtl-fabrics.service` is not active, start that unit, so they are refused
 with `invalid`, naming the target, when `fabrics.conf` plans one that
-exists in configfs and `mhvtl-fabrics` does not own. A start
+exists in configfs and `mhvtl-fabrics` does not own. A rollback or crash
+recovery of a target restart or stop that would start `mhvtl.target` again
+is checked the same way: it then leaves `mhvtl.target` (and the bay
+monitor) stopped, completes, and answers `500 fabrics_recovery_required`
+naming the target; remove that target or unbind it, then start
+`mhvtl.target`. A start
 of `mhvtl-fabrics.service` outside the helper (at boot, or by hand) is not
 checked at all. The ownership checks look at configfs when
 the helper checks, not when `mhvtl-fabrics` applies: a target someone

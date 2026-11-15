@@ -64,8 +64,9 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 	if err := h.saveIntent(it); err != nil {
 		return responseOf(err)
 	}
+	var notStarted *targetNotStarted
 	if units {
-		if err := h.cfg.Lifecycle.Start(ctx, it); err != nil {
+		if err := h.cfg.Lifecycle.Start(ctx, it); err != nil && !errors.As(err, &notStarted) {
 			return responseOf(fmt.Errorf("recovery: starting: %w", err))
 		}
 	}
@@ -116,6 +117,12 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 		msg += "; " + restoreConflicts(conflicts).Error()
 	}
 	resp := Response{Result: ResultRecovered, Message: msg, Conflicts: conflicts}
+	if notStarted != nil {
+		// The intent is gone, as after any recovery; the answer is an
+		// error so the client sees what is left to do.
+		resp.Result, resp.Error = ResultError, ErrFabricsState
+		resp.Message += "; " + notStarted.Error()
+	}
 	if it.Exec != nil {
 		resp.OrphanedMedia = it.Exec.NewMedia
 	}

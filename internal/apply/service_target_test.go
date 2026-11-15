@@ -971,3 +971,81 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 		})
 	}
 }
+
+// A target stop that died after it journaled stopping mhvtl.target left
+// the target down; the next request's recovery starts it again, which
+// starts mhvtl-fabrics.service. With fabrics.conf planning a target that
+// exists in configfs and mhvtl-fabrics does not own, it is not started:
+// the recovery completes, removes the intent and answers an error naming
+// the target, and leaves the target and the bay monitor stopped. With the
+// target owned, the recovery starts mhvtl.target as before.
+func TestServiceTargetStopRecoverForeignFabricsTarget(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	for _, owned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("owned %v", owned), func(t *testing.T) {
+			e, s := newExecEnv(t)
+			standalone34(e)
+			partOf(s)
+			e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
+			e.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
+			sysctl := e.cfg.Systemctl
+			e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
+				if len(args) == 4 && args[0] == "show" && args[1] == "--property=LoadState" && args[3] == FabricsUnit {
+					return []byte("loaded\n"), nil
+				}
+				return sysctl(ctx, args...)
+			}
+			e.rebuild()
+			files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n", fabricsConf: fabConf}
+			for name, data := range files {
+				if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", lib10, "tpgt_1"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if owned {
+				if err := os.WriteFile(e.cfg.FabricsState, []byte("iscsi "+lib10+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.state[FabricsUnit] = "active"
+			s.state[bayMonitor] = "active"
+			e.h.killPoint = func(st string) bool { return st == "stop "+mhvtlTarget }
+			if resp := e.do(target(OpService, ActionStop, targetUnits)); resp.Result != ResultError || !e.intentExists() {
+				t.Fatalf("killed: %+v", resp)
+			}
+			// The stop ran before the helper died.
+			s.mu.Lock()
+			for _, u := range []string{mhvtlTarget, FabricsUnit, bayMonitor} {
+				s.state[u] = "inactive"
+			}
+			s.calls = nil
+			s.mu.Unlock()
+			e.rebuild()
+			resp := e.do(target(OpServicePlan, ActionStop, nil))
+			if e.intentExists() {
+				t.Errorf("intent kept: %+v", resp)
+			}
+			if owned {
+				if resp.Result != ResultRecovered || !slices.Contains(e.calls(), "start "+mhvtlTarget) {
+					t.Errorf("owned: %+v, calls %v", resp, e.calls())
+				}
+				return
+			}
+			if resp.Result != ResultError || resp.Error != ErrFabricsState || !strings.Contains(resp.Message, lib10) || !strings.Contains(resp.Message, "does not own") {
+				t.Errorf("recovery: %+v", resp)
+			}
+			for _, u := range []string{mhvtlTarget, bayMonitor} {
+				if slices.Contains(e.calls(), "start "+u) || s.unitState(u) != "inactive" {
+					t.Errorf("%s started (%s): %v", u, s.unitState(u), e.calls())
+				}
+			}
+			// Nothing is left to recover: the next request plans.
+			if next := e.do(target(OpServicePlan, ActionStart, nil)); next.Result == ResultRecovered {
+				t.Errorf("next request recovered again: %+v", next)
+			}
+		})
+	}
+}

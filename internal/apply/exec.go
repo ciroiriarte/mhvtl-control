@@ -1273,6 +1273,11 @@ func (x *execution) rollback(ctx context.Context, cause error) Response {
 	}
 	if err == nil {
 		resp.Unplaced, err = h.unwind(rctx, x.it, again)
+		var tns *targetNotStarted
+		if errors.As(err, &tns) {
+			resp.Message += "; " + tns.Error()
+			err = nil
+		}
 	}
 	if err == nil {
 		err = h.removeIntent()
@@ -1444,8 +1449,16 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 		return unplaced, err
 	}
 	// The target starts once the libraries are online (see finish); it
-	// also pulls in mhvtl-control-apply-recover.service, harmlessly.
+	// also pulls in mhvtl-control-apply-recover.service, harmlessly. It
+	// starts mhvtl-fabrics.service too, so it is checked as a target start
+	// through the helper is (checkTargetFabrics) against the files as
+	// restored: when the unit's apply would adopt a foreign target, or
+	// that cannot be told, the target and the bay monitor, WantedBy= it,
+	// stay stopped (targetNotStarted).
 	if ex.TargetStopped {
+		if err := h.checkTargetFabrics(ctx, files, false); err != nil {
+			return unplaced, &targetNotStarted{err: err}
+		}
 		if _, err := h.cfg.Systemctl(ctx, "start", mhvtlTarget); err != nil {
 			return unplaced, fmt.Errorf("systemctl start %s: %w", mhvtlTarget, err)
 		}
@@ -1457,6 +1470,22 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 	}
 	return unplaced, nil
 }
+
+// targetNotStarted is an unwind that left mhvtl.target stopped, and
+// everything else as it should be, because starting it could have
+// mhvtl-fabrics adopt a target it does not own (err, from
+// checkTargetFabrics). The rollback or recovery that met it completes and
+// removes the intent rather than keep it: the target stopped is a state a
+// later start through the helper checks the same way, and a kept intent
+// would have every request, the iSCSI unbind that resolves it included,
+// recover first and fail.
+type targetNotStarted struct{ err error }
+
+func (e *targetNotStarted) Error() string {
+	return mhvtlTarget + " was left stopped: " + e.err.Error() + "; then start " + mhvtlTarget + " (service start)"
+}
+
+func (e *targetNotStarted) Unwrap() error { return e.err }
 
 // writePlacement writes p into library id's restored library_contents. A
 // file that is not the original the intent recorded changed after the
