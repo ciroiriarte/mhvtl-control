@@ -1549,6 +1549,20 @@ func TestFabricsLeftoverNameNoOracle(t *testing.T) {
 	}
 }
 
+// TestFabricsMaskCutsHashes: the helper's masks cut a SHA-256 before
+// masking the secrets in it; a secret inside the hash would otherwise
+// leave the runs on either side, too short for the daemon's cut.
+func TestFabricsMaskCutsHashes(t *testing.T) {
+	hash := conffile.Hash([]byte(fabConf))
+	m := fabricsMask{secrets: []string{hash[20:30]}}
+	text := "fabrics.conf: conflict (now sha256 \"" + hash + "\")"
+	for name, got := range map[string]string{"output": m.output(text), "message": m.message(text)} {
+		if strings.Contains(got, hash[:20]) || strings.Contains(got, hash[30:]) || !strings.Contains(got, "(hash not shown)") {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+}
+
 // TestFabricsBrokenFileNoLockUp: mhvtl-fabrics fails every reload of a
 // file with a target it would not plan. A rollback, a marker's retry and a
 // crash recovery that find such a file on disk leave it not applied rather

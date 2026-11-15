@@ -1195,6 +1195,16 @@ const SecretMask = "********"
 
 const fabMask = SecretMask
 
+// sha256Run is a run of 64 or more hex digits: a SHA-256 in hex, such as
+// the real hash of fabrics.conf a conflict quotes ("now sha256").
+var sha256Run = regexp.MustCompile(`[0-9A-Fa-f]{64,}`)
+
+// CutHashes replaces every SHA-256 in s: the hash of fabrics.conf would let
+// a client test guesses at its CHAP secrets offline. Run it before the
+// secrets are masked, so that a secret inside a hash cannot split it into
+// shorter runs.
+func CutHashes(s string) string { return sha256Run.ReplaceAllString(s, "(hash not shown)") }
+
 // MaskSecrets replaces each secret in s with SecretMask, longest first so
 // a secret that contains another is masked whole.
 func MaskSecrets(s string, secrets []string) string {

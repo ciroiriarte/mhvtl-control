@@ -1314,7 +1314,7 @@ func (h *Helper) fabricsMask(stored []byte, newer ...[]byte) fabricsMask {
 // brings are masked whole: either way the answer is the same whether or
 // not a name the client chose contains or equals a stored secret.
 func (m fabricsMask) output(s string) string {
-	return conffile.MaskSecretsExcept(s, m.secrets, m.keepOut, m.hideOut)
+	return conffile.MaskSecretsExcept(conffile.CutHashes(s), m.secrets, m.keepOut, m.hideOut)
 }
 
 // message masks a message the helper composed, whose parts from outside
@@ -1322,9 +1322,12 @@ func (m fabricsMask) output(s string) string {
 // systemctl errors, but no journal. Secrets inside the names of every
 // file are left as they are, so that a new name the message gives, such
 // as a derived target name, shows as the client sent it whether or not it
-// contains a stored secret.
+// contains a stored secret. Both cut every SHA-256 first
+// (conffile.CutHashes), such as the hash of fabrics.conf a restore
+// conflict quotes: masked first, a secret inside it would split it into
+// runs the daemon's cut no longer finds.
 func (m fabricsMask) message(s string) string {
-	return conffile.MaskSecretsExcept(s, m.secrets, m.keepMsg, nil)
+	return conffile.MaskSecretsExcept(conffile.CutHashes(s), m.secrets, m.keepMsg, nil)
 }
 
 // name masks a target name mhvtl-fabrics' state file lists: one that a
