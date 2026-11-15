@@ -506,7 +506,12 @@ is missing or unreadable. It also refuses with `invalid` a file that names a
 target already in configfs that `mhvtl-fabrics` does not own (not listed in
 `/run/mhvtl/fabrics.state`), such as one made with targetcli:
 `mhvtl-fabrics apply` would take it over, remove the ACLs and LUNs the
-record does not list, and delete it on unbind. The other way round, a
+record does not list, and delete it on unbind. Every reload the helper runs
+on a file it did not just check (the file a rollback or a crash recovery
+put back, or the one a retry finds) gets the same check first: when that
+file names such a target the helper does not reload, and answers
+`fabrics_recovery_required` naming it; remove that target, or change
+`fabrics.conf` by hand, and the next iSCSI change retries. The other way round, a
 configuration apply that changes `device.conf` so that a target of
 `fabrics.conf` would no longer plan (its library deleted, two of its drives
 given the same Slot) is refused with `invalid`, naming the target: stop

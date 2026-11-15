@@ -1132,3 +1132,82 @@ func TestFabricsPruneRollbackCopies(t *testing.T) {
 		t.Errorf("another file's copy removed: %v", err)
 	}
 }
+
+// TestFabricsReloadGuardsForeignTargets: a reload the helper runs on a file
+// it did not just check, the file a rollback or crash recovery restored or
+// the one the marker's retry finds, gets the foreign-target check too. When
+// that file names a target configfs has and mhvtl-fabrics does not own, the
+// helper does not reload: it answers fabrics_recovery_required naming the
+// target and keeps the marker, so the next fabrics op retries once the
+// target is resolved.
+func TestFabricsReloadGuardsForeignTargets(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	next := strings.Replace(fabConf, "vtl1:mhvtl", "vtl1:new", 1) // plans vtl1:new.lib10, not in configfs
+	setup := func(t *testing.T) *fabEnv {
+		f := newFabEnv(t)
+		f.writeConf(fabricsConf, fabConf, 0o600)
+		f.mkTarget(lib10)
+		if err := os.WriteFile(f.cfg.FabricsState, []byte("iscsi iqn.2003-01.org.linux-iscsi.vtl1:other\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	refused := func(t *testing.T, f *fabEnv, resp Response, what string) {
+		t.Helper()
+		if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, lib10) || !strings.Contains(resp.Message, "does not own") ||
+			strings.Contains(resp.Message, "then systemctl reload") {
+			t.Fatalf("%s: %+v, want fabrics_recovery_required naming %s without advising a reload", what, resp, lib10)
+		}
+		for _, v := range f.verbs() {
+			if strings.HasPrefix(v, "reload ") {
+				t.Errorf("%s: systemctl %v, want no reload of the file naming the foreign target", what, f.verbs())
+			}
+		}
+		if !f.markerExists() || f.intentExists() {
+			t.Errorf("%s: marker %v, intent %v; want the marker and no intent", what, f.markerExists(), f.intentExists())
+		}
+		if string(f.read(fabricsConf)) != fabConf {
+			t.Errorf("%s: fabrics.conf not restored", what)
+		}
+	}
+	retry := func(t *testing.T, f *fabEnv) {
+		t.Helper()
+		f.systemctl = nil
+		refused(t, f, f.do(f.fabricsReq(OpFabrics, next)), "retry while foreign")
+		// The operator removes the foreign target: the retry reloads and
+		// clears the marker, and the op goes on.
+		if err := os.RemoveAll(filepath.Join(f.cfg.TargetRoot, "iscsi", lib10)); err != nil {
+			t.Fatal(err)
+		}
+		f.systemctl = nil
+		if resp := f.do(f.fabricsReq(OpFabrics, next)); resp.Result != ResultApplied || f.markerExists() {
+			t.Fatalf("after the target was removed: %+v, marker %v", resp, f.markerExists())
+		}
+		if v := f.verbs(); len(v) != 2 || v[0] != "reload "+FabricsUnit || v[1] != "reload "+FabricsUnit {
+			t.Errorf("systemctl %v, want the retried reload and the apply's", v)
+		}
+	}
+
+	t.Run("rollback", func(t *testing.T) {
+		f := setup(t)
+		f.fail[FabricsReload] = errors.New("job failed")
+		resp := f.do(f.fabricsReq(OpFabrics, next))
+		if v := f.verbs(); len(v) != 1 || v[0] != "reload "+FabricsUnit {
+			t.Fatalf("systemctl %v, want the failed reload alone", v)
+		}
+		f.systemctl = nil
+		refused(t, f, resp, "rollback")
+		retry(t, f)
+	})
+	t.Run("crash recovery", func(t *testing.T) {
+		f := setup(t)
+		f.h.killPoint = func(step string) bool { return step == "applying" }
+		if resp := f.do(f.fabricsReq(OpFabrics, next)); resp.Result != ResultError || !f.intentExists() {
+			t.Fatalf("killed apply: %+v", resp)
+		}
+		f.h.killPoint = func(string) bool { return false }
+		f.systemctl = nil
+		refused(t, f, f.do(Request{Op: OpRecover, Actor: "test"}), "recovery")
+		retry(t, f)
+	})
+}

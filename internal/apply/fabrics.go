@@ -373,22 +373,37 @@ func (h *Helper) checkForeignTargets(conf *conffile.FabricsConf, files *fileSet)
 	if err != nil {
 		return err
 	}
+	foreign, err := h.foreignTargets(conf.PlannedWWNs(conffile.ParseDeviceConf(dc.data)))
+	if err != nil {
+		return err
+	}
+	if len(foreign) > 0 {
+		return refuse(ErrInvalid, "iSCSI target %s already exists in configfs and mhvtl-fabrics does not own it (not in %s): applying %s would take it over, remove the ACLs and LUNs it does not list, and delete it on unbind; choose another Target name or Base name, or remove that target first",
+			strings.Join(foreign, ", "), h.cfg.FabricsState, fabricsConf)
+	}
+	return nil
+}
+
+// foreignTargets returns the names of wwns that exist in configfs as
+// targets mhvtl-fabrics' state file does not list. The state file is read
+// only when one of them exists.
+func (h *Helper) foreignTargets(wwns []string) ([]string, error) {
 	var foreign []string
 	var owned map[string]bool
-	for _, wwn := range conf.PlannedWWNs(conffile.ParseDeviceConf(dc.data)) {
+	for _, wwn := range wwns {
 		st, err := os.Lstat(filepath.Join(h.cfg.TargetRoot, "iscsi", wwn))
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			continue
 		case err != nil:
-			return err
+			return nil, err
 		case !st.IsDir():
 			continue
 		}
 		if owned == nil {
 			list, err := fabricsOwned(h.cfg.FabricsState)
 			if err != nil {
-				return fmt.Errorf("%s exists in configfs and the state file cannot be read to tell whether mhvtl-fabrics owns it: %w", wwn, err)
+				return nil, fmt.Errorf("%s exists in configfs and the state file cannot be read to tell whether mhvtl-fabrics owns it: %w", wwn, err)
 			}
 			owned = map[string]bool{}
 			for _, o := range list {
@@ -399,9 +414,47 @@ func (h *Helper) checkForeignTargets(conf *conffile.FabricsConf, files *fileSet)
 			foreign = append(foreign, wwn)
 		}
 	}
+	return foreign, nil
+}
+
+// fabricsForeign is a reload the helper did not run: fabrics.conf as it is
+// on disk (a restored file, or the one a crash recovery or the marker's
+// retry finds) plans targets that exist in configfs and mhvtl-fabrics does
+// not own, which the reload would adopt (checkForeignTargets).
+type fabricsForeign struct {
+	wwns  []string
+	state string
+}
+
+func (e *fabricsForeign) Error() string {
+	return fmt.Sprintf("%s not reloaded: %s names iSCSI target %s, which exists in configfs and mhvtl-fabrics does not own (not in %s); a reload would take it over, remove the ACLs and LUNs it does not list, and delete it on unbind",
+		FabricsUnit, fabricsConf, strings.Join(e.wwns, ", "), e.state)
+}
+
+// foreignOnDisk runs the foreign-target check on fabrics.conf and
+// device.conf as they are on disk, right before the helper reloads the
+// unit with them. A file that does not exist, or that mhvtl-fabrics cannot
+// parse, creates no target: apply fails before it touches configfs (load,
+// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L80-L118).
+func (h *Helper) foreignOnDisk() error {
+	fc, err := readTarget(h.cfg.ConfigDir, fabricsConf)
+	if err != nil || !fc.exists {
+		return err
+	}
+	conf := conffile.ParseFabricsConf(fc.data)
+	if len(conf.Problems) > 0 {
+		return nil
+	}
+	dc, err := readTarget(h.cfg.ConfigDir, deviceConf)
+	if err != nil {
+		return err
+	}
+	foreign, err := h.foreignTargets(conf.PlannedWWNs(conffile.ParseDeviceConf(dc.data)))
+	if err != nil {
+		return err
+	}
 	if len(foreign) > 0 {
-		return refuse(ErrInvalid, "iSCSI target %s already exists in configfs and mhvtl-fabrics does not own it (not in %s): applying %s would take it over, remove the ACLs and LUNs it does not list, and delete it on unbind; choose another Target name or Base name, or remove that target first",
-			strings.Join(foreign, ", "), h.cfg.FabricsState, fabricsConf)
+		return &fabricsForeign{wwns: foreign, state: h.cfg.FabricsState}
 	}
 	return nil
 }
@@ -568,8 +621,10 @@ func (h *Helper) newFabricsRemoved(it *Intent) bool {
 // and it then keeps the state file, which a clean remove deletes
 // (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L530-L551);
 // that is a *fabricsLeftover. Any other state (a job still running) and a
-// failed systemctl are errors: the targets may not follow the file. It
-// runs to its end even when ctx ends.
+// failed systemctl are errors: the targets may not follow the file. A
+// reload is not run when the file would adopt a target mhvtl-fabrics does
+// not own (a *fabricsForeign): a stop removes only owned targets. It runs
+// to its end even when ctx ends.
 func (h *Helper) reconcileFabrics(ctx context.Context, removed bool) (string, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricsTimeout)
 	defer cancel()
@@ -592,6 +647,8 @@ func (h *Helper) reconcileFabrics(ctx context.Context, removed bool) (string, er
 	verb, done := FabricsReload, "reloaded "+FabricsUnit+" with it"
 	if removed {
 		verb, done = fabricsStop, "stopped "+FabricsUnit+", which removed its targets: it ran only for the start that failed"
+	} else if err := h.foreignOnDisk(); err != nil {
+		return "", err
 	}
 	if err := h.runFabrics(ctx, verb); err != nil {
 		return "", fmt.Errorf("systemctl %s %s with it failed too: %s", verb, FabricsUnit, errText(err))
@@ -836,6 +893,11 @@ func reconcileAdvice(err error, removed bool) string {
 // marker recorded: what to run by hand, and that only fabrics requests
 // wait for it.
 func markerAdvice(err error, removed bool) string {
+	var foreign *fabricsForeign
+	if errors.As(err, &foreign) {
+		return fmt.Sprintf("%v; remove that target from configfs, or change %s by hand so that it no longer names it; until then each iSCSI change retries it first and is refused, and other requests go ahead",
+			err, fabricsConf)
+	}
 	verb := FabricsReload
 	if removed {
 		verb = fabricsStop

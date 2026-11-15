@@ -89,6 +89,10 @@ cannot be read, or the file names a target already in configfs that
 does not own (not in
 .IR /run/mhvtl/fabrics.state ),
 which its apply would take over and later delete.
+It runs that check again before every reload of a file it did not just
+check (one a rollback or a recovery put back), and answers
+.B fabrics_recovery_required
+naming the target instead of reloading.
 A configuration apply that changes
 .I device.conf
 so that an exported target would no longer plan is refused too.
