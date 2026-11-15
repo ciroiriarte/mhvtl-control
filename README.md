@@ -454,11 +454,16 @@ configuration editor needs (see [Turn writes on](#turn-writes-on)).
   not read, which blocks every change until fixed by hand; or `plan`, a
   target it reads but would not export against `device.conf` (`target` is
   its ID), which an unbind of that target can fix. With more than one such
-  target, each can be unbound in turn: an unbind is refused only for a
-  problem it adds, and while others remain the helper writes the file
-  without reloading `mhvtl-fabrics.service` (its apply would fail on them),
+  target, each can be unbound in turn: an unbind is refused for a problem
+  it adds, and while others remain the helper writes the file without
+  reloading `mhvtl-fabrics.service` (its apply would fail on them),
   answering the action `not_applied`; the unbind that removes the last one
-  reloads it, or starts it if it had failed on them.
+  reloads it, or starts it if it had failed on them. While a target is
+  broken every other change is refused (422 `invalid`), an unbind of a
+  healthy target included: written but not applied, it would leave that
+  target exported. The message names the broken targets to unbind first.
+  A problem that names no target (a `device.conf` limit) no unbind
+  removes: fix `device.conf`.
 - `PATCH /api/v1/transports/iscsi` `{"portals": [...], "base_name": "..."}`:
   the settings every target shares. `[]` removes every portal (targets then
   listen on `0.0.0.0:3260`), `""` removes the base name.
@@ -517,7 +522,8 @@ change. Then:
 - while `mhvtl.target` is stopped, it only writes the file, applied when
   mhVTL starts;
 - while the file keeps targets that would not plan, which it had before
-  the change, it only writes the file (`not_applied`).
+  the change, it only writes the file (`not_applied`); the change must
+  remove at least one of them, or it is refused.
 
 Before it writes anything, for a dry run too, the helper checks the new
 file against `device.conf` as `mhvtl-fabrics` plans it (each target names a

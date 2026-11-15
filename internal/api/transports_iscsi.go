@@ -638,6 +638,26 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 			field: field, msg: fabricsConfName + ": " + strings.Join(msgs, "; ")})
 		return
 	}
+	// An unbind that keeps every problem would only be written, not
+	// applied: the target would stay exported. It must unbind a broken
+	// target, as the helper requires.
+	if q.unbind && len(had) > 0 {
+		kept := map[string]bool{}
+		for _, p := range f.conf.CheckPlan(f.dev) {
+			kept[p.Msg] = true
+		}
+		if len(kept) >= len(had) {
+			broken := brokenTargetIDs(conffile.ParseFabricsConf(f.data), f.dev)
+			next := "fix device.conf first"
+			if len(broken) > 0 {
+				next = "unbind the broken targets first (" + strings.Join(broken, ", ") + ")"
+			}
+			refuse(&fabricsInvalid{status: http.StatusUnprocessableEntity, code: apply.ErrInvalid, field: "library",
+				msg: fmt.Sprintf("library %d's target exports fine, but %s has targets mhvtl-fabrics would not export: with them in the file the unbind could only be written, not applied, and library %d would stay exported; %s",
+					*q.target, fabricsConfName, *q.target, next)})
+			return
+		}
+	}
 	next := f.conf.Render()
 	setsSecret := q.setsCHAP || q.setsMutualCHAP
 	if f.exists && bytes.Equal(next, f.data) && !setsSecret {
@@ -746,6 +766,24 @@ const (
 	resultUnchanged = "unchanged"
 	fabricsChanged  = fabricsConfName + " changed since it was read: read it again and resend the change"
 )
+
+// brokenTargetIDs lists the IDs of the targets of c with a plan problem
+// against dev.
+func brokenTargetIDs(c *conffile.FabricsConf, dev *conffile.DeviceConf) []string {
+	ids := map[int]int{}
+	for _, t := range c.Targets() {
+		ids[t.Line] = t.ID
+	}
+	var out []string
+	seen := map[int]bool{}
+	for _, p := range c.CheckPlan(dev) {
+		if id, ok := ids[p.Line]; ok && p.Line > 0 && !seen[id] {
+			seen[id] = true
+			out = append(out, fmt.Sprint(id))
+		}
+	}
+	return out
+}
 
 // aboutTarget reports whether CheckPlan problem p is about the target the
 // request edits: its message names "iSCSI target <id>", or its line is

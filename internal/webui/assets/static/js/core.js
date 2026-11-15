@@ -1852,10 +1852,14 @@
   // problem of fabrics.conf blocks every action. When every problem is a
   // plan problem (kind "plan": a target mhvtl-fabrics reads but would not
   // export), only Stop exporting stays open, for the targets named (unbind:
-  // {ids, all}; all when a problem names no target; iscsiUnbindAllowed).
-  // The daemon accepts an unbind that adds no problem, and the helper
+  // {ids}; iscsiUnbindAllowed). The daemon and the helper accept an unbind
+  // that removes a broken target and adds no problem, and the helper
   // writes the file without reloading while other problems remain (action
-  // not_applied), so the broken targets can be unbound one at a time.
+  // not_applied), so the broken targets can be unbound one at a time. They
+  // refuse any other change while a problem remains, an unbind of a healthy
+  // target included (it would stay exported), so a problem that names no
+  // target (a device.conf limit, which no unbind removes) leaves every
+  // action closed.
   function iscsiAllowed(s) {
     s = s || {};
     var no = function (reason, hide) { return { ok: false, hide: !!hide, reason: reason }; };
@@ -1875,10 +1879,12 @@
     if (problems.length) {
       var plan = problems.every(function (p) { return p && p.kind === "plan"; });
       if (!plan) { return no("fabrics.conf has lines mhvtl-fabrics would not read; fix them first."); }
-      var unbind = { ids: {}, all: false };
+      var unbind = { ids: {} };
+      var limit = false;
       problems.forEach(function (p) {
-        if (p.target === undefined || p.target === null) { unbind.all = true; } else { unbind.ids[coerceNumber(p.target)] = true; }
+        if (p.target === undefined || p.target === null) { limit = true; } else { unbind.ids[coerceNumber(p.target)] = true; }
       });
+      if (limit) { return no("device.conf has a problem mhvtl-fabrics would stop at whatever fabrics.conf exports: fix device.conf first."); }
       var r = no("fabrics.conf has targets mhvtl-fabrics would not export against device.conf: stop exporting them, or fix device.conf.");
       r.unbind = unbind;
       return r;
@@ -1891,7 +1897,7 @@
   // open for a target they name.
   function iscsiUnbindAllowed(gate, row) {
     if (gate.ok || !gate.unbind || !row) { return gate; }
-    if (gate.unbind.all || gate.unbind.ids[coerceNumber(row.id)]) { return { ok: true, hide: false, reason: "" }; }
+    if (gate.unbind.ids[coerceNumber(row.id)]) { return { ok: true, hide: false, reason: "" }; }
     return gate;
   }
 

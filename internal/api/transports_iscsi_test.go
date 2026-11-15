@@ -775,11 +775,17 @@ func TestISCSIFieldAttribution(t *testing.T) {
 	if n := len(e.fabricsReqs()) + len(other.fabricsReqs()); n != 0 {
 		t.Errorf("%d helper requests", n)
 	}
-	// An unbind adds no problem: target 99's, which was there before, does
-	// not refuse it (the helper writes the file without applying it).
+	// An unbind of a healthy target while another is broken would only be
+	// written, not applied, and leave the target exported: refused, naming
+	// the broken one. The broken target's own unbind goes ahead.
 	rec = other.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30})
-	if rec.Code != http.StatusOK || len(other.fabricsReqs()) != 1 {
+	if body := decodeBody[fieldErrBody](t, rec); rec.Code != http.StatusUnprocessableEntity || body.Error.Field != "library" ||
+		!strings.Contains(body.Error.Message, "unbind the broken targets first (99)") || len(other.fabricsReqs()) != 0 {
 		t.Errorf("unbind of 30 with target 99 broken: %d %s", rec.Code, rec.Body)
+	}
+	rec = other.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 99})
+	if rec.Code != http.StatusOK || len(other.fabricsReqs()) != 1 {
+		t.Errorf("unbind of the broken 99: %d %s", rec.Code, rec.Body)
 	}
 
 	if f := fieldOf("initiator name 'IQN.2024-01.com.Chapman:pbs' is not an iSCSI name", []string{"chap", "initiators"}); f != "initiators" {

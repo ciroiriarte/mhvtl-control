@@ -205,9 +205,12 @@ test("iscsiAllowed: plan problems leave Stop exporting open for their targets", 
   assert.ok(/would not export/.test(g.reason));
   assert.deepStrictEqual(core.iscsiUnbindAllowed(g, row(11)), { ok: true, hide: false, reason: "" });
   assert.strictEqual(core.iscsiUnbindAllowed(g, row(10)).ok, false);
-  // A plan problem without a target (a device.conf limit) opens every unbind.
+  // A plan problem without a target (a device.conf limit) no unbind
+  // removes: every action stays closed, Stop exporting included.
   const limit = { targets: [], problems: [{ line: 0, kind: "plan", message: "device.conf has more than 256 devices" }] };
-  assert.strictEqual(core.iscsiUnbindAllowed(core.iscsiAllowed({ caps: ok, reachable: true, cfg: limit }), row(10)).ok, true);
+  const lg = core.iscsiAllowed({ caps: ok, reachable: true, cfg: limit });
+  assert.ok(/fix device.conf first/.test(lg.reason));
+  assert.strictEqual(core.iscsiUnbindAllowed(lg, row(10)).ok, false);
   // Any parse problem, or a problem without a kind (an older daemon),
   // blocks every action, Stop exporting included.
   for (const problems of [

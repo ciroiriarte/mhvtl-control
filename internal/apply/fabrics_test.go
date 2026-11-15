@@ -1647,3 +1647,31 @@ func TestFabricsMarkerPlanAction(t *testing.T) {
 		t.Errorf("plan with leftovers: %+v", plan)
 	}
 }
+
+// TestFabricsNotAppliedMustRemoveProblem: a change written but not
+// applied leaves configfs as it was, so it is accepted only when it
+// removes a broken target. Unbinding a healthy target while another is
+// broken (its target would stay exported), binding one, or changing a
+// secret is refused, naming the broken target, and nothing is written.
+func TestFabricsNotAppliedMustRemoveProblem(t *testing.T) {
+	const t77 = "\niSCSI target: 77\n Initiator name: iqn.2024-01.com.example:pbs1\n"
+	const t30 = "\niSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs1\n"
+	const head = "VERSION: 1\n\niSCSI:\n Base name: iqn.2003-01.org.linux-iscsi.vtl1:mhvtl\n"
+	for name, next := range map[string]string{
+		"unbind healthy": head + t77,
+		"bind":           fabConf + t77 + t30,
+		"secret":         strings.Replace(fabConf, fabSecret, fabNewSecret, 1) + t77,
+	} {
+		for _, op := range []string{OpFabricsPlan, OpFabrics} {
+			f := newFabEnv(t)
+			f.writeConf(fabricsConf, fabConf+t77, 0o600)
+			resp := f.do(f.fabricsReq(op, next))
+			if resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, "unbind the broken targets first (77)") {
+				t.Errorf("%s %s: %+v", name, op, resp)
+			}
+			if string(f.read(fabricsConf)) != fabConf+t77 || len(f.verbs()) != 0 {
+				t.Errorf("%s %s: file %q, systemctl %v", name, op, f.read(fabricsConf), f.verbs())
+			}
+		}
+	}
+}

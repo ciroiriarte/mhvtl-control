@@ -311,7 +311,10 @@ const envMaxLine = 4096
 // not line, as an edit moves the records after it. The problems that
 // were there before are returned in left (the file is then written but
 // not applied, FabricsNotApplied); curBroken reports whether cur has plan
-// problems at all.
+// problems at all. A file that keeps problems must have fewer than cur:
+// a change written but not applied leaves configfs as it was, so one that
+// removes no broken target (an unbind of a healthy one, whose target would
+// stay exported, or any bind or setting) is refused.
 func checkPlan(conf *conffile.FabricsConf, cur fileState, files *fileSet) (left []conffile.Problem, curBroken bool, err error) {
 	dc, err := files.current(deviceConf)
 	switch {
@@ -322,15 +325,19 @@ func checkPlan(conf *conffile.FabricsConf, cur fileState, files *fileSet) (left 
 	}
 	dev := conffile.ParseDeviceConf(dc.data)
 	had := map[string]bool{}
+	var broken []string
 	if cc := conffile.ParseFabricsConf(cur.data); cur.exists && len(cc.Problems) == 0 {
+		broken = brokenTargets(cc, dev)
 		for _, p := range cc.CheckPlan(dev) {
 			had[p.Msg] = true
 		}
 	}
 	var msgs []string
+	kept := map[string]bool{}
 	for _, p := range conf.CheckPlan(dev) {
 		if had[p.Msg] {
 			left = append(left, p)
+			kept[p.Msg] = true
 			continue
 		}
 		msgs = append(msgs, p.Error())
@@ -338,17 +345,53 @@ func checkPlan(conf *conffile.FabricsConf, cur fileState, files *fileSet) (left 
 	if len(msgs) > 0 {
 		return nil, false, refuse(ErrInvalid, "%s: %s", fabricsConf, strings.Join(msgs, "; "))
 	}
+	if len(kept) > 0 && len(kept) >= len(had) {
+		return nil, false, refuse(ErrInvalid, "%s has targets mhvtl-fabrics would not export (%s), and the change removes none of them: it could only be written, not applied, and configfs would stay as it is; %s",
+			fabricsConf, notAppliedProblems(left), unbindFirst(broken))
+	}
 	return left, len(had) > 0, nil
 }
 
-// notAppliedText is the answer of a FabricsNotApplied apply.
-func notAppliedText(left []conffile.Problem) string {
+// brokenTargets lists the IDs of the targets of conf with a plan problem
+// against dev.
+func brokenTargets(conf *conffile.FabricsConf, dev *conffile.DeviceConf) []string {
+	ids := map[int]int{}
+	for _, t := range conf.Targets() {
+		ids[t.Line] = t.ID
+	}
+	var out []string
+	seen := map[int]bool{}
+	for _, p := range conf.CheckPlan(dev) {
+		if id, ok := ids[p.Line]; ok && p.Line > 0 && !seen[id] {
+			seen[id] = true
+			out = append(out, fmt.Sprint(id))
+		}
+	}
+	return out
+}
+
+// unbindFirst says what makes the change possible: unbinding the broken
+// targets, or, for a problem no target has (a device.conf limit), fixing
+// device.conf.
+func unbindFirst(broken []string) string {
+	if len(broken) == 0 {
+		return "fix device.conf first"
+	}
+	return "unbind the broken targets first (" + strings.Join(broken, ", ") + ")"
+}
+
+func notAppliedProblems(left []conffile.Problem) string {
 	msgs := make([]string, len(left))
 	for k, p := range left {
 		msgs[k] = p.Error()
 	}
+	return strings.Join(msgs, "; ")
+}
+
+// notAppliedText is the answer of a FabricsNotApplied apply.
+func notAppliedText(left []conffile.Problem) string {
 	return fmt.Sprintf("%s written, %s not reloaded: the file still has targets mhvtl-fabrics would not export, which it had before (%s), so its apply would fail; stop exporting them or fix device.conf, and the change that leaves none applies the file",
-		fabricsConf, FabricsUnit, strings.Join(msgs, "; "))
+		fabricsConf, FabricsUnit, notAppliedProblems(left))
 }
 
 // checkFabricsDevices refuses a device.conf change that leaves an iSCSI
