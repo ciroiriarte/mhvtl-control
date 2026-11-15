@@ -181,6 +181,17 @@ type Server struct {
 	// fabricsWriting counts the writes of fabrics.conf sent to the helper
 	// and not answered yet. While one is, no version is answered.
 	fabricsWriting int
+	// fabricsWriteMu serializes the writes of fabrics.conf the iSCSI
+	// routes send the helper, from the read their base comes from to the
+	// revision's advance after the answer. A write that finds it held is
+	// answered apply_in_progress at once: queued behind another, its base
+	// would predate that write, and the helper's validated or conflict
+	// would tell whether the file came out byte-identical.
+	fabricsWriteMu sync.Mutex
+	// beforeFabricsHelper, when set, runs in fabricsWrite after the read
+	// and before the helper call: a test seam for interleavings, nil
+	// otherwise.
+	beforeFabricsHelper func()
 }
 
 // keyedMutex is a set of mutexes created on first use. Each is a channel

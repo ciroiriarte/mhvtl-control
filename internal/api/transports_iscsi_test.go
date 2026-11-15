@@ -1271,7 +1271,7 @@ func TestISCSIDerivedNameNoOracle(t *testing.T) {
 // conflict's current version answer the same for a right and a wrong
 // guess, with no version; after the write the version has changed.
 func TestISCSIVersionHiddenWhileApplying(t *testing.T) {
-	type seen struct{ get, dry, based, cur string }
+	type seen struct{ get, dry, based, write, cur string }
 	run := func(guess string) (seen, string, string) {
 		t.Helper()
 		e := iscsiEnv(t, fabricsSample, "reload", nil)
@@ -1300,6 +1300,7 @@ func TestISCSIVersionHiddenWhileApplying(t *testing.T) {
 			during.get = raw(http.MethodGet, "/api/v1/transports/iscsi/config", nil)
 			during.dry = raw(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30, "dry_run": true})
 			during.based = raw(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30, "dry_run": true, "base_sha256": pre})
+			during.write = raw(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30})
 			during.cur = str(e.srv.currentFabricsVersion())
 			return apply.Response{Result: apply.ResultApplied, FabricsAction: "reload"}
 		})
@@ -1316,13 +1317,18 @@ func TestISCSIVersionHiddenWhileApplying(t *testing.T) {
 	if right != wrong {
 		t.Errorf("answers during the write differ:\nright %+v\nwrong %+v", right, wrong)
 	}
-	for _, s := range []string{right.get, right.dry, right.based} {
+	for _, s := range []string{right.get, right.dry, right.based, right.write} {
 		if strings.Contains(s, `"sha256"`) || strings.Contains(s, pre) {
 			t.Errorf("a version was answered during the write: %s", s)
 		}
 	}
-	if !strings.HasPrefix(right.get, "200 ") || !strings.HasPrefix(right.dry, "200 ") || !strings.HasPrefix(right.based, "409 ") {
-		t.Errorf("statuses during the write: get %.3s dry %.3s based %.3s, want 200 200 409", right.get, right.dry, right.based)
+	if !strings.HasPrefix(right.get, "200 ") {
+		t.Errorf("GET config during the write: %s", right.get)
+	}
+	for _, s := range []string{right.dry, right.based, right.write} {
+		if !strings.HasPrefix(s, "409 ") || !strings.Contains(s, `"result":"`+apply.ResultInProgress+`"`) {
+			t.Errorf("write request during the write: %s, want 409 %s", s, apply.ResultInProgress)
+		}
 	}
 	if right.cur != "<absent>" {
 		t.Errorf("current version during the write = %s, want none", right.cur)
@@ -1384,5 +1390,115 @@ func TestISCSIVersionAfterUnreachedWrite(t *testing.T) {
 		if changed := str(after.SHA256) != before; changed != c.advance || after.SHA256 == nil {
 			t.Errorf("%s: version %s after, %s before: want changed %v", c.name, str(after.SHA256), before, c.advance)
 		}
+	}
+}
+
+// helperLikeFabrics makes e's helper check a fabrics request's base
+// against the file as the real one does (apply.Helper.fabrics): conflict
+// unless it is the file's SHA-256 now; a plan is then validated and an
+// apply writes the file.
+func helperLikeFabrics(e *writeEnv) {
+	e.answer(func(req apply.Request) apply.Response {
+		if req.Op != apply.OpFabrics && req.Op != apply.OpFabricsPlan {
+			return apply.Response{Result: apply.ResultValidated}
+		}
+		p := filepath.Join(e.dir, "fabrics.conf")
+		cur, err := os.ReadFile(p)
+		if err != nil || conffile.Hash(cur) != req.Files[0].BaseSHA256 {
+			return apply.Response{Result: apply.ResultConflict, File: "fabrics.conf", Message: "conflict"}
+		}
+		if req.Op == apply.OpFabricsPlan {
+			return apply.Response{Result: apply.ResultValidated, FabricsAction: "reload"}
+		}
+		if err := os.WriteFile(p, req.Files[0].Content, 0o600); err != nil {
+			return apply.Response{Result: apply.ResultError, Error: "io", Message: err.Error()}
+		}
+		return apply.Response{Result: apply.ResultApplied, FabricsAction: "reload"}
+	})
+}
+
+// chapOnlySample is fabricsSample without mutual CHAP, so a bind can set
+// the CHAP secret alone.
+var chapOnlySample = strings.Replace(fabricsSample, " Mutual CHAP name: vtl\n Mutual CHAP secret: "+mutualSecret+"\n", "", 1)
+
+// guessBind is a bind that sets library 10's CHAP secret to guess.
+func guessBind(guess string) map[string]any {
+	return map[string]any{"library": 10, "chap": map[string]string{"name": "pbs", "secret": guess}}
+}
+
+func recText(rec *httptest.ResponseRecorder) string {
+	return fmt.Sprintf("%d %s", rec.Code, rec.Body)
+}
+
+// TestISCSIDryRunRacingWriteNoOracle: a write that sets a CHAP secret to
+// a guess and runs between a dry run's read and its helper check leaves
+// the file byte-identical exactly when the guess is right. The helper
+// would then validate the dry run's base for a right guess and find a
+// conflict for a wrong one; the dry run is answered the same either way.
+func TestISCSIDryRunRacingWriteNoOracle(t *testing.T) {
+	run := func(guess string) string {
+		t.Helper()
+		e := iscsiEnv(t, chapOnlySample, "reload", nil)
+		e.srv.fabricsKey = []byte("one key for both answers")
+		helperLikeFabrics(e)
+		var wrote string
+		e.srv.beforeFabricsHelper = func() {
+			e.srv.beforeFabricsHelper = nil
+			wrote = recText(e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", guessBind(guess)))
+		}
+		got := recText(e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30, "dry_run": true}))
+		if !strings.HasPrefix(wrote, "200 ") || !strings.Contains(wrote, `"result":"applied"`) {
+			t.Fatalf("guess %q: the racing write was not applied: %s", guess, wrote)
+		}
+		return got
+	}
+	right, wrong := run(chapSecret), run("WrongGuess-0123")
+	if right != wrong {
+		t.Errorf("dry run answers differ:\nright %s\nwrong %s", right, wrong)
+	}
+	if !strings.HasPrefix(right, "409 ") || strings.Contains(right, `"sha256"`) || !strings.Contains(right, `"diff":""`) {
+		t.Errorf("dry run answer = %s, want a 409 conflict without version or diff", right)
+	}
+}
+
+// TestISCSIWriteRacingWriteNoOracle: a write W2 that sets a CHAP secret to
+// a guess and comes after write W1 read the file, before W1 reached the
+// helper, is answered apply_in_progress at once and never reaches it:
+// otherwise W1's stale base would be validated exactly when W2 left the
+// file byte-identical. Both answers are the same for a right and a wrong
+// guess.
+func TestISCSIWriteRacingWriteNoOracle(t *testing.T) {
+	run := func(guess string) (string, string) {
+		t.Helper()
+		e := iscsiEnv(t, chapOnlySample, "reload", nil)
+		e.srv.fabricsKey = []byte("one key for both answers")
+		helperLikeFabrics(e)
+		var w2 string
+		e.srv.beforeFabricsHelper = func() {
+			e.srv.beforeFabricsHelper = nil
+			w2 = recText(e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", guessBind(guess)))
+		}
+		w1 := recText(e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30}))
+		writes := 0
+		for _, r := range e.fabricsReqs() {
+			if r.Op == apply.OpFabrics {
+				writes++
+			}
+		}
+		if writes != 1 {
+			t.Errorf("guess %q: %d writes reached the helper, want W1's only", guess, writes)
+		}
+		return w1, w2
+	}
+	w1Right, w2Right := run(chapSecret)
+	w1Wrong, w2Wrong := run("WrongGuess-0123")
+	if w1Right != w1Wrong || w2Right != w2Wrong {
+		t.Errorf("answers differ:\nW1 right %s\nW1 wrong %s\nW2 right %s\nW2 wrong %s", w1Right, w1Wrong, w2Right, w2Wrong)
+	}
+	if !strings.HasPrefix(w2Right, "409 ") || !strings.Contains(w2Right, `"result":"`+apply.ResultInProgress+`"`) {
+		t.Errorf("W2 = %s, want 409 %s", w2Right, apply.ResultInProgress)
+	}
+	if !strings.HasPrefix(w1Right, "200 ") {
+		t.Errorf("W1 = %s, want applied", w1Right)
 	}
 }

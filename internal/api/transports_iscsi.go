@@ -101,7 +101,12 @@ type iscsiConfigDTO struct {
 // version only advances when it answers: a version of the new file under
 // the old revision would equal the version before the write exactly when
 // the write left the file as it was, so it would confirm a CHAP guess.
+//
+// seq is the sequence (Server.fabricsSeq) the read was made at: a helper
+// call is answered from what the helper said only when no other one
+// started or ended since (fabricsWrite).
 type fabricsFiles struct {
+	seq     uint64
 	data    []byte
 	sha     string // "" when fabrics.conf does not exist
 	version string // "" when fabrics.conf does not exist or busy
@@ -138,6 +143,7 @@ func (s *Server) readFabricsFiles() (fabricsFiles, error) {
 	s.fabricsMu.Lock()
 	f.busy = writing || s.fabricsWriting > 0 || s.fabricsSeq != seq
 	s.fabricsMu.Unlock()
+	f.seq = seq
 	if f.exists && !f.busy {
 		f.version = s.fabricsVersion(rev, data)
 	}
@@ -176,7 +182,7 @@ func (s *Server) fabricsVersion(rev uint64, data []byte) string {
 // or never came; only a write that never reached the helper leaves it:
 // no helper on the socket (applyclient.ErrAbsent) or a failed connect.
 func (s *Server) fabricsDo(ctx context.Context, hreq apply.Request) (resp apply.Response, err error) {
-	if hreq.Op == apply.OpFabrics {
+	if seqSteps(hreq.Op) > 0 {
 		s.fabricsMu.Lock()
 		s.fabricsWriting++
 		s.fabricsSeq++
@@ -197,6 +203,16 @@ func (s *Server) fabricsDo(ctx context.Context, hreq apply.Request) (resp apply.
 		return resp, err
 	}
 	return s.cfg.Helper.Do(ctx, hreq)
+}
+
+// seqSteps is how far a helper call of op advances fabricsSeq: by one
+// when it is sent and one when it is answered for a call that may change
+// fabrics.conf, else not at all.
+func seqSteps(op string) uint64 {
+	if op == apply.OpFabrics {
+		return 2
+	}
+	return 0
 }
 
 // currentFabricsVersion is the version of fabrics.conf as it is now, for
@@ -644,15 +660,35 @@ type fabricsWriteReq struct {
 // is the stored one (conffile.PlaceholdSecrets): either would tell the
 // client whether its secret is the stored one. With bind set, a real apply
 // that reloads or starts the unit answers the target's state in configfs.
+//
+// The helper's validated or conflict compares the content sent against
+// the file as it is then, so the base it gets must be the file as it was
+// when the helper last answered: a base from before another write, or
+// before a write that is still in flight, would have it tell whether that
+// write left the file byte-identical, a CHAP guess right. So real writes
+// are serialized (Server.fabricsWriteMu), a request read while one is in
+// flight is answered apply_in_progress, and a dry run during which
+// another helper call started or ended is answered a conflict that does
+// not depend on what the helper said.
 func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsWriteReq, edit func(fabricsFiles) *fabricsInvalid) {
+	if !q.dryRun {
+		if !s.fabricsWriteMu.TryLock() {
+			writeFabricsBusy(w, q.dryRun)
+			return
+		}
+		defer s.fabricsWriteMu.Unlock()
+	}
 	f, err := s.readFabricsFiles()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "config_error", err.Error())
 		return
 	}
-	// While a write is in flight no base matches: the file may already be
-	// the new one.
-	if q.base != nil && (f.busy || !hmac.Equal([]byte(*q.base), []byte(f.version))) {
+	// The file read may already be the new one of the write in flight.
+	if f.busy {
+		writeFabricsBusy(w, q.dryRun)
+		return
+	}
+	if q.base != nil && !hmac.Equal([]byte(*q.base), []byte(f.version)) {
 		writeJSON(w, http.StatusConflict, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.versionOf(), Result: apply.ResultConflict,
 			CurrentSHA256: f.versionOf(), Error: &errorDetail{Code: apply.ResultConflict, Message: fabricsChanged}})
 		return
@@ -782,6 +818,9 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
 		defer cancel()
 	}
+	if s.beforeFabricsHelper != nil {
+		s.beforeFabricsHelper()
+	}
 	resp, err := s.fabricsDo(ctx, hreq)
 	s.forgetHello()
 	if errors.Is(err, applyclient.ErrAbsent) {
@@ -790,6 +829,13 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, helperUnreachable, mask(err.Error()))
+		return
+	}
+	if q.dryRun && !s.fabricsQuiet(f.seq+seqSteps(hreq.Op)) {
+		// Another call may have changed the file between the read and the
+		// helper's check: its validated or conflict is not answered.
+		writeJSON(w, http.StatusConflict, iscsiWriteDTO{DryRun: q.dryRun, Result: apply.ResultConflict,
+			Error: &errorDetail{Code: apply.ResultConflict, Message: fabricsChanged}})
 		return
 	}
 	status, code := applyStatus(resp)
@@ -826,7 +872,24 @@ const (
 	// resultUnchanged answers an edit that leaves fabrics.conf as it is.
 	resultUnchanged = "unchanged"
 	fabricsChanged  = fabricsConfName + " changed since it was read: read it again and resend the change"
+	fabricsBusy     = "a change is being applied: read " + fabricsConfName + " again once it has finished, and resend the change"
 )
+
+// fabricsQuiet reports whether fabricsSeq is seq and no helper call that
+// moves it is in flight: none started or ended since a read made at seq,
+// but the caller's own.
+func (s *Server) fabricsQuiet(seq uint64) bool {
+	s.fabricsMu.Lock()
+	defer s.fabricsMu.Unlock()
+	return s.fabricsSeq == seq && s.fabricsWriting == 0
+}
+
+// writeFabricsBusy answers an iSCSI write that came while another write
+// was being applied: the same answer whatever the request and the file.
+func writeFabricsBusy(w http.ResponseWriter, dryRun bool) {
+	writeJSON(w, http.StatusConflict, iscsiWriteDTO{DryRun: dryRun, Result: apply.ResultInProgress,
+		Error: &errorDetail{Code: apply.ResultInProgress, Message: fabricsBusy}})
+}
 
 // brokenTargetIDs lists the IDs of the targets of c with a plan problem
 // against dev.

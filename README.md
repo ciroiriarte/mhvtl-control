@@ -493,10 +493,11 @@ restarts; an apply
 sent with a version from before any of these gets 409, and a new preview
 gives the current one. While an apply of `fabrics.conf` is in progress
 (the helper writes the file and then reloads `mhvtl-fabrics`, which can
-take minutes), no version is answered: `sha256` and `current_sha256` are
-left out of every answer, including `GET .../config` and previews, and
-an apply with `base_sha256` gets 409. Read `GET .../config` again, or
-preview again, once it has finished.
+take minutes), `GET .../config` answers no `sha256`, and every preview
+and apply gets 409 with `error.code` `apply_in_progress`, whatever it
+sends; applies are never queued. A preview during which an apply started
+or finished gets 409 `conflict` with no version and no diff. Read
+`GET .../config` again, or preview again, once it has finished.
 `GET /api/v1/transports/iscsi/config` answers it too, but only with
 `-api-token`. An apply answers with the version it was made against, which
 is stale once it has been sent, and for a bind the

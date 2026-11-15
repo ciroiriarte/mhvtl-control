@@ -188,9 +188,12 @@ While an apply of the file is in progress (the helper writes it, then
 reloads
 .BR mhvtl\-fabrics ),
 no answer holds a version: clients read the file again once it is done,
-and an apply sent with
-.I base_sha256
-meanwhile gets 409.
+and every preview or apply sent meanwhile gets 409
+.BR apply_in_progress ,
+whatever it sends.
+A preview during which an apply started or finished gets 409
+.B conflict
+with no version.
 The helper refuses when
 .B MHVTL_BACKEND
 is not
