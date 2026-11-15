@@ -1675,3 +1675,34 @@ func TestFabricsNotAppliedMustRemoveProblem(t *testing.T) {
 		}
 	}
 }
+
+// TestBackendToTCMUChecksForeignTargets: while MHVTL_BACKEND is not tcmu
+// device.conf edits are not checked against fabrics.conf, so it may name a
+// target someone else made by the time a change sets tcmu. That change has
+// every target the file plans checked for ownership, device.conf
+// unchanged; a change that leaves the backend as it is is not.
+func TestBackendToTCMUChecksForeignTargets(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	f := newFabEnv(t)
+	tcmu := string(f.read(mhvtlConf))
+	plain := strings.TrimSuffix(tcmu, "MHVTL_BACKEND=tcmu\n")
+	f.writeConf(mhvtlConf, plain, 0o644)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	f.mkTarget(lib10)
+	req := func(content string) Request {
+		return Request{Op: OpPlan, Actor: "test", Files: []File{{Name: mhvtlConf, BaseSHA256: f.sha(mhvtlConf), Content: []byte(content)}}}
+	}
+	if resp := f.do(req(tcmu)); resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, lib10) ||
+		!strings.Contains(resp.Message, "does not own") {
+		t.Fatalf("backend to tcmu with a foreign %s: %+v", lib10, resp)
+	}
+	if resp := f.do(req(strings.Replace(plain, "VERBOSE=1", "VERBOSE=2", 1))); resp.Result != ResultValidated {
+		t.Errorf("a change that keeps the backend: %+v", resp)
+	}
+	if err := os.WriteFile(f.cfg.FabricsState, []byte("iscsi "+lib10+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if resp := f.do(req(tcmu)); resp.Result != ResultValidated {
+		t.Errorf("backend to tcmu with %s owned: %+v", lib10, resp)
+	}
+}

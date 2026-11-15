@@ -105,7 +105,11 @@ is
 .B tcmu
 and
 .B mhvtl-fabrics.service
-is installed.
+is installed; one that sets
+.B MHVTL_BACKEND=tcmu
+has every target the file plans checked for ownership.
+A start of the unit outside the helper (at boot, or by hand) is not
+checked.
 .B mhvtl-control-apply
 writes the file mode 0600 and runs
 .BR "systemctl reload mhvtl-fabrics.service" ,

@@ -547,7 +547,11 @@ did not name before (a derived name ends in `.lib<ID>` or `.tape<ID>` after
 the device kind) which exists in configfs and `mhvtl-fabrics` does not own.
 These `device.conf` checks apply only while iSCSI export is in use
 (`MHVTL_BACKEND=tcmu` and `mhvtl-fabrics.service` installed): otherwise
-nothing applies `fabrics.conf`. The ownership checks look at configfs when
+nothing applies `fabrics.conf`. A configuration apply that sets
+`MHVTL_BACKEND=tcmu` has every target `fabrics.conf` plans checked for
+ownership, as `device.conf` may have changed unchecked meanwhile. A start
+of `mhvtl-fabrics.service` outside the helper (at boot, or by hand) is not
+checked at all. The ownership checks look at configfs when
 the helper checks, not when `mhvtl-fabrics` applies: a target someone
 creates with targetcli in between is still taken over.
 

@@ -406,7 +406,12 @@ func notAppliedText(left []conffile.Problem) string {
 // that did not plan may plan now) which exists in configfs and
 // mhvtl-fabrics does not own (checkForeignTargets). Without fabrics.conf,
 // with one mhvtl-fabrics cannot parse, or when fabrics are not in use
-// (fabricsInUse), there is nothing to check.
+// (fabricsInUse), there is nothing to check. A change that brings fabrics
+// into use (MHVTL_BACKEND becomes tcmu) has every target the file plans
+// checked for ownership, as none was checked while nothing applied the
+// file: device.conf may have been changed in between so that the file
+// names a foreign target (Library 10 turned into Drive 10). A unit start
+// outside the helper (at boot, or by hand) is not guarded here.
 func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) error {
 	cur, err := files.current(deviceConf)
 	if err != nil {
@@ -416,7 +421,8 @@ func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) 
 	if err != nil {
 		return err
 	}
-	if nd.sha == cur.sha {
+	intoUse := h.checkBackend(files.current) != nil && h.checkBackend(next.next) == nil
+	if nd.sha == cur.sha && !intoUse {
 		return nil
 	}
 	fc, err := files.current(fabricsConf)
@@ -459,7 +465,7 @@ func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) 
 	}
 	named := map[string]bool{}
 	for _, w := range conf.PlannedWWNs(curDev) {
-		named[w] = true
+		named[w] = !intoUse
 	}
 	var appear []string
 	for _, w := range conf.PlannedWWNs(nextDev) {
