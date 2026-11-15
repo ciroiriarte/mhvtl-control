@@ -856,8 +856,9 @@ func (h *Helper) retryReconcile(ctx context.Context, rec *AuditRecord) error {
 	if err != nil {
 		return err
 	}
+	removed := markerStops(m, cur)
 	audit := AuditRecord{TS: h.cfg.Now(), Actor: rec.Actor, Peer: rec.Peer, Op: OpRecover, Result: ResultRecovered}
-	note, err := h.reconcileFabrics(ctx, m.Removed)
+	note, err := h.reconcileFabrics(ctx, removed)
 	var lo *fabricsLeftover
 	switch {
 	case err == nil:
@@ -870,7 +871,7 @@ func (h *Helper) retryReconcile(ctx context.Context, rec *AuditRecord) error {
 	case errors.As(err, &lo):
 		err = errors.Join(refuse(ErrFabricsState, "%s", maskFabrics(lo.Error(), cur.data)), h.clearFabricsMarker())
 	default:
-		err = refuse(ErrFabricsState, "%s", maskFabrics("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and retrying failed: "+markerAdvice(err, m.Removed), cur.data))
+		err = refuse(ErrFabricsState, "%s", maskFabrics("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and retrying failed: "+markerAdvice(err, removed), cur.data))
 	}
 	audit.Result, audit.Error, audit.Message = ResultError, ErrFabricsState, err.Error()
 	h.audit(audit)
@@ -887,18 +888,26 @@ func (h *Helper) peekMarker() (string, error) {
 	if err != nil || m == nil {
 		return "", err
 	}
+	cur, err := readTarget(h.cfg.ConfigDir, fabricsConf)
+	if err != nil {
+		return "", err
+	}
+	removed := markerStops(m, cur)
 	verb := FabricsReload
-	if m.Removed {
+	if removed {
 		verb = fabricsStop
 	} else if err := h.foreignOnDisk(); err != nil {
-		cur, rerr := readTarget(h.cfg.ConfigDir, fabricsConf)
-		if rerr != nil {
-			return "", rerr
-		}
-		return "", refuse(ErrFabricsState, "%s", maskFabrics("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and applying a change would retry that first: "+markerAdvice(err, m.Removed), cur.data))
+		return "", refuse(ErrFabricsState, "%s", maskFabrics("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and applying a change would retry that first: "+markerAdvice(err, removed), cur.data))
 	}
 	return fmt.Sprintf("an earlier rollback restored %s but could not make the targets follow it: applying this change first runs systemctl %s %s again, and is refused if that fails", fabricsConf, verb, FabricsUnit), nil
 }
+
+// markerStops reports whether the marker's retry is a stop: the rollback
+// removed a fabrics.conf the apply had created (m.Removed) and there is
+// still none. When the file exists again, someone wrote it since (and
+// likely started the unit with it): the retry reloads, which makes the
+// targets follow that file, rather than stop the unit and remove them.
+func markerStops(m *fabricsMarker, cur fileState) bool { return m.Removed && !cur.exists }
 
 // fabricsLeftover is a failed mhvtl-fabrics.service whose state file
 // lists targets, or cannot be read: they may still be exported.

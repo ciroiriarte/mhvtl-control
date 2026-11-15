@@ -1328,3 +1328,33 @@ func TestFabricsUnbindBrokenTargets(t *testing.T) {
 		})
 	}
 }
+
+// TestFabricsMarkerRemovedFileBack: a marker left by a first start whose
+// rollback removed the new file and could not stop the unit retries a
+// stop, but not once fabrics.conf exists again (the administrator wrote it
+// and started the unit): then it reloads, so the targets follow that file.
+func TestFabricsMarkerRemovedFileBack(t *testing.T) {
+	f := newFabEnv(t)
+	f.fab = "inactive"
+	f.fail[FabricsStart] = errors.New("signal: terminated")
+	f.failedStart = "active"
+	f.failAlways[fabricsStop] = errors.New("job failed")
+	if resp := f.do(f.fabricsReq(OpFabrics, fabConf)); resp.Error != ErrFabricsState || !f.markerExists() {
+		t.Fatalf("first start with the stop failing: %+v, marker %v", resp, f.markerExists())
+	}
+	if plan := f.do(f.fabricsReq(OpFabricsPlan, fabConf)); !strings.Contains(plan.Message, "systemctl stop") {
+		t.Errorf("plan without the file: %+v, want a note of the stop", plan)
+	}
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	f.systemctl = nil
+	if plan := f.do(f.fabricsReq(OpFabricsPlan, fabConf)); !strings.Contains(plan.Message, "systemctl reload") {
+		t.Errorf("plan with the file back: %+v, want a note of the reload", plan)
+	}
+	next := strings.Replace(fabConf, fabSecret, fabNewSecret, 1)
+	if resp := f.do(f.fabricsReq(OpFabrics, next)); resp.Result != ResultApplied || f.markerExists() || f.fab != "active" {
+		t.Fatalf("apply with the file back: %+v, marker %v, unit %s", resp, f.markerExists(), f.fab)
+	}
+	if v := f.verbs(); len(v) != 2 || v[0] != "reload "+FabricsUnit || v[1] != "reload "+FabricsUnit {
+		t.Errorf("systemctl %v, want the retry's reload and the apply's, no stop", v)
+	}
+}
