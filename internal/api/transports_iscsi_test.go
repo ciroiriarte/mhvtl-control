@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"mhvtl-control/internal/apply"
 	"mhvtl-control/internal/applyclient"
@@ -1688,5 +1689,58 @@ func TestISCSIWriteRacingRecoveryNoOracle(t *testing.T) {
 	}
 	if !strings.HasPrefix(right, "200 ") || !strings.Contains(right, `"result":"applied"`) {
 		t.Errorf("W1 = %s, want applied", right)
+	}
+}
+
+// TestHelperCallOutlivesClient: a dry run whose client goes away while
+// the helper works on it stays in flight until the helper answers: the
+// helper goes on, and may recover and put fabrics.conf back, so GET config
+// answers no version meanwhile. Once the helper answers, the call's
+// sequence and revision steps are made.
+func TestHelperCallOutlivesClient(t *testing.T) {
+	e := iscsiEnv(t, fabricsSample, "reload", nil)
+	release, entered := make(chan struct{}), make(chan struct{})
+	e.answer(func(req apply.Request) apply.Response {
+		close(entered)
+		<-release
+		return apply.Response{Result: apply.ResultValidated}
+	})
+	get := func() *string {
+		t.Helper()
+		return decodeBody[iscsiConfigDTO](t, e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil)).SHA256
+	}
+	before := get()
+	e.srv.fabricsMu.Lock()
+	seq, rev := e.srv.fabricsSeq, e.srv.fabricsRev
+	e.srv.fabricsMu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/service/libraries/10/restart", strings.NewReader(`{"dry_run":true}`)).WithContext(ctx)
+	r.Header.Set("Authorization", "Bearer "+e.srv.cfg.Token)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.handler.ServeHTTP(httptest.NewRecorder(), r)
+	}()
+	<-entered
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(300 * time.Millisecond):
+	}
+	if v := get(); v != nil {
+		t.Errorf("GET config while the helper still works = version %s, want none", *v)
+	}
+	close(release)
+	<-done
+	after := get()
+	e.srv.fabricsMu.Lock()
+	gotSeq, gotRev, writing := e.srv.fabricsSeq, e.srv.fabricsRev, e.srv.fabricsWriting
+	e.srv.fabricsMu.Unlock()
+	if gotSeq != seq+2 || gotRev != rev+1 || writing != 0 {
+		t.Errorf("after the answer: seq %d rev %d writing %d, want %d %d 0", gotSeq, gotRev, writing, seq+2, rev+1)
+	}
+	if before == nil || after == nil || *after == *before {
+		t.Errorf("version %s after, %s before: want both, different", str(after), str(before))
 	}
 }

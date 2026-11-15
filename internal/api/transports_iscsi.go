@@ -207,8 +207,14 @@ func (s *Server) helperDo(ctx context.Context, hreq apply.Request) (apply.Respon
 }
 
 // helperCall is helperDo for a call that may change fabrics.conf, made
-// with fabricsGate held, shared or alone.
+// with fabricsGate held, shared or alone. It waits for the helper's answer
+// even when the request's client goes away, a dry run's included, bounded
+// by applyTimeout, past the helper's RuntimeMaxSec=: the helper goes on
+// after the client hangs up, and may recover, so the call is in flight,
+// and no version answered, until it ends.
 func (s *Server) helperCall(ctx context.Context, hreq apply.Request) (resp apply.Response, err error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
+	defer cancel()
 	s.fabricsMu.Lock()
 	s.fabricsWriting++
 	s.fabricsSeq++
