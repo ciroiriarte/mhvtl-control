@@ -860,26 +860,44 @@ func TestServiceTargetLibraryAddedAfterPlan(t *testing.T) {
 // started. A start with the unit active leaves it alone, and a target the
 // state file lists is mhvtl-fabrics' own. An mhvtl.conf the helper cannot
 // tell the backend of (a backslash in a comment, which systemd accepts)
-// is checked: systemd may pass tcmu.
+// is checked: systemd may pass tcmu. Nothing is checked with a backend
+// that is not tcmu, the unit not installed, or a fabrics.conf that does
+// not exist or that mhvtl-fabrics cannot parse.
 func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
-	setup := func(t *testing.T, fabricsState, mhvtlAdd string) (*env, *fakeSystem) {
+	type tc struct {
+		name, action, fabrics, state string
+		mhvtlAdd                     string // appended to mhvtl.conf after MHVTL_BACKEND=tcmu
+		load                         string // the unit's LoadState; "" is loaded
+		conf                         string // fabrics.conf; "" is fabConf, "-" none
+		refused                      bool
+	}
+	setup := func(t *testing.T, c tc) (*env, *fakeSystem) {
 		t.Helper()
 		e, s := newExecEnv(t)
 		e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
 		e.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
+		load := c.load
+		if load == "" {
+			load = "loaded"
+		}
 		sysctl := e.cfg.Systemctl
 		e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
 			if len(args) == 4 && args[0] == "show" && args[1] == "--property=LoadState" && args[3] == FabricsUnit {
-				return []byte("loaded\n"), nil
+				return []byte(load + "\n"), nil
 			}
 			return sysctl(ctx, args...)
 		}
 		e.rebuild()
-		for name, data := range map[string]string{
-			mhvtlConf:   string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n" + mhvtlAdd,
-			fabricsConf: fabConf,
-		} {
+		files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n" + c.mhvtlAdd}
+		switch c.conf {
+		case "":
+			files[fabricsConf] = fabConf
+		case "-":
+		default:
+			files[fabricsConf] = c.conf
+		}
+		for name, data := range files {
 			if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -887,27 +905,28 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", lib10, "tpgt_1"), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if fabricsState != "" {
-			if err := os.WriteFile(e.cfg.FabricsState, []byte(fabricsState), 0o600); err != nil {
+		if c.state != "" {
+			if err := os.WriteFile(e.cfg.FabricsState, []byte(c.state), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
 		return e, s
 	}
-	for _, c := range []struct {
-		name, action, fabrics, state, mhvtlAdd string
-		refused                                bool
-	}{
-		{"restart", ActionRestart, "active", "", "", true},
-		{"start with the unit inactive", ActionStart, "inactive", "", "", true},
-		{"start with the unit failed", ActionStart, "failed", "", "", true},
-		{"start with the unit active", ActionStart, "active", "", "", false},
-		{"restart of an owned target", ActionRestart, "active", "iscsi " + lib10 + "\n", "", false},
-		{"restart with the backend unknown", ActionRestart, "active", "", "# C:\\backups\n", true},
-		{"start with the backend unknown", ActionStart, "inactive", "", "# C:\\backups\n", true},
+	for _, c := range []tc{
+		{name: "restart", action: ActionRestart, fabrics: "active", refused: true},
+		{name: "start with the unit inactive", action: ActionStart, fabrics: "inactive", refused: true},
+		{name: "start with the unit failed", action: ActionStart, fabrics: "failed", refused: true},
+		{name: "start with the unit active", action: ActionStart, fabrics: "active"},
+		{name: "restart of an owned target", action: ActionRestart, fabrics: "active", state: "iscsi " + lib10 + "\n"},
+		{name: "restart with the backend unknown", action: ActionRestart, fabrics: "active", mhvtlAdd: "# C:\\backups\n", refused: true},
+		{name: "start with the backend unknown", action: ActionStart, fabrics: "inactive", mhvtlAdd: "# C:\\backups\n", refused: true},
+		{name: "restart with the backend not tcmu", action: ActionRestart, fabrics: "active", mhvtlAdd: "MHVTL_BACKEND=mhvtl\n"},
+		{name: "restart with the unit not installed", action: ActionRestart, fabrics: "inactive", load: "not-found"},
+		{name: "restart with no fabrics.conf", action: ActionRestart, fabrics: "active", conf: "-"},
+		{name: "restart with fabrics.conf unparsable", action: ActionRestart, fabrics: "active", conf: fabConf + "bogus\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			e, s := setup(t, c.state, c.mhvtlAdd)
+			e, s := setup(t, c)
 			s.state[FabricsUnit] = c.fabrics
 			pr := e.do(target(OpServicePlan, c.action, nil))
 			if !c.refused {
