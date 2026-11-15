@@ -156,7 +156,9 @@ An apply that sends
 .I base_sha256
 (the
 .I sha256
-of a preview) is refused with 409 if the file changed since.
+of a preview) is refused with 409 if the file changed since; the answer's
+.I current_sha256
+is the file's version now, left out when the daemon cannot read it then.
 That
 .I sha256
 is an opaque version of the file, an HMAC under a key made when

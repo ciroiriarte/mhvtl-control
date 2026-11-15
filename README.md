@@ -491,7 +491,9 @@ target as configfs shows it afterwards. To apply exactly what was
 previewed, send the same body with `"dry_run": false` and
 `"base_sha256"` set to the preview's `sha256`: if `fabrics.conf` changed in
 between, the answer is 409 with `error.code` `conflict` and
-`current_sha256`, and nothing is written. A change that leaves the file as
+`current_sha256`, the version of the file now (left out when the daemon
+cannot read the file at that point; read `GET .../config` again), and
+nothing is written. A change that leaves the file as
 it is answers `"result": "unchanged"`, except a bind that sends a CHAP or
 mutual CHAP secret: it always goes to the helper, and its diff shows the
 secret line removed and added, so the answer is the same whether or not the
