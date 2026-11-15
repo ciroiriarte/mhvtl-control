@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -116,7 +117,7 @@ type fabricsFiles struct {
 func (s *Server) readFabricsFiles() (fabricsFiles, error) {
 	var f fabricsFiles
 	s.fabricsMu.Lock()
-	rev, writing := s.fabricsRev, s.fabricsWriting > 0
+	rev, seq, writing := s.fabricsRev, s.fabricsSeq, s.fabricsWriting > 0
 	s.fabricsMu.Unlock()
 	data, sha, err := conffile.ReadFile(filepath.Join(s.cfg.ConfigDir, fabricsConfName))
 	switch {
@@ -132,10 +133,10 @@ func (s *Server) readFabricsFiles() (fabricsFiles, error) {
 		return f, errors.New("device.conf: unreadable")
 	}
 	f.conf, f.dev = conffile.ParseFabricsConf(f.data), conffile.ParseDeviceConf(dev)
-	// A write that started after rev was taken advanced it: the file read
+	// A write that started after seq was taken advanced it: the file read
 	// may be the new one, and its version under rev must not be answered.
 	s.fabricsMu.Lock()
-	f.busy = writing || s.fabricsWriting > 0 || s.fabricsRev != rev
+	f.busy = writing || s.fabricsWriting > 0 || s.fabricsSeq != seq
 	s.fabricsMu.Unlock()
 	if f.exists && !f.busy {
 		f.version = s.fabricsVersion(rev, data)
@@ -168,23 +169,32 @@ func (s *Server) fabricsVersion(rev uint64, data []byte) string {
 	return hex.EncodeToString(m.Sum(nil))
 }
 
-// fabricsDo sends hreq to the helper. A write (not a plan) advances the
-// revision of fabrics.conf's version before it is sent and after the
-// helper answers, whatever the answer: the helper may have written the
-// file even when the answer is an error or never came. While it is in
-// flight no version is answered (fabricsFiles.busy).
-func (s *Server) fabricsDo(ctx context.Context, hreq apply.Request) (apply.Response, error) {
+// fabricsDo sends hreq to the helper. While a write (not a plan) is in
+// flight no version is answered (fabricsFiles.busy). After it, the
+// revision of fabrics.conf's version advances whatever the answer, since
+// the helper may have written the file even when the answer is an error
+// or never came; only a write that never reached the helper leaves it:
+// no helper on the socket (applyclient.ErrAbsent) or a failed connect.
+func (s *Server) fabricsDo(ctx context.Context, hreq apply.Request) (resp apply.Response, err error) {
 	if hreq.Op == apply.OpFabrics {
 		s.fabricsMu.Lock()
 		s.fabricsWriting++
-		s.fabricsRev++
+		s.fabricsSeq++
 		s.fabricsMu.Unlock()
+		reached := true
 		defer func() {
 			s.fabricsMu.Lock()
-			s.fabricsRev++
+			if reached {
+				s.fabricsRev++
+			}
+			s.fabricsSeq++
 			s.fabricsWriting--
 			s.fabricsMu.Unlock()
 		}()
+		resp, err = s.cfg.Helper.Do(ctx, hreq)
+		var op *net.OpError
+		reached = !errors.Is(err, applyclient.ErrAbsent) && !(errors.As(err, &op) && op.Op == "dial")
+		return resp, err
 	}
 	return s.cfg.Helper.Do(ctx, hreq)
 }

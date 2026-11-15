@@ -2,18 +2,22 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"mhvtl-control/internal/apply"
+	"mhvtl-control/internal/applyclient"
 	"mhvtl-control/internal/conffile"
 )
 
@@ -1325,5 +1329,60 @@ func TestISCSIVersionHiddenWhileApplying(t *testing.T) {
 	}
 	if afterRight == "<absent>" || afterRight == pre || afterWrong == "<absent>" || afterWrong == pre {
 		t.Errorf("version after the write: right %s, wrong %s, before %s", afterRight, afterWrong, pre)
+	}
+}
+
+// failingHelper is a helper whose Do of a write fails with err.
+type failingHelper struct {
+	HelperService
+	err error
+}
+
+func (h failingHelper) Do(ctx context.Context, req apply.Request) (apply.Response, error) {
+	if req.Op == apply.OpFabrics {
+		return apply.Response{}, h.err
+	}
+	return h.HelperService.Do(ctx, req)
+}
+
+// failDo makes e's helper fail a write with err.
+func failDo(err error) func(*writeEnv) {
+	return func(e *writeEnv) { e.srv.cfg.Helper = failingHelper{e.srv.cfg.Helper, err} }
+}
+
+// TestISCSIVersionAfterUnreachedWrite: a write that never reached the
+// helper leaves fabrics.conf's version as it was; one that reached it
+// advances it, whatever the answer.
+func TestISCSIVersionAfterUnreachedWrite(t *testing.T) {
+	bind := map[string]any{"library": 30, "initiators": []string{pbsIQN}}
+	for _, c := range []struct {
+		name    string
+		helper  func(*writeEnv)
+		status  int
+		advance bool
+	}{
+		{"absent", failDo(fmt.Errorf("%w: gone", applyclient.ErrAbsent)), http.StatusConflict, false},
+		{"connect failed", failDo(&net.OpError{Op: "dial", Net: "unix", Err: syscall.EACCES}), http.StatusBadGateway, false},
+		{"connection lost", failDo(&net.OpError{Op: "read", Net: "unix", Err: syscall.ECONNRESET}), http.StatusBadGateway, true},
+		{"refused", func(e *writeEnv) {
+			e.answer(func(apply.Request) apply.Response {
+				return apply.Response{Result: apply.ResultRefused, Error: apply.ErrInvalid, Message: "no"}
+			})
+		}, http.StatusUnprocessableEntity, true},
+		{"not json", func(e *writeEnv) {
+			e.answer(func(apply.Request) apply.Response { return apply.Response{Result: notJSON} })
+		}, http.StatusBadGateway, true},
+	} {
+		e := iscsiEnv(t, fabricsSample, "reload", nil)
+		before := e.version(fabricsSample)
+		c.helper(e)
+		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", bind)
+		if rec.Code != c.status {
+			t.Errorf("%s: %d %s, want %d", c.name, rec.Code, rec.Body, c.status)
+		}
+		after := decodeBody[iscsiConfigDTO](t, e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil))
+		if changed := str(after.SHA256) != before; changed != c.advance || after.SHA256 == nil {
+			t.Errorf("%s: version %s after, %s before: want changed %v", c.name, str(after.SHA256), before, c.advance)
+		}
 	}
 }

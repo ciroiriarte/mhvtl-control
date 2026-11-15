@@ -169,13 +169,15 @@ type Server struct {
 	// fabricsKey keys the opaque version of fabrics.conf the iSCSI routes
 	// answer (fabricsVersion). It is made at start and never stored.
 	fabricsKey []byte
-	// fabricsMu guards fabricsRev and fabricsWriting.
+	// fabricsMu guards fabricsRev, fabricsSeq and fabricsWriting.
 	fabricsMu sync.Mutex
-	// fabricsRev is part of that version: it advances when a write of
-	// fabrics.conf the daemon sends the helper starts and when it ends. A
+	// fabricsRev is part of that version: it advances after every write of
+	// fabrics.conf the daemon sends the helper that may have reached it.
+	fabricsRev uint64
+	// fabricsSeq advances when such a write starts and when it ends: a
 	// version computed while it changed straddles one of them and is not
 	// answered.
-	fabricsRev uint64
+	fabricsSeq uint64
 	// fabricsWriting counts the writes of fabrics.conf sent to the helper
 	// and not answered yet. While one is, no version is answered.
 	fabricsWriting int
