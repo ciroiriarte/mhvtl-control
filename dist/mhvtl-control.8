@@ -68,7 +68,10 @@ the CHAP names too.
 .I /api/v1/transports/iscsi/bind
 and
 .I /api/v1/transports/iscsi/unbind
-edit it; each takes a dry run that shows the change with secrets masked.
+edit it; each takes a dry run that shows the change with secrets masked
+and the text of every comment replaced by
+.IR "(comment not shown)" ,
+as a comment may quote an old secret.
 A bind that sends a CHAP or mutual CHAP secret is never answered
 .I unchanged
 and its diff always shows the secret line replaced, so the answer does not

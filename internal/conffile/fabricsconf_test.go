@@ -741,6 +741,27 @@ func TestMaskFileLine(t *testing.T) {
 	}
 }
 
+// TestRedactComment: whole-line and trailing comments, as fab_conf_parse
+// and split_field find them, keep their indentation and '#' and lose their
+// text; a '#' not after a blank is part of the value.
+func TestRedactComment(t *testing.T) {
+	ph := "# " + CommentPlaceholder
+	for _, c := range []struct{ in, want string }{
+		{"# was: hunter2-Secret", ph},
+		{" \t# old", " \t" + ph},
+		{"#", ph},
+		{" Target name: iqn.2024-01.com.example:t # was x", " Target name: iqn.2024-01.com.example:t " + ph},
+		{"iSCSI target: 10\t#x", "iSCSI target: 10\t" + ph},
+		{" CHAP name: a#b", " CHAP name: a#b"},
+		{" Portal: 192.0.2.1:3260", " Portal: 192.0.2.1:3260"},
+		{"", ""},
+	} {
+		if got := RedactComment(c.in); got != c.want {
+			t.Errorf("RedactComment(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // TestMaskSecretsExcept: a secret inside a kept value stays, any other
 // occurrence is masked, also one that contains a kept value.
 func TestMaskSecretsExcept(t *testing.T) {

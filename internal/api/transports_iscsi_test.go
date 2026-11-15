@@ -858,9 +858,9 @@ func TestISCSIPreviewNoSecretOracle(t *testing.T) {
 	noSecrets(t, "unbind preview", rec.Body.String())
 }
 
-// TestISCSIPreviewMasksFileLines: a line of the file as read that shows on
-// the added side, between two changed lines, has stored secrets masked
-// even outside a secret field, such as a hand-written comment.
+// TestISCSIPreviewMasksFileLines: a hand-written comment of the file as
+// read that shows on the added side, between two changed lines, shows as a
+// placeholder, so a stored secret it quotes is not shown.
 func TestISCSIPreviewMasksFileLines(t *testing.T) {
 	content := strings.Replace(fabricsSample, " Target name: iqn.2026-11.lan.example:custom30\n",
 		"# was: "+chapSecret+"\n Target name: iqn.2026-11.lan.example:custom30\n", 1)
@@ -873,10 +873,66 @@ func TestISCSIPreviewMasksFileLines(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
-	if d := decodeBody[iscsiWriteDTO](t, rec).Diff; !strings.Contains(d, "# was: ") {
-		t.Fatalf("comment not in the diff, test does not cover the case: %q", d)
+	if d := decodeBody[iscsiWriteDTO](t, rec).Diff; !strings.Contains(d, "\n+# "+conffile.CommentPlaceholder+"\n") {
+		t.Fatalf("comment not in the diff as a placeholder: %q", d)
 	}
 	noSecrets(t, "bind preview", rec.Body.String())
+}
+
+// TestISCSIPreviewCommentAfterRotation: a comment quoting an old CHAP
+// secret ("# was: <old>") shows in a preview as a placeholder, whether or
+// not an earlier apply rotated the stored secret back to that old value.
+// Masking only the secrets stored now would mask the comment exactly when
+// the rotation's guess was the old secret, and show the old secret
+// otherwise (Codex review round 8).
+func TestISCSIPreviewCommentAfterRotation(t *testing.T) {
+	const old = "OldSecret-0123"
+	chapOnly := strings.Replace(fabricsSample, " Mutual CHAP name: vtl\n Mutual CHAP secret: "+mutualSecret+"\n", "", 1)
+	content := strings.Replace(chapOnly, " Target name: iqn.2026-11.lan.example:custom30\n",
+		"# was: "+old+"\n Target name: iqn.2026-11.lan.example:custom30 # was "+old+"\n", 1)
+	diff := func(guess string) string {
+		t.Helper()
+		e := iscsiEnv(t, content, "reload", nil)
+		e.h.answer = func(req apply.Request) apply.Response {
+			if req.Op == apply.OpFabricsPlan {
+				return apply.Response{Result: apply.ResultValidated, FabricsAction: "reload"}
+			}
+			if err := os.WriteFile(filepath.Join(e.dir, "fabrics.conf"), req.Files[0].Content, 0o600); err != nil {
+				t.Error(err)
+			}
+			return apply.Response{Result: apply.ResultApplied, FabricsAction: "reload"}
+		}
+		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
+			"chap": map[string]string{"name": "pbs", "secret": guess}})
+		if rec.Code != http.StatusOK || decodeBody[iscsiWriteDTO](t, rec).Result != apply.ResultApplied {
+			t.Fatalf("rotation to %q: %d %s", guess, rec.Code, rec.Body)
+		}
+		data, err := os.ReadFile(filepath.Join(e.dir, "fabrics.conf"))
+		if err != nil || !strings.Contains(string(data), " CHAP secret: "+guess+"\n") {
+			t.Fatalf("rotation to %q not written (%v): %s", guess, err, data)
+		}
+		// A separate preview whose diff holds both comments: the
+		// initiator above the whole-line comment and the target name
+		// with the trailing one change.
+		rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
+			"initiators": []string{"iqn.2024-01.com.example:other"}, "target_name": "iqn.2026-11.lan.example:renamed30",
+			"dry_run": true})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("preview after %q: %d %s", guess, rec.Code, rec.Body)
+		}
+		noSecrets(t, "preview", rec.Body.String(), old, guess)
+		return decodeBody[iscsiWriteDTO](t, rec).Diff
+	}
+	right, wrong := diff(old), diff("WrongGuess-0123")
+	if right != wrong {
+		t.Errorf("preview depends on the rotation's guess:\nright %q\nwrong %q", right, wrong)
+	}
+	for _, want := range []string{"\n+# " + conffile.CommentPlaceholder + "\n",
+		"\n+ Target name: iqn.2026-11.lan.example:renamed30 # " + conffile.CommentPlaceholder + "\n"} {
+		if !strings.Contains(right, want) {
+			t.Errorf("diff lacks %q: %q", want, right)
+		}
+	}
 }
 
 // TestISCSISecretGuessNoOracle: a bind that sends a CHAP or mutual CHAP
@@ -1099,7 +1155,7 @@ func TestISCSIPreviewStoredCHAPNameNoOracle(t *testing.T) {
 }
 
 // TestISCSIPreviewTrailingCommentMasked: a line rewriteValue changes keeps
-// its trailing comment from the file; a stored secret there is masked on
+// its trailing comment from the file; its text shows as a placeholder on
 // the added line as on the removed one.
 func TestISCSIPreviewTrailingCommentMasked(t *testing.T) {
 	content := strings.Replace(fabricsSample, " Target name: iqn.2026-11.lan.example:custom30\n",
@@ -1111,7 +1167,7 @@ func TestISCSIPreviewTrailingCommentMasked(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
 	d := decodeBody[iscsiWriteDTO](t, rec).Diff
-	if !strings.Contains(d, "\n+ Target name: iqn.2026-11.lan.example:renamed30 # was "+conffile.SecretMask+"\n") {
+	if !strings.Contains(d, "\n+ Target name: iqn.2026-11.lan.example:renamed30 # "+conffile.CommentPlaceholder+"\n") {
 		t.Errorf("added line not masked as expected: %q", d)
 	}
 	noSecrets(t, "bind preview", rec.Body.String())

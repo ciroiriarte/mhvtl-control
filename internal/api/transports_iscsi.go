@@ -503,13 +503,17 @@ var quotedSecret = regexp.MustCompile(`(?i)'[^']*secret[^']*'`)
 var quotedCHAP = regexp.MustCompile(`(?i)'[^']*(?:secret|chap)[^']*'`)
 
 // previewDiff is the fabrics.conf diff to answer. Secret lines are masked
-// by RedactFabrics. In every line the request's own secrets are masked,
-// and the stored ones (stored) by conffile.MaskFileLine: in comments,
-// trailing comments (also those rewriteValue keeps on a changed line) and
-// lines of any other kind, but not in the value of a field the client sets
-// and GET config shows in clear, such as a CHAP name or an initiator.
-// Masking a stored secret there would tell the client that a value it
-// chose, now or in an earlier apply, contains one.
+// by RedactFabrics. The text of every comment, whole-line or trailing
+// (also one rewriteValue keeps on a changed line), is replaced by a fixed
+// placeholder (conffile.RedactComment), whatever it holds: a comment may
+// quote an old secret, and masking it only when it holds a secret stored
+// now would tell a client that rotated a secret to a guess whether the
+// guess was the old one. In every line the request's own secrets are
+// masked, and the stored ones (stored) by conffile.MaskFileLine, but not
+// in the value of a field the client sets and GET config shows in clear,
+// such as a CHAP name or an initiator. Masking a stored secret there would
+// tell the client that a value it chose, now or in an earlier apply,
+// contains one.
 func previewDiff(before, after []byte, own, stored []string) string {
 	lines := strings.SplitAfter(conffile.FabricsDiff(before, after), "\n")
 	// The first three lines are FabricsDiff's header.
@@ -519,7 +523,7 @@ func previewDiff(before, after []byte, own, stored []string) string {
 			continue
 		}
 		body, nl := strings.CutSuffix(l[1:], "\n")
-		lines[i] = l[:1] + conffile.MaskSecrets(conffile.MaskFileLine(body, stored), own)
+		lines[i] = l[:1] + conffile.MaskSecrets(conffile.MaskFileLine(conffile.RedactComment(body), stored), own)
 		if nl {
 			lines[i] += "\n"
 		}

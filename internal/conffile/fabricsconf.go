@@ -1277,6 +1277,31 @@ func MaskFileLine(line string, secrets []string) string {
 	return line[:ve] + MaskSecrets(line[ve:], secrets)
 }
 
+// CommentPlaceholder stands for the text of a comment in RedactComment.
+const CommentPlaceholder = "(comment not shown)"
+
+// RedactComment returns one fabrics.conf line with the text of its comment
+// replaced by CommentPlaceholder, keeping the indentation and the '#': a
+// whole-line comment, '#' after the indentation (fab_conf_parse,
+// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_conf.c#L367-L370),
+// or a trailing one, from the first '#' after a blank or tab (split_field,
+// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_conf.c#L63-L67).
+// A comment is free text that may quote an old secret: shown, or masked
+// only when it holds a secret stored now, it would tell a client that
+// rotated a secret to a guess whether the guess was the old one.
+func RedactComment(line string) string {
+	p := fabIndent(line)
+	if p < len(line) && line[p] == '#' {
+		return line[:p] + "# " + CommentPlaceholder
+	}
+	for k := p; k+1 < len(line); k++ {
+		if (line[k] == ' ' || line[k] == '\t') && line[k+1] == '#' {
+			return line[:k+1] + "# " + CommentPlaceholder
+		}
+	}
+	return line
+}
+
 // FabricsClearValues returns the values of the clearFields lines of data,
 // the text MaskSecretsExcept leaves alone.
 func FabricsClearValues(data []byte) []string {

@@ -476,10 +476,11 @@ configuration editor needs (see [Turn writes on](#turn-writes-on)).
 - `POST /api/v1/transports/iscsi/unbind` `{"library": 10}`: stop exporting it.
 
 Each takes `"dry_run": true` to see the change first: the diff of
-`fabrics.conf`, with secrets shown as `********` (in secret lines and
-comments; a value the client sets and reads in clear, such as a CHAP name or
-an initiator, is shown as it is even if it contains a stored secret, so the
-diff does not answer guesses), what the apply would
+`fabrics.conf`, with secrets shown as `********` (a value the client sets
+and reads in clear, such as a CHAP name or an initiator, is shown as it is
+even if it contains a stored secret, so the diff does not answer guesses)
+and the text of every comment, whole-line or trailing, shown as
+`# (comment not shown)`, as a comment may quote an old secret; what the apply would
 do, and `sha256`, the version of the file the change was made against (`""`
 when there is none). The version is opaque: an HMAC of the file under a
 key the daemon makes when it starts, not the file's SHA-256, which would
