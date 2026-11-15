@@ -266,7 +266,7 @@ test("iscsiFieldInput maps request fields to inputs", () => {
 });
 
 test("iscsiOutcome maps write responses", () => {
-  const v = core.iscsiOutcome({ dry_run: true, action: "reload", diff: "+x\n", result: "validated" }, 200);
+  const v = core.iscsiOutcome({ dry_run: true, action: "reload", diff: "+x\n", result: "validated", sha256: "v1" }, 200);
   assert.deepStrictEqual([v.kind, v.action, v.actionText, v.diff], ["validated", "reload", "reload: sessions to other targets stay up", "+x\n"]);
   const a = core.iscsiOutcome({ dry_run: false, action: "start", result: "applied" }, 200);
   assert.strictEqual(a.kind, "applied");
@@ -277,7 +277,7 @@ test("iscsiOutcome maps write responses", () => {
   assert.ok(rb.text.includes("mhvtl-fabrics failed") && rb.text.includes("/rollback/1"));
   // A preview while the fabrics marker exists: validated with the helper's
   // note shown, or refused (422) when the retry could not succeed.
-  const note = core.iscsiOutcome({ dry_run: true, action: "reload", result: "validated", message: "applying this change first runs systemctl reload" }, 200);
+  const note = core.iscsiOutcome({ dry_run: true, action: "reload", result: "validated", sha256: "v1", message: "applying this change first runs systemctl reload" }, 200);
   assert.deepStrictEqual([note.kind, note.text], ["validated", "applying this change first runs systemctl reload"]);
   const rr = core.iscsiOutcome({ dry_run: true, result: "refused", error: { code: "fabrics_recovery_required", message: "target x exists" } }, 422);
   assert.deepStrictEqual([rr.kind, rr.text], ["invalid", "target x exists"]);
@@ -306,6 +306,16 @@ test("iscsiOutcome maps write responses", () => {
   assert.strictEqual(core.iscsiOutcome({ error: { message: "network" } }, 0).kind, "error");
   assert.ok(/No answer/.test(core.iscsiOutcome(null, 0).text));
   assert.strictEqual(core.iscsiOutcome(null, 500).kind, "error");
+});
+
+test("iscsiOutcome: a preview without a version is not one to apply", () => {
+  // A change was in flight: an apply of it could only be refused.
+  const b = core.iscsiOutcome({ dry_run: true, action: "reload", diff: "+x\n", result: "validated" }, 200);
+  assert.deepStrictEqual([b.kind, b.text], ["busy", "A change is being applied; preview again when it finishes."]);
+  // No file yet: the version is "", and the preview is one to apply.
+  assert.strictEqual(core.iscsiOutcome({ dry_run: true, action: "start", result: "validated", sha256: "" }, 200).kind, "validated");
+  // An apply's answer is not a preview.
+  assert.strictEqual(core.iscsiOutcome({ dry_run: false, action: "reload", result: "applied" }, 200).kind, "applied");
 });
 
 test("no outcome text carries a secret from the request", () => {

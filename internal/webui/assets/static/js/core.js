@@ -1952,7 +1952,8 @@
 
   // iscsiOutcome maps a write's answer to what the UI does: res is the
   // response body (any status), status its HTTP status (0: no answer). kind
-  // is validated (a preview to confirm), unchanged (nothing to apply),
+  // is validated (a preview to confirm), busy (a preview without a version,
+  // made while another change was applied: not to confirm), unchanged (nothing to apply),
   // applied, rolled_back, invalid (field: the request field to fix),
   // conflict (409: reload and redo), not_bound, readonly, refused or error.
   // text is built from the daemon's message, never from the request.
@@ -2018,6 +2019,13 @@
       if (result === "applied" || (!res.dry_run && result === "")) {
         out.kind = "applied";
         out.text = "Applied" + (out.action ? " (" + out.actionText + ")" : "") + ".";
+        return out;
+      }
+      if ((result === "validated" || res.dry_run) && typeof res.sha256 !== "string") {
+        // No version: another change was in flight, and an apply of this
+        // preview could only be refused as changed since read.
+        out.kind = "busy";
+        out.text = "A change is being applied; preview again when it finishes.";
         return out;
       }
       if (result === "validated" || res.dry_run) {

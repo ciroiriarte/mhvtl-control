@@ -1454,6 +1454,10 @@
           iscsiSetPreviewed(true);
           ctx.preview = { body: b.body, sha: r.res && r.res.sha256 };
           return;
+        case "busy":
+          // Apply stays disabled: nothing was previewed to apply.
+          iscsiShow({ text: o.text });
+          return;
         case "unchanged":
           iscsiShow({ text: o.text });
           if (!dryRun) { iscsiReload(); }
