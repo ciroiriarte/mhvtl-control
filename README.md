@@ -501,8 +501,8 @@ and apply gets 409 with `error.code` `apply_in_progress`, whatever it
 sends; applies are never queued. From an apply's read of `fabrics.conf`
 to its answer, a stage check or apply and a service action or dry run get
 409 `apply_in_progress` too, without reaching the helper. A preview during which another such
-request started or finished gets 409 `conflict` with no version and no
-diff; an apply gets 409 with `"result": "unknown"` and `error.code`
+request started or finished gets 409 `apply_in_progress` too, with no
+version and no diff: preview again; an apply gets 409 with `"result": "unknown"` and `error.code`
 `conflict`, without the helper's answer: it may have been made. Read
 `GET .../config` again, or preview again, once it has finished.
 `GET /api/v1/transports/iscsi/config` answers it too, but only with

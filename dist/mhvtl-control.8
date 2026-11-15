@@ -207,8 +207,8 @@ apply and a service action or dry run get 409
 .B apply_in_progress
 too, without reaching the helper.
 A preview during which another such request started or finished gets 409
-.B conflict
-with no version; an apply gets 409 with result
+.B apply_in_progress
+too, with no version: preview again; an apply gets 409 with result
 .B unknown
 and no answer of the helper, as it may have been made.
 The helper refuses when

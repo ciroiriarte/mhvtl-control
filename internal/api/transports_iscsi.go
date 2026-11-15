@@ -889,13 +889,16 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	if !s.fabricsQuiet(f.seq + seqSteps(hreq.Op)) {
 		// Another call may have changed the file between the read and the
 		// helper's check, a recovery included: what the helper said is not
-		// answered. A write may have been made, which the client reads.
-		out := iscsiWriteDTO{DryRun: q.dryRun, Result: apply.ResultConflict,
-			Error: &errorDetail{Code: apply.ResultConflict, Message: fabricsChanged}}
-		if !q.dryRun {
-			out.Result, out.Error.Message = resultUnknown, fabricsOverlapped
+		// answered. A dry run is answered as one that came while another
+		// call was in flight, which it overlapped (or was refused for,
+		// helperDo): previewing again once it is done gives the answer. A
+		// write may have been made, which the client reads.
+		if q.dryRun {
+			writeFabricsBusy(w, q.dryRun)
+			return
 		}
-		writeJSON(w, http.StatusConflict, out)
+		writeJSON(w, http.StatusConflict, iscsiWriteDTO{Result: resultUnknown,
+			Error: &errorDetail{Code: apply.ResultConflict, Message: fabricsOverlapped}})
 		return
 	}
 	status, code := applyStatus(resp)

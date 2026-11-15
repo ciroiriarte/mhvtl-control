@@ -1461,8 +1461,37 @@ func TestISCSIDryRunRacingWriteNoOracle(t *testing.T) {
 	if right != wrong {
 		t.Errorf("dry run answers differ:\nright %s\nwrong %s", right, wrong)
 	}
-	if !strings.HasPrefix(right, "409 ") || strings.Contains(right, `"sha256"`) || !strings.Contains(right, `"diff":""`) {
-		t.Errorf("dry run answer = %s, want a 409 conflict without version or diff", right)
+	if !strings.HasPrefix(right, "409 ") || !strings.Contains(right, `"result":"`+apply.ResultInProgress+`"`) ||
+		strings.Contains(right, `"sha256"`) || !strings.Contains(right, `"diff":""`) {
+		t.Errorf("dry run answer = %s, want a 409 %s without version or diff", right, apply.ResultInProgress)
+	}
+}
+
+// TestISCSIDryRunOverlappedAnswersBusy: a dry run whose helper call
+// another one overlapped, a second dry run or a stage's plan, is answered
+// apply_in_progress ("preview again"), not conflict ("changed since it
+// was read"): nothing changed the file. The call that overlapped it, alone
+// in the helper, is answered as usual.
+func TestISCSIDryRunOverlappedAnswersBusy(t *testing.T) {
+	for _, other := range []string{"iscsi", "config"} {
+		e := iscsiEnv(t, fabricsSample, "reload", nil)
+		helperLikeFabrics(e)
+		path, body := "/api/v1/transports/iscsi/unbind", map[string]any{"library": 10, "dry_run": true}
+		if other == "config" {
+			path, body = "/api/v1/config/apply", map[string]any{"stage": e.staged().Stage, "dry_run": true}
+		}
+		var second string
+		e.srv.beforeFabricsHelper = func() {
+			e.srv.beforeFabricsHelper = nil
+			second = e.rawCall(http.MethodPost, path, body)
+		}
+		first := recText(e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30, "dry_run": true}))
+		if !strings.HasPrefix(first, "409 ") || !strings.Contains(first, `"result":"`+apply.ResultInProgress+`"`) || strings.Contains(first, `"sha256"`) {
+			t.Errorf("%s: overlapped dry run = %s, want 409 %s without version", other, first, apply.ResultInProgress)
+		}
+		if !strings.HasPrefix(second, "200 ") || !strings.Contains(second, `"result":"validated"`) {
+			t.Errorf("%s: the other call = %s, want validated", other, second)
+		}
 	}
 }
 

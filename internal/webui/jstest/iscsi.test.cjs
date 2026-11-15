@@ -291,6 +291,8 @@ test("iscsiOutcome maps write responses", () => {
   assert.ok(/may have been made/.test(unk.text) && !/changed since it was read/.test(unk.text), unk.text);
   const busy = core.iscsiOutcome({ result: "apply_in_progress", error: { code: "apply_in_progress", message: "another apply is running" } }, 409);
   assert.deepStrictEqual([busy.kind, /Another change is being applied/.test(busy.text)], ["conflict", true]);
+  const busyDry = core.iscsiOutcome({ dry_run: true, result: "apply_in_progress", diff: "", error: { code: "apply_in_progress", message: "a change is being applied" } }, 409);
+  assert.deepStrictEqual([busyDry.kind, /preview again/.test(busyDry.text)], ["busy", true]);
   const rec = core.iscsiOutcome({ result: "recovered", error: { code: "recovered", message: "m" } }, 409);
   assert.ok(/recovered a change that had been interrupted/.test(rec.text) && /make the change again/.test(rec.text));
   const other = core.iscsiOutcome({ error: { code: "intent_unreadable", message: "intent.json unreadable" } }, 409);

@@ -1984,6 +1984,13 @@
           break;
         case "apply_in_progress":
         case "in_progress":
+          if (res.dry_run) {
+            // A preview that came while, or was overlapped by, another
+            // request to the helper: nothing to apply, and nothing changed.
+            out.kind = "busy";
+            out.text = "A change is being applied; preview again when it finishes.";
+            break;
+          }
           out.text = "Another change is being applied. Try again in a moment.";
           break;
         case "recovered":
