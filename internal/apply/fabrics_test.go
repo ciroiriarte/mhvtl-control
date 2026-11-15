@@ -457,12 +457,20 @@ func TestFabricsReconcileFailure(t *testing.T) {
 		t.Errorf("other requests ran %v", v)
 	}
 
-	// A fabrics op retries the reload first; it still fails: refused, and
-	// the marker stays.
+	// A fabrics plan does not act: it is validated with a note that the
+	// apply retries first.
 	resp = f.do(f.fabricsReq(OpFabricsPlan, next))
+	if resp.Result != ResultValidated || !strings.Contains(resp.Message, "first runs systemctl reload "+FabricsUnit) ||
+		!f.markerExists() || len(f.verbs()) != 0 {
+		t.Fatalf("fabrics plan with the marker: %+v, marker %v, systemctl %v", resp, f.markerExists(), f.verbs())
+	}
+
+	// A fabrics apply retries the reload first; it still fails: refused,
+	// and the marker stays.
+	resp = f.do(f.fabricsReq(OpFabrics, next))
 	if resp.Result != ResultRefused || resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "retrying failed") ||
 		!f.markerExists() {
-		t.Fatalf("fabrics plan with reload failing: %+v, marker %v", resp, f.markerExists())
+		t.Fatalf("fabrics apply with reload failing: %+v, marker %v", resp, f.markerExists())
 	}
 	if v := f.verbs(); len(v) != 1 || v[0] != "reload "+FabricsUnit {
 		t.Errorf("systemctl %v, want one reload", v)
@@ -485,7 +493,7 @@ func TestFabricsReconcileFailure(t *testing.T) {
 }
 
 // TestFabricsMarkerUnitStopped: a unit stopped by hand clears the marker
-// on the next fabrics op, with no reload.
+// on the next fabrics apply, with no reload.
 func TestFabricsMarkerUnitStopped(t *testing.T) {
 	f := newFabEnv(t)
 	f.writeConf(fabricsConf, fabConf, 0o600)
@@ -496,8 +504,8 @@ func TestFabricsMarkerUnitStopped(t *testing.T) {
 		t.Fatal("no marker")
 	}
 	f.fab, f.target, f.systemctl = "inactive", "inactive", nil
-	if resp := f.do(f.fabricsReq(OpFabricsPlan, fabConf)); resp.Result != ResultValidated || f.markerExists() || len(f.verbs()) != 0 {
-		t.Fatalf("plan with the unit stopped: %+v, marker %v, systemctl %v", resp, f.markerExists(), f.verbs())
+	if resp := f.do(f.fabricsReq(OpFabrics, fabConf)); resp.Result != ResultApplied || f.markerExists() || len(f.verbs()) != 0 {
+		t.Fatalf("apply with the unit stopped: %+v, marker %v, systemctl %v", resp, f.markerExists(), f.verbs())
 	}
 }
 
@@ -1229,6 +1237,8 @@ func TestFabricsReloadGuardsForeignTargets(t *testing.T) {
 	retry := func(t *testing.T, f *fabEnv) {
 		t.Helper()
 		f.systemctl = nil
+		// A plan does not act, but tells the retry would be refused.
+		refused(t, f, f.do(f.fabricsReq(OpFabricsPlan, next)), "plan while foreign")
 		refused(t, f, f.do(f.fabricsReq(OpFabrics, next)), "retry while foreign")
 		// The operator removes the foreign target: the retry reloads and
 		// clears the marker, and the op goes on.

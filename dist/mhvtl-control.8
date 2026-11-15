@@ -133,7 +133,7 @@ then run
 Until a reload succeeds or
 .B "systemctl stop mhvtl-fabrics"
 stops the unit, each iSCSI change retries the reload first and is refused
-while it fails; other requests go ahead.
+while it fails (a dry run only says so); other requests go ahead.
 When the unit is left failed and its state file
 .I /run/mhvtl/fabrics.state
 still lists targets, or cannot be read, the answer is

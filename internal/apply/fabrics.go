@@ -106,7 +106,17 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	if err := h.checkLegacyEnv(); err != nil {
 		return responseOf(err)
 	}
-	if err := h.retryReconcile(ctx, rec); err != nil {
+	// A plan does not act: while the marker exists it only says that the
+	// apply retries first. Refusing it would leave the dashboard, which
+	// applies only what it previewed, no way to make the retry happen.
+	var markerNote string
+	if req.Op == OpFabricsPlan {
+		note, err := h.peekMarker()
+		if err != nil {
+			return responseOf(err)
+		}
+		markerNote = note
+	} else if err := h.retryReconcile(ctx, rec); err != nil {
 		return responseOf(err)
 	}
 	f := req.Files[0]
@@ -148,7 +158,7 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 		rec.Units = []string{action + " " + FabricsUnit}
 	}
 	if req.Op == OpFabricsPlan {
-		return Response{Result: ResultValidated, FabricsAction: action}
+		return Response{Result: ResultValidated, FabricsAction: action, Message: markerNote}
 	}
 
 	boot, err := h.bootID()
@@ -830,8 +840,8 @@ func (h *Helper) clearFabricsMarker() error {
 	return syncDir(h.cfg.StateDir)
 }
 
-// retryReconcile runs before a fabrics plan or apply while the fabrics
-// marker exists: it has the targets follow fabrics.conf as it is now
+// retryReconcile runs before a fabrics apply (a plan only reads the
+// marker, peekMarker) while the fabrics marker exists: it has the targets follow fabrics.conf as it is now
 // (reconcileFabrics) and removes the marker when that succeeds, an
 // inactive unit included. Otherwise the op is refused with
 // fabrics_recovery_required and the marker stays; a *fabricsLeftover
@@ -865,6 +875,29 @@ func (h *Helper) retryReconcile(ctx context.Context, rec *AuditRecord) error {
 	audit.Result, audit.Error, audit.Message = ResultError, ErrFabricsState, err.Error()
 	h.audit(audit)
 	return err
+}
+
+// peekMarker is retryReconcile for a plan, which reads and changes
+// nothing but answers: "" without the marker; with it, a note that the
+// apply retries first. When the retry would be refused for a foreign
+// target (foreignOnDisk), the plan is refused the same way, with
+// fabrics_recovery_required.
+func (h *Helper) peekMarker() (string, error) {
+	m, err := h.readFabricsMarker()
+	if err != nil || m == nil {
+		return "", err
+	}
+	verb := FabricsReload
+	if m.Removed {
+		verb = fabricsStop
+	} else if err := h.foreignOnDisk(); err != nil {
+		cur, rerr := readTarget(h.cfg.ConfigDir, fabricsConf)
+		if rerr != nil {
+			return "", rerr
+		}
+		return "", refuse(ErrFabricsState, "%s", maskFabrics("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and applying a change would retry that first: "+markerAdvice(err, m.Removed), cur.data))
+	}
+	return fmt.Sprintf("an earlier rollback restored %s but could not make the targets follow it: applying this change first runs systemctl %s %s again, and is refused if that fails", fabricsConf, verb, FabricsUnit), nil
 }
 
 // fabricsLeftover is a failed mhvtl-fabrics.service whose state file

@@ -272,6 +272,12 @@ test("iscsiOutcome maps write responses", () => {
     rollback_dir: "/var/lib/mhvtl-control-apply/rollback/1" }, 500);
   assert.deepStrictEqual([rb.kind, rb.tail], ["rolled_back", "line1\nline2"]);
   assert.ok(rb.text.includes("mhvtl-fabrics failed") && rb.text.includes("/rollback/1"));
+  // A preview while the fabrics marker exists: validated with the helper's
+  // note shown, or refused (422) when the retry could not succeed.
+  const note = core.iscsiOutcome({ dry_run: true, action: "reload", result: "validated", message: "applying this change first runs systemctl reload" }, 200);
+  assert.deepStrictEqual([note.kind, note.text], ["validated", "applying this change first runs systemctl reload"]);
+  const rr = core.iscsiOutcome({ dry_run: true, result: "refused", error: { code: "fabrics_recovery_required", message: "target x exists" } }, 422);
+  assert.deepStrictEqual([rr.kind, rr.text], ["invalid", "target x exists"]);
   const inv = core.iscsiOutcome({ result: "refused", error: { code: "invalid", message: "bad IQN", field: "initiators" } }, 422);
   assert.deepStrictEqual([inv.kind, inv.field, inv.text], ["invalid", "initiators", "bad IQN"]);
   const c = core.iscsiOutcome({ result: "conflict", error: { code: "conflict", message: "changed" } }, 409);
