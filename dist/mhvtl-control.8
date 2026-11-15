@@ -177,6 +177,13 @@ starts, not its SHA-256 (the file holds CHAP secrets); it changes after
 every apply sent through these routes, even one that leaves the file
 byte-identical, and when the daemon restarts, and is not answered without
 .BR \-api\-token .
+While an apply of the file is in progress (the helper writes it, then
+reloads
+.BR mhvtl\-fabrics ),
+no answer holds a version: clients read the file again once it is done,
+and an apply sent with
+.I base_sha256
+meanwhile gets 409.
 The helper refuses when
 .B MHVTL_BACKEND
 is not

@@ -597,7 +597,7 @@ func TestApplyAnswersNoFabricsHash(t *testing.T) {
 				t.Errorf("%s via %s: fabrics.conf's SHA-256 answered: %s", name, route, rec.Body)
 			}
 			got := decodeBody[applyResultDTO](t, rec)
-			version := e.srv.fabricsVersion([]byte(fabrics))
+			version := versionNow(e.srv, []byte(fabrics))
 			switch name {
 			case "recovered":
 				if len(got.Conflicts) != 2 || got.Conflicts[0].CurrentSHA256 == nil || *got.Conflicts[0].CurrentSHA256 != version ||

@@ -75,7 +75,8 @@ type iscsiProblemDTO struct {
 
 // iscsiConfigDTO is GET /transports/iscsi/config. SHA256 is fabrics.conf's
 // version (fabricsFiles.version), left out without an API token: only the
-// writes, which need the token, take it back.
+// writes, which need the token, take it back. It is also left out while a
+// write of fabrics.conf is being applied (fabricsFiles.busy).
 type iscsiConfigDTO struct {
 	Exists   bool              `json:"exists"`
 	SHA256   *string           `json:"sha256,omitempty"`
@@ -91,10 +92,19 @@ type iscsiConfigDTO struct {
 // the file under a key made when the daemon starts (fabricsVersion). The
 // file holds CHAP secrets, so its plain hash would let a client test
 // guesses at them offline.
+//
+// busy means a write of fabrics.conf the daemon sent the helper was in
+// flight while the file was read: version is then "" and must not be
+// answered, nor a base_sha256 accepted. The helper writes the file before
+// it reloads mhvtl-fabrics, for minutes at worst, and the revision in the
+// version only advances when it answers: a version of the new file under
+// the old revision would equal the version before the write exactly when
+// the write left the file as it was, so it would confirm a CHAP guess.
 type fabricsFiles struct {
 	data    []byte
 	sha     string // "" when fabrics.conf does not exist
-	version string // "" when fabrics.conf does not exist
+	version string // "" when fabrics.conf does not exist or busy
+	busy    bool
 	exists  bool
 	conf    *conffile.FabricsConf
 	dev     *conffile.DeviceConf
@@ -105,10 +115,13 @@ type fabricsFiles struct {
 // error names the file only: the absolute path goes to the log.
 func (s *Server) readFabricsFiles() (fabricsFiles, error) {
 	var f fabricsFiles
+	s.fabricsMu.Lock()
+	rev, writing := s.fabricsRev, s.fabricsWriting > 0
+	s.fabricsMu.Unlock()
 	data, sha, err := conffile.ReadFile(filepath.Join(s.cfg.ConfigDir, fabricsConfName))
 	switch {
 	case err == nil:
-		f.data, f.sha, f.version, f.exists = data, sha, s.fabricsVersion(data), true
+		f.data, f.sha, f.exists = data, sha, true
 	case !errors.Is(err, fs.ErrNotExist):
 		log.Printf("transports/iscsi: %v", err)
 		return f, errors.New(fabricsConfName + ": unreadable")
@@ -119,39 +132,72 @@ func (s *Server) readFabricsFiles() (fabricsFiles, error) {
 		return f, errors.New("device.conf: unreadable")
 	}
 	f.conf, f.dev = conffile.ParseFabricsConf(f.data), conffile.ParseDeviceConf(dev)
+	// A write that started after rev was taken advanced it: the file read
+	// may be the new one, and its version under rev must not be answered.
+	s.fabricsMu.Lock()
+	f.busy = writing || s.fabricsWriting > 0 || s.fabricsRev != rev
+	s.fabricsMu.Unlock()
+	if f.exists && !f.busy {
+		f.version = s.fabricsVersion(rev, data)
+	}
 	return f, nil
 }
 
+// versionOf is f's version as answered: nil when busy.
+func (f fabricsFiles) versionOf() *string {
+	if f.busy {
+		return nil
+	}
+	v := f.version
+	return &v
+}
+
 // fabricsVersion is the opaque version of fabrics.conf content data: the
-// HMAC-SHA256 under s.fabricsKey of s.fabricsRev and data, in hex. It
-// changes when the file does, after every write the daemon sends the
-// helper, and when the daemon restarts. A write that leaves the file
-// byte-identical, such as a CHAP secret guess equal to the stored one,
-// still changes it: otherwise a version unchanged after the write would
-// confirm the guess.
-func (s *Server) fabricsVersion(data []byte) string {
+// HMAC-SHA256 under s.fabricsKey of revision rev (s.fabricsRev) and data,
+// in hex. It changes when the file does, after every write the daemon
+// sends the helper, and when the daemon restarts. A write that leaves the
+// file byte-identical, such as a CHAP secret guess equal to the stored
+// one, still changes it: otherwise a version unchanged after the write
+// would confirm the guess.
+func (s *Server) fabricsVersion(rev uint64, data []byte) string {
 	m := hmac.New(sha256.New, s.fabricsKey)
-	var rev [8]byte
-	binary.BigEndian.PutUint64(rev[:], s.fabricsRev.Load())
-	m.Write(rev[:])
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], rev)
+	m.Write(b[:])
 	m.Write(data)
 	return hex.EncodeToString(m.Sum(nil))
 }
 
-// fabricsWritten advances the version of fabrics.conf after a write of it
-// was sent to the helper, whatever the answer: the helper may have written
-// the file even when the answer is an error or never came.
-func (s *Server) fabricsWritten() { s.fabricsRev.Add(1) }
+// fabricsDo sends hreq to the helper. A write (not a plan) advances the
+// revision of fabrics.conf's version before it is sent and after the
+// helper answers, whatever the answer: the helper may have written the
+// file even when the answer is an error or never came. While it is in
+// flight no version is answered (fabricsFiles.busy).
+func (s *Server) fabricsDo(ctx context.Context, hreq apply.Request) (apply.Response, error) {
+	if hreq.Op == apply.OpFabrics {
+		s.fabricsMu.Lock()
+		s.fabricsWriting++
+		s.fabricsRev++
+		s.fabricsMu.Unlock()
+		defer func() {
+			s.fabricsMu.Lock()
+			s.fabricsRev++
+			s.fabricsWriting--
+			s.fabricsMu.Unlock()
+		}()
+	}
+	return s.cfg.Helper.Do(ctx, hreq)
+}
 
 // currentFabricsVersion is the version of fabrics.conf as it is now, for
 // a conflict the helper found: "" when it does not exist, nil when it
-// cannot be read.
+// cannot be read or a write of it is in flight.
 func (s *Server) currentFabricsVersion() *string {
 	f, err := s.readFabricsFiles()
 	if err != nil {
 		return nil
 	}
-	return &f.version
+	return f.versionOf()
 }
 
 // deviceOf finds device.conf's Library or Drive id.
@@ -195,7 +241,7 @@ func (s *Server) handleISCSIConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 	out.Exists = f.exists
 	if s.cfg.Token != "" {
-		out.SHA256 = &f.version
+		out.SHA256 = f.versionOf()
 	}
 	portals, base, present := f.conf.ISCSI()
 	out.ISCSI.Present, out.ISCSI.BaseName = present, base
@@ -309,13 +355,14 @@ type iscsiTargetStateDTO struct {
 // change, its diff with every secret masked. SHA256 is the version of
 // fabrics.conf as the daemon read it ("" when absent), what an apply of the
 // previewed change sends as base_sha256; CurrentSHA256 that of the file a
-// conflict found. Result "unchanged" is an edit that leaves the file
+// conflict found. Both are left out while a write of the file is in
+// flight (fabricsFiles.busy). Result "unchanged" is an edit that leaves the file
 // as it is, not sent to the helper.
 type iscsiWriteDTO struct {
 	DryRun        bool                 `json:"dry_run"`
 	Action        string               `json:"action"`
 	Diff          string               `json:"diff"`
-	SHA256        string               `json:"sha256"`
+	SHA256        *string              `json:"sha256,omitempty"`
 	Result        string               `json:"result"`
 	Message       string               `json:"message,omitempty"`
 	Error         *errorDetail         `json:"error,omitempty"`
@@ -593,18 +640,19 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		writeError(w, http.StatusInternalServerError, "config_error", err.Error())
 		return
 	}
-	if q.base != nil && !hmac.Equal([]byte(*q.base), []byte(f.version)) {
-		cur := f.version
-		writeJSON(w, http.StatusConflict, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.version, Result: apply.ResultConflict,
-			CurrentSHA256: &cur, Error: &errorDetail{Code: apply.ResultConflict, Message: fabricsChanged}})
+	// While a write is in flight no base matches: the file may already be
+	// the new one.
+	if q.base != nil && (f.busy || !hmac.Equal([]byte(*q.base), []byte(f.version))) {
+		writeJSON(w, http.StatusConflict, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.versionOf(), Result: apply.ResultConflict,
+			CurrentSHA256: f.versionOf(), Error: &errorDetail{Code: apply.ResultConflict, Message: fabricsChanged}})
 		return
 	}
 	own, stored := q.secrets, conffile.FabricsSecrets(f.data)
 	refuseWith := func(inv *fabricsInvalid, mask []string) {
 		writeJSON(w, inv.status, struct {
 			Error  fieldErrorDetail `json:"error"`
-			SHA256 string           `json:"sha256"`
-		}{fieldErrorDetail{Code: inv.code, Message: refusalText(inv.msg, mask), Field: inv.field}, f.version})
+			SHA256 *string          `json:"sha256,omitempty"`
+		}{fieldErrorDetail{Code: inv.code, Message: refusalText(inv.msg, mask), Field: inv.field}, f.versionOf()})
 	}
 	refuse := func(inv *fabricsInvalid) { refuseWith(inv, own) }
 	if err := f.conf.Writable(); err != nil {
@@ -674,7 +722,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	next := f.conf.Render()
 	setsSecret := q.setsCHAP || q.setsMutualCHAP
 	if f.exists && bytes.Equal(next, f.data) && !setsSecret {
-		writeJSON(w, http.StatusOK, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.version, Result: resultUnchanged})
+		writeJSON(w, http.StatusOK, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.versionOf(), Result: resultUnchanged})
 		return
 	}
 	// The helper's answers quote secrets and names the client set. The
@@ -724,11 +772,8 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
 		defer cancel()
 	}
-	resp, err := s.cfg.Helper.Do(ctx, hreq)
+	resp, err := s.fabricsDo(ctx, hreq)
 	s.forgetHello()
-	if !q.dryRun {
-		s.fabricsWritten()
-	}
 	if errors.Is(err, applyclient.ErrAbsent) {
 		writeHelperAbsent(w)
 		return
@@ -744,7 +789,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	}
 	out := iscsiWriteDTO{
 		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: previewDiff(before, next, own, stored),
-		SHA256: f.version, Result: resp.Result, Message: mask(resp.Message),
+		SHA256: f.versionOf(), Result: resp.Result, Message: mask(resp.Message),
 		JournalTail: external(resp.JournalTail), RollbackDir: resp.RollbackDir,
 	}
 	if resp.Result == apply.ResultConflict {

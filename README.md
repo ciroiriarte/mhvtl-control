@@ -218,7 +218,8 @@ If an apply dies, for instance with the host, `intent.json` stays behind:
   answers `recovered`; check again. A file changed since the apply is left
   alone and listed in `conflicts` with its `current_sha256`; for
   `fabrics.conf` that is the opaque version the iSCSI routes answer (see
-  below), not its SHA-256, and it is left out when the file cannot be read.
+  below), not its SHA-256, and it is left out when the file cannot be read
+  or an iSCSI apply is in progress.
 - If `intent.json` cannot be read, `helper` is `intent_unreadable` and the
   helper refuses every change. Boot recovery fails too, and mhVTL may already be
   running on the partly written files: stop `mhvtl.target`, restore the files
@@ -487,7 +488,12 @@ file changes, after every apply sent through these routes (even one that
 leaves the file byte-identical, so the version never tells whether a CHAP
 secret sent was the stored one), and when mhvtl-control restarts; an apply
 sent with a version from before any of these gets 409, and a new preview
-gives the current one.
+gives the current one. While an apply of `fabrics.conf` is in progress
+(the helper writes the file and then reloads `mhvtl-fabrics`, which can
+take minutes), no version is answered: `sha256` and `current_sha256` are
+left out of every answer, including `GET .../config` and previews, and
+an apply with `base_sha256` gets 409. Read `GET .../config` again, or
+preview again, once it has finished.
 `GET /api/v1/transports/iscsi/config` answers it too, but only with
 `-api-token`. An apply answers with the version it was made against, which
 is stale once it has been sent, and for a bind the
