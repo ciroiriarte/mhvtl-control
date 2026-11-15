@@ -566,3 +566,49 @@ func TestConfigStages(t *testing.T) {
 	e.clock = e.clock.Add(stageTTL)
 	e.staged()
 }
+
+// TestApplyAnswersNoFabricsHash: a recovery's conflicts and a conflict the
+// config apply and service routes pass on give fabrics.conf's opaque
+// version, never its SHA-256, which would let a client test guesses at
+// its CHAP secrets offline; other files keep their SHA-256.
+func TestApplyAnswersNoFabricsHash(t *testing.T) {
+	const fabrics = "VERSION: 1\n\niSCSI:\n Base name: iqn.2026-11.lan.example:vtl\n\niSCSI target: 10\n Initiator name: iqn.2024-01.com.example:pbs\n CHAP name: pbs\n CHAP secret: S3cretChapOne\n"
+	sha, devSHA := conffile.Hash([]byte(fabrics)), conffile.Hash([]byte("x"))
+	answers := map[string]apply.Response{
+		"recovered": {Result: apply.ResultRecovered, Message: "recovered",
+			Conflicts: []apply.Conflict{{File: "fabrics.conf", CurrentSHA256: sha}, {File: "device.conf", CurrentSHA256: devSHA}}},
+		"conflict": {Result: apply.ResultConflict, File: "/etc/mhvtl/fabrics.conf", CurrentSHA256: &sha},
+	}
+	for name, resp := range answers {
+		for _, route := range []string{"config", "service"} {
+			e := newWriteEnv(t, nil)
+			if err := os.WriteFile(filepath.Join(e.dir, "fabrics.conf"), []byte(fabrics), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			e.answer(func(apply.Request) apply.Response { return resp })
+			var rec *httptest.ResponseRecorder
+			if route == "config" {
+				st := e.staged()
+				rec = e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage, "dry_run": true})
+			} else {
+				rec = e.call(http.MethodPost, "/api/v1/service/libraries/10/restart", map[string]any{"dry_run": true})
+			}
+			if strings.Contains(rec.Body.String(), sha) {
+				t.Errorf("%s via %s: fabrics.conf's SHA-256 answered: %s", name, route, rec.Body)
+			}
+			got := decodeBody[applyResultDTO](t, rec)
+			version := e.srv.fabricsVersion([]byte(fabrics))
+			switch name {
+			case "recovered":
+				if len(got.Conflicts) != 2 || got.Conflicts[0].CurrentSHA256 == nil || *got.Conflicts[0].CurrentSHA256 != version ||
+					got.Conflicts[1].CurrentSHA256 == nil || *got.Conflicts[1].CurrentSHA256 != devSHA {
+					t.Errorf("%s via %s: conflicts %s", name, route, rec.Body)
+				}
+			case "conflict":
+				if got.CurrentSHA256 == nil || *got.CurrentSHA256 != version {
+					t.Errorf("%s via %s: current_sha256 %s", name, route, rec.Body)
+				}
+			}
+		}
+	}
+}

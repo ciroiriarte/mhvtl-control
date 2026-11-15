@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -849,12 +850,12 @@ type applyResultDTO struct {
 	CurrentSHA256 *string `json:"current_sha256,omitempty"`
 	// FailedUnit, JournalTail, OrphanedMedia, Unplaced, Conflicts and
 	// RollbackDir describe a rollback (apply.Response).
-	FailedUnit    string           `json:"failed_unit,omitempty"`
-	JournalTail   string           `json:"journal_tail,omitempty"`
-	OrphanedMedia []string         `json:"orphaned_media,omitempty"`
-	Unplaced      []string         `json:"unplaced,omitempty"`
-	Conflicts     []apply.Conflict `json:"conflicts,omitempty"`
-	RollbackDir   string           `json:"rollback_dir,omitempty"`
+	FailedUnit    string        `json:"failed_unit,omitempty"`
+	JournalTail   string        `json:"journal_tail,omitempty"`
+	OrphanedMedia []string      `json:"orphaned_media,omitempty"`
+	Unplaced      []string      `json:"unplaced,omitempty"`
+	Conflicts     []conflictDTO `json:"conflicts,omitempty"`
+	RollbackDir   string        `json:"rollback_dir,omitempty"`
 	// Dispositions are the stage's, as sent.
 	Dispositions []validate.Disposition `json:"dispositions,omitempty"`
 }
@@ -913,9 +914,42 @@ func offlineLibraries(units []string) []int {
 	return ids
 }
 
+// conflictDTO is a file a recovery left alone (apply.Conflict).
+// CurrentSHA256 is its SHA-256 now ("" when it no longer exists), but for
+// fabrics.conf the opaque version (fabricsFiles), absent when the file
+// cannot be read.
+type conflictDTO struct {
+	File          string  `json:"file"`
+	CurrentSHA256 *string `json:"current_sha256,omitempty"`
+}
+
+// fabricsHashes replaces the SHA-256 of fabrics.conf in a helper answer,
+// as a conflict's current_sha256 and as a recovery's conflicts, with the
+// version of the file as it is now: the file holds CHAP secrets, and its
+// plain hash would let a client test guesses at them offline. Every
+// helper answer the API passes on goes through applyResultOf, which calls
+// it; the iSCSI routes answer the version themselves.
+func (s *Server) fabricsHashes(resp apply.Response) (*string, []conflictDTO) {
+	cur := resp.CurrentSHA256
+	if cur != nil && filepath.Base(resp.File) == fabricsConfName {
+		cur = s.currentFabricsVersion()
+	}
+	var conflicts []conflictDTO
+	for _, c := range resp.Conflicts {
+		sha := c.CurrentSHA256
+		d := conflictDTO{File: c.File, CurrentSHA256: &sha}
+		if filepath.Base(c.File) == fabricsConfName {
+			d.CurrentSHA256 = s.currentFabricsVersion()
+		}
+		conflicts = append(conflicts, d)
+	}
+	return cur, conflicts
+}
+
 // applyResultOf is the helper's answer as applyResultDTO, with the error
 // envelope's code when code is not "".
-func applyResultOf(resp apply.Response, code string) applyResultDTO {
+func (s *Server) applyResultOf(resp apply.Response, code string) applyResultDTO {
+	cur, conflicts := s.fabricsHashes(resp)
 	out := applyResultDTO{
 		Result:         resp.Result,
 		Plan:           applyPlanDTO{Units: resp.Units, Notes: resp.Notes, OfflineLibraries: offlineLibraries(resp.Units)},
@@ -926,12 +960,12 @@ func applyResultOf(resp apply.Response, code string) applyResultDTO {
 		ForcedUnloads:  resp.ForcedUnloads,
 		PlacementDrift: resp.PlacementDrift,
 		File:           resp.File,
-		CurrentSHA256:  resp.CurrentSHA256,
+		CurrentSHA256:  cur,
 		FailedUnit:     resp.FailedUnit,
 		JournalTail:    resp.JournalTail,
 		OrphanedMedia:  resp.OrphanedMedia,
 		Unplaced:       resp.Unplaced,
-		Conflicts:      resp.Conflicts,
+		Conflicts:      conflicts,
 		RollbackDir:    resp.RollbackDir,
 	}
 	if code != "" {
@@ -1016,7 +1050,7 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	status, code := applyStatus(resp)
-	out := applyResultOf(resp, code)
+	out := s.applyResultOf(resp, code)
 	out.Stage, out.Dispositions = st.id, hreq.Dispositions
 	if !req.DryRun {
 		out.ForceToken, out.ForceExpires = "", nil

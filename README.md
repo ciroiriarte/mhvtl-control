@@ -215,7 +215,10 @@ If an apply dies, for instance with the host, `intent.json` stays behind:
   instances after it. It acts only on an apply from an earlier boot, and only
   while no `vtllibrary@` or `vtltape@` instance is active.
 - Otherwise, the next check or apply recovers first, does nothing else, and
-  answers `recovered`; check again.
+  answers `recovered`; check again. A file changed since the apply is left
+  alone and listed in `conflicts` with its `current_sha256`; for
+  `fabrics.conf` that is the opaque version the iSCSI routes answer (see
+  below), not its SHA-256, and it is left out when the file cannot be read.
 - If `intent.json` cannot be read, `helper` is `intent_unreadable` and the
   helper refuses every change. Boot recovery fails too, and mhVTL may already be
   running on the partly written files: stop `mhvtl.target`, restore the files
