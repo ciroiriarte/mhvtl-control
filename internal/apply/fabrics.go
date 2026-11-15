@@ -109,13 +109,13 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	// A plan does not act: while the marker exists it only says that the
 	// apply retries first. Refusing it would leave the dashboard, which
 	// applies only what it previewed, no way to make the retry happen.
-	var markerNote string
+	var markerNote, markerVerb string
 	if req.Op == OpFabricsPlan {
-		note, err := h.peekMarker()
+		note, verb, err := h.peekMarker(ctx)
 		if err != nil {
 			return responseOf(err)
 		}
-		markerNote = note
+		markerNote, markerVerb = note, verb
 	} else if err := h.retryReconcile(ctx, rec); err != nil {
 		return responseOf(err)
 	}
@@ -150,7 +150,13 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	}
 	action := FabricsNotApplied
 	if len(left) == 0 {
-		if action, err = h.fabricsAction(ctx, cur.exists, curBroken); err != nil {
+		// A plan answers the action the apply runs after its retry: a
+		// retry that stops the unit leaves it inactive.
+		after := ""
+		if markerVerb == fabricsStop {
+			after = "inactive"
+		}
+		if action, err = h.fabricsAction(ctx, cur.exists, curBroken, after); err != nil {
 			return responseOf(err)
 		}
 	}
@@ -553,8 +559,11 @@ func (h *Helper) foreignOnDisk() error {
 // fabricsAction decides how the edited file gets applied, from the state
 // of mhvtl-fabrics.service and mhvtl.target. curBroken is set when the
 // current file has plan problems, which the edit removes: a failed unit
-// most likely failed on them, and is started with the file that has none.
-func (h *Helper) fabricsAction(ctx context.Context, existed, curBroken bool) (string, error) {
+// most likely failed on them, and an inactive one (stopped, or reset after
+// failing) could not have started with them; either is started with the
+// file that has none. after, when not "", is the unit's ActiveState the
+// marker's retry leaves, for a plan, which does not run it.
+func (h *Helper) fabricsAction(ctx context.Context, existed, curBroken bool, after string) (string, error) {
 	out, err := h.cfg.Systemctl(ctx, "show", "--property=LoadState,ActiveState,CanReload", FabricsUnit, targetUnit)
 	if err != nil {
 		return "", fmt.Errorf("systemctl show: %w", err)
@@ -564,6 +573,9 @@ func (h *Helper) fabricsAction(ctx context.Context, existed, curBroken bool) (st
 		return "", err
 	}
 	fab, target := units[0], units[1]
+	if after != "" {
+		fab["ActiveState"] = after
+	}
 	if fab["LoadState"] != "loaded" {
 		return "", refuse(ErrFabricsUnit, "%s is %s: install mhVTL's TCMU package (mhvtl-tcmu)", FabricsUnit, orUnknown(fab["LoadState"]))
 	}
@@ -585,7 +597,7 @@ func (h *Helper) fabricsAction(ctx context.Context, existed, curBroken bool) (st
 			return "", refuse(ErrFabricsState, "%s failed; check journalctl -u %s, fix the cause, then systemctl restart %s, which starts it again and removes any target the failed run left behind", FabricsUnit, FabricsUnit, FabricsUnit)
 		case target["ActiveState"] != "active":
 			return FabricsDeferred, nil
-		case !existed || st == "failed":
+		case !existed || st == "failed" || curBroken:
 			return FabricsStart, nil
 		default:
 			return "", refuse(ErrFabricsState, "%s is stopped while %s runs and %s exists; check journalctl -u %s, then systemctl start %s", FabricsUnit, targetUnit, fabricsConf, FabricsUnit, FabricsUnit)
@@ -718,16 +730,35 @@ func (h *Helper) newFabricsRemoved(it *Intent) bool {
 // that is a *fabricsLeftover. Any other state (a job still running) and a
 // failed systemctl are errors: the targets may not follow the file. A
 // reload is not run when the file would adopt a target mhvtl-fabrics does
-// not own (a *fabricsForeign): a stop removes only owned targets. It runs
-// to its end even when ctx ends. What the error quotes from outside the
-// helper (systemctl's error, the state file's names and read error) is
-// masked with m.output.
+// not own (a *fabricsForeign): a stop removes only owned targets. Nor is
+// it run when the file has targets mhvtl-fabrics would not export against
+// device.conf (diskProblems): apply would fail on them, and a marker would
+// then refuse every iSCSI change, the unbind that removes them included;
+// the file is left not applied, as a FabricsNotApplied apply leaves it. It
+// runs to its end even when ctx ends. What the error quotes from outside
+// the helper (systemctl's error, the state file's names and read error) is
+// masked with m.output. reconcileStep decides what it runs.
 func (h *Helper) reconcileFabrics(ctx context.Context, removed bool, m fabricsMask) (string, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricsTimeout)
 	defer cancel()
+	verb, note, err := h.reconcileStep(ctx, removed, m)
+	if err != nil || verb == "" {
+		return note, err
+	}
+	if err := h.runFabrics(ctx, verb); err != nil {
+		return "", fmt.Errorf("systemctl %s %s with it failed too: %s", verb, FabricsUnit, m.output(errText(err)))
+	}
+	return note, nil
+}
+
+// reconcileStep is what reconcileFabrics runs, decided without acting: a
+// verb (FabricsReload or fabricsStop) and the note that says it was done,
+// or no verb and the note that says why, or the error that refuses. A
+// plan (peekMarker) answers it, and an apply's retry runs it.
+func (h *Helper) reconcileStep(ctx context.Context, removed bool, m fabricsMask) (verb, note string, err error) {
 	st, err := showProp(ctx, &h.cfg, FabricsUnit, "ActiveState")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	switch st {
 	case "failed":
@@ -739,25 +770,56 @@ func (h *Helper) reconcileFabrics(ctx context.Context, removed bool, m fabricsMa
 			if err != nil {
 				lo.err = errors.New(m.output(err.Error()))
 			}
-			return "", lo
+			return "", "", lo
 		}
-		return FabricsUnit + " is " + st + ", not reloaded", nil
+		return "", FabricsUnit + " is " + st + ", not reloaded", nil
 	case "inactive":
-		return FabricsUnit + " is " + st + ", not reloaded", nil
+		return "", FabricsUnit + " is " + st + ", not reloaded", nil
 	case "active":
 	default:
-		return "", &fabricsBusy{state: orUnknown(st)}
+		return "", "", &fabricsBusy{state: orUnknown(st)}
 	}
-	verb, done := FabricsReload, "reloaded "+FabricsUnit+" with it"
 	if removed {
-		verb, done = fabricsStop, "stopped "+FabricsUnit+", which removed its targets: it ran only for the start that failed"
-	} else if err := h.foreignOnDisk(); err != nil {
-		return "", err
+		return fabricsStop, "stopped " + FabricsUnit + ", which removed its targets: it ran only for the start that failed", nil
 	}
-	if err := h.runFabrics(ctx, verb); err != nil {
-		return "", fmt.Errorf("systemctl %s %s with it failed too: %s", verb, FabricsUnit, m.output(errText(err)))
+	ps, err := h.diskProblems()
+	if err != nil {
+		return "", "", err
 	}
-	return done, nil
+	if len(ps) > 0 {
+		return "", fmt.Sprintf("%s not reloaded: %s has targets mhvtl-fabrics would not export (%s), so its apply would fail; stop exporting them or fix device.conf, and the change that leaves none applies the file",
+			FabricsUnit, fabricsConf, strings.Join(ps, "; ")), nil
+	}
+	if err := h.foreignOnDisk(); err != nil {
+		return "", "", err
+	}
+	return FabricsReload, "reloaded " + FabricsUnit + " with it", nil
+}
+
+// diskProblems returns the problems mhvtl-fabrics apply would stop at in
+// fabrics.conf and device.conf as they are on disk: a line it cannot
+// parse, or a target it would not plan (conffile.FabricsConf.CheckPlan).
+// A file that does not exist has none here: reconcileFabrics reloads only
+// after a restore that left one.
+func (h *Helper) diskProblems() ([]string, error) {
+	fc, err := readTarget(h.cfg.ConfigDir, fabricsConf)
+	if err != nil || !fc.exists {
+		return nil, err
+	}
+	conf := conffile.ParseFabricsConf(fc.data)
+	ps := conf.Problems
+	if len(ps) == 0 {
+		dc, err := readTarget(h.cfg.ConfigDir, deviceConf)
+		if err != nil {
+			return nil, err
+		}
+		ps = conf.CheckPlan(conffile.ParseDeviceConf(dc.data))
+	}
+	var msgs []string
+	for _, p := range ps {
+		msgs = append(msgs, p.Error())
+	}
+	return msgs, nil
 }
 
 // fabricsBusy is a unit in a state other than active, inactive or failed:
@@ -917,28 +979,33 @@ func (h *Helper) retryReconcile(ctx context.Context, rec *AuditRecord) error {
 	return err
 }
 
-// peekMarker is retryReconcile for a plan, which reads and changes
-// nothing but answers: "" without the marker; with it, a note that the
-// apply retries first. When the retry would be refused for a foreign
-// target (foreignOnDisk), the plan is refused the same way, with
-// fabrics_recovery_required.
-func (h *Helper) peekMarker() (string, error) {
+// peekMarker is retryReconcile for a plan, which changes nothing but
+// answers: "" without the marker; with it, a note of what the apply's
+// retry does (reconcileStep), and that verb ("" when it runs none). When
+// the retry would be refused, a foreign target included, the plan is
+// refused the same way, with fabrics_recovery_required.
+func (h *Helper) peekMarker(ctx context.Context) (note, verb string, err error) {
 	m, err := h.liveMarker(false)
 	if err != nil || m == nil {
-		return "", err
+		return "", "", err
 	}
 	cur, err := readTarget(h.cfg.ConfigDir, fabricsConf)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	removed := markerStops(m, cur)
-	verb := FabricsReload
-	if removed {
-		verb = fabricsStop
-	} else if err := h.foreignOnDisk(); err != nil {
-		return "", refuse(ErrFabricsState, "%s", h.fabricsMask(cur.data).message("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and applying a change would retry that first: "+markerAdvice(err, removed)))
+	mask := h.fabricsMask(cur.data)
+	verb, why, err := h.reconcileStep(ctx, removed, mask)
+	var lo *fabricsLeftover
+	switch {
+	case errors.As(err, &lo):
+		return "", "", refuse(ErrFabricsState, "%s", mask.message(lo.Error()))
+	case err != nil:
+		return "", "", refuse(ErrFabricsState, "%s", mask.message("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and applying a change would retry that first: "+markerAdvice(err, removed)))
+	case verb == "":
+		return mask.message(fmt.Sprintf("an earlier rollback restored %s but could not make the targets follow it: applying this change first checks again, finds that %s, and clears that record", fabricsConf, why)), "", nil
 	}
-	return fmt.Sprintf("an earlier rollback restored %s but could not make the targets follow it: applying this change first runs systemctl %s %s again, and is refused if that fails", fabricsConf, verb, FabricsUnit), nil
+	return fmt.Sprintf("an earlier rollback restored %s but could not make the targets follow it: applying this change first runs systemctl %s %s again, and is refused if that fails", fabricsConf, verb, FabricsUnit), verb, nil
 }
 
 // markerStops reports whether the marker's retry is a stop: the rollback

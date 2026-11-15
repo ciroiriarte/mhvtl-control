@@ -121,15 +121,18 @@ is stopped it only writes the file. While the file keeps targets that do
 not plan, which it had before the change, it only writes it too (action
 .IR not_applied ),
 so that broken targets can be unbound one at a time; the change that leaves
-none reloads the unit, or starts it if it had failed. A failed reload puts the previous file
-back and reloads the unit with it. A failed first start removes the new file
+none reloads the unit, or starts it if it had failed or is stopped. A failed reload puts the previous file
+back and reloads the unit with it, unless that file has targets that do not
+plan: it is then left not applied, as above. A rollback, a retry or a
+recovery never reloads such a file, which would fail. A failed first start removes the new file
 and leaves the unit failed; the next export starts it again. When the
 reload of the restored file fails too, the answer is
 .B fabrics_recovery_required
 (configfs may not match the file): check
 .B "journalctl -u mhvtl-fabrics"
 and fix the cause. The next iSCSI change retries the reload first and is
-refused while it fails (a dry run only says so); other requests go ahead.
+refused while it fails (a dry run only says what the retry will do, and
+answers the action the apply runs after it); other requests go ahead.
 That record is cleared when the retry succeeds or finds the unit stopped,
 and ignored after a reboot; a reload by hand does not clear it.
 When the unit is left failed and its state file

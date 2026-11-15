@@ -546,7 +546,11 @@ the helper checks, not when `mhvtl-fabrics` applies: a target someone
 creates with targetcli in between is still taken over.
 
 If the reload fails, the previous file is put back and the unit reloaded
-with it. If a first start fails, the new file is removed and the unit is
+with it, unless that file has targets `mhvtl-fabrics` would not export:
+it is then left not applied, as `not_applied` leaves it, and the change
+that leaves none applies it. A rollback, a retry or a crash recovery never
+reloads such a file, which would fail and refuse every iSCSI change after
+it, the unbind that fixes it included. If a first start fails, the new file is removed and the unit is
 left failed, its targets removed by its `ExecStopPost`; the next export
 starts it again. Either way the answer is `rolled_back` and carries the
 unit's last journal lines. In those lines and in the systemctl error, every
@@ -562,7 +566,9 @@ configfs may not match `fabrics.conf`: the answer is
 the cause. The helper records this, and the next iSCSI change retries the
 reload first (a stop, if the rollback removed a file the change had
 created and there is still none) and is refused while it fails; other
-requests go ahead. A dry run does not retry: it says that the apply will.
+requests go ahead. A dry run does not retry: it says what the apply's
+retry will do (and is refused when the retry would be), and answers the
+action the apply runs after it, a start after the retry's stop.
 The record is cleared when that retry succeeds or finds the unit stopped,
 and ignored after a reboot (mhVTL then applies the file afresh); a reload
 or stop by hand does not clear it, the next iSCSI change does.
@@ -578,7 +584,9 @@ helper refuses, changing nothing, when `MHVTL_BACKEND` is not `tcmu`
 missing, has no reload, has failed with `fabrics.conf` in place (check
 `journalctl -u mhvtl-fabrics`, fix the cause, then
 `systemctl restart mhvtl-fabrics`) or was stopped while mhVTL runs (check
-the journal, then `systemctl start mhvtl-fabrics`), both
+the journal, then `systemctl start mhvtl-fabrics`; a stopped unit whose
+file has targets that do not plan is started by the change that removes
+them, as a failed one is), both
 `fabrics_recovery_required`, and when `base_sha256` is not the file's
 (409). `MHVTL_BACKEND` is read from `mhvtl.conf` as systemd's
 `EnvironmentFile=` passes it to the unit: quotes and trailing blanks go, but

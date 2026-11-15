@@ -36,6 +36,9 @@ type fabEnv struct {
 	// onRun, when set, runs before a reload, start or stop.
 	onRun func(verb string)
 	tail  string
+	// failBroken fails every reload or start while fabrics.conf has a
+	// target mhvtl-fabrics would not plan, as its apply does.
+	failBroken bool
 }
 
 func newFabEnv(t *testing.T) *fabEnv {
@@ -70,6 +73,9 @@ func newFabEnv(t *testing.T) *fabEnv {
 			if err == nil {
 				err = f.failAlways[args[0]]
 			}
+			if err == nil && f.failBroken && args[0] != fabricsStop && f.planBroken() {
+				err = &exec.ExitError{Stderr: []byte("mhvtl-fabrics: plan failed")}
+			}
 			switch {
 			case err != nil && args[0] == FabricsStart:
 				f.fab = f.failedStart
@@ -88,6 +94,16 @@ func newFabEnv(t *testing.T) *fabEnv {
 	f.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
 	f.rebuild()
 	return f
+}
+
+// planBroken reports whether fabrics.conf on disk has a target
+// mhvtl-fabrics would not plan against device.conf.
+func (f *fabEnv) planBroken() bool {
+	data, err := os.ReadFile(filepath.Join(f.dir, fabricsConf))
+	if err != nil {
+		return false
+	}
+	return len(conffile.ParseFabricsConf(data).CheckPlan(conffile.ParseDeviceConf(f.read(deviceConf)))) > 0
 }
 
 func (f *fabEnv) markerExists() bool {
@@ -1479,5 +1495,155 @@ func TestFabricsDerivedNameNoOracle(t *testing.T) {
 	}
 	if answers[0] != answers[2] || answers[1] != answers[3] {
 		t.Errorf("the answers depend on the secret:\n%s\n%s\n%s\n%s", answers[0], answers[2], answers[1], answers[3])
+	}
+}
+
+// TestFabricsBrokenFileNoLockUp: mhvtl-fabrics fails every reload of a
+// file with a target it would not plan. A rollback, a marker's retry and a
+// crash recovery that find such a file on disk leave it not applied rather
+// than reload it and record the marker, which would refuse every later
+// iSCSI change, the unbind that removes the broken target included.
+func TestFabricsBrokenFileNoLockUp(t *testing.T) {
+	const t77 = "\niSCSI target: 77\n Initiator name: iqn.2024-01.com.example:pbs1\n"
+	const t78 = "\niSCSI target: 78\n Initiator name: iqn.2024-01.com.example:pbs1\n"
+	unbindLast := func(t *testing.T, f *fabEnv) {
+		t.Helper()
+		f.systemctl = nil
+		if resp := f.do(f.fabricsReq(OpFabrics, fabConf)); resp.Result != ResultApplied || resp.FabricsAction != FabricsReload {
+			t.Fatalf("unbinding the last broken target: %+v", resp)
+		}
+		if f.markerExists() || f.intentExists() || string(f.read(fabricsConf)) != fabConf {
+			t.Errorf("marker %v, intent %v, file %q", f.markerExists(), f.intentExists(), f.read(fabricsConf))
+		}
+	}
+	t.Run("rollback", func(t *testing.T) {
+		f := newFabEnv(t)
+		f.failBroken = true
+		f.writeConf(fabricsConf, fabConf+t77+t78, 0o600)
+		if resp := f.do(f.fabricsReq(OpFabrics, fabConf+t78)); resp.FabricsAction != FabricsNotApplied {
+			t.Fatalf("unbinding 77: %+v", resp)
+		}
+		f.fail[FabricsReload] = errors.New("job failed")
+		resp := f.do(f.fabricsReq(OpFabrics, fabConf))
+		if resp.Result != ResultRolledBack || f.markerExists() || !strings.Contains(resp.Message, "not reloaded") ||
+			!strings.Contains(resp.Message, "no Library or Drive 78") || string(f.read(fabricsConf)) != fabConf+t78 {
+			t.Fatalf("failed unbind of 78: %+v, marker %v", resp, f.markerExists())
+		}
+		if v := f.verbs(); len(v) != 1 {
+			t.Errorf("systemctl %v, want the failed reload alone", v)
+		}
+		unbindLast(t, f)
+	})
+	t.Run("retry", func(t *testing.T) {
+		f := newFabEnv(t)
+		f.failBroken = true
+		f.writeConf(fabricsConf, fabConf+t78, 0o600)
+		if err := f.h.markFabrics(false); err != nil {
+			t.Fatal(err)
+		}
+		if plan := f.do(f.fabricsReq(OpFabricsPlan, fabConf)); plan.Result != ResultValidated || plan.FabricsAction != FabricsReload ||
+			!strings.Contains(plan.Message, "clears that record") || len(f.verbs()) != 0 {
+			t.Fatalf("plan: %+v, systemctl %v", plan, f.verbs())
+		}
+		unbindLast(t, f)
+		if v := f.verbs(); len(v) != 1 {
+			t.Errorf("systemctl %v, want the apply's reload alone", v)
+		}
+	})
+	t.Run("recovery", func(t *testing.T) {
+		f := newFabEnv(t)
+		f.failBroken = true
+		f.writeConf(fabricsConf, fabConf+t77+t78, 0o600)
+		f.h.killPoint = func(step string) bool { return step == "wrote "+fabricsConf }
+		f.do(f.fabricsReq(OpFabrics, fabConf+t78))
+		f.h.killPoint = func(string) bool { return false }
+		if !f.intentExists() {
+			t.Fatal("no intent after the kill")
+		}
+		resp := f.do(Request{Op: OpRecover, Actor: "test"})
+		if resp.Result != ResultRecovered || f.markerExists() || f.intentExists() || !strings.Contains(resp.Message, "not reloaded") {
+			t.Fatalf("recover: %+v, marker %v, intent %v", resp, f.markerExists(), f.intentExists())
+		}
+		if v := f.verbs(); len(v) != 0 {
+			t.Errorf("systemctl %v, want none", v)
+		}
+		if resp := f.do(f.fabricsReq(OpFabrics, fabConf+t78)); resp.FabricsAction != FabricsNotApplied {
+			t.Fatalf("unbinding 77 again: %+v", resp)
+		}
+		unbindLast(t, f)
+	})
+}
+
+// TestFabricsInactiveBrokenStarts: an inactive unit while mhvtl.target
+// runs and fabrics.conf has a target it would not plan (reset after
+// failing on it) is started by the change that removes the target, as a
+// failed one is, not refused as stopped by hand.
+func TestFabricsInactiveBrokenStarts(t *testing.T) {
+	const t78 = "\niSCSI target: 78\n Initiator name: iqn.2024-01.com.example:pbs1\n"
+	f := newFabEnv(t)
+	f.fab = "inactive"
+	f.writeConf(fabricsConf, fabConf+t78, 0o600)
+	if resp := f.do(f.fabricsReq(OpFabrics, fabConf)); resp.Result != ResultApplied || resp.FabricsAction != FabricsStart || f.fab != "active" {
+		t.Fatalf("unbinding 78: %+v", resp)
+	}
+	f.systemctl = nil
+	f.fab = "inactive"
+	if resp := f.do(f.fabricsReq(OpFabrics, strings.Replace(fabConf, fabSecret, fabNewSecret, 1))); resp.Error != ErrFabricsState || len(f.verbs()) != 0 {
+		t.Errorf("a healthy file with the unit stopped: %+v, systemctl %v", resp, f.verbs())
+	}
+}
+
+// TestFabricsMarkerPlanAction: a plan while the marker's retry would stop
+// the unit (the rollback removed the file a first start created) answers
+// the action the apply runs after that stop, a start, not a reload; a plan
+// whose retry would find the unit inactive notes that, and refuses when
+// the retry would be refused (a failed unit with leftovers).
+func TestFabricsMarkerPlanAction(t *testing.T) {
+	f := newFabEnv(t)
+	f.fab = "inactive"
+	f.fail[FabricsStart] = errors.New("signal: terminated")
+	f.failedStart = "active"
+	f.fail[fabricsStop] = errors.New("job failed")
+	if resp := f.do(f.fabricsReq(OpFabrics, fabConf)); resp.Error != ErrFabricsState || !f.markerExists() || f.fab != "active" {
+		t.Fatalf("first start with the stop failing: %+v, marker %v, unit %s", resp, f.markerExists(), f.fab)
+	}
+	f.systemctl = nil
+	plan := f.do(f.fabricsReq(OpFabricsPlan, fabConf))
+	if plan.Result != ResultValidated || plan.FabricsAction != FabricsStart || !strings.Contains(plan.Message, "systemctl stop") || len(f.verbs()) != 0 {
+		t.Fatalf("plan: %+v, systemctl %v; want start after the retry's stop", plan, f.verbs())
+	}
+	resp := f.do(f.fabricsReq(OpFabrics, fabConf))
+	if resp.Result != ResultApplied || resp.FabricsAction != plan.FabricsAction || f.markerExists() {
+		t.Fatalf("apply: %+v, marker %v; want the plan's action", resp, f.markerExists())
+	}
+	if v := f.verbs(); len(v) != 2 || v[0] != "stop "+FabricsUnit || v[1] != "start "+FabricsUnit {
+		t.Errorf("systemctl %v", v)
+	}
+
+	// The retry would find the unit inactive: no ownership check, a note.
+	g := newFabEnv(t)
+	g.writeConf(fabricsConf, fabConf, 0o600)
+	g.fab, g.target = "inactive", "inactive"
+	g.mkTarget("iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10") // foreign, but nothing reloads
+	if err := g.h.markFabrics(false); err != nil {
+		t.Fatal(err)
+	}
+	next := strings.Replace(fabConf, "vtl1:mhvtl", "vtl1:other", 1)
+	if plan := g.do(g.fabricsReq(OpFabricsPlan, next)); plan.Result != ResultValidated || !strings.Contains(plan.Message, "is inactive") {
+		t.Errorf("plan with the unit inactive: %+v", plan)
+	}
+
+	// A failed unit whose state file lists targets: the retry refuses.
+	h := newFabEnv(t)
+	h.writeConf(fabricsConf, fabConf, 0o600)
+	h.fab = "failed"
+	if err := os.WriteFile(h.cfg.FabricsState, []byte("iscsi iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.h.markFabrics(false); err != nil {
+		t.Fatal(err)
+	}
+	if plan := h.do(h.fabricsReq(OpFabricsPlan, fabConf)); plan.Result != ResultRefused || plan.Error != ErrFabricsState || !strings.Contains(plan.Message, "state file") {
+		t.Errorf("plan with leftovers: %+v", plan)
 	}
 }
