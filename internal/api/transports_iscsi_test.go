@@ -1129,3 +1129,31 @@ func TestISCSIHelperHashNotPassedOn(t *testing.T) {
 		}
 	}
 }
+
+// TestISCSIDerivedNameNoOracle: a stored secret that spans a Base name the
+// request brings and the ".lib<ID>" a derived target name adds is masked,
+// or not, in a helper message naming that target whether or not the Base
+// name is the guess.
+func TestISCSIDerivedNameNoOracle(t *testing.T) {
+	const secret = "le:pick.lib10"
+	stored := strings.Replace(fabricsSample, chapSecret, secret, 1)
+	answer := func(base string) string {
+		t.Helper()
+		e := iscsiEnv(t, stored, "reload", nil)
+		e.srv.fabricsKey = []byte("one key for both answers")
+		e.h.answer = func(apply.Request) apply.Response {
+			return apply.Response{Result: apply.ResultRefused, Error: apply.ErrInvalid,
+				Message: "iSCSI target " + base + ".lib10 already exists in configfs and mhvtl-fabrics does not own it"}
+		}
+		rec := e.call(http.MethodPatch, "/api/v1/transports/iscsi", map[string]any{"base_name": base, "dry_run": true})
+		got := decodeBody[iscsiWriteDTO](t, rec)
+		if got.Error == nil {
+			t.Fatalf("%s: %s", base, rec.Body)
+		}
+		return got.Error.Message
+	}
+	wrong, right := answer("iqn.2026-11.lan.example:pock"), answer("iqn.2026-11.lan.example:pick")
+	if right != strings.ReplaceAll(wrong, "pock", "pick") {
+		t.Errorf("messages %q and %q", wrong, right)
+	}
+}

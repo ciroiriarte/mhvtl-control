@@ -1094,65 +1094,79 @@ func fabricsDiff(before, after []byte) (string, bool) {
 	return d, false
 }
 
-// maskOutput masks the CHAP secrets of stored, the file the client could
-// read before the request, and of newer, the files the request brings, in
-// s, output of the reload or start the helper did not write itself (the
-// systemctl error, the journal), which may quote a stored secret anywhere
-// (conffile.MaskSecretsExcept). A secret inside a name stored has, which
-// the client reads in clear, is left as it is; the names the request
-// brings are masked whole: either way the answer is the same whether or
-// not a name the client chose contains or equals a stored secret.
-func maskOutput(s string, stored []byte, newer ...[]byte) string {
-	var hide []string
-	for _, f := range newer {
-		hide = append(hide, conffile.FabricsNewValues(stored, f)...)
-	}
-	return conffile.MaskSecretsExcept(s, fabricsSecrets(append([][]byte{stored}, newer...)...), conffile.FabricsClearValues(stored), hide)
-}
-
-// maskFabrics masks the CHAP secrets of files in a message the helper
-// composed, whose parts from outside went through maskOutput: it names
-// targets and quotes the restored file's systemctl errors, but no journal.
-// Secrets inside the files' clear values (names a client sets and reads
-// in clear) are left as they are, so that a new name the message gives,
-// such as a derived target name, shows as the client sent it whether or
-// not it contains a stored secret.
-func maskFabrics(s string, files ...[]byte) string {
-	var keep []string
-	for _, f := range files {
-		keep = append(keep, conffile.FabricsClearValues(f)...)
-	}
-	return conffile.MaskSecretsExcept(s, fabricsSecrets(files...), keep, nil)
-}
-
 // fabricsMask masks the CHAP secrets of the files of a fabrics answer:
 // stored, the file a client could read before (the file the request
 // edits, or the one a rollback or recovery restored), and newer, the files
 // a request brought (the edit, or the half-applied file a recovery finds).
-// wwns are the target names the files plan against device.conf as it is
-// on disk (conffile.FabricsConf.PlannedWWNs), the names mhvtl-fabrics'
-// state file lists.
+// Besides the files' clear values (names a client sets and reads in
+// clear, conffile.FabricsClearValues) it knows the target names each file
+// plans against device.conf as it is on disk
+// (conffile.FabricsConf.PlannedWWNs): a derived name, the Base name and
+// ".lib<ID>" or ".tape<ID>", is one the client can tell from the file
+// too, and a secret that spans the Base name and that suffix must be
+// masked, or not, whether or not it is the guess.
 type fabricsMask struct {
-	stored []byte
-	newer  [][]byte
-	wwns   map[string]bool
+	secrets []string
+	// keepOut are the names stored has, clear values and planned target
+	// names; hideOut the names newer brings, which stored has not.
+	keepOut, hideOut []string
+	// keepMsg are the names of every file.
+	keepMsg []string
+	wwns    map[string]bool
 }
 
 func (h *Helper) fabricsMask(stored []byte, newer ...[]byte) fabricsMask {
-	m := fabricsMask{stored: stored, newer: newer, wwns: map[string]bool{}}
-	dc, err := readTarget(h.cfg.ConfigDir, deviceConf)
-	if err != nil {
-		return m
+	files := append([][]byte{stored}, newer...)
+	m := fabricsMask{secrets: fabricsSecrets(files...), wwns: map[string]bool{}}
+	var dev *conffile.DeviceConf
+	if dc, err := readTarget(h.cfg.ConfigDir, deviceConf); err == nil {
+		dev = conffile.ParseDeviceConf(dc.data)
 	}
-	dev := conffile.ParseDeviceConf(dc.data)
-	for _, f := range append([][]byte{stored}, newer...) {
-		if c := conffile.ParseFabricsConf(f); len(c.Problems) == 0 {
-			for _, w := range c.PlannedWWNs(dev) {
-				m.wwns[w] = true
+	planned := func(f []byte) []string {
+		if c := conffile.ParseFabricsConf(f); dev != nil && len(c.Problems) == 0 {
+			return c.PlannedWWNs(dev)
+		}
+		return nil
+	}
+	storedWWNs := planned(stored)
+	had := map[string]bool{}
+	for _, w := range storedWWNs {
+		had[w], m.wwns[w] = true, true
+	}
+	m.keepOut = append(conffile.FabricsClearValues(stored), storedWWNs...)
+	m.keepMsg = append([]string(nil), m.keepOut...)
+	for _, f := range newer {
+		m.hideOut = append(m.hideOut, conffile.FabricsNewValues(stored, f)...)
+		m.keepMsg = append(m.keepMsg, conffile.FabricsClearValues(f)...)
+		for _, w := range planned(f) {
+			m.wwns[w] = true
+			m.keepMsg = append(m.keepMsg, w)
+			if !had[w] {
+				m.hideOut = append(m.hideOut, w)
 			}
 		}
 	}
 	return m
+}
+
+// output masks text from outside the helper (systemctl's error, the
+// journal, mhvtl-fabrics' state file), which may quote a stored secret
+// anywhere (conffile.MaskSecretsExcept). A secret inside a name stored
+// has, which the client reads in clear, is left as it is; the names newer
+// brings are masked whole: either way the answer is the same whether or
+// not a name the client chose contains or equals a stored secret.
+func (m fabricsMask) output(s string) string {
+	return conffile.MaskSecretsExcept(s, m.secrets, m.keepOut, m.hideOut)
+}
+
+// message masks a message the helper composed, whose parts from outside
+// went through output: it names targets and quotes the reconcile's
+// systemctl errors, but no journal. Secrets inside the names of every
+// file are left as they are, so that a new name the message gives, such
+// as a derived target name, shows as the client sent it whether or not it
+// contains a stored secret.
+func (m fabricsMask) message(s string) string {
+	return conffile.MaskSecretsExcept(s, m.secrets, m.keepMsg, nil)
 }
 
 // name masks a target name mhvtl-fabrics' state file lists: one that a
@@ -1163,17 +1177,6 @@ func (m fabricsMask) name(s string) string {
 		return s
 	}
 	return m.output(s)
-}
-
-// output masks text from outside the helper, such as systemctl's error,
-// the journal or mhvtl-fabrics' state file (maskOutput): the names newer
-// brings are masked whole.
-func (m fabricsMask) output(s string) string { return maskOutput(s, m.stored, m.newer...) }
-
-// message masks a message the helper composed, whose parts from outside
-// went through output (maskFabrics).
-func (m fabricsMask) message(s string) string {
-	return maskFabrics(s, append([][]byte{m.stored}, m.newer...)...)
 }
 
 // fabricsSecrets lists the CHAP secret values of both files, for the audit

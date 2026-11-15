@@ -1454,3 +1454,30 @@ func TestFabricsRecoveryMasksNewFile(t *testing.T) {
 	}
 	f.noSecret(fabSecret, fabNewSecret)
 }
+
+// TestFabricsDerivedNameNoOracle: a message the helper composes names the
+// derived target a file plans (here the foreign target a marker's retry
+// would adopt); a stored secret spanning the Base name and ".lib10" is
+// shown, as part of the name, whether or not it is that span.
+func TestFabricsDerivedNameNoOracle(t *testing.T) {
+	const base = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl"
+	var answers []string
+	for _, secret := range []string{"1:mhvtl.lib10", "1:mhvtl.lib11"} {
+		f := newFabEnv(t)
+		f.writeConf(fabricsConf, strings.Replace(fabConf, fabSecret, secret, 1), 0o600)
+		if err := f.h.markFabrics(false); err != nil {
+			t.Fatal(err)
+		}
+		f.mkTarget(base + ".lib10")
+		for _, op := range []string{OpFabricsPlan, OpFabrics} {
+			resp := f.do(f.fabricsReq(op, fabConf))
+			if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, base+".lib10") {
+				t.Fatalf("%s %s: %+v", secret, op, resp)
+			}
+			answers = append(answers, strings.ReplaceAll(resp.Message, f.cfg.FabricsState, ""))
+		}
+	}
+	if answers[0] != answers[2] || answers[1] != answers[3] {
+		t.Errorf("the answers depend on the secret:\n%s\n%s\n%s\n%s", answers[0], answers[2], answers[1], answers[3])
+	}
+}

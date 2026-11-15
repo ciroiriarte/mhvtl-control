@@ -651,10 +651,26 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	// request brings are masked whole (conffile.MaskSecretsExcept), as the
 	// helper does. The helper's messages quote output from outside only
 	// masked that way, and may name a new name, which is kept: the files'
-	// secrets are masked except inside the names of either file.
+	// secrets are masked except inside the names of either file. The names
+	// include the target names each file plans (PlannedWWNs): a derived
+	// one, the Base name and ".lib<ID>" or ".tape<ID>", may hold a secret
+	// that spans the two, which must not be masked only when it is the
+	// guess.
 	fileSecrets := append(append([]string(nil), stored...), conffile.FabricsSecrets(next)...)
-	storedNames, newNames := conffile.FabricsClearValues(f.data), conffile.FabricsNewValues(f.data, next)
-	allNames := append(conffile.FabricsClearValues(f.data), conffile.FabricsClearValues(next)...)
+	storedWWNs := conffile.ParseFabricsConf(f.data).PlannedWWNs(f.dev)
+	storedNames := append(conffile.FabricsClearValues(f.data), storedWWNs...)
+	newNames := conffile.FabricsNewValues(f.data, next)
+	allNames := append(append([]string(nil), storedNames...), conffile.FabricsClearValues(next)...)
+	plannedBefore := map[string]bool{}
+	for _, w := range storedWWNs {
+		plannedBefore[w] = true
+	}
+	for _, w := range f.conf.PlannedWWNs(f.dev) {
+		allNames = append(allNames, w)
+		if !plannedBefore[w] {
+			newNames = append(newNames, w)
+		}
+	}
 	external := func(s string) string {
 		return conffile.MaskSecrets(conffile.MaskSecretsExcept(cutHashes(s), fileSecrets, storedNames, newNames), own)
 	}
