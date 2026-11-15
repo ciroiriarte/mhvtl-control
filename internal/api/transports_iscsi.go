@@ -656,10 +656,10 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	storedNames, newNames := conffile.FabricsClearValues(f.data), conffile.FabricsNewValues(f.data, next)
 	allNames := append(conffile.FabricsClearValues(f.data), conffile.FabricsClearValues(next)...)
 	external := func(s string) string {
-		return conffile.MaskSecrets(conffile.MaskSecretsExcept(s, fileSecrets, storedNames, newNames), own)
+		return conffile.MaskSecrets(conffile.MaskSecretsExcept(cutHashes(s), fileSecrets, storedNames, newNames), own)
 	}
 	mask := func(s string) string {
-		return conffile.MaskSecrets(conffile.MaskSecretsExcept(s, fileSecrets, allNames, nil), own)
+		return conffile.MaskSecrets(conffile.MaskSecretsExcept(cutHashes(s), fileSecrets, allNames, nil), own)
 	}
 
 	// The helper checks the file's real hash: base_sha256, when sent, was
@@ -696,9 +696,10 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		JournalTail: external(resp.JournalTail), RollbackDir: resp.RollbackDir,
 	}
 	if resp.Result == apply.ResultConflict {
-		// The helper answers the file's real hash; the client gets its
-		// version.
+		// The helper answers the file's real hash, in current_sha256 and
+		// in its message; the client gets its version.
 		out.CurrentSHA256 = s.currentFabricsVersion()
+		out.Message = fabricsChanged
 	}
 	if code != "" {
 		msg := applyMessage(resp)
@@ -713,6 +714,16 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	}
 	writeJSON(w, status, out)
 }
+
+// sha256Run is a run of 64 or more hex digits: a SHA-256 in hex, such as
+// the real hash of fabrics.conf a helper conflict quotes ("now sha256").
+var sha256Run = regexp.MustCompile(`[0-9A-Fa-f]{64,}`)
+
+// cutHashes replaces every SHA-256 in a helper text the iSCSI routes pass
+// on: the hash of fabrics.conf would let a client test guesses at its CHAP
+// secrets offline (fabricsFiles). It runs before the secrets are masked,
+// so that a secret inside a hash cannot split it into shorter runs.
+func cutHashes(s string) string { return sha256Run.ReplaceAllString(s, "(hash not shown)") }
 
 const (
 	// resultUnchanged answers an edit that leaves fabrics.conf as it is.

@@ -1094,3 +1094,38 @@ func TestISCSIProblemCHAPNameNoToken(t *testing.T) {
 		}
 	}
 }
+
+// TestISCSIHelperHashNotPassedOn: a helper conflict, built as the helper's
+// responseOf builds it, quotes the real SHA-256 of fabrics.conf in
+// current_sha256 and in its message; neither reaches the client, nor does
+// a hash in any other helper text the routes pass on.
+func TestISCSIHelperHashNotPassedOn(t *testing.T) {
+	sha := conffile.Hash([]byte(fabricsSample))
+	path := "/etc/mhvtl/fabrics.conf"
+	conflict := func() apply.Response {
+		cur := sha
+		return apply.Response{Result: apply.ResultConflict, File: path, CurrentSHA256: &cur,
+			Message: (&conffile.ConflictError{Path: path, Current: sha}).Error()}
+	}
+	for name, resp := range map[string]apply.Response{
+		"conflict": conflict(),
+		"rolled back": {Result: apply.ResultRolledBack, Error: apply.ErrFabricsApply, FabricsAction: "reload",
+			Message: "restoring: " + path + " now sha256 " + sha, JournalTail: "apply read " + strings.ToUpper(sha)},
+		"error": {Result: apply.ResultError, Error: apply.ErrInternal, Message: "recovery: " + sha},
+	} {
+		for _, dry := range []bool{true, false} {
+			e := iscsiEnv(t, fabricsSample, "reload", nil)
+			e.h.answer = func(apply.Request) apply.Response { return resp }
+			rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30, "dry_run": dry})
+			if body := strings.ToLower(rec.Body.String()); strings.Contains(body, sha) {
+				t.Errorf("%s (dry run %v): the file's SHA-256 is in the answer: %s", name, dry, rec.Body)
+			}
+			if name == "conflict" {
+				got := decodeBody[iscsiWriteDTO](t, rec)
+				if rec.Code != http.StatusConflict || got.Message != fabricsChanged || got.CurrentSHA256 == nil || *got.CurrentSHA256 != e.version(fabricsSample) {
+					t.Errorf("conflict answer = %d %+v", rec.Code, got)
+				}
+			}
+		}
+	}
+}
