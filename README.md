@@ -444,7 +444,9 @@ configuration editor needs (see [Turn writes on](#turn-writes-on)).
   derived IQN (`wwn`), whether CHAP and mutual CHAP are set, and the
   `device.conf` device. Secrets are never returned, and without
   `-api-token`, when any local user can read the route, neither are the
-  CHAP names (`chap_name`, `mutual_chap_name`). `problems` lists what
+  CHAP names (`chap_name`, `mutual_chap_name`), nor a quoted field name in
+  a problem's message that mentions CHAP or a secret (a CHAP name run into
+  the field name would show there). `problems` lists what
   `mhvtl-fabrics` would refuse, each with a `kind`: `parse`, a line it would
   not read, which blocks every change until fixed by hand; or `plan`, a
   target it reads but would not export against `device.conf` (`target` is
@@ -496,7 +498,10 @@ exports nothing; use unbind.
 The helper writes `fabrics.conf` mode 0600 (it may hold CHAP secrets), keeps
 the previous copy for rollback (only the latest: a successful apply removes
 older copies of `fabrics.conf`, which may hold secrets since rotated), and
-records the change in its audit log with secrets masked. Then:
+records the change in its audit log with secrets masked. A secret rotated
+out by a change therefore stays in that kept copy (root, mode 0600, under
+`/var/lib/mhvtl-control-apply/rollback/`) until the next successful iSCSI
+change. Then:
 
 - with `mhvtl-fabrics.service` active, it runs `systemctl reload`, which runs
   `mhvtl-fabrics apply`: targets, LUNs and ACLs follow the file, and sessions

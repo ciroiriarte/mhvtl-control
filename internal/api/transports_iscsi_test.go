@@ -1075,3 +1075,22 @@ func TestISCSIVersionNotFileHash(t *testing.T) {
 		t.Error("the version did not change with a new daemon")
 	}
 }
+
+// TestISCSIProblemCHAPNameNoToken: a CHAP name run into the field name
+// ("CHAP name pbs-x: ..." is an unknown field) shows in the problem's
+// message; without an API token, when GET config leaves CHAP names out, so
+// does the message.
+func TestISCSIProblemCHAPNameNoToken(t *testing.T) {
+	bad := strings.Replace(fabricsSample, " CHAP name: pbs\n", " CHAP name pbsuser7: x\n", 1)
+	for _, token := range []string{"s3cret", ""} {
+		e := iscsiEnv(t, bad, "reload", func(c *Config) { c.Token = token })
+		rec := e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil)
+		got := decodeBody[iscsiConfigDTO](t, rec)
+		if len(got.Problems) == 0 {
+			t.Fatalf("token %q: no problem for the line: %s", token, rec.Body)
+		}
+		if shown := strings.Contains(rec.Body.String(), "pbsuser7"); shown != (token != "") {
+			t.Errorf("token %q: CHAP name shown %v: %s", token, shown, rec.Body)
+		}
+	}
+}

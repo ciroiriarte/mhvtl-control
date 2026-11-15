@@ -216,6 +216,9 @@ func (s *Server) handleISCSIConfig(w http.ResponseWriter, _ *http.Request) {
 	stored := conffile.FabricsSecrets(f.data)
 	for _, p := range ps {
 		dto := iscsiProblemDTO{Line: p.Line, Message: refusalText(p.Msg, stored), Kind: kind}
+		if s.cfg.Token == "" {
+			dto.Message = quotedCHAP.ReplaceAllString(dto.Message, "'(not shown)'")
+		}
 		if id, ok := ids[p.Line]; ok && kind == "plan" && p.Line > 0 {
 			dto.Target = &id
 		}
@@ -359,6 +362,12 @@ func fieldOf(msg string, fields []string) string {
 // secret, such as "unknown iSCSI target field 'chap secret= pa'": a field
 // name run into its value can carry the start of the secret.
 var quotedSecret = regexp.MustCompile(`(?i)'[^']*secret[^']*'`)
+
+// quotedCHAP is a quoted name in a parser message that mentions CHAP or a
+// secret, such as "unknown iSCSI target field 'chap name pbs1 x'": a CHAP
+// name run into the field name. GET config cuts these when it has no API
+// token to answer CHAP names to.
+var quotedCHAP = regexp.MustCompile(`(?i)'[^']*(?:secret|chap)[^']*'`)
 
 // previewDiff is the fabrics.conf diff to answer. Secret lines are masked
 // by RedactFabrics. In every line the request's own secrets are masked,
