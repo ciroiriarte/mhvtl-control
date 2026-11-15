@@ -570,7 +570,9 @@ with it, unless that file has targets `mhvtl-fabrics` would not export:
 it is then left not applied, as `not_applied` leaves it, and the change
 that leaves none applies it. A rollback, a retry or a crash recovery never
 reloads such a file, which would fail and refuse every iSCSI change after
-it, the unbind that fixes it included. If a first start fails, the new file is removed and the unit is
+it, the unbind that fixes it included. Left so after a failed reload,
+configfs may still hold part of the failed change until the next change
+that leaves no such targets applies the file. If a first start fails, the new file is removed and the unit is
 left failed, its targets removed by its `ExecStopPost`; the next export
 starts it again. Either way the answer is `rolled_back` and carries the
 unit's last journal lines. In those lines and in the systemctl error, every

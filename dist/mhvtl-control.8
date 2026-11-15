@@ -138,7 +138,10 @@ targets to unbind first; the change that leaves
 none reloads the unit, or starts it if it had failed or is stopped. A failed reload puts the previous file
 back and reloads the unit with it, unless that file has targets that do not
 plan: it is then left not applied, as above. A rollback, a retry or a
-recovery never reloads such a file, which would fail. A failed first start removes the new file
+recovery never reloads such a file, which would fail; left so after a
+failed reload, configfs may still hold part of the failed change until the
+next change that leaves no such targets applies the file.
+A failed first start removes the new file
 and leaves the unit failed; the next export starts it again. When the
 reload of the restored file fails too, the answer is
 .B fabrics_recovery_required
