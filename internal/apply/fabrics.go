@@ -179,9 +179,10 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	if h.killPoint(it.Step) {
 		return responseOf(errKilled)
 	}
+	output := func(s string) string { return maskOutput(s, cur.data, next) }
 	mask := func(s string) string { return maskFabrics(s, cur.data, next) }
 	if err := h.runFabrics(ctx, action); err != nil {
-		resp := h.rollBackFabrics(ctx, it, action, err, mask)
+		resp := h.rollBackFabrics(ctx, it, action, err, output, mask)
 		if it.RollbackDir != "" {
 			resp.RollbackDir = filepath.Join(h.cfg.StateDir, rollbackDir, it.RollbackDir)
 		}
@@ -640,15 +641,16 @@ func (h *Helper) runFabrics(ctx context.Context, action string) error {
 // or start). The intent is kept when the restore fails, so that recovery
 // retries it. A failed reconcile answers fabrics_recovery_required, as
 // configfs may then not match the file; reconcileFailed says what is kept
-// for the retry.
-func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string, runErr error, mask func(string) string) Response {
+// for the retry. output masks the failed command's error and the journal
+// (maskOutput), mask the message (maskFabrics).
+func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string, runErr error, output, mask func(string) string) Response {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricsTimeout)
 	defer cancel()
 	resp := Response{Result: ResultRolledBack, Error: ErrFabricsApply, FailedUnit: FabricsUnit, FabricsAction: action}
-	msg := fmt.Sprintf("systemctl %s %s failed: %s", action, FabricsUnit, mask(errText(runErr)))
+	msg := fmt.Sprintf("systemctl %s %s failed: %s", action, FabricsUnit, output(errText(runErr)))
 	if h.cfg.JournalTail != nil {
 		if tail, err := h.cfg.JournalTail(ctx, FabricsUnit); err == nil {
-			resp.JournalTail = mask(string(tail))
+			resp.JournalTail = output(string(tail))
 		}
 	}
 	conflicts, err := h.restore(it)
@@ -1011,19 +1013,35 @@ func fabricsDiff(before, after []byte) (string, bool) {
 	return d, false
 }
 
-// maskFabrics masks the CHAP secrets of files in s, output the helper did
-// not write itself (systemctl, the journal), except inside values a client
-// sets and reads in clear, such as an initiator or target name
-// (conffile.MaskSecretsExcept): masking a stored secret there would tell
-// the daemon's client that a value it chose contains one. Every value of
-// either file is kept that way, so the answer is the same whether or not
-// a secret the request sends is the stored one.
+// maskOutput masks the CHAP secrets of stored, the file the client could
+// read before the request, and of newer, the files the request brings, in
+// s, output of the reload or start the helper did not write itself (the
+// systemctl error, the journal), which may quote a stored secret anywhere
+// (conffile.MaskSecretsExcept). A secret inside a name stored has, which
+// the client reads in clear, is left as it is; the names the request
+// brings are masked whole: either way the answer is the same whether or
+// not a name the client chose contains or equals a stored secret.
+func maskOutput(s string, stored []byte, newer ...[]byte) string {
+	var hide []string
+	for _, f := range newer {
+		hide = append(hide, conffile.FabricsNewValues(stored, f)...)
+	}
+	return conffile.MaskSecretsExcept(s, fabricsSecrets(append([][]byte{stored}, newer...)...), conffile.FabricsClearValues(stored), hide)
+}
+
+// maskFabrics masks the CHAP secrets of files in a message the helper
+// composed, whose parts from outside went through maskOutput: it names
+// targets and quotes the restored file's systemctl errors, but no journal.
+// Secrets inside the files' clear values (names a client sets and reads
+// in clear) are left as they are, so that a new name the message gives,
+// such as a derived target name, shows as the client sent it whether or
+// not it contains a stored secret.
 func maskFabrics(s string, files ...[]byte) string {
 	var keep []string
 	for _, f := range files {
 		keep = append(keep, conffile.FabricsClearValues(f)...)
 	}
-	return conffile.MaskSecretsExcept(s, fabricsSecrets(files...), keep)
+	return conffile.MaskSecretsExcept(s, fabricsSecrets(files...), keep, nil)
 }
 
 // fabricsSecrets lists the CHAP secret values of both files, for the audit

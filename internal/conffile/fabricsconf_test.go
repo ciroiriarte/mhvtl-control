@@ -757,9 +757,20 @@ func TestMaskSecretsExcept(t *testing.T) {
 		{"ab abcd", SecretMask + " " + SecretMask, []string{"ab", "abcd"}},
 		{"plain", "plain", nil},
 	} {
-		if got := MaskSecretsExcept(c.in, c.secrets, keep); got != c.want {
+		if got := MaskSecretsExcept(c.in, c.secrets, keep, nil); got != c.want {
 			t.Errorf("MaskSecretsExcept(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+	// A name the request brings is masked whole, whether it holds the
+	// secret, equals it, or neither: the answers do not tell them apart.
+	for _, name := range []string{"x-" + sec + "-y", sec, "x-wrong-guess-y"} {
+		in := "login of " + name + " refused; secret " + sec
+		if got, want := MaskSecretsExcept(in, []string{sec}, keep, []string{name}), "login of "+SecretMask+" refused; secret "+SecretMask; got != want {
+			t.Errorf("new name %q: got %q, want %q", name, got, want)
+		}
+	}
+	if got := FabricsNewValues([]byte("iSCSI target: 10\n CHAP name: n1\n"), []byte("iSCSI target: 30\n CHAP name: n1\n Initiator name: iqn.new\n")); strings.Join(got, ",") != "iqn.new" {
+		t.Errorf("FabricsNewValues = %q", got)
 	}
 	vals := FabricsClearValues([]byte("iSCSI:\n Base name: iqn.b\niSCSI target: 10\n CHAP name: n1 # c\n CHAP secret: s\n# Initiator name: iqn.c\n"))
 	if strings.Join(vals, ",") != "iqn.b,10,n1" {

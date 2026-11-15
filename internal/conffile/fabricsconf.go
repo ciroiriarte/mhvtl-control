@@ -1279,13 +1279,42 @@ func FabricsClearValues(data []byte) []string {
 	return out
 }
 
+// FabricsNewValues returns the values of the indented clearFields lines of
+// next (portals, base name, initiator, target and CHAP names) that are not
+// clear values of stored: the names a request brings, which
+// MaskSecretsExcept hides in free text. Record headers (IDs, the version)
+// are left out: they are short numbers, which free text such as a journal
+// is full of.
+func FabricsNewValues(stored, next []byte) []string {
+	had := map[string]bool{}
+	for _, v := range FabricsClearValues(stored) {
+		had[v] = true
+	}
+	var out []string
+	for _, l := range splitLines(next) {
+		if fabIndent(l.Text) == 0 {
+			continue
+		}
+		if vs, ve, ok := clearValueSpan(l.Text); ok && ve > vs && !had[l.Text[vs:ve]] {
+			out = append(out, l.Text[vs:ve])
+		}
+	}
+	return out
+}
+
 // MaskSecretsExcept is MaskSecrets for free text, such as a journal tail,
-// that may quote both secrets and values the client set in clear (keep):
-// an occurrence of a secret that lies wholly inside an occurrence of a
-// keep value is left as it is, so the answer does not depend on whether a
-// value the client chose contains a stored secret. Any other occurrence is
-// masked, a secret that contains a keep value included.
-func MaskSecretsExcept(s string, secrets, keep []string) string {
+// that may quote secrets and the names a client sets in clear. keep are
+// names the client can already read (the stored file's clear values): an
+// occurrence of a secret that lies wholly inside an occurrence of one is
+// left as it is, so the answer does not depend on whether a stored name
+// contains a stored secret. Any other occurrence is masked, a secret that
+// contains a keep value included. hide are the names the request brings
+// (FabricsNewValues): every occurrence is masked whole, whether or not it
+// contains a secret. Keeping them would show a stored secret in clear
+// wherever the text quotes it when a name equals it, and masking only the
+// secret inside them would tell the client which name holds one; either
+// way the answer would confirm a guess.
+func MaskSecretsExcept(s string, secrets, keep, hide []string) string {
 	var kept [][2]int
 	for _, k := range keep {
 		for i := 0; k != "" && i < len(s); {
@@ -1299,6 +1328,19 @@ func MaskSecretsExcept(s string, secrets, keep []string) string {
 	}
 	masked := make([]bool, len(s))
 	hit := false
+	for _, v := range hide {
+		for i := 0; v != "" && i < len(s); {
+			j := strings.Index(s[i:], v)
+			if j < 0 {
+				break
+			}
+			for x := i + j; x < i+j+len(v); x++ {
+				masked[x] = true
+			}
+			hit = true
+			i += j + 1
+		}
+	}
 	for _, v := range secrets {
 		for i := 0; v != "" && i < len(s); {
 			j := strings.Index(s[i:], v)

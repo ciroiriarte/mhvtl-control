@@ -1015,25 +1015,35 @@ func TestDeviceConfNamesForeignTarget(t *testing.T) {
 	}
 }
 
-// TestFabricsRollBackMaskKeepsClearValues: the journal tail and message of
-// a rollback mask the files' secrets, but not inside a value the client set
-// in clear, such as a CHAP name that contains a stored secret: masking it
-// there would answer whether the name holds one.
+// TestFabricsRollBackMaskKeepsClearValues: the journal tail and the
+// systemctl error of a rollback mask the files' secrets, keep the names
+// the stored file has, and mask the names the request brings whole, so the
+// answer is byte-identical whether a new CHAP name holds the stored secret,
+// equals it, or neither. Keeping the new name would show the stored secret
+// in clear where the journal quotes it alone when the name equals it;
+// masking only the secret inside it would tell which name holds one.
 func TestFabricsRollBackMaskKeepsClearValues(t *testing.T) {
-	for _, guess := range []string{"password1", fabSecret} {
-		f := newFabEnv(t)
-		f.writeConf(fabricsConf, fabConf, 0o600)
-		name := "x" + guess + "y"
-		next := fabConf + "\niSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs1\n CHAP name: " + name + "\n CHAP secret: " + fabNewSecret + "\n"
-		f.fail[FabricsReload] = &exec.ExitError{Stderr: []byte("login of " + name + " refused")}
-		f.tail = "login of " + name + " refused; secret " + fabSecret + " and " + fabNewSecret
-		resp := f.do(f.fabricsReq(OpFabrics, next))
-		if resp.Result != ResultRolledBack {
-			t.Fatalf("%s: %+v", guess, resp)
+	for _, shape := range []string{"x%sy", "%s"} {
+		var answers []string
+		for _, guess := range []string{"password1", fabSecret} {
+			f := newFabEnv(t)
+			f.writeConf(fabricsConf, fabConf, 0o600)
+			name := strings.Replace(shape, "%s", guess, 1)
+			next := fabConf + "\niSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs1\n CHAP name: " + name + "\n CHAP secret: " + fabNewSecret + "\n"
+			f.fail[FabricsReload] = &exec.ExitError{Stderr: []byte("login of " + name + " refused")}
+			f.tail = "login of " + name + " refused; stored pbs1 secret " + fabSecret + " and " + fabNewSecret
+			resp := f.do(f.fabricsReq(OpFabrics, next))
+			if resp.Result != ResultRolledBack {
+				t.Fatalf("%s: %+v", name, resp)
+			}
+			want := "login of " + conffile.SecretMask + " refused; stored pbs1 secret " + conffile.SecretMask + " and " + conffile.SecretMask
+			if resp.JournalTail != want {
+				t.Errorf("%s: journal %q, want %q", name, resp.JournalTail, want)
+			}
+			answers = append(answers, resp.JournalTail+"\n"+strings.ReplaceAll(resp.Message, resp.RollbackDir, ""))
 		}
-		want := "login of " + name + " refused; secret " + conffile.SecretMask + " and " + conffile.SecretMask
-		if resp.JournalTail != want || !strings.Contains(resp.Message, "login of "+name+" refused") {
-			t.Errorf("%s: journal %q message %q", guess, resp.JournalTail, resp.Message)
+		if answers[0] != answers[1] {
+			t.Errorf("name %q: the answer depends on the guess:\n%s\n%s", shape, answers[0], answers[1])
 		}
 	}
 }

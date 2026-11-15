@@ -541,7 +541,11 @@ If the reload fails, the previous file is put back and the unit reloaded
 with it. If a first start fails, the new file is removed and the unit is
 left failed, its targets removed by its `ExecStopPost`; the next export
 starts it again. Either way the answer is `rolled_back` and carries the
-unit's last journal lines. When the reload of the restored file fails too,
+unit's last journal lines. In those lines and in the systemctl error, every
+CHAP secret is masked, except inside a name the file already had; the
+names the change brings (a new initiator, target or CHAP name, portal or
+base name) are shown as `********` too, so that the answer does not tell
+whether a name the client chose is, or contains, a stored secret. When the reload of the restored file fails too,
 configfs may not match `fabrics.conf`: the answer is
 `fabrics_recovery_required`; check `journalctl -u mhvtl-fabrics`, then run
 `systemctl reload mhvtl-fabrics`. Until a reload succeeds or the unit is

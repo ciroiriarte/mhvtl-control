@@ -635,14 +635,22 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		writeJSON(w, http.StatusOK, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.version, Result: resultUnchanged})
 		return
 	}
-	// The helper's message and journal tail quote values the client set
-	// (initiator and target names) as well as secrets: the request's own
-	// are masked everywhere, the files' everywhere but inside those values
-	// (conffile.MaskSecretsExcept), as previewDiff does in the diff.
-	keep := append(conffile.FabricsClearValues(f.data), conffile.FabricsClearValues(next)...)
+	// The helper's answers quote secrets and names the client set. The
+	// request's own secrets are masked everywhere. The journal tail may
+	// quote a stored secret anywhere: there the files' secrets are masked
+	// except inside the names the stored file has, and the names the
+	// request brings are masked whole (conffile.MaskSecretsExcept), as the
+	// helper does. The helper's messages quote output from outside only
+	// masked that way, and may name a new name, which is kept: the files'
+	// secrets are masked except inside the names of either file.
 	fileSecrets := append(append([]string(nil), stored...), conffile.FabricsSecrets(next)...)
+	storedNames, newNames := conffile.FabricsClearValues(f.data), conffile.FabricsNewValues(f.data, next)
+	allNames := append(conffile.FabricsClearValues(f.data), conffile.FabricsClearValues(next)...)
+	external := func(s string) string {
+		return conffile.MaskSecrets(conffile.MaskSecretsExcept(s, fileSecrets, storedNames, newNames), own)
+	}
 	mask := func(s string) string {
-		return conffile.MaskSecrets(conffile.MaskSecretsExcept(s, fileSecrets, keep), own)
+		return conffile.MaskSecrets(conffile.MaskSecretsExcept(s, fileSecrets, allNames, nil), own)
 	}
 
 	// The helper checks the file's real hash: base_sha256, when sent, was
@@ -676,7 +684,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	out := iscsiWriteDTO{
 		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: previewDiff(before, next, own, stored),
 		SHA256: f.version, Result: resp.Result, Message: mask(resp.Message),
-		JournalTail: mask(resp.JournalTail), RollbackDir: resp.RollbackDir,
+		JournalTail: external(resp.JournalTail), RollbackDir: resp.RollbackDir,
 	}
 	if resp.Result == apply.ResultConflict {
 		// The helper answers the file's real hash; the client gets its

@@ -1023,28 +1023,35 @@ func TestISCSIProblemSecretName(t *testing.T) {
 }
 
 // TestISCSIMessageCHAPNameNoOracle: the helper's journal tail quotes the
-// CHAP name the request sets; a name that contains a stored secret shows as
-// sent, like any other, while the stored secret alone is still masked.
+// CHAP name the request sets and the stored secret. The tail answered is
+// byte-identical whether the name holds the stored secret, equals it, or
+// neither: the new name is masked whole, the stored secret everywhere. The
+// helper's message, which quotes outside output only masked that way,
+// shows a new name as sent.
 func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
-	answer := func(name string) string {
+	answer := func(name string) iscsiWriteDTO {
 		t.Helper()
 		e := iscsiEnv(t, fabricsSample, "reload", nil)
 		e.srv.fabricsKey = []byte("one key for both answers")
 		e.h.answer = func(apply.Request) apply.Response {
 			return apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrFabricsApply, FabricsAction: "reload",
-				Message:     "reload failed for CHAP name x" + name + "y",
-				JournalTail: "login of x" + name + "y refused; stored " + chapSecret}
+				Message:     "reload failed for CHAP name " + name,
+				JournalTail: "login of " + name + " refused; stored pbs secret " + chapSecret}
 		}
 		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
-			"chap": map[string]string{"name": "x" + name + "y", "secret": "Fresh-secret-0123"}})
-		return rec.Body.String()
+			"chap": map[string]string{"name": name, "secret": "Fresh-secret-0123"}})
+		noSecrets(t, name, strings.ReplaceAll(rec.Body.String(), name, ""), "Fresh-secret-0123")
+		return decodeBody[iscsiWriteDTO](t, rec)
 	}
-	wrong, right := answer("password1"), answer(chapSecret)
-	if right != strings.ReplaceAll(wrong, "password1", chapSecret) {
-		t.Errorf("answer depends on the CHAP name holding a stored secret:\n%s\n%s", wrong, right)
-	}
-	if !strings.Contains(wrong, "stored "+conffile.SecretMask) || strings.Contains(wrong, "Fresh-secret-0123") {
-		t.Errorf("secrets not masked: %s", wrong)
+	for _, shape := range []string{"x%sy", "%s"} {
+		wrongName, rightName := strings.Replace(shape, "%s", "password1", 1), strings.Replace(shape, "%s", chapSecret, 1)
+		wrong, right := answer(wrongName), answer(rightName)
+		if wrong.JournalTail != right.JournalTail || wrong.JournalTail != "login of "+conffile.SecretMask+" refused; stored pbs secret "+conffile.SecretMask {
+			t.Errorf("%q: journal tails %q and %q", shape, wrong.JournalTail, right.JournalTail)
+		}
+		if right.Message != strings.ReplaceAll(wrong.Message, wrongName, rightName) {
+			t.Errorf("%q: messages %q and %q", shape, wrong.Message, right.Message)
+		}
 	}
 }
 

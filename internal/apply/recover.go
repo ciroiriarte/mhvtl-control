@@ -71,12 +71,14 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 		removed := h.newFabricsRemoved(it)
 		note, err := h.reconcileFabrics(ctx, removed)
 		if err != nil {
-			var originals [][]byte
+			var original []byte
 			for _, f := range it.Files {
-				originals = append(originals, f.Original)
+				if f.Name == fabricsConf {
+					original = f.Original
+				}
 			}
 			return Response{Result: ResultError, Error: ErrFabricsState, Conflicts: conflicts,
-				Message: maskFabrics("recovery: "+h.reconcileFailed(err, removed), originals...)}
+				Message: maskFabrics("recovery: "+h.reconcileFailed(err, removed), original)}
 		}
 		fabricsNote = note
 	}
