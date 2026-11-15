@@ -135,6 +135,13 @@ An apply that sends
 (the
 .I sha256
 of a preview) is refused with 409 if the file changed since.
+That
+.I sha256
+is an opaque version of the file, an HMAC under a key made when
+.B mhvtl-control
+starts, not its SHA-256 (the file holds CHAP secrets); it changes when the
+daemon restarts, and is not answered without
+.BR \-api\-token .
 The helper refuses when
 .B MHVTL_BACKEND
 is not

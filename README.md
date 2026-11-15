@@ -464,8 +464,14 @@ Each takes `"dry_run": true` to see the change first: the diff of
 comments; a value the client sets and reads in clear, such as a CHAP name or
 an initiator, is shown as it is even if it contains a stored secret, so the
 diff does not answer guesses), what the apply would
-do, and `sha256`, the hash of the file the change was made against (`""`
-when there is none). An apply answers with the same, and for a bind the
+do, and `sha256`, the version of the file the change was made against (`""`
+when there is none). The version is opaque: an HMAC of the file under a
+key the daemon makes when it starts, not the file's SHA-256, which would
+let a client test guesses at the CHAP secrets in it. It changes when the
+file changes and when mhvtl-control restarts; an apply sent with a version
+from before a restart gets 409, and a new preview gives the current one.
+`GET /api/v1/transports/iscsi/config` answers it too, but only with
+`-api-token`. An apply answers with the same, and for a bind the
 target as configfs shows it afterwards. To apply exactly what was
 previewed, send the same body with `"dry_run": false` and
 `"base_sha256"` set to the preview's `sha256`: if `fabrics.conf` changed in

@@ -67,6 +67,15 @@ func (e *writeEnv) fabricsReqs() []apply.Request {
 	return append([]apply.Request(nil), e.h.reqs...)
 }
 
+// version is the opaque version e's daemon answers for fabrics.conf
+// content ("" for no file).
+func (e *writeEnv) version(content string) string {
+	if content == "" {
+		return ""
+	}
+	return e.srv.fabricsVersion([]byte(content))
+}
+
 // noSecrets fails when body holds a CHAP secret.
 func noSecrets(t *testing.T, what, body string, secrets ...string) {
 	t.Helper()
@@ -88,7 +97,8 @@ func TestISCSIConfigAbsent(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
 	got := decodeBody[iscsiConfigDTO](t, rec)
-	want := iscsiConfigDTO{ISCSI: iscsiRecordDTO{Portals: []string{}}, Targets: []iscsiTargetDTO{},
+	empty := ""
+	want := iscsiConfigDTO{SHA256: &empty, ISCSI: iscsiRecordDTO{Portals: []string{}}, Targets: []iscsiTargetDTO{},
 		Problems: []iscsiProblemDTO{}, Warnings: []string{}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
@@ -106,8 +116,8 @@ func TestISCSIConfigSample(t *testing.T) {
 	}
 	noSecrets(t, "GET config", rec.Body.String())
 	got := decodeBody[iscsiConfigDTO](t, rec)
-	if !got.Exists || got.SHA256 != conffile.Hash([]byte(fabricsSample)) {
-		t.Errorf("exists %v sha %q", got.Exists, got.SHA256)
+	if !got.Exists || got.SHA256 == nil || *got.SHA256 != e.version(fabricsSample) {
+		t.Errorf("exists %v sha %v", got.Exists, got.SHA256)
 	}
 	if !reflect.DeepEqual(got.ISCSI, iscsiRecordDTO{Present: true, Portals: []string{"192.0.2.10:3260"}, BaseName: baseName}) {
 		t.Errorf("iscsi = %+v", got.ISCSI)
@@ -136,6 +146,9 @@ func TestISCSIConfigNoTokenNoCHAPNames(t *testing.T) {
 	}
 	if b := rec.Body.String(); strings.Contains(b, "chap_name") || strings.Contains(b, `"pbs"`) || strings.Contains(b, `"vtl"`) {
 		t.Errorf("CHAP names answered without a token: %s", b)
+	}
+	if strings.Contains(rec.Body.String(), `"sha256"`) {
+		t.Errorf("version answered without a token: %s", rec.Body)
 	}
 	got := decodeBody[iscsiConfigDTO](t, rec)
 	if len(got.Targets) != 2 || !got.Targets[0].CHAP || !got.Targets[0].MutualCHAP || got.Targets[1].CHAP {
@@ -470,7 +483,9 @@ func TestISCSIHelperAnswers(t *testing.T) {
 			}
 			switch c.name {
 			case "conflict":
-				if got.CurrentSHA256 == nil || *got.CurrentSHA256 != cur || !strings.Contains(got.Error.Message, "read it again") {
+				// The helper's real hash is not passed on: the client gets
+				// the version of the file as it is.
+				if got.CurrentSHA256 == nil || *got.CurrentSHA256 != e.version(fabricsSample) || !strings.Contains(got.Error.Message, "read it again") {
 					t.Errorf("conflict = %+v", got)
 				}
 			case "foreign target":
@@ -630,14 +645,15 @@ func TestISCSIDiffMasksAnySpacing(t *testing.T) {
 // gets.
 func TestISCSIBaseSHA256(t *testing.T) {
 	e := iscsiEnv(t, fabricsSample, "reload", nil)
-	sha := conffile.Hash([]byte(fabricsSample))
+	sha, ver := conffile.Hash([]byte(fabricsSample)), e.version(fabricsSample)
 	bind := map[string]any{"library": 30, "initiators": []string{pbsIQN}, "dry_run": true}
 	got := decodeBody[iscsiWriteDTO](t, e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", bind))
-	if got.SHA256 != sha || got.Result != apply.ResultValidated {
-		t.Fatalf("dry run = %+v, want sha256 %s", got, sha)
+	if got.SHA256 != ver || got.Result != apply.ResultValidated {
+		t.Fatalf("dry run = %+v, want sha256 %s", got, ver)
 	}
 
-	bind["dry_run"], bind["base_sha256"] = false, sha
+	// The client sends the version back; the helper gets the real hash.
+	bind["dry_run"], bind["base_sha256"] = false, ver
 	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", bind)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("apply: %d %s", rec.Code, rec.Body)
@@ -647,18 +663,22 @@ func TestISCSIBaseSHA256(t *testing.T) {
 	}
 
 	for name, body := range map[string]map[string]any{
-		"bind":   {"library": 30, "initiators": []string{pbsIQN}, "base_sha256": strings.Repeat("0", 64)},
-		"patch":  {"base_name": "iqn.2026-12.lan.example:x", "base_sha256": "", "dry_run": true},
-		"unbind": {"library": 30, "base_sha256": "stale"},
+		"real hash": {"library": 30, "initiators": []string{pbsIQN}, "base_sha256": sha},
+		"bind":      {"library": 30, "initiators": []string{pbsIQN}, "base_sha256": strings.Repeat("0", 64)},
+		"patch":     {"base_name": "iqn.2026-12.lan.example:x", "base_sha256": "", "dry_run": true},
+		"unbind":    {"library": 30, "base_sha256": "stale"},
 	} {
 		method, path := http.MethodPost, "/api/v1/transports/iscsi/"+name
+		if name == "real hash" {
+			path = "/api/v1/transports/iscsi/bind"
+		}
 		if name == "patch" {
 			method, path = http.MethodPatch, "/api/v1/transports/iscsi"
 		}
 		rec := e.call(method, path, body)
 		got := decodeBody[iscsiWriteDTO](t, rec)
 		if rec.Code != http.StatusConflict || got.Result != apply.ResultConflict || got.Error == nil || got.Error.Code != apply.ResultConflict ||
-			got.CurrentSHA256 == nil || *got.CurrentSHA256 != sha || got.SHA256 != sha {
+			got.CurrentSHA256 == nil || *got.CurrentSHA256 != ver || got.SHA256 != ver {
 			t.Errorf("%s with a stale base: %d %s", name, rec.Code, rec.Body)
 		}
 	}
@@ -686,7 +706,7 @@ func TestISCSIUnchanged(t *testing.T) {
 		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10, "initiators": []string{pbsIQN}, "dry_run": dry})
 		got := decodeBody[iscsiWriteDTO](t, rec)
 		if rec.Code != http.StatusOK || got.Result != "unchanged" || got.Diff != "" || got.DryRun != dry ||
-			got.SHA256 != conffile.Hash([]byte(fabricsSample)) || got.Error != nil {
+			got.SHA256 != e.version(fabricsSample) || got.Error != nil {
 			t.Errorf("dry run %v: %d %s", dry, rec.Code, rec.Body)
 		}
 	}
@@ -993,6 +1013,7 @@ func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
 	answer := func(name string) string {
 		t.Helper()
 		e := iscsiEnv(t, fabricsSample, "reload", nil)
+		e.srv.fabricsKey = []byte("one key for both answers")
 		e.h.answer = func(apply.Request) apply.Response {
 			return apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrFabricsApply, FabricsAction: "reload",
 				Message:     "reload failed for CHAP name x" + name + "y",
@@ -1008,5 +1029,26 @@ func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
 	}
 	if !strings.Contains(wrong, "stored "+conffile.SecretMask) || strings.Contains(wrong, "Fresh-secret-0123") {
 		t.Errorf("secrets not masked: %s", wrong)
+	}
+}
+
+// TestISCSIVersionNotFileHash: the sha256 the routes answer is not the
+// SHA-256 of fabrics.conf, which holds CHAP secrets and would let a client
+// test guesses at them offline, and a daemon restart (a new key) changes
+// it, so an apply against the old one is a conflict.
+func TestISCSIVersionNotFileHash(t *testing.T) {
+	e := iscsiEnv(t, fabricsSample, "reload", nil)
+	sha := conffile.Hash([]byte(fabricsSample))
+	cfg := decodeBody[iscsiConfigDTO](t, e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil))
+	got := decodeBody[iscsiWriteDTO](t, e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30, "dry_run": true}))
+	if cfg.SHA256 == nil || *cfg.SHA256 == "" || *cfg.SHA256 != got.SHA256 {
+		t.Fatalf("GET sha256 %v, write sha256 %q: want the same non-empty version", cfg.SHA256, got.SHA256)
+	}
+	if *cfg.SHA256 == sha || got.SHA256 == sha {
+		t.Errorf("sha256(fabrics.conf) answered: GET %s, write %s", *cfg.SHA256, got.SHA256)
+	}
+	restarted := NewServer(e.srv.cfg)
+	if v := restarted.fabricsVersion([]byte(fabricsSample)); v == got.SHA256 {
+		t.Error("the version did not change with a new daemon")
 	}
 }

@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -165,6 +166,9 @@ type Server struct {
 	stages stages
 	// now is the clock; time.Now unless a test sets it.
 	now func() time.Time
+	// fabricsKey keys the opaque version of fabrics.conf the iSCSI routes
+	// answer (fabricsVersion). It is made at start and never stored.
+	fabricsKey []byte
 }
 
 // keyedMutex is a set of mutexes created on first use. Each is a channel
@@ -251,7 +255,11 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 
 // NewServer returns a Server configured with cfg.
 func NewServer(cfg Config) *Server {
-	return &Server{cfg: cfg, now: time.Now}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic("mhvtl-control: reading random bytes: " + err.Error())
+	}
+	return &Server{cfg: cfg, now: time.Now, fabricsKey: key}
 }
 
 // Handler builds the route mux and wraps it in the middleware chain

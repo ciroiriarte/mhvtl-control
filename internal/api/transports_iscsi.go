@@ -3,6 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -69,10 +72,12 @@ type iscsiProblemDTO struct {
 	Target  *int   `json:"target,omitempty"`
 }
 
-// iscsiConfigDTO is GET /transports/iscsi/config.
+// iscsiConfigDTO is GET /transports/iscsi/config. SHA256 is fabrics.conf's
+// version (fabricsFiles.version), left out without an API token: only the
+// writes, which need the token, take it back.
 type iscsiConfigDTO struct {
 	Exists   bool              `json:"exists"`
-	SHA256   string            `json:"sha256"`
+	SHA256   *string           `json:"sha256,omitempty"`
 	ISCSI    iscsiRecordDTO    `json:"iscsi"`
 	Targets  []iscsiTargetDTO  `json:"targets"`
 	Problems []iscsiProblemDTO `json:"problems"`
@@ -80,12 +85,18 @@ type iscsiConfigDTO struct {
 }
 
 // fabricsFiles is fabrics.conf and device.conf as read for one request.
+// sha, the file's SHA-256, goes to the helper only. version is what
+// clients get and send back as sha256 and base_sha256: an HMAC-SHA256 of
+// the file under a key made when the daemon starts (fabricsVersion). The
+// file holds CHAP secrets, so its plain hash would let a client test
+// guesses at them offline.
 type fabricsFiles struct {
-	data   []byte
-	sha    string // "" when fabrics.conf does not exist
-	exists bool
-	conf   *conffile.FabricsConf
-	dev    *conffile.DeviceConf
+	data    []byte
+	sha     string // "" when fabrics.conf does not exist
+	version string // "" when fabrics.conf does not exist
+	exists  bool
+	conf    *conffile.FabricsConf
+	dev     *conffile.DeviceConf
 }
 
 // readFabricsFiles reads fabrics.conf and device.conf from the
@@ -96,7 +107,7 @@ func (s *Server) readFabricsFiles() (fabricsFiles, error) {
 	data, sha, err := conffile.ReadFile(filepath.Join(s.cfg.ConfigDir, fabricsConfName))
 	switch {
 	case err == nil:
-		f.data, f.sha, f.exists = data, sha, true
+		f.data, f.sha, f.version, f.exists = data, sha, s.fabricsVersion(data), true
 	case !errors.Is(err, fs.ErrNotExist):
 		log.Printf("transports/iscsi: %v", err)
 		return f, errors.New(fabricsConfName + ": unreadable")
@@ -108,6 +119,26 @@ func (s *Server) readFabricsFiles() (fabricsFiles, error) {
 	}
 	f.conf, f.dev = conffile.ParseFabricsConf(f.data), conffile.ParseDeviceConf(dev)
 	return f, nil
+}
+
+// fabricsVersion is the opaque version of fabrics.conf content data: its
+// HMAC-SHA256 under s.fabricsKey, in hex. It changes when the file does,
+// and when the daemon restarts.
+func (s *Server) fabricsVersion(data []byte) string {
+	m := hmac.New(sha256.New, s.fabricsKey)
+	m.Write(data)
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// currentFabricsVersion is the version of fabrics.conf as it is now, for
+// a conflict the helper found: "" when it does not exist, nil when it
+// cannot be read.
+func (s *Server) currentFabricsVersion() *string {
+	f, err := s.readFabricsFiles()
+	if err != nil {
+		return nil
+	}
+	return &f.version
 }
 
 // deviceOf finds device.conf's Library or Drive id.
@@ -149,7 +180,10 @@ func (s *Server) handleISCSIConfig(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
-	out.Exists, out.SHA256 = f.exists, f.sha
+	out.Exists = f.exists
+	if s.cfg.Token != "" {
+		out.SHA256 = &f.version
+	}
 	portals, base, present := f.conf.ISCSI()
 	out.ISCSI.Present, out.ISCSI.BaseName = present, base
 	if portals != nil {
@@ -207,10 +241,10 @@ func (c *chapDTO) creds() *conffile.CHAPCreds {
 // iscsiPatchRequest is PATCH /transports/iscsi: an absent field is left
 // as it is; portals [] removes them all, base_name "" removes it.
 //
-// Every iSCSI write takes base_sha256: the sha256 of fabrics.conf the
-// change was made against, as a write answer or GET /config gave it ("" for
-// no file). When present, the change is refused with 409 unless the file
-// is still that one.
+// Every iSCSI write takes base_sha256: the sha256 (fabrics.conf's opaque
+// version, fabricsFiles.version) the change was made against, as a write
+// answer or GET /config gave it ("" for no file). When present, the change
+// is refused with 409 unless the file is still that one.
 type iscsiPatchRequest struct {
 	Portals    []string `json:"portals"`
 	BaseName   *string  `json:"base_name"`
@@ -256,9 +290,10 @@ type iscsiTargetStateDTO struct {
 }
 
 // iscsiWriteDTO answers the iSCSI writes: the helper's answer and the
-// change, its diff with every secret masked. SHA256 is fabrics.conf as the
-// daemon read it ("" when absent), what an apply of the previewed change
-// sends as base_sha256. Result "unchanged" is an edit that leaves the file
+// change, its diff with every secret masked. SHA256 is the version of
+// fabrics.conf as the daemon read it ("" when absent), what an apply of the
+// previewed change sends as base_sha256; CurrentSHA256 that of the file a
+// conflict found. Result "unchanged" is an edit that leaves the file
 // as it is, not sent to the helper.
 type iscsiWriteDTO struct {
 	DryRun        bool                 `json:"dry_run"`
@@ -535,9 +570,9 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		writeError(w, http.StatusInternalServerError, "config_error", err.Error())
 		return
 	}
-	if q.base != nil && *q.base != f.sha {
-		cur := f.sha
-		writeJSON(w, http.StatusConflict, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.sha, Result: apply.ResultConflict,
+	if q.base != nil && !hmac.Equal([]byte(*q.base), []byte(f.version)) {
+		cur := f.version
+		writeJSON(w, http.StatusConflict, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.version, Result: apply.ResultConflict,
 			CurrentSHA256: &cur, Error: &errorDetail{Code: apply.ResultConflict, Message: fabricsChanged}})
 		return
 	}
@@ -546,7 +581,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		writeJSON(w, inv.status, struct {
 			Error  fieldErrorDetail `json:"error"`
 			SHA256 string           `json:"sha256"`
-		}{fieldErrorDetail{Code: inv.code, Message: refusalText(inv.msg, mask), Field: inv.field}, f.sha})
+		}{fieldErrorDetail{Code: inv.code, Message: refusalText(inv.msg, mask), Field: inv.field}, f.version})
 	}
 	refuse := func(inv *fabricsInvalid) { refuseWith(inv, own) }
 	if err := f.conf.Writable(); err != nil {
@@ -581,7 +616,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	next := f.conf.Render()
 	setsSecret := q.setsCHAP || q.setsMutualCHAP
 	if f.exists && bytes.Equal(next, f.data) && !setsSecret {
-		writeJSON(w, http.StatusOK, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.sha, Result: resultUnchanged})
+		writeJSON(w, http.StatusOK, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.version, Result: resultUnchanged})
 		return
 	}
 	// The helper's message and journal tail quote values the client set
@@ -594,12 +629,11 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		return conffile.MaskSecrets(conffile.MaskSecretsExcept(s, fileSecrets, keep), own)
 	}
 
+	// The helper checks the file's real hash: base_sha256, when sent, was
+	// found to be the version of this very content above.
 	hreq := apply.Request{Op: apply.OpFabricsPlan,
 		Files: []apply.File{{Name: fabricsConfName, BaseSHA256: f.sha, Content: next}},
 		Actor: "mhvtl-control API client " + r.RemoteAddr}
-	if q.base != nil {
-		hreq.Files[0].BaseSHA256 = *q.base
-	}
 	ctx := r.Context()
 	if !q.dryRun {
 		hreq.Op = apply.OpFabrics
@@ -625,8 +659,13 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	}
 	out := iscsiWriteDTO{
 		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: previewDiff(before, next, own, stored),
-		SHA256: f.sha, Result: resp.Result, Message: mask(resp.Message), CurrentSHA256: resp.CurrentSHA256,
+		SHA256: f.version, Result: resp.Result, Message: mask(resp.Message),
 		JournalTail: mask(resp.JournalTail), RollbackDir: resp.RollbackDir,
+	}
+	if resp.Result == apply.ResultConflict {
+		// The helper answers the file's real hash; the client gets its
+		// version.
+		out.CurrentSHA256 = s.currentFabricsVersion()
 	}
 	if code != "" {
 		msg := applyMessage(resp)
