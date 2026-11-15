@@ -862,7 +862,7 @@ func TestServiceTargetLibraryAddedAfterPlan(t *testing.T) {
 // tell the backend of (a backslash in a comment, which systemd accepts)
 // is checked: systemd may pass tcmu. Nothing is checked with a backend
 // that is not tcmu, the unit not installed, or a fabrics.conf that does
-// not exist or that mhvtl-fabrics cannot parse.
+// not exist or that mhvtl-fabrics cannot parse: there the action runs.
 func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
 	type tc struct {
@@ -928,10 +928,33 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e, s := setup(t, c)
 			s.state[FabricsUnit] = c.fabrics
+			if !c.refused && c.action == ActionStart {
+				// Something for the start to start.
+				for _, u := range targetUnits {
+					s.state[u], s.enabled[u] = "inactive", true
+				}
+				s.onStart = func(u string) {
+					if u == mhvtlTarget {
+						for _, w := range targetUnits {
+							s.state[w] = "active"
+						}
+					}
+				}
+			}
 			pr := e.do(target(OpServicePlan, c.action, nil))
 			if !c.refused {
 				if pr.Result != ResultValidated {
 					t.Fatalf("service_plan: %+v", pr)
+				}
+				resp := e.do(target(OpService, c.action, pr.Units))
+				if resp.Result != ResultApplied || strings.Contains(resp.Message, "does not own") {
+					t.Fatalf("service: %+v", resp)
+				}
+				if !slices.Contains(s.calls, "start "+mhvtlTarget) {
+					t.Errorf("%s not started: %v", mhvtlTarget, s.calls)
+				}
+				if c.action == ActionRestart && !s.before("stop "+mhvtlTarget, "start "+mhvtlTarget) {
+					t.Errorf("%s not restarted: %v", mhvtlTarget, s.calls)
 				}
 				return
 			}
