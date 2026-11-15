@@ -245,29 +245,41 @@ func (h *Helper) pruneFabricsCopies(keep string) string {
 // shell's: systemd keeps text after an unquoted value, so
 // "MHVTL_BACKEND=tcmu # TCMU" passes "tcmu # TCMU".
 func (h *Helper) checkBackend(read func(string) (fileState, error)) error {
-	backend := "mhvtl"
-	mc, err := read(mhvtlConf)
+	backend, err := backendOf(read)
 	if err != nil {
 		return err
-	}
-	if mc.exists {
-		if line, what := envSubsetViolation(mc.data); what != "" {
-			return refuse(ErrFabricsBackend, "%s line %d has %s; the helper checks only what every supported systemd reads the same way, so it cannot tell what MHVTL_BACKEND %s gets: keep %s to plain ASCII lines without backslashes, under 4096 bytes",
-				mhvtlConf, line, what, FabricsUnit, mhvtlConf)
-		}
-		vars, err := conffile.EnvironmentFile(mc.data)
-		if err != nil {
-			return refuse(ErrFabricsBackend, "%s: %v, so %s does not start", mhvtlConf, err, FabricsUnit)
-		}
-		if v, ok := vars["MHVTL_BACKEND"]; ok {
-			backend = v
-		}
 	}
 	if backend != "tcmu" {
 		return refuse(ErrFabricsBackend, "systemd passes MHVTL_BACKEND=%q from %s to %s, not tcmu: mhvtl-fabrics exports only TCMU backstores (systemd keeps text after an unquoted value; write MHVTL_BACKEND=tcmu alone on its line)",
 			backend, mhvtlConf, FabricsUnit)
 	}
 	return nil
+}
+
+// backendOf is the MHVTL_BACKEND systemd passes mhvtl-fabrics.service
+// from mhvtl.conf as read (checkBackend). An error is a file the helper
+// cannot tell that of: unreadable, outside the subset it checks
+// (envSubsetViolation), or not parsed.
+func backendOf(read func(string) (fileState, error)) (string, error) {
+	backend := "mhvtl"
+	mc, err := read(mhvtlConf)
+	if err != nil {
+		return "", err
+	}
+	if mc.exists {
+		if line, what := envSubsetViolation(mc.data); what != "" {
+			return "", refuse(ErrFabricsBackend, "%s line %d has %s; the helper checks only what every supported systemd reads the same way, so it cannot tell what MHVTL_BACKEND %s gets: keep %s to plain ASCII lines without backslashes, under 4096 bytes",
+				mhvtlConf, line, what, FabricsUnit, mhvtlConf)
+		}
+		vars, err := conffile.EnvironmentFile(mc.data)
+		if err != nil {
+			return "", refuse(ErrFabricsBackend, "%s: %v, so %s does not start", mhvtlConf, err, FabricsUnit)
+		}
+		if v, ok := vars["MHVTL_BACKEND"]; ok {
+			backend = v
+		}
+	}
+	return backend, nil
 }
 
 // envSubsetViolation returns the first line of an EnvironmentFile= file
@@ -406,10 +418,12 @@ func notAppliedText(left []conffile.Problem) string {
 // that did not plan may plan now) which exists in configfs and
 // mhvtl-fabrics does not own (checkForeignTargets). Without fabrics.conf,
 // with one mhvtl-fabrics cannot parse, or when fabrics are not in use
-// (fabricsInUse), there is nothing to check. A change that brings fabrics
-// into use (MHVTL_BACKEND becomes tcmu) has every target the file plans
-// checked for ownership, as none was checked while nothing applied the
-// file: device.conf may have been changed in between so that the file
+// (fabricsInUse), there is nothing to check. When the helper cannot tell
+// the backend (unknown), only a foreign target is refused: the plan check
+// would block device.conf edits of kmod users. A change that brings
+// fabrics into use (MHVTL_BACKEND becomes tcmu) has every target the file
+// plans checked for ownership, as none was checked while nothing applied
+// the file: device.conf may have been changed in between so that the file
 // names a foreign target (Library 10 turned into Drive 10). A unit start
 // outside the helper (at boot, or by hand) is not guarded here.
 func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) error {
@@ -433,7 +447,8 @@ func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) 
 	if len(conf.Problems) > 0 {
 		return nil
 	}
-	if inUse, err := h.fabricsInUse(ctx, files, next); err != nil || !inUse {
+	inUse, unknown, err := h.fabricsInUse(ctx, files, next)
+	if err != nil || !inUse && !unknown {
 		return err
 	}
 	curDev, nextDev := conffile.ParseDeviceConf(cur.data), conffile.ParseDeviceConf(nd.data)
@@ -455,7 +470,10 @@ func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) 
 			targets = append(targets, fmt.Sprint(id))
 		}
 	}
-	if len(msgs) > 0 {
+	// When the backend cannot be told (unknown), fabrics may not be in
+	// use: a device.conf edit is not blocked for the plan, only for a
+	// foreign target below.
+	if len(msgs) > 0 && inUse {
 		what := "fabrics.conf"
 		if len(targets) > 0 {
 			what = "the iSCSI target(s) " + strings.Join(targets, ", ") + " of " + fabricsConf
@@ -489,16 +507,26 @@ func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) 
 // the request leaves it, and mhvtl-fabrics.service is installed. Otherwise
 // nothing reloads it, and a stale file must not block device.conf edits:
 // the iSCSI unbind that would clear it is refused with fabrics_backend or
-// fabrics_unit.
-func (h *Helper) fabricsInUse(ctx context.Context, files, next *fileSet) (bool, error) {
-	if h.checkBackend(files.current) != nil && h.checkBackend(next.next) != nil {
-		return false, nil
+// fabrics_unit. unknown is an installed unit and an mhvtl.conf the helper
+// cannot tell the backend of (backendOf), in neither file tcmu: systemd
+// may still pass tcmu, so the checks that refuse only when a foreign
+// target exists still run.
+func (h *Helper) fabricsInUse(ctx context.Context, files, next *fileSet) (inUse, unknown bool, err error) {
+	notTCMU := func(read func(string) (fileState, error)) bool {
+		b, err := backendOf(read)
+		return err == nil && b != "tcmu"
+	}
+	if notTCMU(files.current) && notTCMU(next.next) {
+		return false, false, nil
 	}
 	load, err := showProp(ctx, &h.cfg, FabricsUnit, "LoadState")
-	if err != nil {
-		return false, err
+	if err != nil || load != "loaded" {
+		return false, false, err
 	}
-	return load == "loaded", nil
+	if h.checkBackend(files.current) == nil || h.checkBackend(next.next) == nil {
+		return true, false, nil
+	}
+	return false, true, nil
 }
 
 // checkForeignTargets refuses a file that plans a target which exists in
@@ -535,12 +563,12 @@ func (h *Helper) checkForeignTargets(conf *conffile.FabricsConf, files *fileSet)
 // planning a target that exists in configfs and mhvtl-fabrics does not
 // own: its apply would adopt it (checkForeignTargets). A restart restarts
 // the unit; a start starts it unless it is active. Nothing is checked when
-// fabrics are not in use (MHVTL_BACKEND is not tcmu, or the unit is not
-// installed: fabricsInUse), or when fabrics.conf does not exist or
+// fabrics are not in use (MHVTL_BACKEND is not tcmu in an mhvtl.conf the
+// helper can read, or the unit is not installed: fabricsInUse), or when fabrics.conf does not exist or
 // mhvtl-fabrics cannot parse it (foreignOnDisk). A start outside the
 // helper (at boot, or by hand) is not guarded.
 func (h *Helper) checkTargetFabrics(ctx context.Context, files *fileSet, restart bool) error {
-	if inUse, err := h.fabricsInUse(ctx, files, files); err != nil || !inUse {
+	if inUse, unknown, err := h.fabricsInUse(ctx, files, files); err != nil || !inUse && !unknown {
 		return err
 	}
 	if !restart {

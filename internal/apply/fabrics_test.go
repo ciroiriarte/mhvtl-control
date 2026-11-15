@@ -989,6 +989,12 @@ func TestDeviceConfLeavesFabricsTarget(t *testing.T) {
 			f.writeConf("mhvtl.conf", strings.Replace(string(f.read("mhvtl.conf")), "MHVTL_BACKEND=tcmu\n", "", 1), 0o644)
 		},
 		"unit not installed": func(f *fabEnv) { f.load = "not-found" },
+		// The helper cannot tell what systemd passes: fabrics may be in
+		// use, but a plan problem is not refused (only a foreign target,
+		// TestDeviceConfNamesForeignTarget).
+		"backend unknown": func(f *fabEnv) {
+			f.writeConf("mhvtl.conf", string(f.read("mhvtl.conf"))+"# C:\\backups\n", 0o644)
+		},
 	} {
 		f := newFabEnv(t)
 		f.writeConf(fabricsConf, exports30, 0o600)
@@ -1014,10 +1020,29 @@ func TestDeviceConfLeavesFabricsTarget(t *testing.T) {
 // fabrics.conf name a target it did not name before (here target 30, which
 // did not plan without Library 30, plans once the library is back) is
 // refused when that target exists in configfs and mhvtl-fabrics does not
-// own it: the next reload would adopt it. Owned, it is accepted.
+// own it: the next reload would adopt it. Owned, it is accepted. It is
+// refused too when the helper cannot tell the backend (an mhvtl.conf with
+// MHVTL_BACKEND=tcmu and a backslash in a comment, which systemd accepts),
+// and not checked with a backend that is not tcmu.
 func TestDeviceConfNamesForeignTarget(t *testing.T) {
+	for _, c := range []struct {
+		name, add string
+		refused   bool
+	}{
+		{"tcmu", "", true},
+		{"backend unknown", "# C:\\backups\n", true},
+		{"backend mhvtl", "MHVTL_BACKEND=mhvtl\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) { deviceConfNamesForeignTarget(t, c.add, c.refused) })
+	}
+}
+
+// deviceConfNamesForeignTarget runs TestDeviceConfNamesForeignTarget with
+// add appended to mhvtl.conf.
+func deviceConfNamesForeignTarget(t *testing.T, add string, refused bool) {
 	const lib30 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib30"
 	f := newFabEnv(t)
+	f.writeConf(mhvtlConf, string(f.read(mhvtlConf))+add, 0o644)
 	f.writeConf(fabricsConf, "VERSION: 1\n\niSCSI:\n Base name: iqn.2003-01.org.linux-iscsi.vtl1:mhvtl\n\n"+
 		"iSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs1\n", 0o600)
 	full := string(f.read(deviceConf))
@@ -1027,6 +1052,12 @@ func TestDeviceConfNamesForeignTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := Request{Op: OpPlan, Actor: "test", Files: []File{{Name: deviceConf, BaseSHA256: f.sha(deviceConf), Content: []byte(full)}}}
+	if !refused {
+		if resp := f.do(req); resp.Result != ResultValidated {
+			t.Fatalf("library 30 back, not checked: %+v", resp)
+		}
+		return
+	}
 	if resp := f.do(req); resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, lib30) ||
 		!strings.Contains(resp.Message, "does not own") {
 		t.Fatalf("library 30 back with a foreign %s: %+v", lib30, resp)

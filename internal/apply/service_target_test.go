@@ -858,10 +858,12 @@ func TestServiceTargetLibraryAddedAfterPlan(t *testing.T) {
 // plans that exists in configfs and mhvtl-fabrics does not own: the plan
 // and the action are refused, naming it, and nothing is stopped or
 // started. A start with the unit active leaves it alone, and a target the
-// state file lists is mhvtl-fabrics' own.
+// state file lists is mhvtl-fabrics' own. An mhvtl.conf the helper cannot
+// tell the backend of (a backslash in a comment, which systemd accepts)
+// is checked: systemd may pass tcmu.
 func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
-	setup := func(t *testing.T, fabricsState string) (*env, *fakeSystem) {
+	setup := func(t *testing.T, fabricsState, mhvtlAdd string) (*env, *fakeSystem) {
 		t.Helper()
 		e, s := newExecEnv(t)
 		e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
@@ -875,7 +877,7 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 		}
 		e.rebuild()
 		for name, data := range map[string]string{
-			mhvtlConf:   string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n",
+			mhvtlConf:   string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n" + mhvtlAdd,
 			fabricsConf: fabConf,
 		} {
 			if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
@@ -893,17 +895,19 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 		return e, s
 	}
 	for _, c := range []struct {
-		name, action, fabrics, state string
-		refused                      bool
+		name, action, fabrics, state, mhvtlAdd string
+		refused                                bool
 	}{
-		{"restart", ActionRestart, "active", "", true},
-		{"start with the unit inactive", ActionStart, "inactive", "", true},
-		{"start with the unit failed", ActionStart, "failed", "", true},
-		{"start with the unit active", ActionStart, "active", "", false},
-		{"restart of an owned target", ActionRestart, "active", "iscsi " + lib10 + "\n", false},
+		{"restart", ActionRestart, "active", "", "", true},
+		{"start with the unit inactive", ActionStart, "inactive", "", "", true},
+		{"start with the unit failed", ActionStart, "failed", "", "", true},
+		{"start with the unit active", ActionStart, "active", "", "", false},
+		{"restart of an owned target", ActionRestart, "active", "iscsi " + lib10 + "\n", "", false},
+		{"restart with the backend unknown", ActionRestart, "active", "", "# C:\\backups\n", true},
+		{"start with the backend unknown", ActionStart, "inactive", "", "# C:\\backups\n", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			e, s := setup(t, c.state)
+			e, s := setup(t, c.state, c.mhvtlAdd)
 			s.state[FabricsUnit] = c.fabrics
 			pr := e.do(target(OpServicePlan, c.action, nil))
 			if !c.refused {

@@ -562,8 +562,11 @@ did not name before (a derived name ends in `.lib<ID>` or `.tape<ID>` after
 the device kind) which exists in configfs and `mhvtl-fabrics` does not own.
 These `device.conf` checks apply only while iSCSI export is in use
 (`MHVTL_BACKEND=tcmu` and `mhvtl-fabrics.service` installed): otherwise
-nothing applies `fabrics.conf`. A configuration apply that sets
-`MHVTL_BACKEND=tcmu` has every target `fabrics.conf` plans checked for
+nothing applies `fabrics.conf`. When the helper cannot tell what
+`MHVTL_BACKEND` systemd passes (an `mhvtl.conf` with a backslash, a
+non-ASCII byte or a line over 4096 bytes, even in a comment), the
+ownership checks here and below still run, but a target left without a
+plan is not refused. A configuration apply that sets `MHVTL_BACKEND=tcmu` has every target `fabrics.conf` plans checked for
 ownership, as `device.conf` may have changed unchecked meanwhile. A
 restart of `mhvtl.target` through `POST /api/v1/service/{action}`, and a start of it while
 `mhvtl-fabrics.service` is not active, start that unit, so they are refused
