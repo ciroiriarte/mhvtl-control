@@ -1211,3 +1211,54 @@ func TestFabricsReloadGuardsForeignTargets(t *testing.T) {
 		retry(t, f)
 	})
 }
+
+// TestFabricsUnbindBrokenTargets: with two targets that do not plan (no
+// device 77 or 78), removing one is accepted though the other still does
+// not plan, since the edit adds no problem: the file is written and the
+// unit not reloaded, as its apply would fail. Removing the last one
+// reloads, or starts a unit that failed on them. A file that adds a
+// problem is still refused.
+func TestFabricsUnbindBrokenTargets(t *testing.T) {
+	const t77 = "\niSCSI target: 77\n Initiator name: iqn.2024-01.com.example:pbs1\n"
+	const t78 = "\niSCSI target: 78\n Initiator name: iqn.2024-01.com.example:pbs1\n"
+	for _, unit := range []string{"active", "failed"} {
+		t.Run(unit, func(t *testing.T) {
+			f := newFabEnv(t)
+			f.writeConf(fabricsConf, fabConf+t77+t78, 0o600)
+			f.fab = unit
+
+			if resp := f.do(f.fabricsReq(OpFabrics, fabConf+t77+t78+"\niSCSI target: 79\n Initiator name: iqn.2024-01.com.example:pbs1\n")); resp.Result != ResultRefused ||
+				resp.Error != ErrInvalid || !strings.Contains(resp.Message, "no Library or Drive 79") || strings.Contains(resp.Message, "Drive 78") {
+				t.Fatalf("adding a broken target: %+v", resp)
+			}
+			for _, op := range []string{OpFabricsPlan, OpFabrics} {
+				resp := f.do(f.fabricsReq(op, fabConf+t78))
+				want := ResultValidated
+				if op == OpFabrics {
+					want = ResultApplied
+				}
+				if resp.Result != want || resp.FabricsAction != FabricsNotApplied {
+					t.Fatalf("%s removing 77 with 78 left: %+v", op, resp)
+				}
+				if op == OpFabrics && (!strings.Contains(resp.Message, "no Library or Drive 78") || !strings.Contains(resp.Message, "not reloaded")) {
+					t.Errorf("message %q", resp.Message)
+				}
+			}
+			if string(f.read(fabricsConf)) != fabConf+t78 || len(f.verbs()) != 0 || f.intentExists() {
+				t.Fatalf("file %q, systemctl %v, intent %v", f.read(fabricsConf), f.verbs(), f.intentExists())
+			}
+
+			resp := f.do(f.fabricsReq(OpFabrics, fabConf))
+			want := FabricsReload
+			if unit == "failed" {
+				want = FabricsStart
+			}
+			if resp.Result != ResultApplied || resp.FabricsAction != want || string(f.read(fabricsConf)) != fabConf {
+				t.Fatalf("removing the last broken target: %+v", resp)
+			}
+			if v := f.verbs(); len(v) != 1 || v[0] != want+" "+FabricsUnit {
+				t.Errorf("systemctl %v, want %s alone", v, want)
+			}
+		})
+	}
+}

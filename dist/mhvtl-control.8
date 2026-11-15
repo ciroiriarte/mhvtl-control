@@ -82,7 +82,8 @@ Before writing, the helper checks the file against
 .I device.conf
 as
 .B mhvtl-fabrics
-plans it, and refuses if it would not plan,
+plans it, and refuses if it has a plan problem the current file does not
+have,
 .I device.conf
 cannot be read, or the file names a target already in configfs that
 .B mhvtl-fabrics
@@ -107,7 +108,11 @@ the drop-in
 shipped with mhvtl-control. On the first export it starts the unit instead,
 and while
 .B mhvtl.target
-is stopped it only writes the file. A failed reload puts the previous file
+is stopped it only writes the file. While the file keeps targets that do
+not plan, which it had before the change, it only writes it too (action
+.IR not_applied ),
+so that broken targets can be unbound one at a time; the change that leaves
+none reloads the unit, or starts it if it had failed. A failed reload puts the previous file
 back and reloads the unit with it. A failed first start removes the new file
 and leaves the unit failed; the next export starts it again. When the
 reload of the restored file fails too, the answer is

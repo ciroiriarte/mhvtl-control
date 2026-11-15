@@ -448,7 +448,12 @@ configuration editor needs (see [Turn writes on](#turn-writes-on)).
   `mhvtl-fabrics` would refuse, each with a `kind`: `parse`, a line it would
   not read, which blocks every change until fixed by hand; or `plan`, a
   target it reads but would not export against `device.conf` (`target` is
-  its ID), which an unbind of that target can fix.
+  its ID), which an unbind of that target can fix. With more than one such
+  target, each can be unbound in turn: an unbind is refused only for a
+  problem it adds, and while others remain the helper writes the file
+  without reloading `mhvtl-fabrics.service` (its apply would fail on them),
+  answering the action `not_applied`; the unbind that removes the last one
+  reloads it, or starts it if it had failed on them.
 - `PATCH /api/v1/transports/iscsi` `{"portals": [...], "base_name": "..."}`:
   the settings every target shares. `[]` removes every portal (targets then
   listen on `0.0.0.0:3260`), `""` removes the base name.
@@ -502,13 +507,15 @@ records the change in its audit log with secrets masked. Then:
 - on the first export, when the unit did not start because the file did not
   exist, it starts the unit;
 - while `mhvtl.target` is stopped, it only writes the file, applied when
-  mhVTL starts.
+  mhVTL starts;
+- while the file keeps targets that would not plan, which it had before
+  the change, it only writes the file (`not_applied`).
 
 Before it writes anything, for a dry run too, the helper checks the new
 file against `device.conf` as `mhvtl-fabrics` plans it (each target names a
 library or standalone drive, names are unique, drive slots give distinct
-LUNs) and refuses with `invalid` if it would not plan, or if `device.conf`
-is missing or unreadable. It also refuses with `invalid` a file that names a
+LUNs) and refuses with `invalid` if it has a problem the current file does
+not have, or if `device.conf` is missing or unreadable. It also refuses with `invalid` a file that names a
 target already in configfs that `mhvtl-fabrics` does not own (not listed in
 `/run/mhvtl/fabrics.state`), such as one made with targetcli:
 `mhvtl-fabrics apply` would take it over, remove the ACLs and LUNs the

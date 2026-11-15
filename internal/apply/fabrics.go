@@ -52,6 +52,13 @@ const (
 	// FabricsDeferred writes the file only: mhvtl.target is not running,
 	// and the unit applies the file when it starts.
 	FabricsDeferred = "none"
+	// FabricsNotApplied writes the file only: it still has targets
+	// mhvtl-fabrics would not plan, which were there before the change, so
+	// a reload or start would fail (fab_plan stops at the first problem,
+	// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_conf.c#L537-L611).
+	// The change that leaves none reloads or starts the unit. This lets an
+	// operator unbind broken targets one at a time.
+	FabricsNotApplied = "not_applied"
 )
 
 // Fabrics refusals.
@@ -121,7 +128,8 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	if err := conf.Writable(); err != nil {
 		return responseOf(refuse(ErrInvalid, "%v", err))
 	}
-	if err := checkPlan(conf, files); err != nil {
+	left, curBroken, err := checkPlan(conf, cur, files)
+	if err != nil {
 		return responseOf(err)
 	}
 	if err := h.checkForeignTargets(conf, files); err != nil {
@@ -130,9 +138,11 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	if err := h.checkBackend(files); err != nil {
 		return responseOf(err)
 	}
-	action, err := h.fabricsAction(ctx, cur.exists)
-	if err != nil {
-		return responseOf(err)
+	action := FabricsNotApplied
+	if len(left) == 0 {
+		if action, err = h.fabricsAction(ctx, cur.exists, curBroken); err != nil {
+			return responseOf(err)
+		}
 	}
 	if action != FabricsDeferred {
 		rec.Units = []string{action + " " + FabricsUnit}
@@ -152,12 +162,15 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	if err := h.writeFiles(ctx, it, []change{{name: fabricsConf, base: cur.sha, data: next, private: true}}, files); err != nil {
 		return responseOf(err)
 	}
-	if action == FabricsDeferred {
+	if action == FabricsDeferred || action == FabricsNotApplied {
 		if err := h.removeIntent(); err != nil {
 			return responseOf(err)
 		}
-		return Response{Result: ResultApplied, FabricsAction: action,
-			Message: targetUnit + " is not running; " + FabricsUnit + " applies " + fabricsConf + " when it starts" + h.pruneFabricsCopies(it.RollbackDir)}
+		msg := targetUnit + " is not running; " + FabricsUnit + " applies " + fabricsConf + " when it starts"
+		if action == FabricsNotApplied {
+			msg = notAppliedText(left)
+		}
+		return Response{Result: ResultApplied, FabricsAction: action, Message: msg + h.pruneFabricsCopies(it.RollbackDir)}
 	}
 	it.Step = "applying"
 	if err := h.saveIntent(it); err != nil {
@@ -278,24 +291,49 @@ const envMaxLine = 4096
 // checkPlan runs conffile.CheckPlan against device.conf, which
 // mhvtl-fabrics needs as well (load,
 // https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L99-L118):
-// a file that would not plan is refused before anything is written.
-func checkPlan(conf *conffile.FabricsConf, files *fileSet) error {
+// a file with a plan problem the current file, cur, does not have is
+// refused before anything is written. Problems are compared by message,
+// not line, as an edit moves the records after it. The problems that
+// were there before are returned in left (the file is then written but
+// not applied, FabricsNotApplied); curBroken reports whether cur has plan
+// problems at all.
+func checkPlan(conf *conffile.FabricsConf, cur fileState, files *fileSet) (left []conffile.Problem, curBroken bool, err error) {
 	dc, err := files.current(deviceConf)
 	switch {
 	case err != nil:
-		return refuse(ErrInvalid, "%s cannot be read (%v): mhvtl-fabrics needs it", deviceConf, err)
+		return nil, false, refuse(ErrInvalid, "%s cannot be read (%v): mhvtl-fabrics needs it", deviceConf, err)
 	case !dc.exists:
-		return refuse(ErrInvalid, "%s does not exist: mhvtl-fabrics needs it", deviceConf)
+		return nil, false, refuse(ErrInvalid, "%s does not exist: mhvtl-fabrics needs it", deviceConf)
 	}
-	ps := conf.CheckPlan(conffile.ParseDeviceConf(dc.data))
-	if len(ps) == 0 {
-		return nil
+	dev := conffile.ParseDeviceConf(dc.data)
+	had := map[string]bool{}
+	if cc := conffile.ParseFabricsConf(cur.data); cur.exists && len(cc.Problems) == 0 {
+		for _, p := range cc.CheckPlan(dev) {
+			had[p.Msg] = true
+		}
 	}
-	msgs := make([]string, len(ps))
-	for k, p := range ps {
+	var msgs []string
+	for _, p := range conf.CheckPlan(dev) {
+		if had[p.Msg] {
+			left = append(left, p)
+			continue
+		}
+		msgs = append(msgs, p.Error())
+	}
+	if len(msgs) > 0 {
+		return nil, false, refuse(ErrInvalid, "%s: %s", fabricsConf, strings.Join(msgs, "; "))
+	}
+	return left, len(had) > 0, nil
+}
+
+// notAppliedText is the answer of a FabricsNotApplied apply.
+func notAppliedText(left []conffile.Problem) string {
+	msgs := make([]string, len(left))
+	for k, p := range left {
 		msgs[k] = p.Error()
 	}
-	return refuse(ErrInvalid, "%s: %s", fabricsConf, strings.Join(msgs, "; "))
+	return fmt.Sprintf("%s written, %s not reloaded: the file still has targets mhvtl-fabrics would not export, which it had before (%s), so its apply would fail; stop exporting them or fix device.conf, and the change that leaves none applies the file",
+		fabricsConf, FabricsUnit, strings.Join(msgs, "; "))
 }
 
 // checkFabricsDevices refuses a device.conf change that leaves an iSCSI
@@ -460,8 +498,10 @@ func (h *Helper) foreignOnDisk() error {
 }
 
 // fabricsAction decides how the edited file gets applied, from the state
-// of mhvtl-fabrics.service and mhvtl.target.
-func (h *Helper) fabricsAction(ctx context.Context, existed bool) (string, error) {
+// of mhvtl-fabrics.service and mhvtl.target. curBroken is set when the
+// current file has plan problems, which the edit removes: a failed unit
+// most likely failed on them, and is started with the file that has none.
+func (h *Helper) fabricsAction(ctx context.Context, existed, curBroken bool) (string, error) {
 	out, err := h.cfg.Systemctl(ctx, "show", "--property=LoadState,ActiveState,CanReload", FabricsUnit, targetUnit)
 	if err != nil {
 		return "", fmt.Errorf("systemctl show: %w", err)
@@ -486,13 +526,13 @@ func (h *Helper) fabricsAction(ctx context.Context, existed bool) (string, error
 		// failed state, as start does for an inactive unit, now that the
 		// file exists again for ConditionPathExists.
 		switch {
-		case st == "failed" && existed:
+		case st == "failed" && existed && !curBroken:
 			// The failed run's ExecStopPost=mhvtl-fabrics remove took its
 			// targets down, so no session is up.
 			return "", refuse(ErrFabricsState, "%s failed; check journalctl -u %s, fix the cause, then systemctl restart %s, which starts it again and removes any target the failed run left behind", FabricsUnit, FabricsUnit, FabricsUnit)
 		case target["ActiveState"] != "active":
 			return FabricsDeferred, nil
-		case !existed:
+		case !existed || st == "failed":
 			return FabricsStart, nil
 		default:
 			return "", refuse(ErrFabricsState, "%s is stopped while %s runs and %s exists; check journalctl -u %s, then systemctl start %s", FabricsUnit, targetUnit, fabricsConf, FabricsUnit, FabricsUnit)

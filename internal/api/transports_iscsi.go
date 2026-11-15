@@ -515,7 +515,7 @@ func (s *Server) handleISCSIUnbind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := *req.Library
-	q := fabricsWriteReq{dryRun: req.DryRun, base: req.BaseSHA256, fields: []string{"library"}, target: &id}
+	q := fabricsWriteReq{dryRun: req.DryRun, base: req.BaseSHA256, fields: []string{"library"}, target: &id, unbind: true}
 	s.fabricsWrite(w, r, q, func(f fabricsFiles) *fabricsInvalid {
 		err := f.conf.RemoveTarget(id)
 		switch {
@@ -542,15 +542,16 @@ func (s *Server) handleTransportUnsupported(w http.ResponseWriter, r *http.Reque
 // fabricsWriteReq is what fabricsWrite needs of an iSCSI write: base is
 // the request's base_sha256 (nil when absent); secrets are the request's
 // own; fields are the request fields a refusal may name; target is the
-// library the request binds or unbinds, and bind is set for a bind;
-// setsCHAP and setsMutualCHAP are set when it sends that secret.
+// library the request binds or unbinds, and bind is set for a bind, unbind
+// for an unbind; setsCHAP and setsMutualCHAP are set when it sends that
+// secret.
 type fabricsWriteReq struct {
 	dryRun                   bool
 	base                     *string
 	secrets                  []string
 	fields                   []string
 	target                   *int
-	bind                     bool
+	bind, unbind             bool
 	setsCHAP, setsMutualCHAP bool
 }
 
@@ -589,6 +590,15 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		refuseWith(&fabricsInvalid{status: http.StatusUnprocessableEntity, code: apply.ErrInvalid, msg: err.Error()}, stored)
 		return
 	}
+	// An unbind is refused only for plan problems it adds, like the helper
+	// (apply.FabricsNotApplied): with two broken targets, each can then be
+	// unbound while the other is still there.
+	had := map[string]bool{}
+	if q.unbind {
+		for _, p := range f.conf.CheckPlan(f.dev) {
+			had[p.Msg] = true
+		}
+	}
 	if inv := edit(f); inv != nil {
 		if inv.field == "" && inv.code == apply.ErrInvalid {
 			inv.field = fieldOf(inv.msg, q.fields)
@@ -600,7 +610,13 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		refuse(&fabricsInvalid{status: http.StatusUnprocessableEntity, code: apply.ErrInvalid, msg: err.Error()})
 		return
 	}
-	if ps := f.conf.CheckPlan(f.dev); len(ps) > 0 {
+	var ps []conffile.Problem
+	for _, p := range f.conf.CheckPlan(f.dev) {
+		if !had[p.Msg] {
+			ps = append(ps, p)
+		}
+	}
+	if len(ps) > 0 {
 		msgs := make([]string, len(ps))
 		field := ""
 		for k, p := range ps {

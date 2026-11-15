@@ -195,11 +195,25 @@ func TestISCSIConfigDevicesAndProblems(t *testing.T) {
 		}
 	}
 
-	// Unbinding a target that does not plan is accepted when it leaves the
-	// file planning; binding another while one does not plan is refused.
+	// Unbinding a target that does not plan is accepted while another that
+	// does not plan stays (the unbind adds no problem; the helper writes the
+	// file without applying it), so each can be unbound in turn; binding
+	// another while one does not plan is refused.
 	rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 11, "dry_run": true})
-	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "no Library or Drive 99") {
+	if rec.Code != http.StatusOK || decodeBody[iscsiWriteDTO](t, rec).Result != apply.ResultValidated {
 		t.Errorf("unbind 11 with 99 left: %d %s", rec.Code, rec.Body)
+	}
+	if reqs := e.fabricsReqs(); len(reqs) != 1 || !bytes.Contains(reqs[0].Files[0].Content, []byte("iSCSI target: 99\n")) ||
+		bytes.Contains(reqs[0].Files[0].Content, []byte("iSCSI target: 11\n")) {
+		t.Errorf("helper requests = %+v", reqs)
+	}
+	rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 99, "dry_run": true})
+	if rec.Code != http.StatusOK || decodeBody[iscsiWriteDTO](t, rec).Result != apply.ResultValidated {
+		t.Errorf("unbind 99 with 11 left: %d %s", rec.Code, rec.Body)
+	}
+	rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30, "initiators": []string{pbsIQN}, "dry_run": true})
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "no Library or Drive 99") {
+		t.Errorf("bind 30 with 11 and 99 broken: %d %s", rec.Code, rec.Body)
 	}
 	data, err := os.ReadFile(filepath.Join(e.dir, "fabrics.conf"))
 	if err != nil {
@@ -758,12 +772,14 @@ func TestISCSIFieldAttribution(t *testing.T) {
 		!strings.Contains(body.Error.Message, "no Library or Drive 99") {
 		t.Errorf("problem of target 99 on a bind of 30: %d %s", rec.Code, rec.Body)
 	}
-	rec = other.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30})
-	if body := decodeBody[fieldErrBody](t, rec); rec.Code != http.StatusUnprocessableEntity || body.Error.Field != "" {
-		t.Errorf("problem of target 99 on an unbind of 30: %d %s", rec.Code, rec.Body)
-	}
 	if n := len(e.fabricsReqs()) + len(other.fabricsReqs()); n != 0 {
 		t.Errorf("%d helper requests", n)
+	}
+	// An unbind adds no problem: target 99's, which was there before, does
+	// not refuse it (the helper writes the file without applying it).
+	rec = other.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30})
+	if rec.Code != http.StatusOK || len(other.fabricsReqs()) != 1 {
+		t.Errorf("unbind of 30 with target 99 broken: %d %s", rec.Code, rec.Body)
 	}
 
 	if f := fieldOf("initiator name 'IQN.2024-01.com.Chapman:pbs' is not an iSCSI name", []string{"chap", "initiators"}); f != "initiators" {

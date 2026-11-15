@@ -1852,8 +1852,10 @@
   // problem of fabrics.conf blocks every action. When every problem is a
   // plan problem (kind "plan": a target mhvtl-fabrics reads but would not
   // export), only Stop exporting stays open, for the targets named (unbind:
-  // {ids, all}; all when a problem names no target), and the daemon decides
-  // whether the result plans (iscsiUnbindAllowed).
+  // {ids, all}; all when a problem names no target; iscsiUnbindAllowed).
+  // The daemon accepts an unbind that adds no problem, and the helper
+  // writes the file without reloading while other problems remain (action
+  // not_applied), so the broken targets can be unbound one at a time.
   function iscsiAllowed(s) {
     s = s || {};
     var no = function (reason, hide) { return { ok: false, hide: !!hide, reason: reason }; };
@@ -1900,6 +1902,7 @@
       case "reload": return "reload: sessions to other targets stay up";
       case "start": return "start: the export service starts and exports the targets";
       case "none": return "none: applied when mhVTL starts";
+      case "not_applied": return "not applied yet: fabrics.conf still has other targets mhvtl-fabrics would not export; the change that leaves none applies it";
       default: return action ? String(action) : "";
     }
   }

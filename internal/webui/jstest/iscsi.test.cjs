@@ -230,6 +230,7 @@ test("iscsiActionText", () => {
   assert.strictEqual(core.iscsiActionText("reload"), "reload: sessions to other targets stay up");
   assert.ok(/^start/.test(core.iscsiActionText("start")));
   assert.strictEqual(core.iscsiActionText("none"), "none: applied when mhVTL starts");
+  assert.ok(/^not applied yet: .*other targets/.test(core.iscsiActionText("not_applied")));
   assert.strictEqual(core.iscsiActionText(""), "");
   assert.strictEqual(core.iscsiActionText("other"), "other");
 });
