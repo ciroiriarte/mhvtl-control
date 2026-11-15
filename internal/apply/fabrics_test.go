@@ -1388,3 +1388,20 @@ func TestFabricsMarkerEarlierBoot(t *testing.T) {
 		t.Errorf("systemctl %v, want the apply's reload alone", v)
 	}
 }
+
+// TestFabricsRecoveryMasksNewFile: a recovery whose reload fails answers
+// with the systemctl error, masked for the secrets of the half-applied new
+// file it found on disk as well as of the original it restored.
+func TestFabricsRecoveryMasksNewFile(t *testing.T) {
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	f.h.killPoint = func(step string) bool { return step == "applying" }
+	f.do(f.fabricsReq(OpFabrics, strings.Replace(fabConf, fabSecret, fabNewSecret, 1)))
+	f.h.killPoint = func(string) bool { return false }
+	f.failAlways[FabricsReload] = &exec.ExitError{Stderr: []byte("refusing " + fabNewSecret + " and " + fabSecret)}
+	resp := f.do(Request{Op: OpRecover, Actor: "test"})
+	if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "refusing "+conffile.SecretMask+" and "+conffile.SecretMask) {
+		t.Fatalf("recover: %+v, want both secrets masked", resp)
+	}
+	f.noSecret(fabSecret, fabNewSecret)
+}

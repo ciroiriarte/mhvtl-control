@@ -48,6 +48,14 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 			return responseOf(err)
 		}
 	}
+	// A fabrics apply that died may have left its new file in place, whose
+	// secrets the messages below must mask too: read it before the restore.
+	var halfApplied []byte
+	if it.Op == OpFabrics {
+		if cur, err := readTarget(h.cfg.ConfigDir, fabricsConf); err == nil {
+			halfApplied = cur.data
+		}
+	}
 	conflicts, err := h.restore(it)
 	if err != nil {
 		return responseOf(fmt.Errorf("recovery: %w", err))
@@ -78,7 +86,7 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 				}
 			}
 			return Response{Result: ResultError, Error: ErrFabricsState, Conflicts: conflicts,
-				Message: maskFabrics("recovery: "+h.reconcileFailed(err, removed), original)}
+				Message: maskFabrics("recovery: "+h.reconcileFailed(err, removed), original, halfApplied)}
 		}
 		fabricsNote = note
 	}
