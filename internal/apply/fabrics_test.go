@@ -54,6 +54,9 @@ func newFabEnv(t *testing.T) *fabEnv {
 			if strings.Contains(args[1], "CanReload") {
 				return []byte("LoadState=" + f.load + "\nActiveState=" + f.fab + "\nCanReload=" + f.canReload + "\n\nLoadState=loaded\nActiveState=" + f.target + "\nCanReload=no\n"), nil
 			}
+			if args[1] == "--property=LoadState" {
+				return []byte(f.load + "\n"), nil
+			}
 			return []byte(f.fab + "\n"), nil
 		case FabricsReload, FabricsStart, fabricsStop:
 			if f.onRun != nil {
@@ -924,6 +927,9 @@ func TestFabricsLegacyEnv(t *testing.T) {
 // device.conf so that a fabrics.conf target no longer plans (its library
 // deleted, two of its drives on one Slot) is refused, naming the target;
 // an unrelated device.conf edit, or any edit without fabrics.conf, is not.
+// Nor is any edit when fabrics are not in use (MHVTL_BACKEND not tcmu, or
+// mhvtl-fabrics.service not installed): nothing would reload the file, and
+// the unbind that would clear it is refused there.
 func TestDeviceConfLeavesFabricsTarget(t *testing.T) {
 	const exports30 = "VERSION: 1\n\niSCSI:\n Base name: iqn.2003-01.org.linux-iscsi.vtl1:mhvtl\n\n" +
 		"iSCSI target: 10\n Initiator name: iqn.2024-01.com.example:pbs1\n\n" +
@@ -939,33 +945,73 @@ func TestDeviceConfLeavesFabricsTarget(t *testing.T) {
 		return resp.Result == ResultRefused && resp.Error == ErrInvalid && strings.Contains(resp.Message, "without a plan")
 	}
 
-	e := newEnv(t)
-	if err := os.WriteFile(filepath.Join(e.dir, fabricsConf), []byte(exports30), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if resp := e.do(drop30(e)); !refused(resp) || !strings.Contains(resp.Message, "target(s) 30 ") ||
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, exports30, 0o600)
+	if resp := f.do(drop30(f.env)); !refused(resp) || !strings.Contains(resp.Message, "target(s) 30 ") ||
 		!strings.Contains(resp.Message, "no Library or Drive 30 in device.conf") {
 		t.Errorf("library 30 deleted: %+v", resp)
 	}
-	sameSlot := Request{Op: OpPlan, Actor: "test", Files: []File{e.edit(deviceConf, " Library ID: 10 Slot: 02", " Library ID: 10 Slot: 01")}}
-	if resp := e.do(sameSlot); !refused(resp) || !strings.Contains(resp.Message, "target(s) 10 ") || !strings.Contains(resp.Message, "two devices on LUN 1") {
+	sameSlot := Request{Op: OpPlan, Actor: "test", Files: []File{f.edit(deviceConf, " Library ID: 10 Slot: 02", " Library ID: 10 Slot: 01")}}
+	if resp := f.do(sameSlot); !refused(resp) || !strings.Contains(resp.Message, "target(s) 10 ") || !strings.Contains(resp.Message, "two devices on LUN 1") {
 		t.Errorf("two drives on one slot: %+v", resp)
 	}
-	unrelated := Request{Op: OpPlan, Actor: "test", Files: []File{e.edit(deviceConf, "# Each 'record'", "# Every 'record'")}}
-	if resp := e.do(unrelated); resp.Result != ResultValidated {
+	unrelated := Request{Op: OpPlan, Actor: "test", Files: []File{f.edit(deviceConf, "# Each 'record'", "# Every 'record'")}}
+	if resp := f.do(unrelated); resp.Result != ResultValidated {
 		t.Errorf("unrelated edit: %+v", resp)
 	}
 
-	e = newEnv(t)
+	for name, setup := range map[string]func(*fabEnv){
+		"backend mhvtl": func(f *fabEnv) {
+			f.writeConf("mhvtl.conf", strings.Replace(string(f.read("mhvtl.conf")), "MHVTL_BACKEND=tcmu\n", "", 1), 0o644)
+		},
+		"unit not installed": func(f *fabEnv) { f.load = "not-found" },
+	} {
+		f := newFabEnv(t)
+		f.writeConf(fabricsConf, exports30, 0o600)
+		setup(f)
+		if resp := f.do(drop30(f.env)); resp.Result != ResultValidated {
+			t.Errorf("%s: %+v", name, resp)
+		}
+	}
+
+	e := newEnv(t)
 	if resp := e.do(drop30(e)); resp.Result != ResultValidated {
 		t.Errorf("no fabrics.conf: %+v", resp)
 	}
 	// A fabrics.conf that does not parse is mhvtl-fabrics' problem already.
-	if err := os.WriteFile(filepath.Join(e.dir, fabricsConf), []byte(exports30+"bogus\n"), 0o600); err != nil {
+	f = newFabEnv(t)
+	f.writeConf(fabricsConf, exports30+"bogus\n", 0o600)
+	if resp := f.do(drop30(f.env)); resp.Result != ResultValidated {
+		t.Errorf("unparsable fabrics.conf: %+v", resp)
+	}
+}
+
+// TestDeviceConfNamesForeignTarget: a device.conf change that makes
+// fabrics.conf name a target it did not name before (here target 30, which
+// did not plan without Library 30, plans once the library is back) is
+// refused when that target exists in configfs and mhvtl-fabrics does not
+// own it: the next reload would adopt it. Owned, it is accepted.
+func TestDeviceConfNamesForeignTarget(t *testing.T) {
+	const lib30 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib30"
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, "VERSION: 1\n\niSCSI:\n Base name: iqn.2003-01.org.linux-iscsi.vtl1:mhvtl\n\n"+
+		"iSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs1\n", 0o600)
+	full := string(f.read(deviceConf))
+	f.writeConf(deviceConf, full[:strings.Index(full, "Library: 30 ")], 0o644)
+	f.mkTarget(lib30)
+	if err := os.WriteFile(f.cfg.FabricsState, []byte("iscsi iqn.2003-01.org.linux-iscsi.vtl1:other\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if resp := e.do(drop30(e)); resp.Result != ResultValidated {
-		t.Errorf("unparsable fabrics.conf: %+v", resp)
+	req := Request{Op: OpPlan, Actor: "test", Files: []File{{Name: deviceConf, BaseSHA256: f.sha(deviceConf), Content: []byte(full)}}}
+	if resp := f.do(req); resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, lib30) ||
+		!strings.Contains(resp.Message, "does not own") {
+		t.Fatalf("library 30 back with a foreign %s: %+v", lib30, resp)
+	}
+	if err := os.WriteFile(f.cfg.FabricsState, []byte("iscsi "+lib30+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if resp := f.do(req); resp.Result != ResultValidated {
+		t.Fatalf("library 30 back with %s owned: %+v", lib30, resp)
 	}
 }
 

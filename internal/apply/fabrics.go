@@ -135,7 +135,7 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 	if err := h.checkForeignTargets(conf, files); err != nil {
 		return responseOf(err)
 	}
-	if err := h.checkBackend(files); err != nil {
+	if err := h.checkBackend(files.current); err != nil {
 		return responseOf(err)
 	}
 	action := FabricsNotApplied
@@ -229,9 +229,9 @@ func (h *Helper) pruneFabricsCopies(keep string) string {
 // The value is the one systemd passes (conffile.EnvironmentFile), not the
 // shell's: systemd keeps text after an unquoted value, so
 // "MHVTL_BACKEND=tcmu # TCMU" passes "tcmu # TCMU".
-func (h *Helper) checkBackend(files *fileSet) error {
+func (h *Helper) checkBackend(read func(string) (fileState, error)) error {
 	backend := "mhvtl"
-	mc, err := files.current(mhvtlConf)
+	mc, err := read(mhvtlConf)
 	if err != nil {
 		return err
 	}
@@ -342,9 +342,14 @@ func notAppliedText(left []conffile.Problem) string {
 // https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L99-L118),
 // so deleting an exported library, or giving two of its drives the same
 // Slot, would make the next reload or start of mhvtl-fabrics.service fail.
-// Only problems the change brings are refused; without fabrics.conf, or
-// with one mhvtl-fabrics cannot parse, there is nothing to check.
-func checkFabricsDevices(files, next *fileSet) error {
+// Only problems the change brings are refused. It also refuses a change
+// that makes the file name a target it did not name before (a derived
+// name follows the device kind: ".lib<ID>" or ".tape<ID>", and a target
+// that did not plan may plan now) which exists in configfs and
+// mhvtl-fabrics does not own (checkForeignTargets). Without fabrics.conf,
+// with one mhvtl-fabrics cannot parse, or when fabrics are not in use
+// (fabricsInUse), there is nothing to check.
+func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) error {
 	cur, err := files.current(deviceConf)
 	if err != nil {
 		return err
@@ -364,8 +369,12 @@ func checkFabricsDevices(files, next *fileSet) error {
 	if len(conf.Problems) > 0 {
 		return nil
 	}
+	if inUse, err := h.fabricsInUse(ctx, files, next); err != nil || !inUse {
+		return err
+	}
+	curDev, nextDev := conffile.ParseDeviceConf(cur.data), conffile.ParseDeviceConf(nd.data)
 	had := map[string]bool{}
-	for _, p := range conf.CheckPlan(conffile.ParseDeviceConf(cur.data)) {
+	for _, p := range conf.CheckPlan(curDev) {
 		had[p.Error()] = true
 	}
 	ids := map[int]int{}
@@ -373,7 +382,7 @@ func checkFabricsDevices(files, next *fileSet) error {
 		ids[t.Line] = t.ID
 	}
 	var targets, msgs []string
-	for _, p := range conf.CheckPlan(conffile.ParseDeviceConf(nd.data)) {
+	for _, p := range conf.CheckPlan(nextDev) {
 		if had[p.Error()] {
 			continue
 		}
@@ -382,15 +391,50 @@ func checkFabricsDevices(files, next *fileSet) error {
 			targets = append(targets, fmt.Sprint(id))
 		}
 	}
-	if len(msgs) == 0 {
-		return nil
+	if len(msgs) > 0 {
+		what := "fabrics.conf"
+		if len(targets) > 0 {
+			what = "the iSCSI target(s) " + strings.Join(targets, ", ") + " of " + fabricsConf
+		}
+		return refuse(ErrInvalid, "%s: the change would leave %s without a plan, and the next reload or start of %s would fail (%s: %s); stop exporting them first (iSCSI unbind), or keep the devices they export",
+			deviceConf, what, FabricsUnit, fabricsConf, strings.Join(msgs, "; "))
 	}
-	what := "fabrics.conf"
-	if len(targets) > 0 {
-		what = "the iSCSI target(s) " + strings.Join(targets, ", ") + " of " + fabricsConf
+	named := map[string]bool{}
+	for _, w := range conf.PlannedWWNs(curDev) {
+		named[w] = true
 	}
-	return refuse(ErrInvalid, "%s: the change would leave %s without a plan, and the next reload or start of %s would fail (%s: %s); stop exporting them first (iSCSI unbind), or keep the devices they export",
-		deviceConf, what, FabricsUnit, fabricsConf, strings.Join(msgs, "; "))
+	var appear []string
+	for _, w := range conf.PlannedWWNs(nextDev) {
+		if !named[w] {
+			appear = append(appear, w)
+		}
+	}
+	foreign, err := h.foreignTargets(appear)
+	if err != nil {
+		return err
+	}
+	if len(foreign) > 0 {
+		return refuse(ErrInvalid, "%s: with the change %s names iSCSI target %s, which exists in configfs and mhvtl-fabrics does not own (not in %s): the next reload or start of %s would take it over, remove the ACLs and LUNs it does not list, and delete it on unbind; remove that target first, or keep the devices as they are",
+			deviceConf, fabricsConf, strings.Join(foreign, ", "), h.cfg.FabricsState, FabricsUnit)
+	}
+	return nil
+}
+
+// fabricsInUse reports whether mhvtl-fabrics would apply fabrics.conf at
+// all: MHVTL_BACKEND is tcmu (checkBackend) in mhvtl.conf as it is or as
+// the request leaves it, and mhvtl-fabrics.service is installed. Otherwise
+// nothing reloads it, and a stale file must not block device.conf edits:
+// the iSCSI unbind that would clear it is refused with fabrics_backend or
+// fabrics_unit.
+func (h *Helper) fabricsInUse(ctx context.Context, files, next *fileSet) (bool, error) {
+	if h.checkBackend(files.current) != nil && h.checkBackend(next.next) != nil {
+		return false, nil
+	}
+	load, err := showProp(ctx, &h.cfg, FabricsUnit, "LoadState")
+	if err != nil {
+		return false, err
+	}
+	return load == "loaded", nil
 }
 
 // checkForeignTargets refuses a file that plans a target which exists in

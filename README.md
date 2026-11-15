@@ -528,7 +528,14 @@ file names such a target the helper does not reload, and answers
 configuration apply that changes `device.conf` so that a target of
 `fabrics.conf` would no longer plan (its library deleted, two of its drives
 given the same Slot) is refused with `invalid`, naming the target: stop
-exporting it first.
+exporting it first. So is one that makes `fabrics.conf` name a target it
+did not name before (a derived name ends in `.lib<ID>` or `.tape<ID>` after
+the device kind) which exists in configfs and `mhvtl-fabrics` does not own.
+These `device.conf` checks apply only while iSCSI export is in use
+(`MHVTL_BACKEND=tcmu` and `mhvtl-fabrics.service` installed): otherwise
+nothing applies `fabrics.conf`. The ownership checks look at configfs when
+the helper checks, not when `mhvtl-fabrics` applies: a target someone
+creates with targetcli in between is still taken over.
 
 If the reload fails, the previous file is put back and the unit reloaded
 with it. If a first start fails, the new file is removed and the unit is

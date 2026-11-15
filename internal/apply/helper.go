@@ -521,7 +521,7 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 			return nil, refuse(ErrNotWritable, "%s: %v", f.Name, werr)
 		}
 	}
-	if err := checkFabricsDevices(files, next); err != nil {
+	if err := h.checkFabricsDevices(ctx, files, next); err != nil {
 		return nil, err
 	}
 
