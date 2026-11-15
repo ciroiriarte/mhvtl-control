@@ -188,28 +188,45 @@ func (s *Server) fabricsVersion(rev uint64, data []byte) string {
 // back is byte-identical to the dead write's, a CHAP guess right. Only a
 // call that never reached the helper leaves the revision: no helper on
 // the socket (applyclient.ErrAbsent) or a failed connect.
-func (s *Server) helperDo(ctx context.Context, hreq apply.Request) (resp apply.Response, err error) {
-	if seqSteps(hreq.Op) > 0 {
-		s.fabricsMu.Lock()
-		s.fabricsWriting++
-		s.fabricsSeq++
-		s.fabricsMu.Unlock()
-		reached := true
-		defer func() {
-			s.fabricsMu.Lock()
-			if reached {
-				s.fabricsRev++
-			}
-			s.fabricsSeq++
-			s.fabricsWriting--
-			s.fabricsMu.Unlock()
-		}()
-		resp, err = s.cfg.Helper.Do(ctx, hreq)
-		var op *net.OpError
-		reached = !errors.Is(err, applyclient.ErrAbsent) && !(errors.As(err, &op) && op.Op == "dial")
-		return resp, err
+//
+// Such a call shares fabricsGate, which a write of fabrics.conf holds
+// alone from its read to its answer: one that finds the gate held is
+// answered in_progress at once, as the helper's lock would answer it, and
+// never sent. Otherwise it could recover between the write's read and its
+// helper call, and whether the write then applies would depend on whether
+// the file put back is byte-identical to the one the write read.
+func (s *Server) helperDo(ctx context.Context, hreq apply.Request) (apply.Response, error) {
+	if seqSteps(hreq.Op) == 0 {
+		return s.cfg.Helper.Do(ctx, hreq)
 	}
-	return s.cfg.Helper.Do(ctx, hreq)
+	if !s.fabricsGate.TryRLock() {
+		return apply.Response{Result: apply.ResultInProgress}, nil
+	}
+	defer s.fabricsGate.RUnlock()
+	return s.helperCall(ctx, hreq)
+}
+
+// helperCall is helperDo for a call that may change fabrics.conf, made
+// with fabricsGate held, shared or alone.
+func (s *Server) helperCall(ctx context.Context, hreq apply.Request) (resp apply.Response, err error) {
+	s.fabricsMu.Lock()
+	s.fabricsWriting++
+	s.fabricsSeq++
+	s.fabricsMu.Unlock()
+	reached := true
+	defer func() {
+		s.fabricsMu.Lock()
+		if reached {
+			s.fabricsRev++
+		}
+		s.fabricsSeq++
+		s.fabricsWriting--
+		s.fabricsMu.Unlock()
+	}()
+	resp, err = s.cfg.Helper.Do(ctx, hreq)
+	var op *net.OpError
+	reached = !errors.Is(err, applyclient.ErrAbsent) && !(errors.As(err, &op) && op.Op == "dial")
+	return resp, err
 }
 
 // seqSteps is how far a helper call of op advances fabricsSeq: by one
@@ -690,17 +707,20 @@ type fabricsWriteReq struct {
 // when the helper last answered: a base from before another write, or
 // before a write that is still in flight, would have it tell whether that
 // write left the file byte-identical, a CHAP guess right. So real writes
-// are serialized (Server.fabricsWriteMu), a request read while one is in
+// are serialized and hold every other such helper call off from their read
+// to their answer (Server.fabricsGate), a request read while one is in
 // flight is answered apply_in_progress, and a request during which
 // another helper call started or ended (helperDo) is answered a conflict
 // that does not depend on what the helper said.
 func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsWriteReq, edit func(fabricsFiles) *fabricsInvalid) {
 	if !q.dryRun {
-		if !s.fabricsWriteMu.TryLock() {
+		// Held alone: no other call that may change the file is in
+		// flight, and none starts until the answer (helperDo).
+		if !s.fabricsGate.TryLock() {
 			writeFabricsBusy(w, q.dryRun)
 			return
 		}
-		defer s.fabricsWriteMu.Unlock()
+		defer s.fabricsGate.Unlock()
 	}
 	f, err := s.readFabricsFiles()
 	if err != nil {
@@ -845,7 +865,12 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	if s.beforeFabricsHelper != nil {
 		s.beforeFabricsHelper()
 	}
-	resp, err := s.helperDo(ctx, hreq)
+	var resp apply.Response
+	if q.dryRun {
+		resp, err = s.helperDo(ctx, hreq)
+	} else {
+		resp, err = s.helperCall(ctx, hreq)
+	}
 	s.forgetHello()
 	if errors.Is(err, applyclient.ErrAbsent) {
 		writeHelperAbsent(w)

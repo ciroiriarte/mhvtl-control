@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -1623,20 +1624,22 @@ func TestISCSIRecoveryChangesVersion(t *testing.T) {
 }
 
 // TestISCSIWriteRacingRecoveryNoOracle: a write W1 reads fabrics.conf as
-// a dead write of a CHAP guess left it; a service plan that reached the
-// helper first recovers and puts the original file back before W1's base
-// is checked. The helper would apply W1 exactly when the guess was right
-// (the file put back is byte-identical) and find a conflict otherwise. W1
-// is answered the same either way, without the helper's answer.
+// a dead write of a CHAP guess left it; a service plan sent between W1's
+// read and its helper call would recover and put the original file back
+// before W1's base is checked. The helper would then apply W1 exactly
+// when the guess was right (the file put back is byte-identical) and find
+// a conflict otherwise, which a later GET would show even with W1's own
+// answer uniform. The plan is answered in_progress without reaching the
+// helper, so W1's answer, the configuration GET shows after it and the
+// file are the same for a right and a wrong guess.
 func TestISCSIWriteRacingRecoveryNoOracle(t *testing.T) {
-	run := func(guess string) string {
+	run := func(guess string) (string, string, string) {
 		t.Helper()
 		dead := strings.Replace(chapOnlySample, chapSecret, guess, 1)
 		e := iscsiEnv(t, dead, "reload", nil)
 		e.srv.fabricsKey = []byte("one key for both answers")
 		helperLikeFabrics(e)
 		check := e.h.answer
-		var plan string
 		e.answer(func(req apply.Request) apply.Response {
 			if req.Op == apply.OpServicePlan {
 				if err := os.WriteFile(filepath.Join(e.dir, "fabrics.conf"), []byte(chapOnlySample), 0o600); err != nil {
@@ -1644,22 +1647,46 @@ func TestISCSIWriteRacingRecoveryNoOracle(t *testing.T) {
 				}
 				return apply.Response{Result: apply.ResultRecovered, Message: "recovered"}
 			}
-			if req.Op == apply.OpFabrics {
-				plan = e.rawCall(http.MethodPost, "/api/v1/service/libraries/10/restart", map[string]any{"dry_run": true})
-			}
 			return check(req)
 		})
-		got := recText(e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30}))
-		if !strings.HasPrefix(plan, "409 ") {
-			t.Fatalf("guess %q: the service plan did not recover: %s", guess, plan)
+		stage := e.staged().Stage
+		var plans []string
+		e.srv.beforeFabricsHelper = func() {
+			e.srv.beforeFabricsHelper = nil
+			plans = append(plans,
+				e.rawCall(http.MethodPost, "/api/v1/service/libraries/10/restart", map[string]any{"dry_run": true}),
+				e.rawCall(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": stage, "dry_run": true}))
 		}
-		return got
+		got := recText(e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30}))
+		for _, plan := range plans {
+			if !strings.HasPrefix(plan, "409 ") || !strings.Contains(plan, `"result":"`+apply.ResultInProgress+`"`) {
+				t.Errorf("guess %q: plan during the write = %s, want 409 %s", guess, plan, apply.ResultInProgress)
+			}
+		}
+		for _, r := range e.requests() {
+			if r.Op == apply.OpServicePlan || r.Op == apply.OpPlan {
+				t.Errorf("guess %q: a %s reached the helper", guess, r.Op)
+			}
+		}
+		cfg := decodeBody[iscsiConfigDTO](t, e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil))
+		if cfg.SHA256 == nil {
+			t.Errorf("guess %q: GET config after the write has no version", guess)
+		}
+		cfg.SHA256 = nil
+		b, _ := json.Marshal(cfg)
+		// The files differ by the guess, so do their versions.
+		got = regexp.MustCompile(`"sha256":"[0-9a-f]+"`).ReplaceAllString(got, `"sha256":"<version>"`)
+		return got, string(b), strings.ReplaceAll(e.disk("fabrics.conf"), guess, "<guess>")
 	}
-	right, wrong := run(chapSecret), run("WrongGuess-0123")
+	right, rightCfg, rightFile := run(chapSecret)
+	wrong, wrongCfg, wrongFile := run("WrongGuess-0123")
 	if right != wrong {
 		t.Errorf("W1 answers differ:\nright %s\nwrong %s", right, wrong)
 	}
-	if !strings.HasPrefix(right, "409 ") || !strings.Contains(right, `"result":"`+resultUnknown+`"`) || strings.Contains(right, `"sha256"`) {
-		t.Errorf("W1 = %s, want 409 %s without version", right, resultUnknown)
+	if rightCfg != wrongCfg || rightFile != wrongFile {
+		t.Errorf("state after W1 differs:\nright %s\n%s\nwrong %s\n%s", rightCfg, rightFile, wrongCfg, wrongFile)
+	}
+	if !strings.HasPrefix(right, "200 ") || !strings.Contains(right, `"result":"applied"`) {
+		t.Errorf("W1 = %s, want applied", right)
 	}
 }

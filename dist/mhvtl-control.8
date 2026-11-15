@@ -196,6 +196,10 @@ no answer holds a version: clients read the file again once it is done,
 and every iSCSI preview or apply sent meanwhile gets 409
 .BR apply_in_progress ,
 whatever it sends.
+From an apply's read of the file to its answer, a configuration check or
+apply and a service action or dry run get 409
+.B apply_in_progress
+too, without reaching the helper.
 A preview during which another such request started or finished gets 409
 .B conflict
 with no version; an apply gets 409 with result
