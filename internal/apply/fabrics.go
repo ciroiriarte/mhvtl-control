@@ -1287,12 +1287,15 @@ func (m fabricsMask) message(s string) string {
 
 // name masks a target name mhvtl-fabrics' state file lists: one that a
 // file plans is a name the client set or derives, shown as it is whatever
-// it contains; any other is output.
+// it contains; any other is masked whole. Such a name may be left from a
+// file a failed apply rolled back, so a client may have chosen it; output
+// would mask only a stored secret inside it, which would tell whether a
+// guess in the name is that secret.
 func (m fabricsMask) name(s string) string {
 	if m.wwns[s] {
 		return s
 	}
-	return m.output(s)
+	return conffile.SecretMask
 }
 
 // fabricsSecrets lists the CHAP secret values of both files, for the audit

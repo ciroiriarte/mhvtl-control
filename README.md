@@ -575,8 +575,9 @@ names the change brings (a new initiator, target or CHAP name, portal or
 base name) are shown as `********` too, so that the answer does not tell
 whether a name the client chose is, or contains, a stored secret. The same
 goes for the systemctl error of the restored file's reload or stop, of the
-retry and of a crash recovery, and for the target names a state file lists
-that neither file plans. When the reload of the restored file fails too,
+retry and of a crash recovery. A target name a state file lists that no
+file plans, such as one left from a file a failed apply rolled back, is
+shown as `********` whole, whatever it contains. When the reload of the restored file fails too,
 configfs may not match `fabrics.conf`: the answer is
 `fabrics_recovery_required`; check `journalctl -u mhvtl-fabrics` and fix
 the cause. The helper records this, and the next iSCSI change retries the

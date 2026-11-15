@@ -1498,6 +1498,57 @@ func TestFabricsDerivedNameNoOracle(t *testing.T) {
 	}
 }
 
+// TestFabricsLeftoverNameNoOracle: a failed unit whose state file lists a
+// target no file plans, such as one from a file a failed apply rolled
+// back, names it masked whole in the retry's and the recovery's refusal:
+// a name holding a CHAP secret guess gets the same answer whether or not
+// the guess is the stored secret.
+func TestFabricsLeftoverNameNoOracle(t *testing.T) {
+	const prefix = "iqn.2003-01.org.linux-iscsi.vtl1:"
+	answers := map[string][]string{}
+	for _, guess := range []string{fabSecret, "pbs1-secret-9999"} {
+		state := []byte("iscsi " + prefix + guess + "\n")
+		for _, op := range []string{OpFabricsPlan, OpFabrics} {
+			f := newFabEnv(t)
+			f.writeConf(fabricsConf, fabConf, 0o600)
+			f.fab = "failed"
+			if err := os.WriteFile(f.cfg.FabricsState, state, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.h.markFabrics(false); err != nil {
+				t.Fatal(err)
+			}
+			resp := f.do(f.fabricsReq(op, fabConf))
+			if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "state file") {
+				t.Fatalf("%s %s: %+v", guess, op, resp)
+			}
+			answers[op] = append(answers[op], strings.ReplaceAll(resp.Message, f.cfg.FabricsState, ""))
+		}
+		f := newFabEnv(t)
+		f.writeConf(fabricsConf, fabConf, 0o600)
+		f.h.killPoint = func(step string) bool { return step == "applying" }
+		f.do(f.fabricsReq(OpFabrics, strings.Replace(fabConf, fabSecret, fabNewSecret, 1)))
+		f.h.killPoint = func(string) bool { return false }
+		f.fab = "failed"
+		if err := os.WriteFile(f.cfg.FabricsState, state, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		resp := f.do(Request{Op: OpRecover, Actor: "test"})
+		if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "state file") {
+			t.Fatalf("%s recovery: %+v", guess, resp)
+		}
+		answers[OpRecover] = append(answers[OpRecover], strings.ReplaceAll(resp.Message, f.cfg.FabricsState, ""))
+	}
+	for op, a := range answers {
+		if a[0] != a[1] {
+			t.Errorf("%s: the answers depend on the guess:\n%s\n%s", op, a[0], a[1])
+		}
+		if strings.Contains(a[1], "pbs1-secret-9999") {
+			t.Errorf("%s: the leftover name is shown: %s", op, a[1])
+		}
+	}
+}
+
 // TestFabricsBrokenFileNoLockUp: mhvtl-fabrics fails every reload of a
 // file with a target it would not plan. A rollback, a marker's retry and a
 // crash recovery that find such a file on disk leave it not applied rather
