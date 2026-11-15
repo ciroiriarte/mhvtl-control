@@ -1031,7 +1031,20 @@ func TestDeviceConfNamesForeignTarget(t *testing.T) {
 // in clear where the journal quotes it alone when the name equals it;
 // masking only the secret inside it would tell which name holds one.
 func TestFabricsRollBackMaskKeepsClearValues(t *testing.T) {
-	for _, shape := range []string{"x%sy", "%s"} {
+	for _, double := range []bool{false, true} {
+		for _, shape := range []string{"x%sy", "%s"} {
+			rollBackAnswers(t, double, shape)
+		}
+	}
+}
+
+// rollBackAnswers runs a bind that brings CHAP name shape around a wrong
+// guess and around the stored secret, whose reload fails, and whose
+// rollback's reload fails too when double is set; the answers must be
+// byte for byte the same.
+func rollBackAnswers(t *testing.T, double bool, shape string) {
+	t.Helper()
+	{
 		var answers []string
 		for _, guess := range []string{"password1", fabSecret} {
 			f := newFabEnv(t)
@@ -1039,10 +1052,18 @@ func TestFabricsRollBackMaskKeepsClearValues(t *testing.T) {
 			name := strings.Replace(shape, "%s", guess, 1)
 			next := fabConf + "\niSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs1\n CHAP name: " + name + "\n CHAP secret: " + fabNewSecret + "\n"
 			f.fail[FabricsReload] = &exec.ExitError{Stderr: []byte("login of " + name + " refused")}
+			result := ResultRolledBack
+			if double {
+				f.failAlways[FabricsReload] = &exec.ExitError{Stderr: []byte("reload: login of " + name + " refused; stored pbs1 secret " + fabSecret)}
+				result = ResultError
+			}
 			f.tail = "login of " + name + " refused; stored pbs1 secret " + fabSecret + " and " + fabNewSecret
 			resp := f.do(f.fabricsReq(OpFabrics, next))
-			if resp.Result != ResultRolledBack {
+			if resp.Result != result {
 				t.Fatalf("%s: %+v", name, resp)
+			}
+			if double && !strings.Contains(resp.Message, "reload: login of "+conffile.SecretMask+" refused; stored pbs1 secret "+conffile.SecretMask) {
+				t.Errorf("%s: message %q", name, resp.Message)
 			}
 			want := "login of " + conffile.SecretMask + " refused; stored pbs1 secret " + conffile.SecretMask + " and " + conffile.SecretMask
 			if resp.JournalTail != want {
@@ -1051,7 +1072,35 @@ func TestFabricsRollBackMaskKeepsClearValues(t *testing.T) {
 			answers = append(answers, resp.JournalTail+"\n"+strings.ReplaceAll(resp.Message, resp.RollbackDir, ""))
 		}
 		if answers[0] != answers[1] {
-			t.Errorf("name %q: the answer depends on the guess:\n%s\n%s", shape, answers[0], answers[1])
+			t.Errorf("name %q (rollback fails: %v): the answer depends on the guess:\n%s\n%s", shape, double, answers[0], answers[1])
+		}
+	}
+}
+
+// TestFabricsRecoveryMaskNewNames: a crash recovery whose reload fails
+// quotes systemctl's error, which may quote the half-applied file's new
+// CHAP name and the stored secret: the answer is byte for byte the same
+// whether the name is a wrong guess, the stored secret, or contains it.
+func TestFabricsRecoveryMaskNewNames(t *testing.T) {
+	var answers []string
+	for _, name := range []string{"password1", fabSecret, "x" + fabSecret + "y", "xpassword1y"} {
+		f := newFabEnv(t)
+		f.writeConf(fabricsConf, fabConf, 0o600)
+		next := fabConf + "\niSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs1\n CHAP name: " + name + "\n CHAP secret: " + fabNewSecret + "\n"
+		f.h.killPoint = func(step string) bool { return step == "applying" }
+		f.do(f.fabricsReq(OpFabrics, next))
+		f.h.killPoint = func(string) bool { return false }
+		f.failAlways[FabricsReload] = &exec.ExitError{Stderr: []byte("login of " + name + " refused; stored pbs1 secret " + fabSecret)}
+		resp := f.do(Request{Op: OpRecover, Actor: "test"})
+		if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "login of "+conffile.SecretMask+" refused; stored pbs1 secret "+conffile.SecretMask) {
+			t.Fatalf("%s: %+v", name, resp)
+		}
+		answers = append(answers, resp.Message)
+		f.noSecret(fabSecret, fabNewSecret)
+	}
+	for _, a := range answers[1:] {
+		if a != answers[0] {
+			t.Errorf("the answer depends on the name:\n%s\n%s", answers[0], a)
 		}
 	}
 }

@@ -77,16 +77,19 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 	var fabricsNote string
 	if it.Op == OpFabrics && !boot {
 		removed := h.newFabricsRemoved(it)
-		note, err := h.reconcileFabrics(ctx, removed)
-		if err != nil {
-			var original []byte
-			for _, f := range it.Files {
-				if f.Name == fabricsConf {
-					original = f.Original
-				}
+		var original []byte
+		for _, f := range it.Files {
+			if f.Name == fabricsConf {
+				original = f.Original
 			}
+		}
+		// The names of the half-applied file came with the request that
+		// died: what reconcileFabrics quotes from outside masks them whole.
+		mask := h.fabricsMask(original, halfApplied)
+		note, err := h.reconcileFabrics(ctx, removed, mask)
+		if err != nil {
 			return Response{Result: ResultError, Error: ErrFabricsState, Conflicts: conflicts,
-				Message: maskFabrics("recovery: "+h.reconcileFailed(err, removed), original, halfApplied)}
+				Message: mask.message("recovery: " + h.reconcileFailed(err, removed))}
 		}
 		fabricsNote = note
 	}
