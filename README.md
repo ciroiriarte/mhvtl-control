@@ -575,7 +575,9 @@ nothing applies `fabrics.conf`. When the helper cannot tell what
 non-ASCII byte or a line over 4096 bytes, even in a comment), the
 ownership checks here and below still run, but a target left without a
 plan is not refused. A configuration apply that sets `MHVTL_BACKEND=tcmu` has every target `fabrics.conf` plans checked for
-ownership, as `device.conf` may have changed unchecked meanwhile. A
+ownership, as `device.conf` may have changed unchecked meanwhile; so does
+any change of `mhvtl.conf` from a backend other than `tcmu` after which the
+helper cannot tell the backend. A
 restart of `mhvtl.target` through `POST /api/v1/service/{action}`, and a start of it while
 `mhvtl-fabrics.service` is not active, start that unit, so they are refused
 with `invalid`, naming the target, when `fabrics.conf` plans one that

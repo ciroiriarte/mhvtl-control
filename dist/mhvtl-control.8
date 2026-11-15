@@ -107,7 +107,10 @@ and
 .B mhvtl-fabrics.service
 is installed; one that sets
 .B MHVTL_BACKEND=tcmu
-has every target the file plans checked for ownership.
+has every target the file plans checked for ownership, and so does any
+change of
+.I mhvtl.conf
+from another backend after which the helper cannot tell the backend.
 When the helper cannot tell what
 .B MHVTL_BACKEND
 systemd passes (a backslash, a non-ASCII byte or a line over 4096 bytes in

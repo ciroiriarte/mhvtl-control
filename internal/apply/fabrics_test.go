@@ -1802,3 +1802,50 @@ func TestBackendToTCMUChecksForeignTargets(t *testing.T) {
 		t.Errorf("backend to tcmu with %s owned: %+v", lib10, resp)
 	}
 }
+
+// TestBackendUnknownChangeChecksForeignTargets: a change of mhvtl.conf
+// where the helper cannot tell the backend before nor after (a backslash
+// in a comment, which systemd accepts) may turn mhvtl into tcmu, so every
+// target fabrics.conf plans is checked for ownership, device.conf
+// unchanged: here a change of the backend alone, and one of VERBOSE. A
+// change whose result is definitively not tcmu is not checked.
+func TestBackendUnknownChangeChecksForeignTargets(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	const comment = "# C:\\backups\n"
+	for _, c := range []struct {
+		name, from, to string
+		refused        bool
+	}{
+		{"unknown backend only", "MHVTL_BACKEND=mhvtl\n" + comment, "MHVTL_BACKEND=tcmu\n" + comment, true},
+		{"unknown verbose", "MHVTL_BACKEND=mhvtl\n" + comment, "MHVTL_BACKEND=mhvtl\n" + comment, true},
+		{"mhvtl verbose", "MHVTL_BACKEND=mhvtl\n", "MHVTL_BACKEND=mhvtl\n", false},
+		{"tcmu to mhvtl", "MHVTL_BACKEND=tcmu\n", "MHVTL_BACKEND=mhvtl\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFabEnv(t)
+			plain := strings.TrimSuffix(string(f.read(mhvtlConf)), "MHVTL_BACKEND=tcmu\n")
+			to := plain + c.to
+			if c.from == c.to {
+				to = strings.Replace(to, "VERBOSE=1", "VERBOSE=2", 1)
+			}
+			if to == plain+c.from {
+				t.Fatal("the request changes nothing")
+			}
+			f.writeConf(mhvtlConf, plain+c.from, 0o644)
+			f.writeConf(fabricsConf, fabConf, 0o600)
+			f.mkTarget(lib10)
+			resp := f.do(Request{Op: OpPlan, Actor: "test",
+				Files: []File{{Name: mhvtlConf, BaseSHA256: f.sha(mhvtlConf), Content: []byte(to)}}})
+			if !c.refused {
+				if resp.Result != ResultValidated {
+					t.Fatalf("not checked: %+v", resp)
+				}
+				return
+			}
+			if resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, lib10) ||
+				!strings.Contains(resp.Message, "does not own") {
+				t.Fatalf("with a foreign %s: %+v", lib10, resp)
+			}
+		})
+	}
+}

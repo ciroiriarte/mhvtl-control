@@ -424,7 +424,9 @@ func notAppliedText(left []conffile.Problem) string {
 // fabrics into use (MHVTL_BACKEND becomes tcmu) has every target the file
 // plans checked for ownership, as none was checked while nothing applied
 // the file: device.conf may have been changed in between so that the file
-// names a foreign target (Library 10 turned into Drive 10). A unit start
+// names a foreign target (Library 10 turned into Drive 10). So does one
+// that may bring them into use, where the backend after the change cannot
+// be told (mayComeIntoUse). A unit start
 // outside the helper (at boot, or by hand) is not guarded here.
 func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) error {
 	cur, err := files.current(deviceConf)
@@ -435,7 +437,10 @@ func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) 
 	if err != nil {
 		return err
 	}
-	intoUse := h.checkBackend(files.current) != nil && h.checkBackend(next.next) == nil
+	intoUse, err := h.mayComeIntoUse(files, next)
+	if err != nil {
+		return err
+	}
 	if nd.sha == cur.sha && !intoUse {
 		return nil
 	}
@@ -500,6 +505,28 @@ func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) 
 			deviceConf, fabricsConf, strings.Join(foreign, ", "), h.cfg.FabricsState, FabricsUnit)
 	}
 	return nil
+}
+
+// mayComeIntoUse reports whether the request may bring fabrics into use:
+// it changes mhvtl.conf, the backend before is not tcmu as far as the
+// helper can tell (checkBackend), and the one after is tcmu or cannot be
+// told (backendOf). Both unknown counts: systemd may pass mhvtl before and
+// tcmu after the change, as with MHVTL_BACKEND=mhvtl turned into tcmu in a
+// file with a backslash in a comment.
+func (h *Helper) mayComeIntoUse(files, next *fileSet) (bool, error) {
+	cm, err := files.current(mhvtlConf)
+	if err != nil {
+		return false, err
+	}
+	nm, err := next.next(mhvtlConf)
+	if err != nil {
+		return false, err
+	}
+	if cm.sha == nm.sha || h.checkBackend(files.current) == nil {
+		return false, nil
+	}
+	b, err := backendOf(next.next)
+	return err != nil || b == "tcmu", nil
 }
 
 // fabricsInUse reports whether mhvtl-fabrics would apply fabrics.conf at
