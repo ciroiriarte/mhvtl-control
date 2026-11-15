@@ -675,15 +675,23 @@ func TestISCSIBaseSHA256(t *testing.T) {
 	if reqs := e.fabricsReqs(); len(reqs) != 2 || reqs[1].Op != apply.OpFabrics || reqs[1].Files[0].BaseSHA256 != sha {
 		t.Fatalf("helper requests = %+v", reqs)
 	}
+	// The apply advanced the version, though this helper left the file
+	// as it was (fabricsWritten): the version read before it is stale.
+	if now := e.version(fabricsSample); now == ver {
+		t.Errorf("version %s unchanged after the apply", ver)
+	} else {
+		ver = now
+	}
 
 	for name, body := range map[string]map[string]any{
+		"stale":     {"library": 30, "initiators": []string{pbsIQN}, "base_sha256": got.SHA256},
 		"real hash": {"library": 30, "initiators": []string{pbsIQN}, "base_sha256": sha},
 		"bind":      {"library": 30, "initiators": []string{pbsIQN}, "base_sha256": strings.Repeat("0", 64)},
 		"patch":     {"base_name": "iqn.2026-12.lan.example:x", "base_sha256": "", "dry_run": true},
 		"unbind":    {"library": 30, "base_sha256": "stale"},
 	} {
 		method, path := http.MethodPost, "/api/v1/transports/iscsi/"+name
-		if name == "real hash" {
+		if name == "real hash" || name == "stale" {
 			path = "/api/v1/transports/iscsi/bind"
 		}
 		if name == "patch" {
@@ -853,12 +861,21 @@ func TestISCSISecretGuessNoOracle(t *testing.T) {
 		{"mutual_chap", "vtl", mutualSecret, "chap", "pbs"},
 	} {
 		for _, dry := range []bool{true, false} {
-			e := iscsiEnv(t, fabricsSample, "reload", nil)
+			// Each guess goes to a daemon of its own, with the same key:
+			// a write advances the version (fabricsWritten), so a second
+			// guess to the same daemon answers another one either way.
+			key := bytes.Repeat([]byte{7}, 32)
 			answer := func(secret string) *httptest.ResponseRecorder {
 				t.Helper()
-				return e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
+				e := iscsiEnv(t, fabricsSample, "reload", nil)
+				e.srv.fabricsKey = key
+				rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
 					c.field: map[string]string{"name": c.name, "secret": secret},
 					c.other: map[string]string{"name": c.otherName, "secret": "Other-fresh-0123"}, "dry_run": dry})
+				if n := len(e.fabricsReqs()); n != 1 {
+					t.Errorf("%s dry run %v: %d helper requests", c.field, dry, n)
+				}
+				return rec
 			}
 			rightRec, wrongRec := answer(c.stored), answer("WrongGuess-0123")
 			right, wrong := rightRec.Body.String(), wrongRec.Body.String()
@@ -866,10 +883,69 @@ func TestISCSISecretGuessNoOracle(t *testing.T) {
 				t.Errorf("%s dry run %v: answers differ:\nright %d %s\nwrong %d %s", c.field, dry, rightRec.Code, right, wrongRec.Code, wrong)
 			}
 			got := decodeBody[iscsiWriteDTO](t, rightRec)
-			if rightRec.Code != http.StatusOK || got.Result == "unchanged" || !strings.Contains(got.Diff, "\n-") || len(e.fabricsReqs()) != 2 {
-				t.Errorf("%s dry run %v: %d %s, %d helper requests", c.field, dry, rightRec.Code, right, len(e.fabricsReqs()))
+			if rightRec.Code != http.StatusOK || got.Result == "unchanged" || !strings.Contains(got.Diff, "\n-") {
+				t.Errorf("%s dry run %v: %d %s", c.field, dry, rightRec.Code, right)
 			}
 			noSecrets(t, c.field, right+wrong, "WrongGuess-0123", "Other-fresh-0123")
+		}
+	}
+}
+
+// TestISCSISecretGuessVersionAdvances: a bind that sets a CHAP secret
+// to a guess, applied by a helper that writes the file, changes the
+// version GET /config answers whether or not the guess is the stored
+// secret. A right guess leaves the file byte-identical; were the version
+// only the file's, it would stay the same exactly then. A base_sha256
+// from before the write is refused after it, and the fresh version is
+// accepted.
+func TestISCSISecretGuessVersionAdvances(t *testing.T) {
+	chapOnly := strings.Replace(fabricsSample, " Mutual CHAP name: vtl\n Mutual CHAP secret: "+mutualSecret+"\n", "", 1)
+	for _, guess := range []string{chapSecret, "WrongGuess-0123"} {
+		e := iscsiEnv(t, chapOnly, "reload", nil)
+		e.h.answer = func(req apply.Request) apply.Response {
+			if req.Op == apply.OpFabricsPlan {
+				return apply.Response{Result: apply.ResultValidated, FabricsAction: "reload"}
+			}
+			if err := os.WriteFile(filepath.Join(e.dir, "fabrics.conf"), req.Files[0].Content, 0o600); err != nil {
+				t.Error(err)
+			}
+			return apply.Response{Result: apply.ResultApplied, FabricsAction: "reload"}
+		}
+		version := func() string {
+			t.Helper()
+			rec := e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil)
+			got := decodeBody[iscsiConfigDTO](t, rec)
+			if rec.Code != http.StatusOK || got.SHA256 == nil {
+				t.Fatalf("GET config: %d %s", rec.Code, rec.Body)
+			}
+			return *got.SHA256
+		}
+		before := version()
+		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
+			"chap": map[string]string{"name": "pbs", "secret": guess}, "base_sha256": before})
+		if rec.Code != http.StatusOK || decodeBody[iscsiWriteDTO](t, rec).Result != apply.ResultApplied {
+			t.Fatalf("guess %q: %d %s", guess, rec.Code, rec.Body)
+		}
+		data, err := os.ReadFile(filepath.Join(e.dir, "fabrics.conf"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if identical := string(data) == chapOnly; identical != (guess == chapSecret) {
+			t.Fatalf("guess %q: file identical %v, test does not cover the case", guess, identical)
+		}
+		after := version()
+		if after == before {
+			t.Errorf("guess %q: version unchanged after the write", guess)
+		}
+		rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
+			"initiators": []string{pbsIQN}, "base_sha256": before, "dry_run": true})
+		if rec.Code != http.StatusConflict {
+			t.Errorf("guess %q: base from before the write: %d %s", guess, rec.Code, rec.Body)
+		}
+		rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 10,
+			"initiators": []string{pbsIQN}, "base_sha256": after, "dry_run": true})
+		if rec.Code != http.StatusOK {
+			t.Errorf("guess %q: fresh base: %d %s", guess, rec.Code, rec.Body)
 		}
 	}
 }

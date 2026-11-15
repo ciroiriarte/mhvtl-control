@@ -483,10 +483,14 @@ do, and `sha256`, the version of the file the change was made against (`""`
 when there is none). The version is opaque: an HMAC of the file under a
 key the daemon makes when it starts, not the file's SHA-256, which would
 let a client test guesses at the CHAP secrets in it. It changes when the
-file changes and when mhvtl-control restarts; an apply sent with a version
-from before a restart gets 409, and a new preview gives the current one.
+file changes, after every apply sent through these routes (even one that
+leaves the file byte-identical, so the version never tells whether a CHAP
+secret sent was the stored one), and when mhvtl-control restarts; an apply
+sent with a version from before any of these gets 409, and a new preview
+gives the current one.
 `GET /api/v1/transports/iscsi/config` answers it too, but only with
-`-api-token`. An apply answers with the same, and for a bind the
+`-api-token`. An apply answers with the version it was made against, which
+is stale once it has been sent, and for a bind the
 target as configfs shows it afterwards. To apply exactly what was
 previewed, send the same body with `"dry_run": false` and
 `"base_sha256"` set to the preview's `sha256`: if `fabrics.conf` changed in

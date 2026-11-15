@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -121,14 +122,26 @@ func (s *Server) readFabricsFiles() (fabricsFiles, error) {
 	return f, nil
 }
 
-// fabricsVersion is the opaque version of fabrics.conf content data: its
-// HMAC-SHA256 under s.fabricsKey, in hex. It changes when the file does,
-// and when the daemon restarts.
+// fabricsVersion is the opaque version of fabrics.conf content data: the
+// HMAC-SHA256 under s.fabricsKey of s.fabricsRev and data, in hex. It
+// changes when the file does, after every write the daemon sends the
+// helper, and when the daemon restarts. A write that leaves the file
+// byte-identical, such as a CHAP secret guess equal to the stored one,
+// still changes it: otherwise a version unchanged after the write would
+// confirm the guess.
 func (s *Server) fabricsVersion(data []byte) string {
 	m := hmac.New(sha256.New, s.fabricsKey)
+	var rev [8]byte
+	binary.BigEndian.PutUint64(rev[:], s.fabricsRev.Load())
+	m.Write(rev[:])
 	m.Write(data)
 	return hex.EncodeToString(m.Sum(nil))
 }
+
+// fabricsWritten advances the version of fabrics.conf after a write of it
+// was sent to the helper, whatever the answer: the helper may have written
+// the file even when the answer is an error or never came.
+func (s *Server) fabricsWritten() { s.fabricsRev.Add(1) }
 
 // currentFabricsVersion is the version of fabrics.conf as it is now, for
 // a conflict the helper found: "" when it does not exist, nil when it
@@ -713,6 +726,9 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	}
 	resp, err := s.cfg.Helper.Do(ctx, hreq)
 	s.forgetHello()
+	if !q.dryRun {
+		s.fabricsWritten()
+	}
 	if errors.Is(err, applyclient.ErrAbsent) {
 		writeHelperAbsent(w)
 		return

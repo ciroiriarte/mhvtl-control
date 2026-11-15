@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -169,6 +170,9 @@ type Server struct {
 	// fabricsKey keys the opaque version of fabrics.conf the iSCSI routes
 	// answer (fabricsVersion). It is made at start and never stored.
 	fabricsKey []byte
+	// fabricsRev is part of that version: it advances after every write
+	// of fabrics.conf the daemon sends the helper (fabricsWritten).
+	fabricsRev atomic.Uint64
 }
 
 // keyedMutex is a set of mutexes created on first use. Each is a channel
