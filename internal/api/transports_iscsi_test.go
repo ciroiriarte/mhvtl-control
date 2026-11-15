@@ -682,9 +682,12 @@ func TestISCSIDiffMasksAnySpacing(t *testing.T) {
 // gets.
 func TestISCSIBaseSHA256(t *testing.T) {
 	e := iscsiEnv(t, fabricsSample, "reload", nil)
-	sha, ver := conffile.Hash([]byte(fabricsSample)), e.version(fabricsSample)
+	sha := conffile.Hash([]byte(fabricsSample))
 	bind := map[string]any{"library": 30, "initiators": []string{pbsIQN}, "dry_run": true}
 	got := decodeBody[iscsiWriteDTO](t, e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", bind))
+	// A dry run takes the helper's lock, and may recover: it too advances
+	// the version, and answers the one after it.
+	ver := e.version(fabricsSample)
 	if str(got.SHA256) != ver || got.Result != apply.ResultValidated {
 		t.Fatalf("dry run = %+v, want sha256 %s", got, ver)
 	}
@@ -1167,8 +1170,8 @@ func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
 func TestISCSIVersionNotFileHash(t *testing.T) {
 	e := iscsiEnv(t, fabricsSample, "reload", nil)
 	sha := conffile.Hash([]byte(fabricsSample))
-	cfg := decodeBody[iscsiConfigDTO](t, e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil))
 	got := decodeBody[iscsiWriteDTO](t, e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30, "dry_run": true}))
+	cfg := decodeBody[iscsiConfigDTO](t, e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil))
 	if cfg.SHA256 == nil || *cfg.SHA256 == "" || *cfg.SHA256 != str(got.SHA256) {
 		t.Fatalf("GET sha256 %v, write sha256 %q: want the same non-empty version", cfg.SHA256, str(got.SHA256))
 	}
@@ -1544,5 +1547,119 @@ func TestISCSIWriteAnswersVersionAfter(t *testing.T) {
 	rec = e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30, "initiators": []string{pbsIQN}})
 	if got := decodeBody[iscsiWriteDTO](t, rec); got.SHA256 != nil || got.CurrentSHA256 != nil {
 		t.Errorf("apply that another call overlapped: %d %s, want no version", rec.Code, rec.Body)
+	}
+}
+
+// rawCall is e.call for a goroutine other than the test's, such as a
+// helper answer: it reports nothing through t.
+func (e *writeEnv) rawCall(method, path string, body any) string {
+	var r *http.Request
+	if body == nil {
+		r = httptest.NewRequest(method, path, nil)
+	} else {
+		b, _ := json.Marshal(body)
+		r = httptest.NewRequest(method, path, bytes.NewReader(b))
+	}
+	r.Header.Set("Authorization", "Bearer "+e.srv.cfg.Token)
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, r)
+	return recText(rec)
+}
+
+// TestISCSIRecoveryChangesVersion: any helper request but units may
+// recover a dead apply and put fabrics.conf back. A service plan or a
+// stage's dry run whose helper does so, and answers recovered, advances
+// the version whether or not the file put back is byte-identical to the
+// one before: otherwise comparing the versions would tell whether a dead
+// write of a CHAP guess left the file as it was. While the request is in
+// the helper, GET config answers no version. Units, which never recovers,
+// leaves it.
+func TestISCSIRecoveryChangesVersion(t *testing.T) {
+	for _, c := range []struct {
+		route string
+		same  bool
+	}{{"service", true}, {"service", false}, {"config", true}, {"config", false}} {
+		same := c.same
+		e := iscsiEnv(t, fabricsSample, "reload", nil)
+		path, body := "/api/v1/service/libraries/10/restart", map[string]any{"dry_run": true}
+		if c.route == "config" {
+			path, body = "/api/v1/config/apply", map[string]any{"stage": e.staged().Stage, "dry_run": true}
+		}
+		get := func() *string {
+			t.Helper()
+			return decodeBody[iscsiConfigDTO](t, e.call(http.MethodGet, "/api/v1/transports/iscsi/config", nil)).SHA256
+		}
+		restored := fabricsSample
+		if !same {
+			restored = strings.Replace(fabricsSample, chapSecret, "Restored-0123", 1)
+		}
+		var during string
+		e.answer(func(req apply.Request) apply.Response {
+			if err := os.WriteFile(filepath.Join(e.dir, "fabrics.conf"), []byte(restored), 0o600); err != nil {
+				return apply.Response{Result: apply.ResultError, Error: "io", Message: err.Error()}
+			}
+			during = e.rawCall(http.MethodGet, "/api/v1/transports/iscsi/config", nil)
+			return apply.Response{Result: apply.ResultRecovered, Message: "recovered"}
+		})
+		before := get()
+		if rec := e.call(http.MethodGet, "/api/v1/service", nil); rec.Code != http.StatusOK {
+			t.Fatalf("GET service: %d %s", rec.Code, rec.Body)
+		}
+		if units := get(); str(units) != str(before) {
+			t.Errorf("%s same %v: units changed the version: %s, before %s", c.route, same, str(units), str(before))
+		}
+		rec := e.call(http.MethodPost, path, body)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s same %v: %d %s", c.route, same, rec.Code, rec.Body)
+		}
+		after := get()
+		if before == nil || after == nil || *after == *before {
+			t.Errorf("%s same %v: version %s after the recovery, %s before: want both, different", c.route, same, str(after), str(before))
+		}
+		if !strings.HasPrefix(during, "200 ") || strings.Contains(during, `"sha256"`) {
+			t.Errorf("%s same %v: GET config during the request: %s, want no version", c.route, same, during)
+		}
+	}
+}
+
+// TestISCSIWriteRacingRecoveryNoOracle: a write W1 reads fabrics.conf as
+// a dead write of a CHAP guess left it; a service plan that reached the
+// helper first recovers and puts the original file back before W1's base
+// is checked. The helper would apply W1 exactly when the guess was right
+// (the file put back is byte-identical) and find a conflict otherwise. W1
+// is answered the same either way, without the helper's answer.
+func TestISCSIWriteRacingRecoveryNoOracle(t *testing.T) {
+	run := func(guess string) string {
+		t.Helper()
+		dead := strings.Replace(chapOnlySample, chapSecret, guess, 1)
+		e := iscsiEnv(t, dead, "reload", nil)
+		e.srv.fabricsKey = []byte("one key for both answers")
+		helperLikeFabrics(e)
+		check := e.h.answer
+		var plan string
+		e.answer(func(req apply.Request) apply.Response {
+			if req.Op == apply.OpServicePlan {
+				if err := os.WriteFile(filepath.Join(e.dir, "fabrics.conf"), []byte(chapOnlySample), 0o600); err != nil {
+					return apply.Response{Result: apply.ResultError, Error: "io", Message: err.Error()}
+				}
+				return apply.Response{Result: apply.ResultRecovered, Message: "recovered"}
+			}
+			if req.Op == apply.OpFabrics {
+				plan = e.rawCall(http.MethodPost, "/api/v1/service/libraries/10/restart", map[string]any{"dry_run": true})
+			}
+			return check(req)
+		})
+		got := recText(e.call(http.MethodPost, "/api/v1/transports/iscsi/unbind", map[string]any{"library": 30}))
+		if !strings.HasPrefix(plan, "409 ") {
+			t.Fatalf("guess %q: the service plan did not recover: %s", guess, plan)
+		}
+		return got
+	}
+	right, wrong := run(chapSecret), run("WrongGuess-0123")
+	if right != wrong {
+		t.Errorf("W1 answers differ:\nright %s\nwrong %s", right, wrong)
+	}
+	if !strings.HasPrefix(right, "409 ") || !strings.Contains(right, `"result":"`+resultUnknown+`"`) || strings.Contains(right, `"sha256"`) {
+		t.Errorf("W1 = %s, want 409 %s without version", right, resultUnknown)
 	}
 }

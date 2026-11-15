@@ -1022,7 +1022,7 @@ func (s *Server) handleConfigApply(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), applyTimeout)
 		defer cancel()
 	}
-	resp, err := s.cfg.Helper.Do(ctx, hreq)
+	resp, err := s.helperDo(ctx, hreq)
 	s.forgetHello()
 	if errors.Is(err, applyclient.ErrAbsent) {
 		writeHelperAbsent(w)

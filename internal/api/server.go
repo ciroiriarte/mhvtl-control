@@ -171,15 +171,17 @@ type Server struct {
 	fabricsKey []byte
 	// fabricsMu guards fabricsRev, fabricsSeq and fabricsWriting.
 	fabricsMu sync.Mutex
-	// fabricsRev is part of that version: it advances after every write of
-	// fabrics.conf the daemon sends the helper that may have reached it.
+	// fabricsRev is part of that version: it advances after every helper
+	// call that may have changed fabrics.conf (helperDo), a write of it or
+	// a recovery any call but units may run, once it may have reached the
+	// helper.
 	fabricsRev uint64
-	// fabricsSeq advances when such a write starts and when it ends: a
+	// fabricsSeq advances when such a call starts and when it ends: a
 	// version computed while it changed straddles one of them and is not
 	// answered.
 	fabricsSeq uint64
-	// fabricsWriting counts the writes of fabrics.conf sent to the helper
-	// and not answered yet. While one is, no version is answered.
+	// fabricsWriting counts such calls sent to the helper and not
+	// answered yet. While one is, no version is answered.
 	fabricsWriting int
 	// fabricsWriteMu serializes the writes of fabrics.conf the iSCSI
 	// routes send the helper, from the read their base comes from to the

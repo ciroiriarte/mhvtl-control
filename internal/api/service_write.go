@@ -150,7 +150,7 @@ func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request, library b
 			defer unlock()
 		}
 	}
-	resp, err := s.cfg.Helper.Do(ctx, hreq)
+	resp, err := s.helperDo(ctx, hreq)
 	s.forgetHello()
 	if !req.DryRun {
 		s.service.forget()

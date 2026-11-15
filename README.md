@@ -219,7 +219,7 @@ If an apply dies, for instance with the host, `intent.json` stays behind:
   alone and listed in `conflicts` with its `current_sha256`; for
   `fabrics.conf` that is the opaque version the iSCSI routes answer (see
   below), not its SHA-256, and it is left out when the file cannot be read
-  or an iSCSI apply is in progress.
+  or another request to the helper is in progress.
 - If `intent.json` cannot be read, `helper` is `intent_unreadable` and the
   helper refuses every change. Boot recovery fails too, and mhVTL may already be
   running on the partly written files: stop `mhvtl.target`, restore the files
@@ -484,19 +484,24 @@ do, and `sha256`, the version of the file the change was made against (`""`
 when there is none). The version is opaque: an HMAC of the file under a
 key the daemon makes when it starts, not the file's SHA-256, which would
 let a client test guesses at the CHAP secrets in it. It changes when the
-file changes, after every apply sent through these routes that reached
-the helper, whatever its answer (even one that leaves the file
-byte-identical, so the version never tells whether a CHAP secret sent was
-the stored one; an apply refused with `helper_absent`, or whose
+file changes, after every request mhvtl-control sends the helper that
+reached it, whatever its answer and whatever the route (a preview or apply
+of these routes, a stage's check or apply, a service action: any of them
+may first recover an interrupted apply, which can put `fabrics.conf`
+back; only the unit state queries are left out), even one that leaves the
+file byte-identical, so the version never tells whether a CHAP secret sent
+was the stored one (a request refused with `helper_absent`, or whose
 connection to the helper failed, leaves it), and when mhvtl-control
 restarts; an apply
 sent with a version from before any of these gets 409, and a new preview
-gives the current one. While an apply of `fabrics.conf` is in progress
-(the helper writes the file and then reloads `mhvtl-fabrics`, which can
+gives the current one. While such a request is in progress (an apply of
+`fabrics.conf` writes the file and then reloads `mhvtl-fabrics`, which can
 take minutes), `GET .../config` answers no `sha256`, and every preview
 and apply gets 409 with `error.code` `apply_in_progress`, whatever it
-sends; applies are never queued. A preview during which an apply started
-or finished gets 409 `conflict` with no version and no diff. Read
+sends; applies are never queued. A preview during which another such
+request started or finished gets 409 `conflict` with no version and no
+diff; an apply gets 409 with `"result": "unknown"` and `error.code`
+`conflict`, without the helper's answer: it may have been made. Read
 `GET .../config` again, or preview again, once it has finished.
 `GET /api/v1/transports/iscsi/config` answers it too, but only with
 `-api-token`. An answer from the helper (a preview's or an apply's)

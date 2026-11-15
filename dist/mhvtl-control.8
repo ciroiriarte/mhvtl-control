@@ -180,20 +180,24 @@ That
 is an opaque version of the file, an HMAC under a key made when
 .B mhvtl-control
 starts, not its SHA-256 (the file holds CHAP secrets); it changes after
-every apply sent through these routes that reached the helper, whatever
-its answer, even one that leaves the file byte-identical, and when the
-daemon restarts, and is not answered without
+every request the daemon sends the helper that reached it, whatever its
+answer and route, unit state queries aside (any other request may first
+recover an interrupted apply, which can put the file back), even one that
+leaves the file byte-identical, and when the daemon restarts, and is not
+answered without
 .BR \-api\-token .
-While an apply of the file is in progress (the helper writes it, then
+While such a request is in progress (an apply of the file writes it, then
 reloads
 .BR mhvtl\-fabrics ),
 no answer holds a version: clients read the file again once it is done,
-and every preview or apply sent meanwhile gets 409
+and every iSCSI preview or apply sent meanwhile gets 409
 .BR apply_in_progress ,
 whatever it sends.
-A preview during which an apply started or finished gets 409
+A preview during which another such request started or finished gets 409
 .B conflict
-with no version.
+with no version; an apply gets 409 with result
+.B unknown
+and no answer of the helper, as it may have been made.
 The helper refuses when
 .B MHVTL_BACKEND
 is not

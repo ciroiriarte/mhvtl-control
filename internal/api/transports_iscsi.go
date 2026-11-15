@@ -175,13 +175,20 @@ func (s *Server) fabricsVersion(rev uint64, data []byte) string {
 	return hex.EncodeToString(m.Sum(nil))
 }
 
-// fabricsDo sends hreq to the helper. While a write (not a plan) is in
-// flight no version is answered (fabricsFiles.busy). After it, the
-// revision of fabrics.conf's version advances whatever the answer, since
-// the helper may have written the file even when the answer is an error
-// or never came; only a write that never reached the helper leaves it:
-// no helper on the socket (applyclient.ErrAbsent) or a failed connect.
-func (s *Server) fabricsDo(ctx context.Context, hreq apply.Request) (resp apply.Response, err error) {
+// helperDo sends hreq to the helper; every helper call of the daemon
+// goes through it. Any request but units and hello takes the helper's
+// lock, and the first to find a dead apply's intent recovers it, which
+// may put back fabrics.conf whatever the request was for (apply.Helper.
+// Handle): a write of the file or not, a plan included. So while such a
+// call is in flight no version of fabrics.conf is answered
+// (fabricsFiles.busy), and after it the revision of the version advances
+// whatever the answer, since the helper may have written the file even
+// when the answer is an error or never came. Otherwise comparing the
+// version before and after a recovery would tell whether the file it put
+// back is byte-identical to the dead write's, a CHAP guess right. Only a
+// call that never reached the helper leaves the revision: no helper on
+// the socket (applyclient.ErrAbsent) or a failed connect.
+func (s *Server) helperDo(ctx context.Context, hreq apply.Request) (resp apply.Response, err error) {
 	if seqSteps(hreq.Op) > 0 {
 		s.fabricsMu.Lock()
 		s.fabricsWriting++
@@ -207,12 +214,13 @@ func (s *Server) fabricsDo(ctx context.Context, hreq apply.Request) (resp apply.
 
 // seqSteps is how far a helper call of op advances fabricsSeq: by one
 // when it is sent and one when it is answered for a call that may change
-// fabrics.conf, else not at all.
+// fabrics.conf, else not at all. Units takes no lock and never recovers;
+// hello (HelperService.Hello) neither.
 func seqSteps(op string) uint64 {
-	if op == apply.OpFabrics {
-		return 2
+	if op == apply.OpUnits || op == apply.OpHello {
+		return 0
 	}
-	return 0
+	return 2
 }
 
 // currentFabricsVersion is the version of fabrics.conf as it is now, for
@@ -683,9 +691,9 @@ type fabricsWriteReq struct {
 // before a write that is still in flight, would have it tell whether that
 // write left the file byte-identical, a CHAP guess right. So real writes
 // are serialized (Server.fabricsWriteMu), a request read while one is in
-// flight is answered apply_in_progress, and a dry run during which
-// another helper call started or ended is answered a conflict that does
-// not depend on what the helper said.
+// flight is answered apply_in_progress, and a request during which
+// another helper call started or ended (helperDo) is answered a conflict
+// that does not depend on what the helper said.
 func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsWriteReq, edit func(fabricsFiles) *fabricsInvalid) {
 	if !q.dryRun {
 		if !s.fabricsWriteMu.TryLock() {
@@ -837,7 +845,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	if s.beforeFabricsHelper != nil {
 		s.beforeFabricsHelper()
 	}
-	resp, err := s.fabricsDo(ctx, hreq)
+	resp, err := s.helperDo(ctx, hreq)
 	s.forgetHello()
 	if errors.Is(err, applyclient.ErrAbsent) {
 		writeHelperAbsent(w)
@@ -847,11 +855,16 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		writeError(w, http.StatusBadGateway, helperUnreachable, mask(err.Error()))
 		return
 	}
-	if q.dryRun && !s.fabricsQuiet(f.seq+seqSteps(hreq.Op)) {
+	if !s.fabricsQuiet(f.seq + seqSteps(hreq.Op)) {
 		// Another call may have changed the file between the read and the
-		// helper's check: its validated or conflict is not answered.
-		writeJSON(w, http.StatusConflict, iscsiWriteDTO{DryRun: q.dryRun, Result: apply.ResultConflict,
-			Error: &errorDetail{Code: apply.ResultConflict, Message: fabricsChanged}})
+		// helper's check, a recovery included: what the helper said is not
+		// answered. A write may have been made, which the client reads.
+		out := iscsiWriteDTO{DryRun: q.dryRun, Result: apply.ResultConflict,
+			Error: &errorDetail{Code: apply.ResultConflict, Message: fabricsChanged}}
+		if !q.dryRun {
+			out.Result, out.Error.Message = resultUnknown, fabricsOverlapped
+		}
+		writeJSON(w, http.StatusConflict, out)
 		return
 	}
 	status, code := applyStatus(resp)
@@ -892,6 +905,10 @@ const (
 	resultUnchanged = "unchanged"
 	fabricsChanged  = fabricsConfName + " changed since it was read: read it again and resend the change"
 	fabricsBusy     = "a change is being applied: read " + fabricsConfName + " again once it has finished, and resend the change"
+	// resultUnknown answers a write another helper call overlapped.
+	resultUnknown     = "unknown"
+	fabricsOverlapped = "another request reached the apply helper while this change was sent, so its answer is not passed on: read " +
+		fabricsConfName + " again to see whether the change was made"
 )
 
 // fabricsQuiet reports whether fabricsSeq is seq and no helper call that

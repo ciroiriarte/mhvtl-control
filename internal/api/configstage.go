@@ -371,7 +371,7 @@ func (s *Server) libraryState(ctx context.Context, id int) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, unitsWait)
 	defer cancel()
-	resp, err := s.cfg.Helper.Do(ctx, apply.Request{Op: apply.OpUnits})
+	resp, err := s.helperDo(ctx, apply.Request{Op: apply.OpUnits})
 	if err != nil {
 		return "", err
 	}
