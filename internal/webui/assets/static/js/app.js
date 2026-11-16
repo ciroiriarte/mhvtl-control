@@ -1476,6 +1476,7 @@
         case "conflict":
         case "not_bound":
         case "rolled_back":
+        case "rolled_back_stopped":
           iscsiShow({ error: o.text, tail: o.tail });
           iscsiReload();
           return;

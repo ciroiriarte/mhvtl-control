@@ -1408,6 +1408,11 @@
         });
         return { tone: extra.length ? "warn" : "ok", text: what + " done." + (extra.length ? " " + extra.join("; ") : ""), tail: "" };
       case "rolled_back":
+        if (code === "fabrics_recovery_required") {
+          // The unwind left mhvtl.target stopped rather than have
+          // mhvtl-fabrics adopt a target it does not own: not as it was.
+          return { tone: "error", text: what + " failed and was rolled back; mhvtl.target was left stopped." + failed + (msg ? " " + msg : ""), tail: tail };
+        }
         return { tone: "error", text: what + " failed and was rolled back: the units are back as they were." + failed + (msg ? " " + msg : ""), tail: tail };
       case "recovered":
         return { tone: "warn", text: "The helper first recovered an earlier action that had died and did nothing else: " + (msg || "try again") + ".", tail: "" };
@@ -1954,7 +1959,9 @@
   // response body (any status), status its HTTP status (0: no answer). kind
   // is validated (a preview to confirm), busy (a preview without a version,
   // made while another change was applied: not to confirm), unchanged (nothing to apply),
-  // applied, rolled_back, invalid (field: the request field to fix),
+  // applied, rolled_back, rolled_back_stopped (a rollback that left
+  // mhvtl.target stopped: fabrics_recovery_required), invalid (field: the
+  // request field to fix),
   // conflict (409: reload and redo), not_bound, readonly, refused or error.
   // text is built from the daemon's message, never from the request.
   function iscsiOutcome(res, status) {
@@ -2008,7 +2015,12 @@
     }
     if (result === "rolled_back") {
       out.kind = "rolled_back";
-      out.text = "The change was rolled back" + (msg ? ": " + msg : ".") + (out.rollbackDir ? " The files it replaced are in " + out.rollbackDir + "." : "");
+      var head = "The change was rolled back";
+      if (code === "fabrics_recovery_required") {
+        out.kind = "rolled_back_stopped";
+        head = "Rolled back; mhvtl.target left stopped";
+      }
+      out.text = head + (msg ? ": " + msg : ".") + (out.rollbackDir ? " The files it replaced are in " + out.rollbackDir + "." : "");
       out.tail = String(res.journal_tail || "");
       return out;
     }

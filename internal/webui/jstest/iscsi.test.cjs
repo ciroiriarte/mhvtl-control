@@ -275,6 +275,10 @@ test("iscsiOutcome maps write responses", () => {
     rollback_dir: "/var/lib/mhvtl-control-apply/rollback/1" }, 500);
   assert.deepStrictEqual([rb.kind, rb.tail], ["rolled_back", "line1\nline2"]);
   assert.ok(rb.text.includes("mhvtl-fabrics failed") && rb.text.includes("/rollback/1"));
+  // A rollback that left mhvtl.target stopped is not shown as a plain one.
+  const rbs = core.iscsiOutcome({ dry_run: false, result: "rolled_back", error: { code: "fabrics_recovery_required", message: "start_failed: x; mhvtl.target was left stopped: y" } }, 500);
+  assert.strictEqual(rbs.kind, "rolled_back_stopped");
+  assert.ok(rbs.text.startsWith("Rolled back; mhvtl.target left stopped: start_failed: x"), rbs.text);
   // A preview while the fabrics marker exists: validated with the helper's
   // note shown, or refused (422) when the retry could not succeed.
   const note = core.iscsiOutcome({ dry_run: true, action: "reload", result: "validated", sha256: "v1", message: "applying this change first runs systemctl reload" }, 200);
