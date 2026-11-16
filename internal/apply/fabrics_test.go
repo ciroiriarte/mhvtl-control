@@ -1570,6 +1570,62 @@ func TestFabricsDerivedNameNoOracle(t *testing.T) {
 	}
 }
 
+// TestFabricsOwnershipNameNoOracle: with a device.conf upstream may read
+// differently from the model (a comment longer than fab_topology_parse's
+// buffer, whose tail "Drive: 10" upstream reads as a line ahead of Library
+// 10), the model plans lib10 while the reload guard also refuses a foreign
+// tape10 (OwnershipWWNs). The refusal of a rollback, a crash recovery and
+// a marker's retry (plan and apply) names tape10; a stored secret spanning
+// the Base name and ".tape10" is shown, as part of the name, whether or
+// not it is that span.
+func TestFabricsOwnershipNameNoOracle(t *testing.T) {
+	const tape10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.tape10"
+	answers := map[string][]string{}
+	for _, secret := range []string{"1:mhvtl.tape10", "1:mhvtl.tape11"} {
+		stored := strings.Replace(fabConf, fabSecret, secret, 1)
+		next := strings.Replace(stored, "vtl1:mhvtl", "vtl1:new", 1) // plans vtl1:new.lib10, not in configfs
+		setup := func() *fabEnv {
+			f := newFabEnv(t)
+			f.writeConf(deviceConf, strings.Replace(string(f.read(deviceConf)), "Library: 10 ", "# "+strings.Repeat("x", 1021)+"Drive: 10\nLibrary: 10 ", 1), 0o644)
+			f.writeConf(fabricsConf, stored, 0o600)
+			f.mkTarget(tape10)
+			if err := os.WriteFile(f.cfg.FabricsState, []byte("iscsi iqn.2003-01.org.linux-iscsi.vtl1:other\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return f
+		}
+		record := func(f *fabEnv, what string, resp Response) {
+			t.Helper()
+			if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "does not own") {
+				t.Fatalf("%s %s: %+v", secret, what, resp)
+			}
+			answers[what] = append(answers[what], strings.ReplaceAll(resp.Message, f.cfg.FabricsState, ""))
+		}
+
+		f := setup()
+		f.fail[FabricsReload] = errors.New("job failed")
+		record(f, "rollback", f.do(f.fabricsReq(OpFabrics, next)))
+		record(f, "retry plan", f.do(f.fabricsReq(OpFabricsPlan, next)))
+		record(f, "retry", f.do(f.fabricsReq(OpFabrics, next)))
+
+		f = setup()
+		f.h.killPoint = func(step string) bool { return step == "applying" }
+		if resp := f.do(f.fabricsReq(OpFabrics, next)); resp.Result != ResultError || !f.intentExists() {
+			t.Fatalf("%s killed apply: %+v", secret, resp)
+		}
+		f.h.killPoint = func(string) bool { return false }
+		record(f, "recovery", f.do(Request{Op: OpRecover, Actor: "test"}))
+	}
+	for what, a := range answers {
+		if a[0] != a[1] {
+			t.Errorf("%s: the answers depend on the secret:\n%s\n%s", what, a[0], a[1])
+		}
+		if !strings.Contains(a[0], tape10) {
+			t.Errorf("%s: %s, want %s named", what, a[0], tape10)
+		}
+	}
+}
+
 // TestFabricsLeftoverNameNoOracle: a failed unit whose state file lists a
 // target no file plans, such as one from a file a failed apply rolled
 // back, names it masked whole in the retry's and the recovery's refusal:

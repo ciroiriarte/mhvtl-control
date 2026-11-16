@@ -1324,6 +1324,49 @@ func TestISCSIDerivedNameNoOracle(t *testing.T) {
 	}
 }
 
+// TestISCSIOwnershipNameNoOracle: with a device.conf upstream may read
+// differently from the model (a comment longer than fab_topology_parse's
+// buffer, whose tail "Drive: 10" upstream reads as a line ahead of Library
+// 10), the model plans lib10 while the helper's ownership check also
+// refuses a foreign tape10 (OwnershipWWNs). A stored secret that spans the
+// Base name the request brings and ".tape10" is masked, or not, in that
+// refusal whether or not the Base name is the guess.
+func TestISCSIOwnershipNameNoOracle(t *testing.T) {
+	const secret = "le:pick.tape10"
+	stored := strings.Replace(fabricsSample, chapSecret, secret, 1)
+	answer := func(base string) string {
+		t.Helper()
+		e := iscsiEnv(t, stored, "reload", nil)
+		e.srv.fabricsKey = []byte("one key for both answers")
+		p := filepath.Join(e.dir, "device.conf")
+		dc, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		long := strings.Replace(string(dc), "Library: 10 ", "# "+strings.Repeat("x", 1021)+"Drive: 10\nLibrary: 10 ", 1)
+		if long == string(dc) {
+			t.Fatal("device.conf has no Library 10")
+		}
+		if err := os.WriteFile(p, []byte(long), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		msg := "iSCSI target " + base + ".tape10 already exists in configfs and mhvtl-fabrics does not own it"
+		e.h.answer = func(apply.Request) apply.Response {
+			return apply.Response{Result: apply.ResultRefused, Error: apply.ErrInvalid, Message: msg, JournalTail: msg}
+		}
+		rec := e.call(http.MethodPatch, "/api/v1/transports/iscsi", map[string]any{"base_name": base, "dry_run": true})
+		got := decodeBody[iscsiWriteDTO](t, rec)
+		if got.Error == nil {
+			t.Fatalf("%s: %s", base, rec.Body)
+		}
+		return got.Message + "\n" + got.Error.Message + "\n" + got.JournalTail
+	}
+	wrong, right := answer("iqn.2026-11.lan.example:pock"), answer("iqn.2026-11.lan.example:pick")
+	if right != strings.ReplaceAll(wrong, "pock", "pick") {
+		t.Errorf("messages %q and %q", wrong, right)
+	}
+}
+
 // TestISCSIVersionHiddenWhileApplying: the helper writes fabrics.conf and
 // then reloads mhvtl-fabrics. Until it answers, no route answers a version
 // of the file: one of the new file under the old revision would equal the

@@ -1371,16 +1371,24 @@ func fabricsDiff(before, after []byte) (string, bool) {
 // edits, or the one a rollback or recovery restored), and newer, the files
 // a request brought (the edit, or the half-applied file a recovery finds).
 // Besides the files' clear values (names a client sets and reads in
-// clear, conffile.FabricsClearValues) it knows the target names each file
-// plans against device.conf as it is on disk
-// (conffile.FabricsConf.PlannedWWNs): a derived name, the Base name and
-// ".lib<ID>" or ".tape<ID>", is one the client can tell from the file
+// clear, conffile.FabricsClearValues) it knows every target name the
+// ownership checks may name for each file against device.conf as it is on
+// disk (conffile.FabricsConf.OwnershipWWNs): a derived name, the Base name
+// and ".lib<ID>" or ".tape<ID>", is one the client can tell from the file
 // too, and a secret that spans the Base name and that suffix must be
-// masked, or not, whether or not it is the guess.
+// masked, or not, whether or not it is the guess. With a device.conf
+// upstream may read differently from the model that is both suffixes, as
+// foreignOnDisk may refuse a foreign ".tape<ID>" where the model plans
+// ".lib<ID>": keeping both is safe, as they are made only of a Base name
+// and a record ID the client reads in clear, so they show the same
+// whether or not a secret lies inside. A file whose names cannot be told
+// (an error), or a device.conf that cannot be read, gives none: the
+// checks then name no target of it, and name masks a state file's names
+// whole.
 type fabricsMask struct {
 	secrets []string
-	// keepOut are the names stored has, clear values and planned target
-	// names; hideOut the names newer brings, which stored has not.
+	// keepOut are the names stored has, clear values and the target
+	// names it may give; hideOut the names newer brings, which stored has not.
 	keepOut, hideOut []string
 	// keepMsg are the names of every file.
 	keepMsg []string
@@ -1395,10 +1403,14 @@ func (h *Helper) fabricsMask(stored []byte, newer ...[]byte) fabricsMask {
 		dev = conffile.ParseDeviceConf(dc.data)
 	}
 	planned := func(f []byte) []string {
-		if c := conffile.ParseFabricsConf(f); dev != nil && len(c.Problems) == 0 {
-			return c.PlannedWWNs(dev)
+		if dev == nil {
+			return nil
 		}
-		return nil
+		wwns, err := conffile.ParseFabricsConf(f).OwnershipWWNs(dev)
+		if err != nil {
+			return nil
+		}
+		return wwns
 	}
 	storedWWNs := planned(stored)
 	had := map[string]bool{}
@@ -1445,8 +1457,8 @@ func (m fabricsMask) message(s string) string {
 }
 
 // name masks a target name mhvtl-fabrics' state file lists: one that a
-// file plans is a name the client set or derives, shown as it is whatever
-// it contains; any other is masked whole. Such a name may be left from a
+// file may give (OwnershipWWNs) is a name the client set or derives,
+// shown as it is whatever it contains; any other is masked whole. Such a name may be left from a
 // file a failed apply rolled back, so a client may have chosen it; output
 // would mask only a stored secret inside it, which would tell whether a
 // guess in the name is that secret.

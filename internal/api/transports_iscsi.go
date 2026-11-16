@@ -833,12 +833,26 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	// helper does. The helper's messages quote output from outside only
 	// masked that way, and may name a new name, which is kept: the files'
 	// secrets are masked except inside the names of either file. The names
-	// include the target names each file plans (PlannedWWNs): a derived
-	// one, the Base name and ".lib<ID>" or ".tape<ID>", may hold a secret
-	// that spans the two, which must not be masked only when it is the
-	// guess.
+	// include every target name the helper's ownership checks may name for
+	// each file (OwnershipWWNs): a derived one, the Base name and
+	// ".lib<ID>" or ".tape<ID>", may hold a secret that spans the two,
+	// which must not be masked only when it is the guess. With a
+	// device.conf upstream may read differently from the model that is
+	// both suffixes, not only the planned one: the helper may refuse a
+	// foreign ".tape<ID>" target where the model plans ".lib<ID>". Keeping
+	// both clear reveals nothing: they are made of the Base name and the
+	// record ID, which GET config shows in clear, and are shown the same
+	// whether or not a secret lies inside. A file whose names cannot be
+	// told gives none, and the helper then names no target either.
+	ownership := func(data []byte) []string {
+		wwns, err := conffile.ParseFabricsConf(data).OwnershipWWNs(f.dev)
+		if err != nil {
+			return nil
+		}
+		return wwns
+	}
 	fileSecrets := append(append([]string(nil), stored...), conffile.FabricsSecrets(next)...)
-	storedWWNs := conffile.ParseFabricsConf(f.data).PlannedWWNs(f.dev)
+	storedWWNs := ownership(f.data)
 	storedNames := append(conffile.FabricsClearValues(f.data), storedWWNs...)
 	newNames := conffile.FabricsNewValues(f.data, next)
 	allNames := append(append([]string(nil), storedNames...), conffile.FabricsClearValues(next)...)
@@ -846,7 +860,7 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	for _, w := range storedWWNs {
 		plannedBefore[w] = true
 	}
-	for _, w := range f.conf.PlannedWWNs(f.dev) {
+	for _, w := range ownership(next) {
 		allNames = append(allNames, w)
 		if !plannedBefore[w] {
 			newNames = append(newNames, w)
