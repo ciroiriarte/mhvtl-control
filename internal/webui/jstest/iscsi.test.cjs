@@ -271,10 +271,15 @@ test("iscsiOutcome maps write responses", () => {
   const a = core.iscsiOutcome({ dry_run: false, action: "start", result: "applied" }, 200);
   assert.strictEqual(a.kind, "applied");
   assert.ok(/^Applied \(start/.test(a.text));
-  const rb = core.iscsiOutcome({ dry_run: false, result: "rolled_back", message: "mhvtl-fabrics failed", journal_tail: "line1\nline2",
+  // The node answers no journal for mhvtl-fabrics.service: the outcome
+  // points at the logs, unless the message already does.
+  const rb = core.iscsiOutcome({ dry_run: false, result: "rolled_back", message: "mhvtl-fabrics failed", failed_unit: "mhvtl-fabrics.service",
     rollback_dir: "/var/lib/mhvtl-control-apply/rollback/1" }, 500);
-  assert.deepStrictEqual([rb.kind, rb.tail], ["rolled_back", "line1\nline2"]);
+  assert.deepStrictEqual([rb.kind, rb.tail, rb.hint], ["rolled_back", undefined, "See journalctl -u mhvtl-fabrics.service and the mhvtl-control audit log on the node."]);
   assert.ok(rb.text.includes("mhvtl-fabrics failed") && rb.text.includes("/rollback/1"));
+  const fixed = "systemctl reload mhvtl-fabrics.service failed (exit status 1); fabrics.conf restored; see journalctl -u mhvtl-fabrics.service and the mhvtl-control audit log";
+  const rbf = core.iscsiOutcome({ dry_run: false, result: "rolled_back", message: fixed, failed_unit: "mhvtl-fabrics.service" }, 500);
+  assert.deepStrictEqual([rbf.kind, rbf.hint, rbf.text], ["rolled_back", "", "The change was rolled back: " + fixed]);
   // A rollback that left mhvtl.target stopped is not shown as a plain one.
   const rbs = core.iscsiOutcome({ dry_run: false, result: "rolled_back", error: { code: "fabrics_recovery_required", message: "start_failed: x; mhvtl.target was left stopped: y" } }, 500);
   assert.strictEqual(rbs.kind, "rolled_back_stopped");
@@ -310,8 +315,8 @@ test("iscsiOutcome maps write responses", () => {
   assert.strictEqual(core.iscsiOutcome({ error: { code: "helper_absent", message: "h" } }, 503).kind, "readonly");
   const ref = core.iscsiOutcome({ result: "refused", message: "helper refused" }, 400);
   assert.deepStrictEqual([ref.kind, ref.text], ["refused", "helper refused"]);
-  const err = core.iscsiOutcome({ result: "error", error: { message: "boom" }, journal_tail: "j" }, 500);
-  assert.deepStrictEqual([err.kind, err.text, err.tail], ["error", "boom", "j"]);
+  const err = core.iscsiOutcome({ result: "error", error: { message: "boom" }, failed_unit: "mhvtl-fabrics.service" }, 500);
+  assert.deepStrictEqual([err.kind, err.text, err.hint], ["error", "boom", "See journalctl -u mhvtl-fabrics.service and the mhvtl-control audit log on the node."]);
   assert.strictEqual(core.iscsiOutcome({ error: { message: "network" } }, 0).kind, "error");
   assert.ok(/No answer/.test(core.iscsiOutcome(null, 0).text));
   assert.strictEqual(core.iscsiOutcome(null, 500).kind, "error");
@@ -333,7 +338,7 @@ test("no outcome text carries a secret from the request", () => {
   const answers = [
     [{ dry_run: true, action: "reload", diff: "+  CHAP secret: ********\n", result: "validated" }, 200],
     [{ dry_run: false, action: "reload", result: "applied" }, 200],
-    [{ result: "rolled_back", message: "failed", journal_tail: "t" }, 500],
+    [{ result: "rolled_back", message: "failed", failed_unit: "mhvtl-fabrics.service" }, 500],
     [{ error: { code: "invalid", message: "CHAP secret too short", field: "chap.secret" } }, 422],
     [{ error: { code: "conflict" } }, 409],
     [{}, 0],

@@ -1344,7 +1344,7 @@
   }
 
   // iscsiShow fills the dialog's result area: a message (tone "error" or
-  // "muted"), and optionally the action, the diff and a journal tail.
+  // "muted"), and optionally the action, the diff and where the logs are.
   function iscsiShow(o) {
     var box = $("iscsi-preview");
     clear(box);
@@ -1358,7 +1358,7 @@
       lines.forEach(function (l) { pre.appendChild(mk("span", { class: l.cls, text: l.text + "\n" })); });
       box.appendChild(pre);
     }
-    if (o.tail) { box.appendChild(mk("pre", { class: "diff", text: o.tail })); }
+    if (o.hint) { box.appendChild(mk("p", { class: "muted", text: o.hint })); }
   }
 
   // iscsiSetPreviewed enables Apply for the change previewed last; off
@@ -1477,7 +1477,7 @@
         case "not_bound":
         case "rolled_back":
         case "rolled_back_stopped":
-          iscsiShow({ error: o.text, tail: o.tail });
+          iscsiShow({ error: o.text, hint: o.hint });
           iscsiReload();
           return;
         case "readonly":
@@ -1485,7 +1485,7 @@
           refreshConfig(NodeState.generation, currentAbort ? currentAbort.signal : undefined);
           return;
       }
-      iscsiShow({ error: o.text, tail: o.tail });
+      iscsiShow({ error: o.text, hint: o.hint });
     }).catch(function (e) {
       if (iscsiCtx !== ctx) { return; }
       $("iscsi-preview-btn").disabled = false;
@@ -3079,11 +3079,13 @@
   }
 
   // renderResult shows what a failed apply reported: the unit that failed
-  // and its journal, and the cartridges a rollback left aside.
+  // and its journal, or where its logs are when the node answers none
+  // (core.logsHint), and the cartridges a rollback left aside.
   function renderResult(box, res) {
     if (!res) { return; }
     var lines = [];
     if (res.failed_unit) { lines.push("Failed unit: " + String(res.failed_unit)); }
+    if (core.logsHint(res)) { lines.push(core.logsHint(res)); }
     coerceArray(res.orphaned_media).forEach(function (b) { lines.push("Created, kept in its home, in no slot: " + String(b)); });
     coerceArray(res.unplaced).forEach(function (b) { lines.push("No slot was free, kept on the shelf: " + String(b)); });
     coerceArray(res.forced_unloads).forEach(function (u) {

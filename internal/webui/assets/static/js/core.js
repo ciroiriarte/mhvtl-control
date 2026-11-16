@@ -1390,15 +1390,27 @@
     return { ok: true, title: title, text: parts.join(" "), okLabel: verb };
   }
 
+  // logsHint points at a failed unit's logs when the answer has no journal
+  // lines for it: the node answers them only for vtllibrary@, vtltape@ and
+  // mhvtl-media.service, never for a unit whose output may quote
+  // fabrics.conf. "" without a unit, or when there are lines.
+  function logsHint(res) {
+    if (!res || !res.failed_unit || res.journal_tail) { return ""; }
+    return "See journalctl -u " + String(res.failed_unit) + " and the mhvtl-control audit log on the node.";
+  }
+
   // serviceResultText is how the Service table shows a service action's
   // answer, or the error of a failed call (its body): {tone, text, tail},
-  // tail being the failed unit's journal.
+  // tail being the failed unit's journal when the node answers it; else the
+  // text points at the logs (logsHint).
   function serviceResultText(res) {
     res = res || {};
     var code = res.error && res.error.code ? String(res.error.code) : "";
     var msg = res.error && res.error.message ? String(res.error.message) : "";
     var what = (SERVICE_ACTIONS[res.action] || "Action") + " of " + (res.target ? "mhvtl.target" : "library " + coerceNumber(res.library));
     var tail = res.journal_tail ? String(res.journal_tail) : "";
+    var hint = logsHint(res);
+    if (hint) { msg = msg ? msg + (/[.!?]$/.test(msg) ? " " : ". ") + hint : hint; }
     var failed = res.failed_unit ? " " + String(res.failed_unit) + " did not start." : "";
     switch (String(res.result || "")) {
       case "applied":
@@ -1963,14 +1975,16 @@
   // mhvtl.target stopped: fabrics_recovery_required), invalid (field: the
   // request field to fix),
   // conflict (409: reload and redo), not_bound, readonly, refused or error.
-  // text is built from the daemon's message, never from the request.
+  // text is built from the daemon's message, never from the request. The
+  // node answers no journal lines for mhvtl-fabrics.service: hint points at
+  // them when the message does not already.
   function iscsiOutcome(res, status) {
     res = res && typeof res === "object" ? res : {};
     status = coerceNumber(status);
     var err = res.error && typeof res.error === "object" ? res.error : {};
     var code = String(err.code || "");
     var msg = String(err.message || res.message || "");
-    var out = { kind: "error", text: "", field: "", tail: "", diff: String(res.diff || ""),
+    var out = { kind: "error", text: "", field: "", hint: "", diff: String(res.diff || ""),
       action: String(res.action || ""), actionText: iscsiActionText(res.action), rollbackDir: String(res.rollback_dir || "") };
     var result = String(res.result || "");
     if (!status) {
@@ -2021,7 +2035,7 @@
         head = "Rolled back; mhvtl.target left stopped";
       }
       out.text = head + (msg ? ": " + msg : ".") + (out.rollbackDir ? " The files it replaced are in " + out.rollbackDir + "." : "");
-      out.tail = String(res.journal_tail || "");
+      if (msg.indexOf("journalctl") < 0) { out.hint = logsHint(res); }
       return out;
     }
     if (status === 422 || err.field) {
@@ -2065,7 +2079,7 @@
       return out;
     }
     out.text = msg || ("The change failed" + (result ? " (" + result + ")" : "") + ": HTTP " + status + ".");
-    if (res.journal_tail) { out.tail = String(res.journal_tail); }
+    if (msg.indexOf("journalctl") < 0) { out.hint = logsHint(res); }
     return out;
   }
 
@@ -2155,6 +2169,7 @@
     servicePath: servicePath,
     serviceConfirmText: serviceConfirmText,
     serviceResultText: serviceResultText,
+    logsHint: logsHint,
     encryptionBadge: encryptionBadge,
     transportDeviceText: transportDeviceText,
     transportSessionText: transportSessionText,

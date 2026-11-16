@@ -184,6 +184,10 @@ test("serviceResultText shows applied, rolled_back, recovered and errors", () =>
   assert.match(forced.text, /^Stop of mhvtl\.target done\. E01001L8 went back from drive 11 to slot 3$/);
   const rb = core.serviceResultText({ result: "rolled_back", action: "start", library: 10, failed_unit: "vtltape@11.service", journal_tail: "j", error: { code: "rolled_back", message: "start failed" } });
   assert.deepStrictEqual(rb, { tone: "error", text: "Start of library 10 failed and was rolled back: the units are back as they were. vtltape@11.service did not start. start failed", tail: "j" });
+  // No journal lines (mhvtl.target, a support unit): the text points at
+  // the logs, and there is no empty journal block.
+  const nt = core.serviceResultText({ result: "rolled_back", action: "restart", target: true, failed_unit: "mhvtl.target", error: { code: "rolled_back", message: "start failed" } });
+  assert.deepStrictEqual(nt, { tone: "error", text: "Restart of mhvtl.target failed and was rolled back: the units are back as they were. mhvtl.target did not start. start failed. See journalctl -u mhvtl.target and the mhvtl-control audit log on the node.", tail: "" });
   // A rollback that left mhvtl.target stopped does not say the units are back.
   const rbs = core.serviceResultText({ result: "rolled_back", action: "restart", target: true, failed_unit: "vtltape@34.service",
     error: { code: "fabrics_recovery_required", message: "start_failed: x; mhvtl.target was left stopped: y" } });
