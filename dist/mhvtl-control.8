@@ -139,7 +139,22 @@ Base name with
 and
 .BI .tape ID\fR);
 when a target record's name cannot be told at all, they are refused with
-.BR invalid .
+.BR invalid ,
+and starting or restarting
+.B mhvtl.target
+through the helper stays blocked until
+.I fabrics.conf
+is fixed.
+Every name is checked the same way, here, for an iSCSI bind and for a
+.I device.conf
+edit, when
+.B mhvtl-fabrics
+may read
+.I device.conf
+differently from the helper: a
+.I device.conf
+with problems, or with a line longer than 1023 bytes (read as two lines)
+or holding a NUL byte.
 A rollback or crash recovery of a target restart or stop that would start
 .B mhvtl.target
 again is checked the same way: it then leaves the target and the bay

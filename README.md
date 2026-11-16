@@ -592,7 +592,13 @@ every name its target records could get (each `Target name`, and each
 `Base name` with `.lib<ID>` and `.tape<ID>`), here and for the
 configuration apply that sets `MHVTL_BACKEND=tcmu`; when a target record's
 name cannot be told at all (no `Target name`, and no `Base name` or no ID
-that parses), they are refused with `invalid`. A rollback or crash
+that parses), they are refused with `invalid`, and starting or restarting
+`mhvtl.target` through the helper stays blocked until `fabrics.conf` is
+fixed. Every name is checked the same way, here, for an iSCSI bind and for a
+`device.conf` edit, when `mhvtl-fabrics` may read `device.conf`
+differently from the helper: a `device.conf` with problems, or with a line
+longer than 1023 bytes (which `mhvtl-fabrics` reads as two lines) or
+holding a NUL byte. A rollback or crash
 recovery of a target restart or stop that would start `mhvtl.target` again
 is checked the same way: it then leaves `mhvtl.target` (and the bay
 monitor) stopped, completes, and answers `500 fabrics_recovery_required`
