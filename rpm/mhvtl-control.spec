@@ -143,6 +143,8 @@ fi
 %{_unitdir}/vtllibrary@.service.d/50-mhvtl-control-apply-recover.conf
 %dir %{_unitdir}/vtltape@.service.d
 %{_unitdir}/vtltape@.service.d/50-mhvtl-control-apply-recover.conf
+%dir %{_unitdir}/mhvtl-fabrics.service.d
+%{_unitdir}/mhvtl-fabrics.service.d/50-mhvtl-control-reload.conf
 %{_tmpfilesdir}/mhvtl-control.conf
 %{_presetdir}/50-mhvtl-control.preset
 %{_mandir}/man8/mhvtl-control.8*

@@ -678,8 +678,8 @@ func (x *execution) stopTarget(ctx context.Context) error {
 // startTarget is a target start (plan 4.2): systemctl start mhvtl.target,
 // then a wait for each unit of the plan, the instances it starts. It stops
 // nothing and writes nothing, so it keeps no intent; a unit that does not
-// come up is reported with its journal, and the rest are left as systemd
-// left them.
+// come up is reported with its journal (journalTail), and the rest are
+// left as systemd left them.
 func (h *Helper) startTarget(ctx context.Context, req *Request, c *checked) Response {
 	resp := Response{Result: ResultApplied, Units: c.plan.Units(), Warnings: c.warnings}
 	if err := supportAllowed(req, mhvtlTarget); err != nil {
@@ -701,12 +701,28 @@ func (h *Helper) startTarget(ctx context.Context, req *Request, c *checked) Resp
 		return resp
 	}
 	resp.Result, resp.Error, resp.Message, resp.FailedUnit = ResultError, ErrStart, err.Error(), unitOf(err)
-	if resp.FailedUnit != "" && h.cfg.JournalTail != nil {
-		if out, jerr := h.cfg.JournalTail(ctx, resp.FailedUnit); jerr == nil {
-			resp.JournalTail = string(out)
-		}
-	}
+	resp.JournalTail = h.journalTail(ctx, resp.FailedUnit)
 	return resp
+}
+
+// journalTail is the last journal lines of unit for an answer, "" unless
+// unit is a vtllibrary@ or vtltape@ instance or mhvtl-media.service: those
+// run vtllibrary, vtltape and make_vtl_media, which read device.conf and
+// mhvtl.conf and never fabrics.conf, and nothing a client sets in
+// fabrics.conf reaches them. mhvtl.target's start pulls in
+// mhvtl-fabrics.service, and the TCMU handler serves the backstores it
+// exports, so their journals, like mhvtl-fabrics.service's, are not
+// answered: what mhvtl-fabrics logs may quote fabrics.conf
+// (fabricsRunError). journalctl -u shows them.
+func (h *Helper) journalTail(ctx context.Context, unit string) string {
+	if h.cfg.JournalTail == nil || !unitRE.MatchString(unit) && unit != mediaService {
+		return ""
+	}
+	out, err := h.cfg.JournalTail(ctx, unit)
+	if err != nil {
+		return ""
+	}
+	return string(out)
 }
 
 // stopped ends a service stop after its write: the units stay down, and
@@ -1237,11 +1253,7 @@ func (x *execution) rollback(ctx context.Context, cause error) Response {
 	defer cancel()
 
 	resp := Response{Result: ResultRolledBack, Error: codeOf(cause), Message: cause.Error(), FailedUnit: unitOf(cause)}
-	if resp.FailedUnit != "" && h.cfg.JournalTail != nil {
-		if out, err := h.cfg.JournalTail(rctx, resp.FailedUnit); err == nil {
-			resp.JournalTail = string(out)
-		}
-	}
+	resp.JournalTail = h.journalTail(rctx, resp.FailedUnit)
 	started := set(x.it.Exec.Started)
 	var libs []StopLib
 	covered := map[string]bool{}
@@ -1273,6 +1285,17 @@ func (x *execution) rollback(ctx context.Context, cause error) Response {
 	}
 	if err == nil {
 		resp.Unplaced, err = h.unwind(rctx, x.it, again)
+		var tns *targetNotStarted
+		if errors.As(err, &tns) {
+			// The rollback completed, but mhvtl.target is left stopped:
+			// the code says so, and the message keeps the cause's.
+			if resp.Error != "" && !strings.HasPrefix(resp.Message, resp.Error+": ") {
+				resp.Message = resp.Error + ": " + resp.Message
+			}
+			resp.Error = ErrFabricsState
+			resp.Message += "; " + tns.Error()
+			err = nil
+		}
 	}
 	if err == nil {
 		err = h.removeIntent()
@@ -1444,8 +1467,16 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 		return unplaced, err
 	}
 	// The target starts once the libraries are online (see finish); it
-	// also pulls in mhvtl-control-apply-recover.service, harmlessly.
+	// also pulls in mhvtl-control-apply-recover.service, harmlessly. It
+	// starts mhvtl-fabrics.service too, so it is checked as a target start
+	// through the helper is (checkTargetFabrics) against the files as
+	// restored: when the unit's apply would adopt a foreign target, or
+	// that cannot be told, the target and the bay monitor, WantedBy= it,
+	// stay stopped (targetNotStarted).
 	if ex.TargetStopped {
+		if err := h.checkTargetFabrics(ctx, files, false); err != nil {
+			return unplaced, &targetNotStarted{err: err}
+		}
 		if _, err := h.cfg.Systemctl(ctx, "start", mhvtlTarget); err != nil {
 			return unplaced, fmt.Errorf("systemctl start %s: %w", mhvtlTarget, err)
 		}
@@ -1457,6 +1488,32 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 	}
 	return unplaced, nil
 }
+
+// targetNotStarted is an unwind that left mhvtl.target stopped, and
+// everything else as it should be, because starting it could have
+// mhvtl-fabrics adopt a target it does not own (err, from
+// checkTargetFabrics). The rollback or recovery that met it completes and
+// removes the intent rather than keep it: the target stopped is a state a
+// later start through the helper checks the same way, and a kept intent
+// would have every request, the iSCSI unbind that resolves it included,
+// recover first and fail. Its message tells a foreign target found
+// (foreignStart) from a check that could not tell, such as a systemctl
+// show that failed or a state file that cannot be read.
+type targetNotStarted struct{ err error }
+
+func (e *targetNotStarted) Error() string {
+	msg := e.err.Error()
+	if _, m, ok := Refused(e.err); ok {
+		msg = m
+	}
+	var fs *foreignStart
+	if errors.As(e.err, &fs) {
+		return mhvtlTarget + " was left stopped: foreign iSCSI target found (" + strings.Join(fs.wwns, ", ") + "): " + msg + "; then start " + mhvtlTarget + " (service start)"
+	}
+	return mhvtlTarget + " was left stopped: could not tell whether starting it would have " + FabricsUnit + " take over an iSCSI target it does not own (" + msg + "); fix that, then start " + mhvtlTarget + " (service start)"
+}
+
+func (e *targetNotStarted) Unwrap() error { return e.err }
 
 // writePlacement writes p into library id's restored library_contents. A
 // file that is not the original the intent recorded changed after the

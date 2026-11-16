@@ -218,7 +218,7 @@ func (s *Server) serviceStatus(ctx context.Context) serviceDTO {
 					unitsDone <- unitsAnswer{err: errors.New("the apply helper units request failed; the daemon log has the cause")}
 				}
 			}()
-			resp, err := s.cfg.Helper.Do(ctx, apply.Request{Op: apply.OpUnits})
+			resp, err := s.helperDo(ctx, apply.Request{Op: apply.OpUnits})
 			unitsDone <- unitsAnswer{resp, err}
 		}()
 	}

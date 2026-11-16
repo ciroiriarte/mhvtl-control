@@ -91,10 +91,17 @@ type Config struct {
 	// read for its --per-library-home option.
 	MakeVTLMedia string
 	// JournalTail returns the last journal lines of a unit, for the
-	// response of a rollback.
+	// response of a rollback (journalTail) and, for
+	// mhvtl-fabrics.service, the audit log.
 	JournalTail func(ctx context.Context, unit string) ([]byte, error)
 	// ReadTimeout bounds reading the request.
 	ReadTimeout time.Duration
+	// FabricsState is mhvtl-fabrics' state file, the targets it owns
+	// (fabricsOwned).
+	FabricsState string
+	// TargetRoot is LIO's configfs directory, read for targets that exist
+	// but mhvtl-fabrics does not own (checkForeignTargets).
+	TargetRoot string
 }
 
 // DefaultHome is the installed helper's media home of a library when
@@ -147,6 +154,12 @@ func DefaultConfig(configDir, version string) Config {
 		},
 		Logf:        logf,
 		ReadTimeout: 30 * time.Second,
+		// fab_state_path, markh794/mhvtl usr/fabrics_cfs.c at 19b71bd,
+		// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L43
+		FabricsState: "/run/mhvtl/fabrics.state",
+		// cfs_root,
+		// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L40
+		TargetRoot: "/sys/kernel/config/target",
 	}
 }
 
@@ -267,7 +280,12 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 	if it != nil {
 		return h.recover(ctx, it, false, req.Actor, peer)
 	}
-	resp := h.handle(ctx, req, &rec)
+	var resp Response
+	if fabricsOp(req.Op) {
+		resp = h.fabrics(ctx, req, &rec)
+	} else {
+		resp = h.handle(ctx, req, &rec)
+	}
 	if !planning(req.Op) || resp.Result != ResultValidated {
 		h.auditResponse(rec, resp)
 	}
@@ -275,7 +293,7 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 }
 
 func (h *Helper) auditResponse(rec AuditRecord, resp Response) {
-	rec.Result, rec.Error, rec.Message, rec.Conflicts = resp.Result, resp.Error, resp.Message, resp.Conflicts
+	rec.Result, rec.Error, rec.Message, rec.Conflicts, rec.Detail = resp.Result, resp.Error, resp.Message, resp.Conflicts, resp.Detail
 	rec.OrphanedMedia, rec.ForcedUnloads, rec.Unplaced = resp.OrphanedMedia, resp.ForcedUnloads, resp.Unplaced
 	h.audit(rec)
 }
@@ -504,6 +522,9 @@ func (h *Helper) check(ctx context.Context, req *Request, files *fileSet, rec *A
 			return nil, refuse(ErrNotWritable, "%s: %v", f.Name, werr)
 		}
 	}
+	if err := h.checkFabricsDevices(ctx, files, next); err != nil {
+		return nil, err
+	}
 
 	cur, err := config.ReadInventory(h.cfg.ConfigDir, reader(files.current))
 	if err != nil && !missingDeviceConf(err) {
@@ -612,7 +633,7 @@ func libraryIDs(inv config.Inventory) map[int]bool {
 func responseOf(err error) Response {
 	var r *refusal
 	if errors.As(err, &r) {
-		return Response{Result: ResultRefused, Error: r.code, Message: r.msg}
+		return Response{Result: ResultRefused, Error: r.code, Message: r.msg, Detail: r.detail}
 	}
 	if c, ok := conflictOf(err); ok {
 		cur := c.Current

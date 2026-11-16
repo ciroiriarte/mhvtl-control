@@ -122,7 +122,7 @@ func (h *Helper) readIntent() (*Intent, error) {
 		return nil, fmt.Errorf("%s: version %d, want %d", h.intentPath(), it.V, Version)
 	}
 	for _, f := range it.Files {
-		if _, ok := libraryOf(f.Name); !ok && f.Name != deviceConf && f.Name != mhvtlConf {
+		if _, ok := libraryOf(f.Name); !ok && f.Name != deviceConf && f.Name != mhvtlConf && f.Name != fabricsConf {
 			return nil, fmt.Errorf("%s: names %q", h.intentPath(), f.Name)
 		}
 	}

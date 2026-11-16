@@ -46,7 +46,7 @@ func cScanf(s, format string) int {
 // cScan is cScanf that also returns the converted values. A value outside
 // int64 is returned as math.MaxInt64 or math.MinInt64 (strconv.ParseInt's
 // result on overflow). C's %d truncates to 32 bits instead, so
-// "Drive: 4294967307" is 11 to mhVTL; that difference is not modelled.
+// "Drive: 4294967307" is 11 to mhVTL; callers that need that apply cInt.
 func cScan(s, format string) (int, []int64) {
 	n, i := 0, 0
 	var vals []int64
@@ -113,6 +113,12 @@ func cScan(s, format string) (int, []int64) {
 	}
 	return n, vals
 }
+
+// cInt is a %d value as glibc's sscanf stores it in an int: the long
+// strtol converted, truncated to its low 32 bits. On overflow strtol gives
+// LONG_MAX or LONG_MIN (cScan's math.MaxInt64 and math.MinInt64), which
+// truncate to -1 and 0. So "Slot: 4294967297" is 1.
+func cInt(v int64) int64 { return int64(int32(v)) }
 
 func isDigit(c byte, hex bool) bool {
 	return c >= '0' && c <= '9' || hex && (c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F')

@@ -26,7 +26,7 @@ func (h *Helper) recover(ctx context.Context, it *Intent, boot bool, actor strin
 	if it.RollbackDir != "" {
 		resp.RollbackDir = filepath.Join(h.cfg.StateDir, rollbackDir, it.RollbackDir)
 	}
-	rec.Result, rec.Error, rec.Message, rec.Conflicts, rec.RollbackDir = resp.Result, resp.Error, resp.Message, resp.Conflicts, resp.RollbackDir
+	rec.Result, rec.Error, rec.Message, rec.Conflicts, rec.RollbackDir, rec.Detail = resp.Result, resp.Error, resp.Message, resp.Conflicts, resp.RollbackDir, resp.Detail
 	rec.OrphanedMedia = resp.OrphanedMedia
 	h.audit(rec)
 	return resp
@@ -48,6 +48,15 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 			return responseOf(err)
 		}
 	}
+	// A fabrics apply that died may have left its new file in place, whose
+	// secrets the audit log masks and whose names a client knows: read it
+	// before the restore.
+	var halfApplied []byte
+	if it.Op == OpFabrics {
+		if cur, err := readTarget(h.cfg.ConfigDir, fabricsConf); err == nil {
+			halfApplied = cur.data
+		}
+	}
 	conflicts, err := h.restore(it)
 	if err != nil {
 		return responseOf(fmt.Errorf("recovery: %w", err))
@@ -56,15 +65,43 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 	if err := h.saveIntent(it); err != nil {
 		return responseOf(err)
 	}
+	var notStarted *targetNotStarted
 	if units {
-		if err := h.cfg.Lifecycle.Start(ctx, it); err != nil {
+		if err := h.cfg.Lifecycle.Start(ctx, it); err != nil && !errors.As(err, &notStarted) {
 			return responseOf(fmt.Errorf("recovery: starting: %w", err))
 		}
+	}
+	// A fabrics apply that died may have half-applied the new file: the
+	// targets follow the restored one (reconcileFabrics). At boot the unit
+	// has not started yet and applies the restored file itself. When that
+	// fails, reconcileFailed keeps the intent for a busy unit and otherwise
+	// records the fabrics marker for the next fabrics request.
+	var fabricsNote string
+	if it.Op == OpFabrics && !boot {
+		removed := h.newFabricsRemoved(it)
+		var original []byte
+		for _, f := range it.Files {
+			if f.Name == fabricsConf {
+				original = f.Original
+			}
+		}
+		// The answer quotes nothing from outside the helper; that goes to
+		// the audit log (auditDetail).
+		k := h.fabricsKnown(original, halfApplied)
+		note, err := h.reconcileFabrics(ctx, removed, k)
+		if err != nil {
+			return Response{Result: ResultError, Error: ErrFabricsState, Conflicts: conflicts,
+				Message: "recovery: " + h.reconcileFailed(err, removed) + "; " + fabricsLogs, Detail: k.audit(auditDetail(err))}
+		}
+		fabricsNote = note
 	}
 	if err := h.removeIntent(); err != nil {
 		return responseOf(err)
 	}
 	msg := fmt.Sprintf("recovered the %s of %s by %q; plan again", it.Op, it.Started.Format("2006-01-02 15:04:05Z07:00"), it.Actor)
+	if fabricsNote != "" {
+		msg += "; " + fabricsNote
+	}
 	if it.Op == OpService+":"+ActionStop && units && it.Exec != nil && (stoppedActive(it.Exec.Stops) || len(it.Exec.StandaloneStopped) > 0) {
 		// unwind starts again every unit the stop had stopped of a library
 		// that ran, and every standalone drive it had stopped (journaled
@@ -81,6 +118,12 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 		msg += "; " + restoreConflicts(conflicts).Error()
 	}
 	resp := Response{Result: ResultRecovered, Message: msg, Conflicts: conflicts}
+	if notStarted != nil {
+		// The intent is gone, as after any recovery; the answer is an
+		// error so the client sees what is left to do.
+		resp.Result, resp.Error = ResultError, ErrFabricsState
+		resp.Message += "; " + notStarted.Error()
+	}
 	if it.Exec != nil {
 		resp.OrphanedMedia = it.Exec.NewMedia
 	}

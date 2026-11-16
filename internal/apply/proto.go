@@ -60,6 +60,14 @@ const (
 	// service_plan only when it is refused.
 	OpServicePlan = "service_plan"
 	OpService     = "service"
+	// OpFabricsPlan checks a new fabrics.conf (one File, nothing else) and
+	// reports how mhvtl-fabrics.service would apply it (FabricsAction);
+	// OpFabrics writes it root:root 0600 and reloads or starts the unit,
+	// restoring the file when that fails (fabrics.go, mhvtl-control#6).
+	// Both take the lock; fabrics is audited with a diff whose CHAP
+	// secrets are masked, and a fabrics_plan only when it is refused.
+	OpFabricsPlan = "fabrics_plan"
+	OpFabrics     = "fabrics"
 )
 
 // Service actions. A restart and a stop run the apply sequence on the
@@ -226,11 +234,22 @@ type Response struct {
 	// rollback: the unit whose start failed and its last journal lines,
 	// the cartridges the apply created that the restored configuration
 	// does not list (kept in their home), and the cartridges no slot of
-	// the restored layout was free for (kept on the shelf).
+	// the restored layout was free for (kept on the shelf). JournalTail is
+	// given only for a unit whose journal cannot quote fabrics.conf
+	// (journalTail); never for mhvtl-fabrics.service.
 	FailedUnit    string   `json:"failed_unit,omitempty"`
 	JournalTail   string   `json:"journal_tail,omitempty"`
 	OrphanedMedia []string `json:"orphaned_media,omitempty"`
 	Unplaced      []string `json:"unplaced,omitempty"`
+	// FabricsAction answers the fabrics ops: reload, start, or none when
+	// mhvtl.target is not running and the unit applies the file when it
+	// starts.
+	FabricsAction string `json:"fabrics_action,omitempty"`
+	// Detail is text from outside the helper that the answer leaves out,
+	// such as what systemctl and mhvtl-fabrics.service printed when a
+	// reload failed: it may quote fabrics.conf. It goes to the audit log
+	// only, never to the client.
+	Detail string `json:"-"`
 }
 
 // UnitStatus is a unit as systemctl show reports it. A unit systemd does
@@ -316,6 +335,8 @@ const (
 // refusal is a request the helper will not carry out.
 type refusal struct {
 	code, msg string
+	// detail is Response.Detail.
+	detail string
 }
 
 func (r *refusal) Error() string { return r.code + ": " + r.msg }
@@ -365,6 +386,10 @@ func DecodeRequest(r io.Reader) (*Request, error) {
 		}
 	case OpServicePlan, OpService:
 		if err := checkServiceRequest(&req); err != nil {
+			return nil, err
+		}
+	case OpFabricsPlan, OpFabrics:
+		if err := checkFabricsRequest(&req); err != nil {
 			return nil, err
 		}
 	default:

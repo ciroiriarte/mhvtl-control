@@ -150,7 +150,7 @@ func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request, library b
 			defer unlock()
 		}
 	}
-	resp, err := s.cfg.Helper.Do(ctx, hreq)
+	resp, err := s.helperDo(ctx, hreq)
 	s.forgetHello()
 	if !req.DryRun {
 		s.service.forget()
@@ -164,7 +164,7 @@ func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request, library b
 		return
 	}
 	status, code := serviceHTTPStatus(resp)
-	out := serviceResultDTO{applyResultDTO: applyResultOf(resp, code), Action: action, Target: lib == nil, Library: lib}
+	out := serviceResultDTO{applyResultDTO: s.applyResultOf(resp, code), Action: action, Target: lib == nil, Library: lib}
 	if !req.DryRun {
 		out.ForceToken, out.ForceExpires = "", nil
 	}

@@ -1,6 +1,10 @@
 package apply
 
 import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,6 +45,28 @@ func start(op string, units ...string) Request {
 func standalone34(e *env) {
 	e.replaceFile("device.conf", " Library ID: 30 Slot: 04", " Library ID: 0 Slot: 00")
 	e.replaceFile("library_contents.30", "Drive 4:\n", "")
+}
+
+// longDrive99 is a device.conf comment line that fab_topology_parse
+// reads in two fgets calls into its 1024-byte buffer
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_conf.c#L469-L475):
+// 1023 bytes, then "Drive: 99", a standalone drive upstream plans a target
+// for. The Go model reads one comment line and no Drive 99.
+var longDrive99 = "# " + strings.Repeat("x", 1021) + "Drive: 99\n"
+
+const (
+	// fabConf99 exports device 99, which device.conf has only in
+	// longDrive99.
+	fabConf99 = "VERSION: 1\n\niSCSI:\n Base name: iqn.2003-01.org.linux-iscsi.vtl1:mhvtl\n\niSCSI target: 99\n"
+	tape99    = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.tape99"
+)
+
+// addLongDrive99 appends longDrive99 to device.conf.
+func addLongDrive99(e *env) {
+	e.t.Helper()
+	if err := os.WriteFile(filepath.Join(e.dir, "device.conf"), append(e.read("device.conf"), longDrive99...), 0o644); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // partOf has stopping mhvtl.target stop its support units, as PartOf= does.
@@ -849,5 +875,413 @@ func TestServiceTargetLibraryAddedAfterPlan(t *testing.T) {
 		if strings.HasPrefix(c, "stop ") || strings.HasPrefix(c, "start ") {
 			t.Errorf("refused action ran %q", c)
 		}
+	}
+}
+
+// A target start or restart through the helper starts
+// mhvtl-fabrics.service, whose apply would adopt a target fabrics.conf
+// plans that exists in configfs and mhvtl-fabrics does not own: the plan
+// and the action are refused, naming it, and nothing is stopped or
+// started. A start with the unit active leaves it alone, and a target the
+// state file lists is mhvtl-fabrics' own. An mhvtl.conf the helper cannot
+// tell the backend of (a backslash in a comment, which systemd accepts)
+// is checked: systemd may pass tcmu. Nothing is checked with a backend
+// that is not tcmu, the unit not installed, or no fabrics.conf: there the
+// action runs. A fabrics.conf with problems is checked for every name its
+// target records could get, and refused when one cannot be told.
+func TestServiceTargetForeignFabricsTarget(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	type tc struct {
+		name, action, fabrics, state string
+		mhvtlAdd                     string // appended to mhvtl.conf after MHVTL_BACKEND=tcmu
+		load                         string // the unit's LoadState; "" is loaded
+		conf                         string // fabrics.conf; "" is fabConf, "-" none
+		refused                      bool
+		msg                          string // in the refusal; "" is the foreign target
+		wwn                          string // the target in configfs; "" is lib10
+		long99                       bool   // device.conf ends in longDrive99
+	}
+	setup := func(t *testing.T, c tc) (*env, *fakeSystem) {
+		t.Helper()
+		e, s := newExecEnv(t)
+		e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
+		e.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
+		load := c.load
+		if load == "" {
+			load = "loaded"
+		}
+		sysctl := e.cfg.Systemctl
+		e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) == 4 && args[0] == "show" && args[1] == "--property=LoadState" && args[3] == FabricsUnit {
+				return []byte(load + "\n"), nil
+			}
+			return sysctl(ctx, args...)
+		}
+		e.rebuild()
+		if c.long99 {
+			addLongDrive99(e)
+		}
+		files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n" + c.mhvtlAdd}
+		switch c.conf {
+		case "":
+			files[fabricsConf] = fabConf
+		case "-":
+		default:
+			files[fabricsConf] = c.conf
+		}
+		for name, data := range files {
+			if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		wwn := c.wwn
+		if wwn == "" {
+			wwn = lib10
+		}
+		if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", wwn, "tpgt_1"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if c.state != "" {
+			if err := os.WriteFile(e.cfg.FabricsState, []byte(c.state), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return e, s
+	}
+	for _, c := range []tc{
+		{name: "restart", action: ActionRestart, fabrics: "active", refused: true},
+		{name: "start with the unit inactive", action: ActionStart, fabrics: "inactive", refused: true},
+		{name: "start with the unit failed", action: ActionStart, fabrics: "failed", refused: true},
+		{name: "start with the unit active", action: ActionStart, fabrics: "active"},
+		{name: "restart of an owned target", action: ActionRestart, fabrics: "active", state: "iscsi " + lib10 + "\n"},
+		{name: "restart with the backend unknown", action: ActionRestart, fabrics: "active", mhvtlAdd: "# C:\\backups\n", refused: true},
+		{name: "start with the backend unknown", action: ActionStart, fabrics: "inactive", mhvtlAdd: "# C:\\backups\n", refused: true},
+		{name: "restart with the backend not tcmu", action: ActionRestart, fabrics: "active", mhvtlAdd: "MHVTL_BACKEND=mhvtl\n"},
+		{name: "restart with the unit not installed", action: ActionRestart, fabrics: "inactive", load: "not-found"},
+		{name: "restart with no fabrics.conf", action: ActionRestart, fabrics: "active", conf: "-"},
+		// A file with problems is checked all the same: the model of
+		// upstream's parser may be wrong. Upstream accepts a last line
+		// without a newline that holds a NUL, read up to the NUL.
+		{name: "restart with fabrics.conf unparsable", action: ActionRestart, fabrics: "active", conf: fabConf + "bogus\n", refused: true},
+		{name: "restart with a NUL in an unterminated last comment", action: ActionRestart, fabrics: "active", conf: fabConf + "# comment\x00", refused: true},
+		{name: "start with a NUL in an unterminated last comment", action: ActionStart, fabrics: "inactive", conf: fabConf + "# comment\x00", refused: true},
+		{name: "restart with an owned target and a NUL comment", action: ActionRestart, fabrics: "active", conf: fabConf + "# comment\x00", state: "iscsi " + lib10 + "\n"},
+		{name: "restart with a target name that cannot be told", action: ActionRestart, fabrics: "active",
+			conf: "iSCSI:\n Portal: 192.0.2.1\niSCSI target: 10\nbogus\n", refused: true, msg: "cannot tell which iSCSI targets"},
+		// device.conf read differently upstream: a long comment ending
+		// in a Drive 99 only upstream sees. Every name target 99 could
+		// get is checked.
+		{name: "restart with a long device.conf comment", action: ActionRestart, fabrics: "active", conf: fabConf99, long99: true, wwn: tape99, refused: true},
+		{name: "start with a long device.conf comment", action: ActionStart, fabrics: "inactive", conf: fabConf99, long99: true, wwn: tape99, refused: true},
+		{name: "restart with a long device.conf comment, target owned", action: ActionRestart, fabrics: "active", conf: fabConf99, long99: true, wwn: tape99, state: "iscsi " + tape99 + "\n"},
+		{name: "start with a long device.conf comment, target owned", action: ActionStart, fabrics: "inactive", conf: fabConf99, long99: true, wwn: tape99, state: "iscsi " + tape99 + "\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, s := setup(t, c)
+			s.state[FabricsUnit] = c.fabrics
+			if !c.refused && c.action == ActionStart {
+				// Something for the start to start.
+				for _, u := range targetUnits {
+					s.state[u], s.enabled[u] = "inactive", true
+				}
+				s.onStart = func(u string) {
+					if u == mhvtlTarget {
+						for _, w := range targetUnits {
+							s.state[w] = "active"
+						}
+					}
+				}
+			}
+			pr := e.do(target(OpServicePlan, c.action, nil))
+			if !c.refused {
+				if pr.Result != ResultValidated {
+					t.Fatalf("service_plan: %+v", pr)
+				}
+				resp := e.do(target(OpService, c.action, pr.Units))
+				if resp.Result != ResultApplied || strings.Contains(resp.Message, "does not own") {
+					t.Fatalf("service: %+v", resp)
+				}
+				if !slices.Contains(s.calls, "start "+mhvtlTarget) {
+					t.Errorf("%s not started: %v", mhvtlTarget, s.calls)
+				}
+				if c.action == ActionRestart && !s.before("stop "+mhvtlTarget, "start "+mhvtlTarget) {
+					t.Errorf("%s not restarted: %v", mhvtlTarget, s.calls)
+				}
+				return
+			}
+			want := c.msg
+			if want == "" {
+				want = cmp.Or(c.wwn, lib10)
+				if !strings.Contains(pr.Message, "does not own") {
+					t.Errorf("service_plan: %+v", pr)
+				}
+			}
+			if pr.Result != ResultRefused || pr.Error != ErrInvalid || !strings.Contains(pr.Message, want) {
+				t.Fatalf("service_plan: %+v", pr)
+			}
+			resp := e.do(target(OpService, c.action, targetUnits))
+			if resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, want) {
+				t.Errorf("service: %+v", resp)
+			}
+			if got := filterPrefix(s.calls, "start ", "stop "); len(got) != 0 {
+				t.Errorf("calls %v", got)
+			}
+		})
+	}
+}
+
+// A target stop that died after it journaled stopping mhvtl.target left
+// the target down; the next request's recovery starts it again, which
+// starts mhvtl-fabrics.service. With fabrics.conf planning a target that
+// exists in configfs and mhvtl-fabrics does not own, it is not started:
+// the recovery completes, removes the intent and answers an error naming
+// the target, and leaves the target and the bay monitor stopped. With the
+// target owned, the recovery starts mhvtl.target as before.
+func TestServiceTargetStopRecoverForeignFabricsTarget(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	for _, c := range []struct {
+		name   string
+		owned  bool
+		conf   string
+		long99 bool // device.conf ends in longDrive99; the target is tape99
+	}{
+		{"foreign", false, fabConf, false}, {"owned", true, fabConf, false},
+		// Upstream accepts a last line without a newline that holds a
+		// NUL, read up to the NUL: the target is still checked.
+		{"foreign, NUL comment", false, fabConf + "# comment\x00", false},
+		// Upstream reads a Drive 99 at the end of a long device.conf
+		// comment: every name target 99 could get is checked.
+		{"foreign, long device.conf comment", false, fabConf99, true},
+		{"owned, long device.conf comment", true, fabConf99, true},
+	} {
+		owned := c.owned
+		wwn := lib10
+		if c.long99 {
+			wwn = tape99
+		}
+		t.Run(c.name, func(t *testing.T) {
+			e, s := newExecEnv(t)
+			standalone34(e)
+			if c.long99 {
+				addLongDrive99(e)
+			}
+			partOf(s)
+			e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
+			e.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
+			sysctl := e.cfg.Systemctl
+			e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
+				if len(args) == 4 && args[0] == "show" && args[1] == "--property=LoadState" && args[3] == FabricsUnit {
+					return []byte("loaded\n"), nil
+				}
+				return sysctl(ctx, args...)
+			}
+			e.rebuild()
+			files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n", fabricsConf: c.conf}
+			for name, data := range files {
+				if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", wwn, "tpgt_1"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if owned {
+				if err := os.WriteFile(e.cfg.FabricsState, []byte("iscsi "+wwn+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.state[FabricsUnit] = "active"
+			s.state[bayMonitor] = "active"
+			e.h.killPoint = func(st string) bool { return st == "stop "+mhvtlTarget }
+			if resp := e.do(target(OpService, ActionStop, targetUnits)); resp.Result != ResultError || !e.intentExists() {
+				t.Fatalf("killed: %+v", resp)
+			}
+			// The stop ran before the helper died.
+			s.mu.Lock()
+			for _, u := range []string{mhvtlTarget, FabricsUnit, bayMonitor} {
+				s.state[u] = "inactive"
+			}
+			s.calls = nil
+			s.mu.Unlock()
+			e.rebuild()
+			resp := e.do(target(OpServicePlan, ActionStop, nil))
+			if e.intentExists() {
+				t.Errorf("intent kept: %+v", resp)
+			}
+			if owned {
+				if resp.Result != ResultRecovered || !slices.Contains(e.calls(), "start "+mhvtlTarget) {
+					t.Errorf("owned: %+v, calls %v", resp, e.calls())
+				}
+				return
+			}
+			if resp.Result != ResultError || resp.Error != ErrFabricsState || !strings.Contains(resp.Message, wwn) || !strings.Contains(resp.Message, "does not own") {
+				t.Errorf("recovery: %+v", resp)
+			}
+			for _, u := range []string{mhvtlTarget, bayMonitor} {
+				if slices.Contains(e.calls(), "start "+u) || s.unitState(u) != "inactive" {
+					t.Errorf("%s started (%s): %v", u, s.unitState(u), e.calls())
+				}
+			}
+			// Nothing is left to recover: the next request plans.
+			if next := e.do(target(OpServicePlan, ActionStart, nil)); next.Result == ResultRecovered {
+				t.Errorf("next request recovered again: %+v", next)
+			}
+		})
+	}
+}
+
+// A target restart whose start fails rolls back, and the rollback's unwind
+// would start mhvtl.target again, which starts mhvtl-fabrics.service. When
+// fabrics.conf then names a target that exists in configfs and
+// mhvtl-fabrics does not own (made during the restart), the target stays
+// stopped: the answer stays rolled_back with its rollback details, but its
+// code is fabrics_recovery_required, the cause's code kept in the message,
+// so a client sees that it has to act. The message tells a foreign target
+// found from a check that could not tell (the state file unreadable).
+func TestServiceTargetRestartRollbackForeignFabricsTarget(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	for _, c := range []struct {
+		name       string
+		unreadable bool
+		long99     bool // device.conf ends in longDrive99; the target is tape99
+		want       string
+	}{
+		{"foreign", false, false, mhvtlTarget + " was left stopped: foreign iSCSI target found (" + lib10 + "): "},
+		{"state file unreadable", true, false, mhvtlTarget + " was left stopped: could not tell whether starting it would have " + FabricsUnit + " take over an iSCSI target it does not own (" + lib10 + " exists in configfs and the state file cannot be read"},
+		// Upstream reads a Drive 99 at the end of a long device.conf
+		// comment: every name target 99 could get is checked.
+		{"foreign, long device.conf comment", false, true, mhvtlTarget + " was left stopped: foreign iSCSI target found (" + tape99 + "): "},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, s := newExecEnv(t)
+			standalone34(e)
+			conf, wwn := fabConf, lib10
+			if c.long99 {
+				addLongDrive99(e)
+				conf, wwn = fabConf99, tape99
+			}
+			partOf(s)
+			e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
+			if c.unreadable {
+				if err := os.Mkdir(e.cfg.FabricsState, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
+			sysctl := e.cfg.Systemctl
+			e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
+				if len(args) == 4 && args[0] == "show" && args[1] == "--property=LoadState" && args[3] == FabricsUnit {
+					return []byte("loaded\n"), nil
+				}
+				return sysctl(ctx, args...)
+			}
+			e.rebuild()
+			files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n", fabricsConf: conf}
+			for name, data := range files {
+				if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.state[FabricsUnit] = "active"
+			s.state[bayMonitor] = "active"
+			s.failStart["vtltape@34.service"] = true
+			// The target appears after the restart's own check passed, when
+			// mhvtl-fabrics.service stops with mhvtl.target.
+			prev := s.onStop
+			s.onStop = func(u string) {
+				prev(u)
+				if u != mhvtlTarget {
+					return
+				}
+				s.state[FabricsUnit] = "inactive"
+				if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", wwn, "tpgt_1"), 0o755); err != nil {
+					t.Error(err)
+				}
+			}
+			resp := e.do(target(OpService, ActionRestart, targetUnits))
+			if resp.Result != ResultRolledBack || resp.Error != ErrFabricsState || resp.FailedUnit != "vtltape@34.service" || e.intentExists() {
+				t.Fatalf("service: %+v", resp)
+			}
+			if !strings.HasPrefix(resp.Message, ErrStart+": ") || !strings.Contains(resp.Message, c.want) {
+				t.Errorf("message %q, want %q", resp.Message, c.want)
+			}
+			if s.unitState(mhvtlTarget) == "active" {
+				t.Errorf("%s started: %v", mhvtlTarget, s.calls)
+			}
+		})
+	}
+	// A systemctl show that fails cannot tell either.
+	err := &targetNotStarted{err: errors.New("systemctl show " + FabricsUnit + ": exit status 1")}
+	if want := "could not tell whether starting it would have " + FabricsUnit + " take over an iSCSI target it does not own (systemctl show"; !strings.Contains(err.Error(), want) {
+		t.Errorf("%q, want %q", err.Error(), want)
+	}
+}
+
+// TestServiceJournalTailSafeUnitsOnly: a target action whose failed unit
+// is mhvtl.target, whose start pulls in mhvtl-fabrics.service, or a
+// support unit answers no journal lines, even when the journal quotes a
+// CHAP secret: journalctl -u shows them. A vtltape@ or vtllibrary@ unit's
+// journal is answered (TestServiceTargetStart, TestServiceStartFailure).
+func TestServiceJournalTailSafeUnitsOnly(t *testing.T) {
+	const leak = "mhvtl-fabrics: CHAP secret " + fabSecret
+	journal := func(e *env) {
+		e.cfg.JournalTail = func(_ context.Context, unit string) ([]byte, error) { return []byte(leak + " (" + unit + ")"), nil }
+		e.rebuild()
+	}
+	check := func(t *testing.T, resp Response, unit string) {
+		t.Helper()
+		b, _ := json.Marshal(resp)
+		if resp.FailedUnit != unit || resp.JournalTail != "" || strings.Contains(string(b), fabSecret) {
+			t.Errorf("failed unit %s: %s", unit, b)
+		}
+	}
+	t.Run("start, mhvtl.target fails", func(t *testing.T) {
+		e, s := newExecEnv(t)
+		all := append(append([]string{}, library10Units...), "vtllibrary@30.service", "vtltape@31.service", "vtltape@32.service", "vtltape@33.service", "vtltape@34.service")
+		for _, u := range all {
+			s.state[u] = "inactive"
+			s.enabled[u] = true
+		}
+		journal(e)
+		pr := e.do(target(OpServicePlan, ActionStart, nil))
+		if pr.Result != ResultValidated {
+			t.Fatalf("service_plan: %+v", pr)
+		}
+		// The units come up, but systemctl start mhvtl.target fails.
+		run := e.cfg.Systemctl
+		e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) == 2 && args[0] == "start" && args[1] == mhvtlTarget {
+				s.mu.Lock()
+				for _, u := range all {
+					s.state[u] = "active"
+				}
+				s.mu.Unlock()
+				return nil, errors.New("exit status 1")
+			}
+			return run(ctx, args...)
+		}
+		e.rebuild()
+		resp := e.do(target(OpService, ActionStart, pr.Units))
+		if resp.Result != ResultError || resp.Error != ErrStart {
+			t.Fatalf("service: %+v", resp)
+		}
+		check(t, resp, mhvtlTarget)
+	})
+	for _, unit := range []string{mhvtlTarget, "mhvtl-tcmu-handler.service"} {
+		t.Run("restart, "+unit+" fails", func(t *testing.T) {
+			e, s := newExecEnv(t)
+			partOf(s)
+			journal(e)
+			pr := e.do(target(OpServicePlan, ActionRestart, nil))
+			if pr.Result != ResultValidated {
+				t.Fatalf("service_plan: %+v", pr)
+			}
+			s.failStart[unit] = true
+			resp := e.do(target(OpService, ActionRestart, pr.Units))
+			if resp.Result != ResultRolledBack || resp.Error != ErrStart {
+				t.Fatalf("service: %+v", resp)
+			}
+			check(t, resp, unit)
+		})
 	}
 }

@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -165,6 +166,38 @@ type Server struct {
 	stages stages
 	// now is the clock; time.Now unless a test sets it.
 	now func() time.Time
+	// fabricsKey keys the opaque version of fabrics.conf the iSCSI routes
+	// answer (fabricsVersion). It is made at start and never stored.
+	fabricsKey []byte
+	// fabricsMu guards fabricsRev, fabricsSeq and fabricsWriting.
+	fabricsMu sync.Mutex
+	// fabricsRev is part of that version: it advances after every helper
+	// call that may have changed fabrics.conf (helperDo), a write of it or
+	// a recovery any call but units may run, once it may have reached the
+	// helper.
+	fabricsRev uint64
+	// fabricsSeq advances when such a call starts and when it ends: a
+	// version computed while it changed straddles one of them and is not
+	// answered.
+	fabricsSeq uint64
+	// fabricsWriting counts such calls sent to the helper and not
+	// answered yet. While one is, no version is answered.
+	fabricsWriting int
+	// fabricsGate serializes the writes of fabrics.conf the iSCSI routes
+	// send the helper, each holding it alone from the read their base
+	// comes from to the revision's advance after the answer; every other
+	// helper call that may change the file holds it shared (helperDo). A
+	// write that finds it held is answered apply_in_progress at once:
+	// queued behind another, its base would predate that write, and the
+	// helper's validated or conflict would tell whether the file came out
+	// byte-identical. Another call that finds it held alone is answered
+	// in_progress, never sent: a recovery it ran between the write's read
+	// and its helper call would decide the write's outcome the same way.
+	fabricsGate sync.RWMutex
+	// beforeFabricsHelper, when set, runs in fabricsWrite after the read
+	// and before the helper call: a test seam for interleavings, nil
+	// otherwise.
+	beforeFabricsHelper func()
 }
 
 // keyedMutex is a set of mutexes created on first use. Each is a channel
@@ -251,7 +284,11 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 
 // NewServer returns a Server configured with cfg.
 func NewServer(cfg Config) *Server {
-	return &Server{cfg: cfg, now: time.Now}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic("mhvtl-control: reading random bytes: " + err.Error())
+	}
+	return &Server{cfg: cfg, now: time.Now, fabricsKey: key}
 }
 
 // Handler builds the route mux and wraps it in the middleware chain
@@ -277,6 +314,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/libraries/{id}/drives/{drive}/stats", s.handleDriveStats)
 	mux.HandleFunc("GET /api/v1/storage/disks", s.handleDisks)
 	mux.HandleFunc("GET /api/v1/transports", s.handleTransports)
+	mux.HandleFunc("GET /api/v1/transports/iscsi/config", s.handleISCSIConfig)
+	mux.HandleFunc("PATCH /api/v1/transports/iscsi", s.handleISCSIPatch)
+	mux.HandleFunc("POST /api/v1/transports/iscsi/bind", s.handleISCSIBind)
+	mux.HandleFunc("POST /api/v1/transports/iscsi/unbind", s.handleISCSIUnbind)
+	mux.HandleFunc("PATCH /api/v1/transports/{type}", s.handleTransportUnsupported)
+	mux.HandleFunc("POST /api/v1/transports/{type}/bind", s.handleTransportUnsupported)
+	mux.HandleFunc("POST /api/v1/transports/{type}/unbind", s.handleTransportUnsupported)
 	mux.HandleFunc("POST /api/v1/storage/disks/format", s.handleFormat)
 	mux.HandleFunc("GET /api/v1/config", s.handleConfig)
 	mux.HandleFunc("GET /api/v1/config/capabilities", s.handleConfigCapabilities)

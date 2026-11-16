@@ -215,7 +215,11 @@ If an apply dies, for instance with the host, `intent.json` stays behind:
   instances after it. It acts only on an apply from an earlier boot, and only
   while no `vtllibrary@` or `vtltape@` instance is active.
 - Otherwise, the next check or apply recovers first, does nothing else, and
-  answers `recovered`; check again.
+  answers `recovered`; check again. A file changed since the apply is left
+  alone and listed in `conflicts` with its `current_sha256`; for
+  `fabrics.conf` that is the opaque version the iSCSI routes answer (see
+  below), not its SHA-256, and it is left out when the file cannot be read
+  or another request to the helper is in progress.
 - If `intent.json` cannot be read, `helper` is `intent_unreadable` and the
   helper refuses every change. Boot recovery fails too, and mhVTL may already be
   running on the partly written files: stop `mhvtl.target`, restore the files
@@ -377,9 +381,12 @@ not have changed in between (`409 unit`). The answer has the fields of
 - An action that, with its rollback, may not fit the helper's 30-minute
   `RuntimeMaxSec=` is refused with `422 budget` (act on the libraries one at
   a time), and a placement the helper cannot save with `422 placement`.
-- A failed action is rolled back (`500 rolled_back`, with `failed_unit` and
-  `journal_tail`); one interrupted by a crash is recovered by the next
-  request (`409 recovered`).
+- A failed action is rolled back (`500 rolled_back`, with `failed_unit`, and
+  `journal_tail` when that unit is a `vtllibrary@`, `vtltape@` or
+  `mhvtl-media.service`); one interrupted by a crash is recovered by the next
+  request (`409 recovered`). No journal lines are answered for
+  `mhvtl.target`, whose start pulls in `mhvtl-fabrics.service`, or for the
+  other support units: see `journalctl -u <unit>`.
 - A stopped library or target stays down until started, and starts again at
   boot. A stop interrupted by a crash is undone by its recovery, which starts
   the units it had stopped again: the library ends up running, so retry the
@@ -426,9 +433,247 @@ from the LIO configuration in configfs (`/sys/kernel/config/target`):
   backstore. `GET /api/v1/system` reports the same list.
 - `warnings`: the files that could not be read; what they hold is left out.
 
-Without configfs or LIO the answer is empty (`"configfs": false`). Changing
-the exports is mhVTL's `mhvtl-fabrics`' job; mhvtl-control does not write to
-configfs. The dashboard shows it as the Transport Map panel.
+Without configfs or LIO the answer is empty (`"configfs": false`). The
+dashboard shows it as the Transport Map panel.
+
+### Export a library over iSCSI
+
+mhVTL's [`mhvtl-fabrics`](https://github.com/markh794/mhvtl/blob/master/man/mhvtl-fabrics.1.in)
+exports libraries to remote initiators as described in `/etc/mhvtl/fabrics.conf`
+([`fabrics.conf(5)`](https://github.com/markh794/mhvtl/blob/master/man/fabrics.conf.5.in)),
+with mhVTL's TCMU backend (`MHVTL_BACKEND=tcmu`, package `mhvtl-tcmu`).
+mhvtl-control edits that file and has `mhvtl-fabrics.service` apply it; it
+never writes configfs itself. These are writes, so they need what the
+configuration editor needs (see [Turn writes on](#turn-writes-on)).
+
+- `GET /api/v1/transports/iscsi/config`: the file as parsed: the portals, the
+  base name, and per exported library its initiators, target name and
+  derived IQN (`wwn`), whether CHAP and mutual CHAP are set, and the
+  `device.conf` device. Secrets are never returned, and without
+  `-api-token`, when any local user can read the route, neither are the
+  CHAP names (`chap_name`, `mutual_chap_name`), nor a quoted field name in
+  a problem's message that mentions CHAP or a secret (a CHAP name run into
+  the field name would show there). `problems` lists what
+  `mhvtl-fabrics` would refuse, each with a `kind`: `parse`, a line it would
+  not read, which blocks every change until fixed by hand; or `plan`, a
+  target it reads but would not export against `device.conf` (`target` is
+  its ID), which an unbind of that target can fix. With more than one such
+  target, each can be unbound in turn: an unbind is refused for a problem
+  it adds, and while others remain the helper writes the file without
+  reloading `mhvtl-fabrics.service` (its apply would fail on them),
+  answering the action `not_applied`; the unbind that removes the last one
+  reloads it, or starts it if it had failed on them. While a target is
+  broken every other change is refused (422 `invalid`), an unbind of a
+  healthy target included: written but not applied, it would leave that
+  target exported. The message names the broken targets to unbind first.
+  A problem that names no target (a `device.conf` limit) no unbind
+  removes: fix `device.conf`.
+- `PATCH /api/v1/transports/iscsi` `{"portals": [...], "base_name": "..."}`:
+  the settings every target shares. `[]` removes every portal (targets then
+  listen on `0.0.0.0:3260`), `""` removes the base name.
+- `POST /api/v1/transports/iscsi/bind` `{"library": 10, "initiators": [...],
+  "chap": {"name": "...", "secret": "..."}}`: export a library (or a
+  standalone drive) to the initiators listed, or change its record. Also
+  `target_name`, `mutual_chap`, `clear_chap` and `clear_mutual_chap`. A
+  field left out stays as it is, CHAP included.
+- `POST /api/v1/transports/iscsi/unbind` `{"library": 10}`: stop exporting it.
+
+Each takes `"dry_run": true` to see the change first: the diff of
+`fabrics.conf`, with secrets shown as `********` (a value the client sets
+and reads in clear, such as a CHAP name or an initiator, is shown as it is
+even if it contains a stored secret, so the diff does not answer guesses)
+and the text of every comment, whole-line or trailing, shown as
+`# (comment not shown)`, as a comment may quote an old secret; what the apply would
+do, and `sha256`, the version of the file the change was made against (`""`
+when there is none). The version is opaque: an HMAC of the file under a
+key the daemon makes when it starts, not the file's SHA-256, which would
+let a client test guesses at the CHAP secrets in it. It changes when the
+file changes, after every request mhvtl-control sends the helper that
+reached it, whatever its answer and whatever the route (a preview or apply
+of these routes, a stage's check or apply, a service action: any of them
+may first recover an interrupted apply, which can put `fabrics.conf`
+back; only the unit state queries are left out), even one that leaves the
+file byte-identical, so the version never tells whether a CHAP secret sent
+was the stored one (a request refused with `helper_absent`, or whose
+connection to the helper failed, leaves it), and when mhvtl-control
+restarts; an apply
+sent with a version from before any of these gets 409, and a new preview
+gives the current one. While such a request is in progress (an apply of
+`fabrics.conf` writes the file and then reloads `mhvtl-fabrics`, which can
+take minutes), `GET .../config` answers no `sha256`, and every preview
+and apply gets 409 with `error.code` `apply_in_progress`, whatever it
+sends; applies are never queued. A helper that hangs keeps it so for up
+to 32 minutes (its 30-minute `RuntimeMaxSec=` and stop time, and a margin),
+after which mhvtl-control stops waiting for it. From an apply's read of `fabrics.conf`
+to its answer, a stage check or apply and a service action or dry run get
+409 `apply_in_progress` too, without reaching the helper. A preview during which another such
+request started or finished gets 409 `apply_in_progress` too, with no
+version and no diff: preview again; an apply gets 409 with `"result": "unknown"` and `error.code`
+`conflict`, without the helper's answer: it may have been made. Read
+`GET .../config` again, or preview again, once it has finished.
+`GET /api/v1/transports/iscsi/config` answers it too, but only with
+`-api-token`. An answer from the helper (a preview's or an apply's)
+holds the version of the file as read again after that answer: an apply's
+is the one the next change takes as `base_sha256`. It is left out when
+another request to the helper started or finished in between. A bind's
+apply also answers the target as configfs shows it afterwards. To apply exactly what was
+previewed, send the same body with `"dry_run": false` and
+`"base_sha256"` set to the preview's `sha256`: if `fabrics.conf` changed in
+between, the answer is 409 with `error.code` `conflict` and
+`current_sha256`, the version of the file now (left out when the daemon
+cannot read the file at that point; read `GET .../config` again), and
+nothing is written. A change that leaves the file as
+it is answers `"result": "unchanged"`, except a bind that sends a CHAP or
+mutual CHAP secret: it always goes to the helper, and its diff shows the
+secret line removed and added, so the answer is the same whether or not the
+secret sent is the one stored. `fabrics.conf(5)` requires the mutual CHAP
+secret to differ from the CHAP secret; so that this never compares a secret
+sent with one stored, a bind that sets one of the two on a target where the
+other is set must send both (`chap` and `mutual_chap`), or
+`clear_mutual_chap`, and is otherwise refused (422) whatever the values. A
+bind with `"initiators": []` is refused: a record without an initiator
+exports nothing; use unbind.
+
+The helper writes `fabrics.conf` mode 0600 (it may hold CHAP secrets), keeps
+the previous copy for rollback (only the latest: a successful apply removes
+older copies of `fabrics.conf`, which may hold secrets since rotated), and
+records the change in its audit log with secrets masked. A secret rotated
+out by a change therefore stays in that kept copy (root, mode 0600, under
+`/var/lib/mhvtl-control-apply/rollback/`) until the next successful iSCSI
+change. Then:
+
+- with `mhvtl-fabrics.service` active, it runs `systemctl reload`, which runs
+  `mhvtl-fabrics apply`: targets, LUNs and ACLs follow the file, and sessions
+  to the targets the change leaves alone stay up. mhVTL's unit has no reload
+  of its own yet, so the package installs the drop-in
+  `mhvtl-fabrics.service.d/50-mhvtl-control-reload.conf` that adds it. A
+  restart would remove every target first and is never used;
+- on the first export, when the unit did not start because the file did not
+  exist, it starts the unit;
+- while `mhvtl.target` is stopped, it only writes the file, applied when
+  mhVTL starts;
+- while the file keeps targets that would not plan, which it had before
+  the change, it only writes the file (`not_applied`); the change must
+  remove at least one of them, or it is refused.
+
+Before it writes anything, for a dry run too, the helper checks the new
+file against `device.conf` as `mhvtl-fabrics` plans it (each target names a
+library or standalone drive, names are unique, drive slots give distinct
+LUNs) and refuses with `invalid` if it has a problem the current file does
+not have, or if `device.conf` is missing or unreadable. It also refuses with `invalid` a file that names a
+target already in configfs that `mhvtl-fabrics` does not own (not listed in
+`/run/mhvtl/fabrics.state`), such as one made with targetcli:
+`mhvtl-fabrics apply` would take it over, remove the ACLs and LUNs the
+record does not list, and delete it on unbind. Every reload the helper runs
+on a file it did not just check (the file a rollback or a crash recovery
+put back, or the one a retry finds) gets the same check first: when that
+file names such a target the helper does not reload, and answers
+`fabrics_recovery_required` naming it; remove that target, or change
+`fabrics.conf` by hand, and the next iSCSI change retries. The other way round, a
+configuration apply that changes `device.conf` so that a target of
+`fabrics.conf` would no longer plan (its library deleted, two of its drives
+given the same Slot) is refused with `invalid`, naming the target: stop
+exporting it first. So is one that makes `fabrics.conf` name a target it
+did not name before (a derived name ends in `.lib<ID>` or `.tape<ID>` after
+the device kind) which exists in configfs and `mhvtl-fabrics` does not own.
+These `device.conf` checks apply only while iSCSI export is in use
+(`MHVTL_BACKEND=tcmu` and `mhvtl-fabrics.service` installed): otherwise
+nothing applies `fabrics.conf`. When the helper cannot tell what
+`MHVTL_BACKEND` systemd passes (an `mhvtl.conf` with a backslash, a
+non-ASCII byte or a line over 4096 bytes, even in a comment), the
+ownership checks here and below still run, but a target left without a
+plan is not refused. A configuration apply that sets `MHVTL_BACKEND=tcmu` has every target `fabrics.conf` plans checked for
+ownership, as `device.conf` may have changed unchecked meanwhile; so does
+any change of `mhvtl.conf` from a backend other than `tcmu` after which the
+helper cannot tell the backend. A
+restart of `mhvtl.target` through `POST /api/v1/service/{action}`, and a start of it while
+`mhvtl-fabrics.service` is not active, start that unit, so they are refused
+with `invalid`, naming the target, when `fabrics.conf` plans one that
+exists in configfs and `mhvtl-fabrics` does not own. A `fabrics.conf` with
+problems, which `mhvtl-fabrics` should refuse, is checked all the same, for
+every name its target records could get (each `Target name`, and each
+`Base name` with `.lib<ID>` and `.tape<ID>`), here and for the
+configuration apply that sets `MHVTL_BACKEND=tcmu`; when a target record's
+name cannot be told at all (no `Target name`, and no `Base name` or no ID
+that parses), they are refused with `invalid`, and starting or restarting
+`mhvtl.target` through the helper stays blocked until `fabrics.conf` is
+fixed. Every name is checked the same way, here, for an iSCSI bind and for a
+`device.conf` edit, when `mhvtl-fabrics` may read `device.conf`
+differently from the helper: a `device.conf` with problems, or with a line
+longer than 1023 bytes (which `mhvtl-fabrics` reads as two lines) or
+holding a NUL byte. A rollback or crash
+recovery of a target restart or stop that would start `mhvtl.target` again
+is checked the same way: it then leaves `mhvtl.target` (and the bay
+monitor) stopped, completes, and answers `500 fabrics_recovery_required`
+naming the target (a rollback keeps `"result": "rolled_back"` and its
+details, the cause's code in the message); remove that target or unbind it, then start
+`mhvtl.target`. A start
+of `mhvtl-fabrics.service` outside the helper (at boot, or by hand) is not
+checked at all. The ownership checks look at configfs when
+the helper checks, not when `mhvtl-fabrics` applies: a target someone
+creates with targetcli in between is still taken over.
+
+If the reload fails, the previous file is put back and the unit reloaded
+with it, unless that file has targets `mhvtl-fabrics` would not export:
+it is then left not applied, as `not_applied` leaves it, and the change
+that leaves none applies it. A rollback, a retry or a crash recovery never
+reloads such a file, which would fail and refuse every iSCSI change after
+it, the unbind that fixes it included. Left so after a failed reload,
+configfs may still hold part of the failed change until the next change
+that leaves no such targets applies the file. If a first start fails, the new file is removed and the unit is
+left failed, its targets removed by its `ExecStopPost`; the next export
+starts it again. Either way the answer is `rolled_back` with
+`failed_unit` `mhvtl-fabrics.service`. Fabrics failures return no log
+text: no answer of an iSCSI route, of a retry or of a crash recovery
+quotes the unit's journal, systemctl's output or the state file, which may
+quote `fabrics.conf`, its CHAP secrets and the names a client chose. The
+message says which systemctl verb failed and how it ended (its exit status),
+and ends with "see journalctl -u mhvtl-fabrics.service and the mhvtl-control
+audit log": the journal has the unit's output, and
+`/var/lib/mhvtl-control-apply/audit.jsonl` (root only; no route serves it)
+has, in each record's `detail`, systemctl's output, the journal lines and
+the state file as the helper read them, with CHAP secrets masked. Of the
+targets a state file lists, an answer names only those a client knows (a
+target name or derived name of the file, or another clear value of it) and
+counts the others. When the reload of the restored file fails too,
+configfs may not match `fabrics.conf`: the answer is
+`fabrics_recovery_required`; check `journalctl -u mhvtl-fabrics` and fix
+the cause. The helper records this, and the next iSCSI change retries the
+reload first (a stop, if the rollback removed a file the change had
+created and there is still none) and is refused while it fails; other
+requests go ahead. A dry run does not retry: it says what the apply's
+retry will do (and is refused when the retry would be), and answers the
+action the apply runs after it, a start after the retry's stop.
+The record is cleared when that retry succeeds or finds the unit stopped,
+and ignored after a reboot (mhVTL then applies the file afresh); a reload
+or stop by hand does not clear it, the next iSCSI change does.
+When the unit is left failed and its state file `/run/mhvtl/fabrics.state`
+still lists targets (its `ExecStopPost=mhvtl-fabrics remove` failed too) or
+cannot be read, the answer is also `fabrics_recovery_required`: targets from
+the failed run are still exported until `systemctl restart mhvtl-fabrics`
+(its apply removes the targets it owns that the file no longer names) or
+`mhvtl-fabrics remove`. The helper does not keep that apply's intent: the
+state file holds what to remove. The
+helper refuses, changing nothing, when `MHVTL_BACKEND` is not `tcmu`
+(`mhvtl-fabrics` would do nothing), when `mhvtl-fabrics.service` is
+missing, has no reload, has failed with `fabrics.conf` in place (check
+`journalctl -u mhvtl-fabrics`, fix the cause, then
+`systemctl restart mhvtl-fabrics`) or was stopped while mhVTL runs (check
+the journal, then `systemctl start mhvtl-fabrics`; a stopped unit whose
+file has targets that do not plan is started by the change that removes
+them, as a failed one is), both
+`fabrics_recovery_required`, and when `base_sha256` is not the file's
+(409). `MHVTL_BACKEND` is read from `mhvtl.conf` as systemd's
+`EnvironmentFile=` passes it to the unit: quotes and trailing blanks go, but
+text after an unquoted value stays, so `MHVTL_BACKEND=tcmu # TCMU` passes
+`tcmu # TCMU` and is refused; write `MHVTL_BACKEND=tcmu` alone on its line.
+A `mhvtl.conf` with a backslash, a byte other than printable ASCII and tab,
+or a line over 4096 bytes is refused too: the helper checks only what every
+supported systemd reads the same way.
+
+An initiator name is not a credential: any host can claim one. Without CHAP
+a listed initiator can read and write every tape, so use CHAP unless the
+portals are on a trusted storage network (`fabrics.conf(5)`, SECURITY).
 
 The map names the initiators allowed in, the sessions logged in and the
 addresses they connect from. Without `-api-token` any local user can read it

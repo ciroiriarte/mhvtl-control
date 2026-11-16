@@ -6,6 +6,7 @@ package dist
 import (
 	"bufio"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -272,6 +273,43 @@ func TestRecoverDropIns(t *testing.T) {
 				t.Errorf("%s: [%s] %v", path, s, v)
 			}
 		}
+	}
+}
+
+// TestFabricsReloadDropIn: mhvtl-fabrics.service gains one ExecReload
+// running apply, after an empty assignment that resets any the unit has,
+// and an ordering after the boot recovery, and nothing else: no other
+// ordering, dependency or sandbox change.
+func TestFabricsReloadDropIn(t *testing.T) {
+	path := "mhvtl-fabrics.service.d/50-mhvtl-control-reload.conf"
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloads []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if k, v, ok := strings.Cut(l, "="); ok && !strings.HasPrefix(l, "#") {
+			switch k {
+			case "ExecReload":
+				reloads = append(reloads, v)
+			case "After":
+			default:
+				t.Errorf("%s: sets %s", path, k)
+			}
+		}
+	}
+	if want := []string{"", "/usr/bin/mhvtl-fabrics apply"}; !slices.Equal(reloads, want) {
+		t.Errorf("%s: ExecReload %q, want %q", path, reloads, want)
+	}
+	want := map[string][]string{"After": {"mhvtl-control-apply-recover.service"}}
+	if v := section(t, path, "Unit"); !reflect.DeepEqual(v, want) {
+		t.Errorf("%s: [Unit] %v, want %v", path, v, want)
+	}
+	if v := section(t, path, "Service"); len(v) != 1 || len(v["ExecReload"]) != 2 {
+		t.Errorf("%s: [Service] %v, want ExecReload alone", path, v)
+	}
+	if v := section(t, path, "Install"); len(v) != 0 {
+		t.Errorf("%s: [Install] %v", path, v)
 	}
 }
 
