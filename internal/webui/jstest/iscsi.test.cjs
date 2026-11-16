@@ -275,9 +275,9 @@ test("iscsiOutcome maps write responses", () => {
   // points at the logs, unless the message already does.
   const rb = core.iscsiOutcome({ dry_run: false, result: "rolled_back", message: "mhvtl-fabrics failed", failed_unit: "mhvtl-fabrics.service",
     rollback_dir: "/var/lib/mhvtl-control-apply/rollback/1" }, 500);
-  assert.deepStrictEqual([rb.kind, rb.tail, rb.hint], ["rolled_back", undefined, "See journalctl -u mhvtl-fabrics.service and the mhvtl-control audit log on the node."]);
+  assert.deepStrictEqual([rb.kind, rb.tail, rb.hint], ["rolled_back", undefined, "See journalctl -u mhvtl-fabrics.service and the audit log /var/lib/mhvtl-control-apply/audit.jsonl on the node."]);
   assert.ok(rb.text.includes("mhvtl-fabrics failed") && rb.text.includes("/rollback/1"));
-  const fixed = "systemctl reload mhvtl-fabrics.service failed (exit status 1); fabrics.conf restored; see journalctl -u mhvtl-fabrics.service and the mhvtl-control audit log";
+  const fixed = "systemctl reload mhvtl-fabrics.service failed (exit status 1); fabrics.conf restored; see journalctl -u mhvtl-fabrics.service and the audit log /var/lib/mhvtl-control-apply/audit.jsonl";
   const rbf = core.iscsiOutcome({ dry_run: false, result: "rolled_back", message: fixed, failed_unit: "mhvtl-fabrics.service" }, 500);
   assert.deepStrictEqual([rbf.kind, rbf.hint, rbf.text], ["rolled_back", "", "The change was rolled back: " + fixed]);
   // A rollback that left mhvtl.target stopped is not shown as a plain one.
@@ -316,7 +316,7 @@ test("iscsiOutcome maps write responses", () => {
   const ref = core.iscsiOutcome({ result: "refused", message: "helper refused" }, 400);
   assert.deepStrictEqual([ref.kind, ref.text], ["refused", "helper refused"]);
   const err = core.iscsiOutcome({ result: "error", error: { message: "boom" }, failed_unit: "mhvtl-fabrics.service" }, 500);
-  assert.deepStrictEqual([err.kind, err.text, err.hint], ["error", "boom", "See journalctl -u mhvtl-fabrics.service and the mhvtl-control audit log on the node."]);
+  assert.deepStrictEqual([err.kind, err.text, err.hint], ["error", "boom", "See journalctl -u mhvtl-fabrics.service and the audit log /var/lib/mhvtl-control-apply/audit.jsonl on the node."]);
   assert.strictEqual(core.iscsiOutcome({ error: { message: "network" } }, 0).kind, "error");
   assert.ok(/No answer/.test(core.iscsiOutcome(null, 0).text));
   assert.strictEqual(core.iscsiOutcome(null, 500).kind, "error");

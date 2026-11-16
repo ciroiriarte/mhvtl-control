@@ -863,7 +863,7 @@ func (h *Helper) runFabrics(ctx context.Context, action string) error {
 
 // fabricsLogs is where a fabrics failure's own output is: no answer quotes
 // it (fabricsRunError).
-const fabricsLogs = "see journalctl -u " + FabricsUnit + " and the mhvtl-control audit log"
+const fabricsLogs = "see journalctl -u " + FabricsUnit + " and the audit log /var/lib/mhvtl-control-apply/audit.jsonl"
 
 // fabricsRunError is a failed systemctl reload, start or stop of
 // mhvtl-fabrics.service. Its message says only which verb failed and how

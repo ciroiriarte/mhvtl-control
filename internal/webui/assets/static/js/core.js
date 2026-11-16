@@ -1396,7 +1396,7 @@
   // fabrics.conf. "" without a unit, or when there are lines.
   function logsHint(res) {
     if (!res || !res.failed_unit || res.journal_tail) { return ""; }
-    return "See journalctl -u " + String(res.failed_unit) + " and the mhvtl-control audit log on the node.";
+    return "See journalctl -u " + String(res.failed_unit) + " and the audit log /var/lib/mhvtl-control-apply/audit.jsonl on the node.";
   }
 
   // serviceResultText is how the Service table shows a service action's
