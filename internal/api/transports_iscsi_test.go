@@ -1191,7 +1191,7 @@ func TestISCSIProblemSecretName(t *testing.T) {
 // TestISCSIMessageCHAPNameNoOracle: the helper's journal tail quotes the
 // CHAP name the request sets and the stored secret. The tail answered is
 // byte-identical whether the name holds the stored secret, equals it, or
-// neither: the new name is masked whole, the stored secret everywhere. The
+// neither: each line that holds the new name or a secret is masked whole. The
 // helper's message, which quotes outside output only masked that way,
 // shows a new name as sent.
 func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
@@ -1202,7 +1202,7 @@ func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
 		e.h.answer = func(apply.Request) apply.Response {
 			return apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrFabricsApply, FabricsAction: "reload",
 				Message:     "reload failed for CHAP name " + name,
-				JournalTail: "login of " + name + " refused; stored pbs secret " + chapSecret}
+				JournalTail: "login of " + name + " refused\nstored pbs secret " + chapSecret + "\nunit stopped"}
 		}
 		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
 			"chap": map[string]string{"name": name, "secret": "Fresh-secret-0123"}})
@@ -1212,12 +1212,38 @@ func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
 	for _, shape := range []string{"x%sy", "%s"} {
 		wrongName, rightName := strings.Replace(shape, "%s", "password1", 1), strings.Replace(shape, "%s", chapSecret, 1)
 		wrong, right := answer(wrongName), answer(rightName)
-		if wrong.JournalTail != right.JournalTail || wrong.JournalTail != "login of "+conffile.SecretMask+" refused; stored pbs secret "+conffile.SecretMask {
+		if wrong.JournalTail != right.JournalTail || wrong.JournalTail != conffile.SecretMask+"\n"+conffile.SecretMask+"\nunit stopped" {
 			t.Errorf("%q: journal tails %q and %q", shape, wrong.JournalTail, right.JournalTail)
 		}
 		if right.Message != strings.ReplaceAll(wrong.Message, wrongName, rightName) {
 			t.Errorf("%q: messages %q and %q", shape, wrong.Message, right.Message)
 		}
+	}
+}
+
+// TestISCSIJournalSecretPastNewName: the journal tail quotes the CHAP name
+// the request sets followed by ':', and the stored secret is the name's
+// tail and the colon. The tail answered is the same whether that is the
+// stored secret or another one: the name's line is masked whole.
+func TestISCSIJournalSecretPastNewName(t *testing.T) {
+	const name = "chap-n-0123456789"
+	answer := func(secret string) iscsiWriteDTO {
+		t.Helper()
+		e := iscsiEnv(t, strings.Replace(fabricsSample, chapSecret, secret, 1), "reload", nil)
+		e.h.answer = func(apply.Request) apply.Response {
+			return apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrFabricsApply, FabricsAction: "reload",
+				Message:     "reload failed",
+				JournalTail: "Nov 16 mhvtl-fabrics[7]: " + name + ": login refused\nunit stopped"}
+		}
+		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
+			"chap": map[string]string{"name": name, "secret": "Fresh-secret-0123"}})
+		noSecrets(t, secret, rec.Body.String(), secret, "Fresh-secret-0123")
+		return decodeBody[iscsiWriteDTO](t, rec)
+	}
+	matching, other := answer("n-0123456789:"), answer("Other-secret-0123")
+	if matching.JournalTail != other.JournalTail || matching.Message != other.Message ||
+		matching.JournalTail != conffile.SecretMask+"\nunit stopped" {
+		t.Errorf("the answer depends on the stored secret: %+v\n%+v", matching, other)
 	}
 }
 

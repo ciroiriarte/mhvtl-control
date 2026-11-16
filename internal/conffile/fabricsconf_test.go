@@ -903,11 +903,12 @@ func TestMaskSecretsExcept(t *testing.T) {
 			t.Errorf("MaskSecretsExcept(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
-	// A name the request brings is masked whole, whether it holds the
-	// secret, equals it, or neither: the answers do not tell them apart.
+	// The line of a name the request brings is masked whole, whether the
+	// name holds the secret, equals it, or neither, and so is a line with
+	// a secret: the answers do not tell them apart.
 	for _, name := range []string{"x-" + sec + "-y", sec, "x-wrong-guess-y"} {
-		in := "login of " + name + " refused; secret " + sec
-		if got, want := MaskSecretsExcept(in, []string{sec}, keep, []string{name}), "login of "+SecretMask+" refused; secret "+SecretMask; got != want {
+		in := "login of " + name + " refused\nsecret " + sec + "\nunit stopped"
+		if got, want := MaskSecretsExcept(in, []string{sec}, keep, []string{name}), SecretMask+"\n"+SecretMask+"\nunit stopped"; got != want {
 			t.Errorf("new name %q: got %q, want %q", name, got, want)
 		}
 	}
@@ -917,6 +918,32 @@ func TestMaskSecretsExcept(t *testing.T) {
 	vals := FabricsClearValues([]byte("iSCSI:\n Base name: iqn.b\niSCSI target: 10\n CHAP name: n1 # c\n CHAP secret: s\n# Initiator name: iqn.c\n"))
 	if strings.Join(vals, ",") != "iqn.b,10,n1" {
 		t.Errorf("FabricsClearValues = %q", vals)
+	}
+}
+
+// TestMaskSecretsExceptPastName: a stored secret that starts inside a name
+// the client chose and runs past it, such as "ck:" in "xpick: error",
+// changes nothing that tells whether it is stored. A new name's line is
+// masked whole whatever the secrets are. A stored name's bytes match any
+// byte, so the text beside it is masked the same whether the name ends
+// with the secret's start or not.
+func TestMaskSecretsExceptPastName(t *testing.T) {
+	const in = "Nov 16 mhvtl-fabrics[7]: target xpick: error\nunit stopped"
+	var hidden []string
+	for _, secrets := range [][]string{{"ck:"}, {"zz:"}, {"other-secret-0123"}, nil} {
+		hidden = append(hidden, MaskSecretsExcept(in, secrets, nil, []string{"xpick"}))
+	}
+	for _, got := range hidden {
+		if want := SecretMask + "\nunit stopped"; got != want {
+			t.Errorf("new name: got %q, want %q (all %q)", got, want, hidden)
+		}
+	}
+	want := "Nov 16 mhvtl-fabrics[7]: target xpi" + SecretMask + " error\nunit stopped"
+	for _, c := range []struct{ name, secret string }{{"xpick", "ck:"}, {"xpick", "zz:"}, {"xpizz", "ck:"}} {
+		s := strings.Replace(in, "xpick", c.name, 1)
+		if got := MaskSecretsExcept(s, []string{c.secret}, []string{c.name}, nil); got != want {
+			t.Errorf("stored name %q, secret %q: got %q, want %q", c.name, c.secret, got, want)
+		}
 	}
 }
 

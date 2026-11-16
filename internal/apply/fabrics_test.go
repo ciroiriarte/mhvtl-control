@@ -1113,11 +1113,12 @@ func TestDeviceConfLeavesAmbiguousNamesForeignTarget(t *testing.T) {
 
 // TestFabricsRollBackMaskKeepsClearValues: the journal tail and the
 // systemctl error of a rollback mask the files' secrets, keep the names
-// the stored file has, and mask the names the request brings whole, so the
-// answer is byte-identical whether a new CHAP name holds the stored secret,
-// equals it, or neither. Keeping the new name would show the stored secret
-// in clear where the journal quotes it alone when the name equals it;
-// masking only the secret inside it would tell which name holds one.
+// the stored file has, and mask whole each line that holds a name the
+// request brings or a secret, so the answer is byte-identical whether a
+// new CHAP name holds the stored secret, equals it, or neither. Keeping the
+// new name would show the stored secret in clear where the journal quotes
+// it alone when the name equals it; masking only the secret inside it
+// would tell which name holds one.
 func TestFabricsRollBackMaskKeepsClearValues(t *testing.T) {
 	for _, double := range []bool{false, true} {
 		for _, shape := range []string{"x%sy", "%s"} {
@@ -1142,18 +1143,18 @@ func rollBackAnswers(t *testing.T, double bool, shape string) {
 			f.fail[FabricsReload] = &exec.ExitError{Stderr: []byte("login of " + name + " refused")}
 			result := ResultRolledBack
 			if double {
-				f.failAlways[FabricsReload] = &exec.ExitError{Stderr: []byte("reload: login of " + name + " refused; stored pbs1 secret " + fabSecret)}
+				f.failAlways[FabricsReload] = &exec.ExitError{Stderr: []byte("reload: login of " + name + " refused\nstored pbs1 secret " + fabSecret)}
 				result = ResultError
 			}
-			f.tail = "login of " + name + " refused; stored pbs1 secret " + fabSecret + " and " + fabNewSecret
+			f.tail = "login of " + name + " refused\nstored pbs1 secret " + fabSecret + " and " + fabNewSecret + "\nunit stopped"
 			resp := f.do(f.fabricsReq(OpFabrics, next))
 			if resp.Result != result {
 				t.Fatalf("%s: %+v", name, resp)
 			}
-			if double && !strings.Contains(resp.Message, "reload: login of "+conffile.SecretMask+" refused; stored pbs1 secret "+conffile.SecretMask) {
+			if double && !strings.Contains(resp.Message, "failed too: "+conffile.SecretMask+"\n"+conffile.SecretMask+";") {
 				t.Errorf("%s: message %q", name, resp.Message)
 			}
-			want := "login of " + conffile.SecretMask + " refused; stored pbs1 secret " + conffile.SecretMask + " and " + conffile.SecretMask
+			want := conffile.SecretMask + "\n" + conffile.SecretMask + "\nunit stopped"
 			if resp.JournalTail != want {
 				t.Errorf("%s: journal %q, want %q", name, resp.JournalTail, want)
 			}
@@ -1178,9 +1179,9 @@ func TestFabricsRecoveryMaskNewNames(t *testing.T) {
 		f.h.killPoint = func(step string) bool { return step == "applying" }
 		f.do(f.fabricsReq(OpFabrics, next))
 		f.h.killPoint = func(string) bool { return false }
-		f.failAlways[FabricsReload] = &exec.ExitError{Stderr: []byte("login of " + name + " refused; stored pbs1 secret " + fabSecret)}
+		f.failAlways[FabricsReload] = &exec.ExitError{Stderr: []byte("login of " + name + " refused\nstored pbs1 secret " + fabSecret)}
 		resp := f.do(Request{Op: OpRecover, Actor: "test"})
-		if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "login of "+conffile.SecretMask+" refused; stored pbs1 secret "+conffile.SecretMask) {
+		if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "failed too: "+conffile.SecretMask+"\n"+conffile.SecretMask+";") {
 			t.Fatalf("%s: %+v", name, resp)
 		}
 		answers = append(answers, resp.Message)
@@ -1190,6 +1191,48 @@ func TestFabricsRecoveryMaskNewNames(t *testing.T) {
 		if a != answers[0] {
 			t.Errorf("the answer depends on the name:\n%s\n%s", answers[0], a)
 		}
+	}
+}
+
+// TestFabricsRollBackSecretPastName: the journal quotes a name the client
+// chose followed by ':', and the stored secret is the name's tail and the
+// colon. The rollback answers the same whether that is the stored secret
+// or another one for a name the request brings (its line is masked
+// whole), and the same whatever the guess in a name the stored file has
+// when the request brings none (its bytes are not compared with a secret).
+func TestFabricsRollBackSecretPastName(t *testing.T) {
+	const name, right = "chap-n-0123456789", "n-0123456789:"
+	answer := func(secret, newName, storedName string) Response {
+		t.Helper()
+		f := newFabEnv(t)
+		stored := strings.Replace(fabConf, fabSecret, secret, 1)
+		stored = strings.Replace(stored, " CHAP name: pbs1\n", " CHAP name: "+storedName+"\n", 1)
+		f.writeConf(fabricsConf, stored, 0o600)
+		next := stored + "\niSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs3\n CHAP name: " + newName + "\n CHAP secret: " + fabNewSecret + "\n"
+		quoted := newName
+		if newName == "" {
+			// No new name: the request only changes the stored secret.
+			next, quoted = strings.Replace(stored, secret, fabNewSecret, 1), storedName
+		}
+		f.fail[FabricsReload] = &exec.ExitError{Stderr: []byte("login of " + quoted + ": refused")}
+		f.tail = "Nov 16 mhvtl-fabrics[7]: " + quoted + ": login refused\nunit stopped"
+		resp := f.do(f.fabricsReq(OpFabrics, next))
+		if resp.Result != ResultRolledBack {
+			t.Fatalf("%s: %+v", secret, resp)
+		}
+		f.noSecret(secret, fabNewSecret)
+		resp.Message = strings.ReplaceAll(resp.Message, resp.RollbackDir, "")
+		resp.RollbackDir = ""
+		return resp
+	}
+	text := func(r Response) string { return r.JournalTail + "\n" + r.Message }
+	matching, other := answer(right, name, "pbs1"), answer("other-secret-0123", name, "pbs1")
+	if text(matching) != text(other) || matching.JournalTail != conffile.SecretMask+"\nunit stopped" {
+		t.Errorf("new name: the answer depends on the stored secret:\n%s\n%s", text(matching), text(other))
+	}
+	matching, other = answer(right, "", name), answer(right, "", "chap-n-0123456780")
+	if text(matching) != text(other) || matching.JournalTail != "Nov 16 mhvtl-fabrics[7]: chap-"+conffile.SecretMask+" login refused\nunit stopped" {
+		t.Errorf("stored name: the answer depends on the guess:\n%s\n%s", text(matching), text(other))
 	}
 }
 

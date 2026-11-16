@@ -1446,63 +1446,98 @@ func FabricsNewValues(stored, next []byte) []string {
 }
 
 // MaskSecretsExcept is MaskSecrets for free text, such as a journal tail,
-// that may quote secrets and the names a client sets in clear. keep are
-// names the client can already read (the stored file's clear values): an
-// occurrence of a secret that lies wholly inside an occurrence of one is
-// left as it is, so the answer does not depend on whether a stored name
-// contains a stored secret. Any other occurrence is masked, a secret that
-// contains a keep value included. hide are the names the request brings
-// (FabricsNewValues): every occurrence is masked whole, whether or not it
-// contains a secret. Keeping them would show a stored secret in clear
-// wherever the text quotes it when a name equals it, and masking only the
-// secret inside them would tell the client which name holds one; either
-// way the answer would confirm a guess.
+// that may quote secrets and the names a client sets in clear. What it
+// masks must not depend on whether a name the client chose holds, equals
+// or borders a stored secret: text masked or shown as the name the client
+// sends matches a secret or not would confirm a guess.
+//
+// keep are names the client can already read (the stored file's clear
+// values), which stay readable. Their bytes are not compared with a
+// secret: they match any byte. An occurrence of a secret is one where the
+// bytes of s outside every keep occurrence match it, with at least one
+// byte outside them; text wholly inside keep values is no occurrence and
+// is left as it is. So whether text beside a stored name is masked
+// depends on where the name is and on the bytes from outside next to it,
+// never on what the name holds: "ck:" and "zz:" mask the same bytes of
+// "...pick: error", whichever is stored, and a name that holds a secret
+// shows as it is. A secret that starts or ends with the text from outside
+// next to a name is masked there with the name's bytes it would span,
+// which may tell that the secret ends (or starts) with that text and how
+// long it is, never whether a guess equals it. A secret that text from
+// outside quotes in full is masked, as its own bytes match; mhvtl-fabrics
+// never logs one, only whether CHAP is set
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L802).
+//
+// hide are the names the request brings (FabricsNewValues). When there is
+// one, every line of s that holds one of them or an occurrence of a secret
+// is masked whole, up to its newline, and no other byte is masked. A
+// secret holds no newline (a fabrics.conf value ends with its line,
+// redactFabrics), so an occurrence that touches a line lies inside it.
+// Masking only the name would not do: a secret that starts inside it and
+// runs past it, such as "ck:" after a name ending in "pick" in
+// "...pick: error", would mask the colon only when the guess is right.
+// Masking only the lines with a name would not do either: where the text
+// quotes a secret that holds the name, the line would be masked whole
+// when the name is part of the secret and only in part otherwise. A line
+// is masked when it holds a name the client sent, whatever is stored, or
+// else by the keep rule above, whatever the request's names are.
 func MaskSecretsExcept(s string, secrets, keep, hide []string) string {
-	var kept [][2]int
+	inName := make([]bool, len(s))
 	for _, k := range keep {
 		for i := 0; k != "" && i < len(s); {
 			j := strings.Index(s[i:], k)
 			if j < 0 {
 				break
 			}
-			kept = append(kept, [2]int{i + j, i + j + len(k)})
+			for x := i + j; x < i+j+len(k); x++ {
+				inName[x] = true
+			}
 			i += j + 1
 		}
 	}
 	masked := make([]bool, len(s))
 	hit := false
-	for _, v := range hide {
-		for i := 0; v != "" && i < len(s); {
-			j := strings.Index(s[i:], v)
-			if j < 0 {
-				break
-			}
-			for x := i + j; x < i+j+len(v); x++ {
-				masked[x] = true
-			}
-			hit = true
-			i += j + 1
-		}
-	}
 	for _, v := range secrets {
-		for i := 0; v != "" && i < len(s); {
-			j := strings.Index(s[i:], v)
-			if j < 0 {
-				break
+		for a := 0; v != "" && a+len(v) <= len(s); a++ {
+			match, outside := true, false
+			for x := 0; x < len(v) && match; x++ {
+				if !inName[a+x] {
+					match, outside = s[a+x] == v[x], true
+				}
 			}
-			a, b := i+j, i+j+len(v)
-			inside := false
-			for _, k := range kept {
-				inside = inside || (k[0] <= a && b <= k[1])
-			}
-			if !inside {
-				for x := a; x < b; x++ {
+			if match && outside {
+				for x := a; x < a+len(v); x++ {
 					masked[x] = true
 				}
 				hit = true
 			}
-			i = a + 1
 		}
+	}
+	lines := false
+	for _, v := range hide {
+		lines = lines || v != ""
+		for i := 0; v != "" && i < len(s); {
+			j := strings.Index(s[i:], v)
+			if j < 0 {
+				break
+			}
+			masked[i+j], hit = true, true
+			i += j + 1
+		}
+	}
+	for ls := 0; lines && ls < len(s); {
+		le := len(s)
+		if n := strings.IndexByte(s[ls:], '\n'); n >= 0 {
+			le = ls + n
+		}
+		whole := false
+		for x := ls; x < le && !whole; x++ {
+			whole = masked[x]
+		}
+		for x := ls; x < le; x++ {
+			masked[x] = whole
+		}
+		ls = le + 1
 	}
 	if !hit {
 		return s

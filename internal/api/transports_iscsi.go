@@ -827,12 +827,13 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	}
 	// The helper's answers quote secrets and names the client set. The
 	// request's own secrets are masked everywhere. The journal tail may
-	// quote a stored secret anywhere: there the files' secrets are masked
-	// except inside the names the stored file has, and the names the
-	// request brings are masked whole (conffile.MaskSecretsExcept), as the
-	// helper does. The helper's messages quote output from outside only
-	// masked that way, and may name a new name, which is kept: the files'
-	// secrets are masked except inside the names of either file. The names
+	// quote a stored secret anywhere: there the names the stored file has
+	// are shown and never compared with the files' secrets, and when the
+	// request brings names each line that holds one or a secret is masked
+	// whole (conffile.MaskSecretsExcept), as the helper does. The helper's
+	// messages quote output from outside only masked that way, and may name
+	// a new name, which is kept: the names of either file are shown and
+	// never compared with the files' secrets. The names
 	// include every target name the helper's ownership checks may name for
 	// each file (OwnershipWWNs): a derived one, the Base name and
 	// ".lib<ID>" or ".tape<ID>", may hold a secret that spans the two,
