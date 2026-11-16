@@ -584,7 +584,13 @@ helper cannot tell the backend. A
 restart of `mhvtl.target` through `POST /api/v1/service/{action}`, and a start of it while
 `mhvtl-fabrics.service` is not active, start that unit, so they are refused
 with `invalid`, naming the target, when `fabrics.conf` plans one that
-exists in configfs and `mhvtl-fabrics` does not own. A rollback or crash
+exists in configfs and `mhvtl-fabrics` does not own. A `fabrics.conf` with
+problems, which `mhvtl-fabrics` should refuse, is checked all the same, for
+every name its target records could get (each `Target name`, and each
+`Base name` with `.lib<ID>` and `.tape<ID>`), here and for the
+configuration apply that sets `MHVTL_BACKEND=tcmu`; when a target record's
+name cannot be told at all (no `Target name`, and no `Base name` or no ID
+that parses), they are refused with `invalid`. A rollback or crash
 recovery of a target restart or stop that would start `mhvtl.target` again
 is checked the same way: it then leaves `mhvtl.target` (and the bay
 monitor) stopped, completes, and answers `500 fabrics_recovery_required`

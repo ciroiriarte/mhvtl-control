@@ -79,6 +79,9 @@ type fabRecord struct {
 	id     int64
 	header int // index of the header line
 	fields []fabField
+	// isTarget: an "iSCSI target" header, a fabBad one included, whose
+	// ID, when it parses (idOK), is id.
+	isTarget, idOK bool
 
 	portals    []fabPortal // iSCSI
 	baseName   string      // iSCSI
@@ -88,8 +91,10 @@ type fabRecord struct {
 }
 
 // FabricsConf is a lossless fabrics.conf. Parsing never fails; every line
-// fab_conf_parse would reject is a Problem (none is Ambiguous: upstream
-// refuses the whole file on any of them).
+// fab_conf_parse would reject is a Problem, and upstream refuses the whole
+// file on any of them. The one Ambiguous problem is a last line without a
+// newline that holds a NUL, which upstream accepts and reads only up to the
+// NUL (fabLineProblem); the model reads it the same way.
 //
 // Upstream stops at its first error; the model goes on, skipping the bad
 // line (or the fields of a bad record), so Problems[0] is the error
@@ -117,10 +122,13 @@ func (c *FabricsConf) Render() []byte { return renderLines(c.lines) }
 // fabLineProblem is fab_conf_parse's fgets check
 // (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_conf.c#L359-L366):
 // a line that does not fit the 1024-byte buffer with its '\n' is refused,
-// and so is one with a NUL, where strchr stops looking for the '\n'. (On a
-// last line without a newline upstream reads up to the NUL instead; that
-// is flagged too.)
-func fabLineProblem(l Line) string {
+// and so is one with a NUL before its '\n', where strchr stops looking for
+// the '\n' and feof is not yet set. A last line without a newline that
+// fits is read to the end of the file, so feof is set and the line is
+// accepted; the string functions after it then stop at its first NUL.
+// That line is read up to the NUL (nul is its index), and is an ambiguous
+// problem: mhvtl-fabrics reads less than the line shows.
+func fabLineProblem(l Line) (msg string, nul int) {
 	n := len(l.Text)
 	if l.EOL == "\r\n" {
 		n++
@@ -129,13 +137,16 @@ func fabLineProblem(l Line) string {
 	if nl {
 		n++
 	}
+	nul = strings.IndexByte(l.Text, 0)
 	switch {
-	case strings.IndexByte(l.Text, 0) >= 0:
-		return "line contains a NUL byte: mhvtl-fabrics reads it as too long"
 	case n > fabLineBuf-1 || (n == fabLineBuf-1 && !nl):
-		return "line too long"
+		return "line too long", -1
+	case nul >= 0 && nl:
+		return "line contains a NUL byte: mhvtl-fabrics reads it as too long", -1
+	case nul >= 0:
+		return "last line contains a NUL byte: mhvtl-fabrics reads it only up to the NUL", nul
 	}
-	return ""
+	return "", -1
 }
 
 func fabIndent(text string) int {
@@ -442,11 +453,14 @@ func (c *FabricsConf) index() {
 	}
 	cur, iscsi, targets := -1, -1, 0
 	for i, l := range c.lines {
-		if msg := fabLineProblem(l); msg != "" {
+		text := cText(l)
+		if msg, nul := fabLineProblem(l); nul >= 0 {
+			c.Problems = append(c.Problems, Problem{Line: i + 1, Msg: msg, Ambiguous: true})
+			text = text[:nul]
+		} else if msg != "" {
 			problem(i, "%s", msg)
 			continue
 		}
-		text := cText(l)
 		p := fabIndent(text)
 		rest := strings.TrimRightFunc(text[p:], isCSpace)
 		if rest == "" || rest[0] == '#' {
@@ -483,6 +497,7 @@ func (c *FabricsConf) index() {
 				r.kind, iscsi = fabISCSI, len(c.records)
 			case name == "iscsi target":
 				id, ok := parseFabID(value)
+				r.isTarget, r.idOK, r.id = true, ok, id
 				dup := false
 				for _, o := range c.records {
 					dup = dup || (o.kind == fabTarget && o.id == id)
@@ -1103,6 +1118,59 @@ func (c *FabricsConf) CheckPlan(dev *DeviceConf) []Problem {
 func (c *FabricsConf) PlannedWWNs(dev *DeviceConf) []string {
 	_, wwns := c.plan(dev)
 	return wwns
+}
+
+// OwnershipWWNs returns the name of every target mhvtl-fabrics could
+// create from the file and dev, for the checks that refuse to have it
+// adopt a target it does not own. A file without problems gives
+// PlannedWWNs. One with problems should be refused whole by
+// mhvtl-fabrics, but the check does not rely on that: every name each
+// "iSCSI target" record could get is returned, problems ignored, without
+// dev: each Target name value the record gives, and each Base name value
+// of the file with ".lib<ID>" and ".tape<ID>" appended. err names a
+// target record that gives no Target name where the ID does not parse or
+// the file gives no Base name; it does not depend on dev.
+func (c *FabricsConf) OwnershipWWNs(dev *DeviceConf) ([]string, error) {
+	if len(c.Problems) == 0 {
+		return c.PlannedWWNs(dev), nil
+	}
+	var bases []string
+	for _, r := range c.records {
+		if r.isTarget {
+			continue
+		}
+		for _, f := range r.fields {
+			if f.name == "base name" && f.value != "" {
+				bases = append(bases, f.value)
+			}
+		}
+	}
+	var out []string
+	for _, r := range c.records {
+		if !r.isTarget {
+			continue
+		}
+		named := false
+		for _, f := range r.fields {
+			if f.name == "target name" && f.value != "" {
+				out = append(out, f.value)
+				named = true
+			}
+		}
+		if r.idOK {
+			for _, b := range bases {
+				out = append(out, fmt.Sprintf("%s.lib%d", b, r.id), fmt.Sprintf("%s.tape%d", b, r.id))
+			}
+		}
+		switch {
+		case named:
+		case !r.idOK:
+			return nil, fmt.Errorf("line %d: an iSCSI target record has no Target name and no ID that parses, and the file has problems (first %v)", r.header+1, c.Problems[0])
+		case len(bases) == 0:
+			return nil, fmt.Errorf("line %d: an iSCSI target record has no Target name, the file no Base name, and the file has problems (first %v)", r.header+1, c.Problems[0])
+		}
+	}
+	return out, nil
 }
 
 func (c *FabricsConf) plan(dev *DeviceConf) ([]Problem, []string) {

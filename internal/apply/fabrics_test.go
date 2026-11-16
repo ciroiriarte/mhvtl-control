@@ -1803,6 +1803,37 @@ func TestBackendToTCMUChecksForeignTargets(t *testing.T) {
 	}
 }
 
+// TestBackendToTCMUChecksFileWithProblems: the change that sets tcmu
+// checks a fabrics.conf with problems too, for every name its target
+// records could get: upstream accepts a last line without a newline that
+// holds a NUL. A file whose target names cannot be told is refused; a
+// change that keeps the backend is not.
+func TestBackendToTCMUChecksFileWithProblems(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	for _, c := range []struct{ name, conf, msg string }{
+		{"NUL comment", fabConf + "# comment\x00", lib10},
+		{"name cannot be told", "iSCSI:\n Portal: 192.0.2.1\niSCSI target: 10\nbogus\n", "cannot tell which iSCSI targets"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFabEnv(t)
+			tcmu := string(f.read(mhvtlConf))
+			plain := strings.TrimSuffix(tcmu, "MHVTL_BACKEND=tcmu\n")
+			f.writeConf(mhvtlConf, plain, 0o644)
+			f.writeConf(fabricsConf, c.conf, 0o600)
+			f.mkTarget(lib10)
+			req := func(content string) Request {
+				return Request{Op: OpPlan, Actor: "test", Files: []File{{Name: mhvtlConf, BaseSHA256: f.sha(mhvtlConf), Content: []byte(content)}}}
+			}
+			if resp := f.do(req(tcmu)); resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, c.msg) {
+				t.Errorf("backend to tcmu: %+v", resp)
+			}
+			if resp := f.do(req(strings.Replace(plain, "VERBOSE=1", "VERBOSE=2", 1))); resp.Result != ResultValidated {
+				t.Errorf("a change that keeps the backend: %+v", resp)
+			}
+		})
+	}
+}
+
 // TestBackendUnknownChangeChecksForeignTargets: a change of mhvtl.conf
 // where the helper cannot tell the backend before nor after (a backslash
 // in a comment, which systemd accepts) may turn mhvtl into tcmu, so every

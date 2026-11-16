@@ -417,8 +417,9 @@ func notAppliedText(left []conffile.Problem) string {
 // name follows the device kind: ".lib<ID>" or ".tape<ID>", and a target
 // that did not plan may plan now) which exists in configfs and
 // mhvtl-fabrics does not own (checkForeignTargets). Without fabrics.conf,
-// with one mhvtl-fabrics cannot parse, or when fabrics are not in use
-// (fabricsInUse), there is nothing to check. When the helper cannot tell
+// or when fabrics are not in use (fabricsInUse), there is nothing to
+// check. A file with problems has no plan to check, but its names are
+// still checked for ownership (foreignAppear). When the helper cannot tell
 // the backend (unknown), only a foreign target is refused: the plan check
 // would block device.conf edits of kmod users. A change that brings
 // fabrics into use (MHVTL_BACKEND becomes tcmu) has every target the file
@@ -449,14 +450,15 @@ func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) 
 		return err
 	}
 	conf := conffile.ParseFabricsConf(fc.data)
-	if len(conf.Problems) > 0 {
-		return nil
-	}
 	inUse, unknown, err := h.fabricsInUse(ctx, files, next)
 	if err != nil || !inUse && !unknown {
 		return err
 	}
 	curDev, nextDev := conffile.ParseDeviceConf(cur.data), conffile.ParseDeviceConf(nd.data)
+	if len(conf.Problems) > 0 {
+		// No plan to check, but the foreign-target check still runs.
+		return h.foreignAppear(conf, curDev, nextDev, intoUse)
+	}
 	had := map[string]bool{}
 	for _, p := range conf.CheckPlan(curDev) {
 		had[p.Error()] = true
@@ -486,12 +488,35 @@ func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) 
 		return refuse(ErrInvalid, "%s: the change would leave %s without a plan, and the next reload or start of %s would fail (%s: %s); stop exporting them first (iSCSI unbind), or keep the devices they export",
 			deviceConf, what, FabricsUnit, fabricsConf, strings.Join(msgs, "; "))
 	}
+	return h.foreignAppear(conf, curDev, nextDev, intoUse)
+}
+
+// foreignAppear is checkFabricsDevices' foreign-target check: the names
+// conf gives with nextDev and not with curDev (all of them when the change
+// may bring fabrics into use) must not be targets mhvtl-fabrics does not
+// own. A file with problems gives every name its records could get
+// (OwnershipWWNs), which does not depend on device.conf; when a name
+// cannot be told, only a change that may bring fabrics into use is
+// refused, as no other change alters what the file gives.
+func (h *Helper) foreignAppear(conf *conffile.FabricsConf, curDev, nextDev *conffile.DeviceConf, intoUse bool) error {
+	before, err := conf.OwnershipWWNs(curDev)
+	var after []string
+	if err == nil {
+		after, err = conf.OwnershipWWNs(nextDev)
+	}
+	if err != nil {
+		if !intoUse {
+			return nil
+		}
+		return refuse(ErrInvalid, "%s: cannot tell which iSCSI targets %s would create from %s (%v), so with the change its next reload or start could take over a target it does not own; fix %s first",
+			mhvtlConf, FabricsUnit, fabricsConf, err, fabricsConf)
+	}
 	named := map[string]bool{}
-	for _, w := range conf.PlannedWWNs(curDev) {
+	for _, w := range before {
 		named[w] = !intoUse
 	}
 	var appear []string
-	for _, w := range conf.PlannedWWNs(nextDev) {
+	for _, w := range after {
 		if !named[w] {
 			appear = append(appear, w)
 		}
@@ -591,9 +616,13 @@ func (h *Helper) checkForeignTargets(conf *conffile.FabricsConf, files *fileSet)
 // own: its apply would adopt it (checkForeignTargets). A restart restarts
 // the unit; a start starts it unless it is active. Nothing is checked when
 // fabrics are not in use (MHVTL_BACKEND is not tcmu in an mhvtl.conf the
-// helper can read, or the unit is not installed: fabricsInUse), or when fabrics.conf does not exist or
-// mhvtl-fabrics cannot parse it (foreignOnDisk). A start outside the
-// helper (at boot, or by hand) is not guarded.
+// helper can read, or the unit is not installed: fabricsInUse), or when
+// fabrics.conf does not exist. A file with problems, which mhvtl-fabrics
+// should refuse, is still checked, for every name its target records
+// could get (OwnershipWWNs): the model of upstream's parser may be wrong,
+// and a wrong guess there must not start the unit unchecked. When a name
+// cannot be told at all, the start is refused. A start outside the helper
+// (at boot, or by hand) is not guarded.
 func (h *Helper) checkTargetFabrics(ctx context.Context, files *fileSet, restart bool) error {
 	if inUse, unknown, err := h.fabricsInUse(ctx, files, files); err != nil || !inUse && !unknown {
 		return err
@@ -608,15 +637,16 @@ func (h *Helper) checkTargetFabrics(ctx context.Context, files *fileSet, restart
 	if err != nil || !fc.exists {
 		return err
 	}
-	conf := conffile.ParseFabricsConf(fc.data)
-	if len(conf.Problems) > 0 {
-		return nil
-	}
 	dc, err := files.current(deviceConf)
 	if err != nil {
 		return err
 	}
-	foreign, err := h.foreignTargets(conf.PlannedWWNs(conffile.ParseDeviceConf(dc.data)))
+	wwns, err := conffile.ParseFabricsConf(fc.data).OwnershipWWNs(conffile.ParseDeviceConf(dc.data))
+	if err != nil {
+		return refuse(ErrInvalid, "cannot tell which iSCSI targets %s would create from %s (%v), so starting it with %s could take over a target it does not own; fix %s first",
+			FabricsUnit, fabricsConf, err, mhvtlTarget, fabricsConf)
+	}
+	foreign, err := h.foreignTargets(wwns)
 	if err != nil {
 		return err
 	}
@@ -676,23 +706,26 @@ func (e *fabricsForeign) Error() string {
 
 // foreignOnDisk runs the foreign-target check on fabrics.conf and
 // device.conf as they are on disk, right before the helper reloads the
-// unit with them. A file that does not exist, or that mhvtl-fabrics cannot
-// parse, creates no target: apply fails before it touches configfs (load,
-// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L80-L118).
+// unit with them. A file that does not exist creates no target. Its caller
+// does not reload a file with problems (diskProblems), which mhvtl-fabrics
+// should refuse before it touches configfs (load,
+// https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L80-L118);
+// such a file is still checked here, for every name it could give
+// (OwnershipWWNs), and refused when one cannot be told.
 func (h *Helper) foreignOnDisk() error {
 	fc, err := readTarget(h.cfg.ConfigDir, fabricsConf)
 	if err != nil || !fc.exists {
 		return err
 	}
-	conf := conffile.ParseFabricsConf(fc.data)
-	if len(conf.Problems) > 0 {
-		return nil
-	}
 	dc, err := readTarget(h.cfg.ConfigDir, deviceConf)
 	if err != nil {
 		return err
 	}
-	foreign, err := h.foreignTargets(conf.PlannedWWNs(conffile.ParseDeviceConf(dc.data)))
+	wwns, err := conffile.ParseFabricsConf(fc.data).OwnershipWWNs(conffile.ParseDeviceConf(dc.data))
+	if err != nil {
+		return fmt.Errorf("%s not reloaded: cannot tell which iSCSI targets it would create from %s (%w)", FabricsUnit, fabricsConf, err)
+	}
+	foreign, err := h.foreignTargets(wwns)
 	if err != nil {
 		return err
 	}

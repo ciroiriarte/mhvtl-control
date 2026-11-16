@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -372,6 +373,67 @@ func TestFabricsPlannedWWNs(t *testing.T) {
 	want := []string{fabW10, "iqn.2024-01.com.example:custom", fabBase + ".tape50"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("PlannedWWNs = %q, want %q", got, want)
+	}
+}
+
+// TestFabricsLastLineNUL: a last line without a newline that holds a NUL
+// is read up to the NUL, as fab_conf_parse reads it (feof is set, so the
+// fgets check passes, and the string functions stop at the NUL), and is an
+// ambiguous problem; with a newline after it the line is refused.
+func TestFabricsLastLineNUL(t *testing.T) {
+	dev := ParseDeviceConf([]byte(fabDeviceConf))
+	valid := "iSCSI:\n Base name: " + fabBase + "\niSCSI target: 10\n"
+	c := ParseFabricsConf([]byte(valid + "# comment\x00"))
+	if len(c.Problems) != 1 || !c.Problems[0].Ambiguous || c.Problems[0].Line != 4 || !strings.Contains(c.Problems[0].Msg, "NUL") {
+		t.Errorf("problems %v", c.Problems)
+	}
+	if c.Writable() == nil {
+		t.Error("writable")
+	}
+	if got, err := c.OwnershipWWNs(dev); err != nil || !slices.Contains(got, fabW10) {
+		t.Errorf("OwnershipWWNs = %q, %v", got, err)
+	}
+	// The part before the NUL counts: here a Target name.
+	c = ParseFabricsConf([]byte(valid + " Target name: iqn.2024-01.com.example:custom\x00junk"))
+	if got := c.PlannedWWNs(dev); len(got) != 1 || got[0] != "iqn.2024-01.com.example:custom" {
+		t.Errorf("PlannedWWNs = %q", got)
+	}
+	c = ParseFabricsConf([]byte(valid + "# comment\x00\n"))
+	if len(c.Problems) != 1 || c.Problems[0].Ambiguous || !strings.Contains(c.Problems[0].Msg, "too long") {
+		t.Errorf("NUL before a newline: %v", c.Problems)
+	}
+}
+
+// TestFabricsOwnershipWWNs: a file with problems gives every name a target
+// record could get, problems ignored, or an error when one cannot be told.
+func TestFabricsOwnershipWWNs(t *testing.T) {
+	dev := ParseDeviceConf([]byte(fabDeviceConf))
+	for _, c := range []struct {
+		name, in string
+		want     []string // nil with err
+		err      string
+	}{
+		{"no problems", "iSCSI:\n Base name: " + fabBase + "\niSCSI target: 10\n", []string{fabW10}, ""},
+		{"bogus line", "iSCSI:\n Base name: " + fabBase + "\niSCSI target: 10\nbogus\n", []string{fabW10, fabBase + ".tape10"}, ""},
+		{"bad Target name", "iSCSI:\n Base name: " + fabBase + "\niSCSI target: 30\n Target name: BAD\n",
+			[]string{"BAD", fabBase + ".lib30", fabBase + ".tape30"}, ""},
+		{"named, ID bad", "iSCSI:\niSCSI target: x\n Target name: iqn.2024-01.com.example:custom\n", []string{"iqn.2024-01.com.example:custom"}, ""},
+		{"ID bad", "iSCSI:\n Base name: " + fabBase + "\niSCSI target: x\n", nil, "line 3: an iSCSI target record has no Target name and no ID"},
+		{"no Base name", "iSCSI:\niSCSI target: 10\nbogus\n", nil, "line 2: an iSCSI target record has no Target name, the file no Base name"},
+		{"no target", "iSCSI:\nbogus\n", nil, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := ParseFabricsConf([]byte(c.in)).OwnershipWWNs(dev)
+			if c.err != "" {
+				if err == nil || !strings.Contains(err.Error(), c.err) {
+					t.Errorf("err %v, want %q", err, c.err)
+				}
+				return
+			}
+			if err != nil || !slices.Equal(got, c.want) {
+				t.Errorf("OwnershipWWNs = %q, %v, want %q", got, err, c.want)
+			}
+		})
 	}
 }
 

@@ -861,8 +861,9 @@ func TestServiceTargetLibraryAddedAfterPlan(t *testing.T) {
 // state file lists is mhvtl-fabrics' own. An mhvtl.conf the helper cannot
 // tell the backend of (a backslash in a comment, which systemd accepts)
 // is checked: systemd may pass tcmu. Nothing is checked with a backend
-// that is not tcmu, the unit not installed, or a fabrics.conf that does
-// not exist or that mhvtl-fabrics cannot parse: there the action runs.
+// that is not tcmu, the unit not installed, or no fabrics.conf: there the
+// action runs. A fabrics.conf with problems is checked for every name its
+// target records could get, and refused when one cannot be told.
 func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
 	type tc struct {
@@ -871,6 +872,7 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 		load                         string // the unit's LoadState; "" is loaded
 		conf                         string // fabrics.conf; "" is fabConf, "-" none
 		refused                      bool
+		msg                          string // in the refusal; "" is the foreign target lib10
 	}
 	setup := func(t *testing.T, c tc) (*env, *fakeSystem) {
 		t.Helper()
@@ -923,7 +925,15 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 		{name: "restart with the backend not tcmu", action: ActionRestart, fabrics: "active", mhvtlAdd: "MHVTL_BACKEND=mhvtl\n"},
 		{name: "restart with the unit not installed", action: ActionRestart, fabrics: "inactive", load: "not-found"},
 		{name: "restart with no fabrics.conf", action: ActionRestart, fabrics: "active", conf: "-"},
-		{name: "restart with fabrics.conf unparsable", action: ActionRestart, fabrics: "active", conf: fabConf + "bogus\n"},
+		// A file with problems is checked all the same: the model of
+		// upstream's parser may be wrong. Upstream accepts a last line
+		// without a newline that holds a NUL, read up to the NUL.
+		{name: "restart with fabrics.conf unparsable", action: ActionRestart, fabrics: "active", conf: fabConf + "bogus\n", refused: true},
+		{name: "restart with a NUL in an unterminated last comment", action: ActionRestart, fabrics: "active", conf: fabConf + "# comment\x00", refused: true},
+		{name: "start with a NUL in an unterminated last comment", action: ActionStart, fabrics: "inactive", conf: fabConf + "# comment\x00", refused: true},
+		{name: "restart with an owned target and a NUL comment", action: ActionRestart, fabrics: "active", conf: fabConf + "# comment\x00", state: "iscsi " + lib10 + "\n"},
+		{name: "restart with a target name that cannot be told", action: ActionRestart, fabrics: "active",
+			conf: "iSCSI:\n Portal: 192.0.2.1\niSCSI target: 10\nbogus\n", refused: true, msg: "cannot tell which iSCSI targets"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e, s := setup(t, c)
@@ -958,11 +968,18 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 				}
 				return
 			}
-			if pr.Result != ResultRefused || pr.Error != ErrInvalid || !strings.Contains(pr.Message, lib10) || !strings.Contains(pr.Message, "does not own") {
+			want := c.msg
+			if want == "" {
+				want = lib10
+				if !strings.Contains(pr.Message, "does not own") {
+					t.Errorf("service_plan: %+v", pr)
+				}
+			}
+			if pr.Result != ResultRefused || pr.Error != ErrInvalid || !strings.Contains(pr.Message, want) {
 				t.Fatalf("service_plan: %+v", pr)
 			}
 			resp := e.do(target(OpService, c.action, targetUnits))
-			if resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, lib10) {
+			if resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, want) {
 				t.Errorf("service: %+v", resp)
 			}
 			if got := filterPrefix(s.calls, "start ", "stop "); len(got) != 0 {
@@ -981,8 +998,17 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 // target owned, the recovery starts mhvtl.target as before.
 func TestServiceTargetStopRecoverForeignFabricsTarget(t *testing.T) {
 	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
-	for _, owned := range []bool{false, true} {
-		t.Run(fmt.Sprintf("owned %v", owned), func(t *testing.T) {
+	for _, c := range []struct {
+		owned bool
+		conf  string
+	}{
+		{false, fabConf}, {true, fabConf},
+		// Upstream accepts a last line without a newline that holds a
+		// NUL, read up to the NUL: the target is still checked.
+		{false, fabConf + "# comment\x00"},
+	} {
+		owned := c.owned
+		t.Run(fmt.Sprintf("owned %v, conf %q", owned, c.conf[len(fabConf):]), func(t *testing.T) {
 			e, s := newExecEnv(t)
 			standalone34(e)
 			partOf(s)
@@ -996,7 +1022,7 @@ func TestServiceTargetStopRecoverForeignFabricsTarget(t *testing.T) {
 				return sysctl(ctx, args...)
 			}
 			e.rebuild()
-			files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n", fabricsConf: fabConf}
+			files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n", fabricsConf: c.conf}
 			for name, data := range files {
 				if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
 					t.Fatal(err)

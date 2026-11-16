@@ -127,6 +127,19 @@ active, which start the unit, are refused the same way when the file plans
 a target that exists in configfs and
 .B mhvtl-fabrics
 does not own.
+A
+.I fabrics.conf
+with problems, which
+.B mhvtl-fabrics
+should refuse, is checked all the same, here and for a change that sets
+.BR MHVTL_BACKEND=tcmu ,
+for every name its target records could get (each Target name, and each
+Base name with
+.BI .lib ID
+and
+.BI .tape ID\fR);
+when a target record's name cannot be told at all, they are refused with
+.BR invalid .
 A rollback or crash recovery of a target restart or stop that would start
 .B mhvtl.target
 again is checked the same way: it then leaves the target and the bay
