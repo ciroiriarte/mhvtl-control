@@ -1120,18 +1120,58 @@ func (c *FabricsConf) PlannedWWNs(dev *DeviceConf) []string {
 	return wwns
 }
 
+// fabTopoLineMax is the longest line fab_topology_parse reads whole: fgets
+// into its 1024-byte buffer reads at most 1023 bytes, the line ending
+// included, and the rest of a longer line comes back from the next fgets
+// as a line of its own
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_conf.c#L469-L475).
+const fabTopoLineMax = 1023
+
+// FabricsTopologyExact reports whether fabTopology reads dev as
+// fab_topology_parse does: dev has no Problems, and no line is longer
+// than fabTopoLineMax (its tail would be read as a line, so a long
+// comment can end in "Drive: 34" that upstream sees and the model does
+// not) or holds a NUL (sscanf stops there). The first test is the wider
+// today (lineProblem flags lines over 510 bytes and every NUL); the
+// second does not rely on that.
+func FabricsTopologyExact(dev *DeviceConf) bool {
+	if len(dev.Problems) > 0 {
+		return false
+	}
+	for _, l := range dev.Lines() {
+		if len(l.Text)+len(l.EOL) > fabTopoLineMax || strings.IndexByte(l.Text, 0) >= 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // OwnershipWWNs returns the name of every target mhvtl-fabrics could
 // create from the file and dev, for the checks that refuse to have it
-// adopt a target it does not own. A file without problems gives
-// PlannedWWNs. One with problems should be refused whole by
-// mhvtl-fabrics, but the check does not rely on that: every name each
-// "iSCSI target" record could get is returned, problems ignored, without
-// dev: each Target name value the record gives, and each Base name value
-// of the file with ".lib<ID>" and ".tape<ID>" appended. err names a
+// adopt a target it does not own. A file without problems, with a dev
+// FabricsTopologyExact takes, gives PlannedWWNs.
+//
+// Otherwise it gives, without dev, every name each "iSCSI target" record
+// could get: each Target name value the record gives, and each Base name
+// value of the file with ".lib<ID>" and ".tape<ID>" appended. That is a
+// superset of what upstream creates whatever it reads in device.conf:
+// fab_plan creates targets only for the "iSCSI target" records of
+// fabrics.conf, each named by its Target name or else by the Base name,
+// ".lib" or ".tape" and the record's ID, and device.conf only picks
+// between lib and tape or refuses the target
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_conf.c#L537-L611).
+//
+// A file with problems should be refused whole by mhvtl-fabrics, but the
+// check does not rely on that: problems are ignored, and err names a
 // target record that gives no Target name where the ID does not parse or
-// the file gives no Base name; it does not depend on dev.
+// the file gives no Base name. In a file without problems such a record
+// has an ID, and with no Target name and no Base name fab_plan refuses it
+// and mhvtl-fabrics creates no target at all
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L112-L117),
+// so it gives no name. err never depends on dev.
 func (c *FabricsConf) OwnershipWWNs(dev *DeviceConf) ([]string, error) {
-	if len(c.Problems) == 0 {
+	clean := len(c.Problems) == 0
+	if clean && FabricsTopologyExact(dev) {
 		return c.PlannedWWNs(dev), nil
 	}
 	var bases []string
@@ -1163,7 +1203,7 @@ func (c *FabricsConf) OwnershipWWNs(dev *DeviceConf) ([]string, error) {
 			}
 		}
 		switch {
-		case named:
+		case named || clean:
 		case !r.idOK:
 			return nil, fmt.Errorf("line %d: an iSCSI target record has no Target name and no ID that parses, and the file has problems (first %v)", r.header+1, c.Problems[0])
 		case len(bases) == 0:

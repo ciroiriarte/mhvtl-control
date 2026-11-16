@@ -859,20 +859,29 @@ func TestFabricsBackendSubset(t *testing.T) {
 // but mhvtl-fabrics' state file does not list is refused, plan and apply,
 // before anything is written: mhvtl-fabrics apply would adopt it, prune its
 // ACLs and LUNs, and delete it on unbind. A target the state file lists is
-// mhvtl-fabrics' own.
+// mhvtl-fabrics' own. A device.conf upstream may read differently from
+// the model has every name the file could give checked: in a comment
+// longer than fab_topology_parse's buffer, upstream reads the tail
+// "Drive: 10" as a line, ahead of Library 10, and plans tape10.
 func TestFabricsForeignTarget(t *testing.T) {
 	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	const tape10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.tape10"
 	const foreign = "iqn.2026-11.lan.example:somebody-else"
 	renamed := strings.Replace(fabConf, " CHAP name:", " Target name: "+foreign+"\n CHAP name:", 1)
 	for _, c := range []struct {
 		name, cur, next, wwn string
+		long                 bool // device.conf has the long comment before Library 10
 	}{
-		{"new file, derived name", "", fabConf, lib10},
-		{"Target name set", fabConf, renamed, foreign},
-		{"Base name changed", strings.Replace(fabConf, "vtl1:mhvtl", "vtl1:old", 1), fabConf, lib10},
+		{"new file, derived name", "", fabConf, lib10, false},
+		{"Target name set", fabConf, renamed, foreign, false},
+		{"Base name changed", strings.Replace(fabConf, "vtl1:mhvtl", "vtl1:old", 1), fabConf, lib10, false},
+		{"new file, long device.conf comment", "", fabConf, tape10, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFabEnv(t)
+			if c.long {
+				f.writeConf(deviceConf, strings.Replace(string(f.read(deviceConf)), "Library: 10 ", "# "+strings.Repeat("x", 1021)+"Drive: 10\nLibrary: 10 ", 1), 0o644)
+			}
 			if c.cur != "" {
 				f.writeConf(fabricsConf, c.cur, 0o600)
 			} else {
@@ -1058,6 +1067,38 @@ func deviceConfNamesForeignTarget(t *testing.T, add string, refused bool) {
 		}
 		return
 	}
+	if resp := f.do(req); resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, lib30) ||
+		!strings.Contains(resp.Message, "does not own") {
+		t.Fatalf("library 30 back with a foreign %s: %+v", lib30, resp)
+	}
+	if err := os.WriteFile(f.cfg.FabricsState, []byte("iscsi "+lib30+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if resp := f.do(req); resp.Result != ResultValidated {
+		t.Fatalf("library 30 back with %s owned: %+v", lib30, resp)
+	}
+}
+
+// TestDeviceConfLeavesAmbiguousNamesForeignTarget: a device.conf that
+// upstream may read differently from the model (a comment longer than
+// fab_topology_parse's buffer, whose tail it reads as a line) has every
+// name fabrics.conf could give checked, without saying which upstream
+// plans. A change from it to a clean device.conf that has target 30 plan
+// as lib30 is refused when lib30 exists in configfs and mhvtl-fabrics does
+// not own it: that the ambiguous file could give lib30 does not mean
+// upstream planned it.
+func TestDeviceConfLeavesAmbiguousNamesForeignTarget(t *testing.T) {
+	const lib30 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib30"
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, "VERSION: 1\n\niSCSI:\n Base name: iqn.2003-01.org.linux-iscsi.vtl1:mhvtl\n\n"+
+		"iSCSI target: 30\n Initiator name: iqn.2024-01.com.example:pbs1\n", 0o600)
+	full := string(f.read(deviceConf))
+	f.writeConf(deviceConf, full[:strings.Index(full, "Library: 30 ")]+"# "+strings.Repeat("x", 1021)+"Drive: 99\n", 0o644)
+	f.mkTarget(lib30)
+	if err := os.WriteFile(f.cfg.FabricsState, []byte("iscsi iqn.2003-01.org.linux-iscsi.vtl1:other\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := Request{Op: OpPlan, Actor: "test", Files: []File{{Name: deviceConf, BaseSHA256: f.sha(deviceConf), Content: []byte(full)}}}
 	if resp := f.do(req); resp.Result != ResultRefused || resp.Error != ErrInvalid || !strings.Contains(resp.Message, lib30) ||
 		!strings.Contains(resp.Message, "does not own") {
 		t.Fatalf("library 30 back with a foreign %s: %+v", lib30, resp)

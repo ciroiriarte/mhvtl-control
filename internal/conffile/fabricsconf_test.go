@@ -437,6 +437,65 @@ func TestFabricsOwnershipWWNs(t *testing.T) {
 	}
 }
 
+// TestFabricsOwnershipWWNsDeviceConf: a device.conf that
+// fab_topology_parse may read differently from the model gives every name
+// each target record could get, without device.conf. Upstream reads it in
+// fgets calls into a 1024-byte buffer, so the tail of a longer comment
+// line is read as a line: here "Drive: 99", which plans target 99 as
+// tape99 upstream while the model sees no Drive 99.
+func TestFabricsOwnershipWWNsDeviceConf(t *testing.T) {
+	long99 := "# " + strings.Repeat("x", 1021) + "Drive: 99\n"
+	clean := ParseDeviceConf([]byte(fabDeviceConf))
+	dev := ParseDeviceConf([]byte(fabDeviceConf + long99))
+	if !FabricsTopologyExact(clean) || FabricsTopologyExact(dev) {
+		t.Fatalf("FabricsTopologyExact clean %v, long comment %v", FabricsTopologyExact(clean), FabricsTopologyExact(dev))
+	}
+	for _, c := range []struct {
+		name, in string
+		want     []string
+	}{
+		{"base name", "iSCSI:\n Base name: " + fabBase + "\niSCSI target: 99\n", []string{fabBase + ".lib99", fabBase + ".tape99"}},
+		{"target name", "iSCSI:\n Base name: " + fabBase + "\niSCSI target: 99\n Target name: iqn.2024-01.com.example:custom\n",
+			[]string{"iqn.2024-01.com.example:custom", fabBase + ".lib99", fabBase + ".tape99"}},
+		// fab_plan refuses a target with no Target name and no Base
+		// name, and mhvtl-fabrics then creates none.
+		{"no name", "iSCSI:\niSCSI target: 99\n", nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			conf := ParseFabricsConf([]byte(c.in))
+			if len(conf.Problems) > 0 {
+				t.Fatalf("problems %v", conf.Problems)
+			}
+			if got := conf.PlannedWWNs(dev); len(got) != 0 {
+				t.Errorf("PlannedWWNs = %q: the model should not see Drive 99", got)
+			}
+			if got, err := conf.OwnershipWWNs(dev); err != nil || !slices.Equal(got, c.want) {
+				t.Errorf("OwnershipWWNs = %q, %v, want %q", got, err, c.want)
+			}
+		})
+	}
+	// The buffer test does not rely on device.conf's Problems: 1023 bytes
+	// with the newline is read whole, 1024 are not, nor is a NUL.
+	for _, c := range []struct {
+		name, line string
+		exact      bool
+	}{
+		{"1023 bytes", "#" + strings.Repeat("x", 1021) + "\n", true},
+		{"1024 bytes", "#" + strings.Repeat("x", 1022) + "\n", false},
+		{"1023 bytes CRLF", "#" + strings.Repeat("x", 1021) + "\r\n", false},
+		{"1023 bytes, last line", "#" + strings.Repeat("x", 1022), true},
+		{"NUL", "# x\x00Drive: 99\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := ParseDeviceConf([]byte(fabDeviceConf + c.line))
+			d.Problems = nil
+			if got := FabricsTopologyExact(d); got != c.exact {
+				t.Errorf("FabricsTopologyExact = %v, want %v", got, c.exact)
+			}
+		})
+	}
+}
+
 func TestFabricsEditCreate(t *testing.T) {
 	const want = "VERSION: 1\n\n" +
 		"iSCSI:\n Portal: 192.0.2.10:3260\n Base name: iqn.2003-01.org.linux-iscsi.vtl1:mhvtl\n\n" +

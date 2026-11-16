@@ -1,6 +1,7 @@
 package apply
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -43,6 +44,28 @@ func start(op string, units ...string) Request {
 func standalone34(e *env) {
 	e.replaceFile("device.conf", " Library ID: 30 Slot: 04", " Library ID: 0 Slot: 00")
 	e.replaceFile("library_contents.30", "Drive 4:\n", "")
+}
+
+// longDrive99 is a device.conf comment line that fab_topology_parse
+// reads in two fgets calls into its 1024-byte buffer
+// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_conf.c#L469-L475):
+// 1023 bytes, then "Drive: 99", a standalone drive upstream plans a target
+// for. The Go model reads one comment line and no Drive 99.
+var longDrive99 = "# " + strings.Repeat("x", 1021) + "Drive: 99\n"
+
+const (
+	// fabConf99 exports device 99, which device.conf has only in
+	// longDrive99.
+	fabConf99 = "VERSION: 1\n\niSCSI:\n Base name: iqn.2003-01.org.linux-iscsi.vtl1:mhvtl\n\niSCSI target: 99\n"
+	tape99    = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.tape99"
+)
+
+// addLongDrive99 appends longDrive99 to device.conf.
+func addLongDrive99(e *env) {
+	e.t.Helper()
+	if err := os.WriteFile(filepath.Join(e.dir, "device.conf"), append(e.read("device.conf"), longDrive99...), 0o644); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // partOf has stopping mhvtl.target stop its support units, as PartOf= does.
@@ -873,7 +896,9 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 		load                         string // the unit's LoadState; "" is loaded
 		conf                         string // fabrics.conf; "" is fabConf, "-" none
 		refused                      bool
-		msg                          string // in the refusal; "" is the foreign target lib10
+		msg                          string // in the refusal; "" is the foreign target
+		wwn                          string // the target in configfs; "" is lib10
+		long99                       bool   // device.conf ends in longDrive99
 	}
 	setup := func(t *testing.T, c tc) (*env, *fakeSystem) {
 		t.Helper()
@@ -892,6 +917,9 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 			return sysctl(ctx, args...)
 		}
 		e.rebuild()
+		if c.long99 {
+			addLongDrive99(e)
+		}
 		files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n" + c.mhvtlAdd}
 		switch c.conf {
 		case "":
@@ -905,7 +933,11 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", lib10, "tpgt_1"), 0o755); err != nil {
+		wwn := c.wwn
+		if wwn == "" {
+			wwn = lib10
+		}
+		if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", wwn, "tpgt_1"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if c.state != "" {
@@ -935,6 +967,13 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 		{name: "restart with an owned target and a NUL comment", action: ActionRestart, fabrics: "active", conf: fabConf + "# comment\x00", state: "iscsi " + lib10 + "\n"},
 		{name: "restart with a target name that cannot be told", action: ActionRestart, fabrics: "active",
 			conf: "iSCSI:\n Portal: 192.0.2.1\niSCSI target: 10\nbogus\n", refused: true, msg: "cannot tell which iSCSI targets"},
+		// device.conf read differently upstream: a long comment ending
+		// in a Drive 99 only upstream sees. Every name target 99 could
+		// get is checked.
+		{name: "restart with a long device.conf comment", action: ActionRestart, fabrics: "active", conf: fabConf99, long99: true, wwn: tape99, refused: true},
+		{name: "start with a long device.conf comment", action: ActionStart, fabrics: "inactive", conf: fabConf99, long99: true, wwn: tape99, refused: true},
+		{name: "restart with a long device.conf comment, target owned", action: ActionRestart, fabrics: "active", conf: fabConf99, long99: true, wwn: tape99, state: "iscsi " + tape99 + "\n"},
+		{name: "start with a long device.conf comment, target owned", action: ActionStart, fabrics: "inactive", conf: fabConf99, long99: true, wwn: tape99, state: "iscsi " + tape99 + "\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e, s := setup(t, c)
@@ -971,7 +1010,7 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 			}
 			want := c.msg
 			if want == "" {
-				want = lib10
+				want = cmp.Or(c.wwn, lib10)
 				if !strings.Contains(pr.Message, "does not own") {
 					t.Errorf("service_plan: %+v", pr)
 				}
@@ -1000,18 +1039,31 @@ func TestServiceTargetForeignFabricsTarget(t *testing.T) {
 func TestServiceTargetStopRecoverForeignFabricsTarget(t *testing.T) {
 	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
 	for _, c := range []struct {
-		owned bool
-		conf  string
+		name   string
+		owned  bool
+		conf   string
+		long99 bool // device.conf ends in longDrive99; the target is tape99
 	}{
-		{false, fabConf}, {true, fabConf},
+		{"foreign", false, fabConf, false}, {"owned", true, fabConf, false},
 		// Upstream accepts a last line without a newline that holds a
 		// NUL, read up to the NUL: the target is still checked.
-		{false, fabConf + "# comment\x00"},
+		{"foreign, NUL comment", false, fabConf + "# comment\x00", false},
+		// Upstream reads a Drive 99 at the end of a long device.conf
+		// comment: every name target 99 could get is checked.
+		{"foreign, long device.conf comment", false, fabConf99, true},
+		{"owned, long device.conf comment", true, fabConf99, true},
 	} {
 		owned := c.owned
-		t.Run(fmt.Sprintf("owned %v, conf %q", owned, c.conf[len(fabConf):]), func(t *testing.T) {
+		wwn := lib10
+		if c.long99 {
+			wwn = tape99
+		}
+		t.Run(c.name, func(t *testing.T) {
 			e, s := newExecEnv(t)
 			standalone34(e)
+			if c.long99 {
+				addLongDrive99(e)
+			}
 			partOf(s)
 			e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
 			e.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
@@ -1029,11 +1081,11 @@ func TestServiceTargetStopRecoverForeignFabricsTarget(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", lib10, "tpgt_1"), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", wwn, "tpgt_1"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			if owned {
-				if err := os.WriteFile(e.cfg.FabricsState, []byte("iscsi "+lib10+"\n"), 0o600); err != nil {
+				if err := os.WriteFile(e.cfg.FabricsState, []byte("iscsi "+wwn+"\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1061,7 +1113,7 @@ func TestServiceTargetStopRecoverForeignFabricsTarget(t *testing.T) {
 				}
 				return
 			}
-			if resp.Result != ResultError || resp.Error != ErrFabricsState || !strings.Contains(resp.Message, lib10) || !strings.Contains(resp.Message, "does not own") {
+			if resp.Result != ResultError || resp.Error != ErrFabricsState || !strings.Contains(resp.Message, wwn) || !strings.Contains(resp.Message, "does not own") {
 				t.Errorf("recovery: %+v", resp)
 			}
 			for _, u := range []string{mhvtlTarget, bayMonitor} {
@@ -1090,14 +1142,23 @@ func TestServiceTargetRestartRollbackForeignFabricsTarget(t *testing.T) {
 	for _, c := range []struct {
 		name       string
 		unreadable bool
+		long99     bool // device.conf ends in longDrive99; the target is tape99
 		want       string
 	}{
-		{"foreign", false, mhvtlTarget + " was left stopped: foreign iSCSI target found (" + lib10 + "): "},
-		{"state file unreadable", true, mhvtlTarget + " was left stopped: could not tell whether starting it would have " + FabricsUnit + " take over an iSCSI target it does not own (" + lib10 + " exists in configfs and the state file cannot be read"},
+		{"foreign", false, false, mhvtlTarget + " was left stopped: foreign iSCSI target found (" + lib10 + "): "},
+		{"state file unreadable", true, false, mhvtlTarget + " was left stopped: could not tell whether starting it would have " + FabricsUnit + " take over an iSCSI target it does not own (" + lib10 + " exists in configfs and the state file cannot be read"},
+		// Upstream reads a Drive 99 at the end of a long device.conf
+		// comment: every name target 99 could get is checked.
+		{"foreign, long device.conf comment", false, true, mhvtlTarget + " was left stopped: foreign iSCSI target found (" + tape99 + "): "},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e, s := newExecEnv(t)
 			standalone34(e)
+			conf, wwn := fabConf, lib10
+			if c.long99 {
+				addLongDrive99(e)
+				conf, wwn = fabConf99, tape99
+			}
 			partOf(s)
 			e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
 			if c.unreadable {
@@ -1114,7 +1175,7 @@ func TestServiceTargetRestartRollbackForeignFabricsTarget(t *testing.T) {
 				return sysctl(ctx, args...)
 			}
 			e.rebuild()
-			files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n", fabricsConf: fabConf}
+			files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n", fabricsConf: conf}
 			for name, data := range files {
 				if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
 					t.Fatal(err)
@@ -1132,7 +1193,7 @@ func TestServiceTargetRestartRollbackForeignFabricsTarget(t *testing.T) {
 					return
 				}
 				s.state[FabricsUnit] = "inactive"
-				if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", lib10, "tpgt_1"), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", wwn, "tpgt_1"), 0o755); err != nil {
 					t.Error(err)
 				}
 			}

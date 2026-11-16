@@ -497,7 +497,12 @@ func (h *Helper) checkFabricsDevices(ctx context.Context, files, next *fileSet) 
 // own. A file with problems gives every name its records could get
 // (OwnershipWWNs), which does not depend on device.conf; when a name
 // cannot be told, only a change that may bring fabrics into use is
-// refused, as no other change alters what the file gives.
+// refused, as no other change alters what the file gives (that error
+// never depends on device.conf). A device.conf that upstream may read
+// differently from the model, before or after the change
+// (FabricsTopologyExact), also gives every name, without saying which
+// upstream plans now: then all the names it gives after the change are
+// checked, as one it gives before may not be planned until the change.
 func (h *Helper) foreignAppear(conf *conffile.FabricsConf, curDev, nextDev *conffile.DeviceConf, intoUse bool) error {
 	before, err := conf.OwnershipWWNs(curDev)
 	var after []string
@@ -512,8 +517,9 @@ func (h *Helper) foreignAppear(conf *conffile.FabricsConf, curDev, nextDev *conf
 			mhvtlConf, FabricsUnit, fabricsConf, err, fabricsConf)
 	}
 	named := map[string]bool{}
+	exact := conffile.FabricsTopologyExact(curDev) && conffile.FabricsTopologyExact(nextDev)
 	for _, w := range before {
-		named[w] = !intoUse
+		named[w] = !intoUse && exact
 	}
 	var appear []string
 	for _, w := range after {
@@ -593,13 +599,19 @@ func (h *Helper) fabricsInUse(ctx context.Context, files, next *fileSet) (inUse,
 // (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L576-L688),
 // and a later unbind or remove deletes the target
 // (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L690-L710).
-// A target mhvtl-fabrics already owns is its own to change.
+// A target mhvtl-fabrics already owns is its own to change. A device.conf
+// upstream may read differently from the model has every name the file
+// could give checked (OwnershipWWNs).
 func (h *Helper) checkForeignTargets(conf *conffile.FabricsConf, files *fileSet) error {
 	dc, err := files.current(deviceConf)
 	if err != nil {
 		return err
 	}
-	foreign, err := h.foreignTargets(conf.PlannedWWNs(conffile.ParseDeviceConf(dc.data)))
+	wwns, err := conf.OwnershipWWNs(conffile.ParseDeviceConf(dc.data))
+	if err != nil {
+		return refuse(ErrInvalid, "cannot tell which iSCSI targets %s would create from %s (%v); fix it first", FabricsUnit, fabricsConf, err)
+	}
+	foreign, err := h.foreignTargets(wwns)
 	if err != nil {
 		return err
 	}
@@ -620,8 +632,11 @@ func (h *Helper) checkForeignTargets(conf *conffile.FabricsConf, files *fileSet)
 // fabrics.conf does not exist. A file with problems, which mhvtl-fabrics
 // should refuse, is still checked, for every name its target records
 // could get (OwnershipWWNs): the model of upstream's parser may be wrong,
-// and a wrong guess there must not start the unit unchecked. When a name
-// cannot be told at all, the start is refused. A start outside the helper
+// and a wrong guess there must not start the unit unchecked. So is a
+// device.conf upstream may read differently from the model
+// (FabricsTopologyExact), such as one with a line longer than
+// fab_topology_parse's buffer. When a name cannot be told at all, the
+// start is refused. A start outside the helper
 // (at boot, or by hand) is not guarded.
 func (h *Helper) checkTargetFabrics(ctx context.Context, files *fileSet, restart bool) error {
 	if inUse, unknown, err := h.fabricsInUse(ctx, files, files); err != nil || !inUse && !unknown {
@@ -721,7 +736,8 @@ func (e *fabricsForeign) Error() string {
 // should refuse before it touches configfs (load,
 // https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/cmd/mhvtl-fabrics.c#L80-L118);
 // such a file is still checked here, for every name it could give
-// (OwnershipWWNs), and refused when one cannot be told.
+// (OwnershipWWNs), and refused when one cannot be told. So is a
+// device.conf upstream may read differently from the model.
 func (h *Helper) foreignOnDisk() error {
 	fc, err := readTarget(h.cfg.ConfigDir, fabricsConf)
 	if err != nil || !fc.exists {
