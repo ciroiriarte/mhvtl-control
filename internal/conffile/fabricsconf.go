@@ -1303,16 +1303,6 @@ const SecretMask = "********"
 
 const fabMask = SecretMask
 
-// sha256Run is a run of 64 or more hex digits: a SHA-256 in hex, such as
-// the real hash of fabrics.conf a conflict quotes ("now sha256").
-var sha256Run = regexp.MustCompile(`[0-9A-Fa-f]{64,}`)
-
-// CutHashes replaces every SHA-256 in s: the hash of fabrics.conf would let
-// a client test guesses at its CHAP secrets offline. Run it before the
-// secrets are masked, so that a secret inside a hash cannot split it into
-// shorter runs.
-func CutHashes(s string) string { return sha256Run.ReplaceAllString(s, "(hash not shown)") }
-
 // MaskSecrets replaces each secret in s with SecretMask, longest first so
 // a secret that contains another is masked whole.
 func MaskSecrets(s string, secrets []string) string {
@@ -1410,8 +1400,8 @@ func RedactComment(line string) string {
 	return line
 }
 
-// FabricsClearValues returns the values of the clearFields lines of data,
-// the text MaskSecretsExcept leaves alone.
+// FabricsClearValues returns the values of the clearFields lines of data:
+// names a client sets and reads in clear.
 func FabricsClearValues(data []byte) []string {
 	var out []string
 	for _, l := range splitLines(data) {
@@ -1420,140 +1410,6 @@ func FabricsClearValues(data []byte) []string {
 		}
 	}
 	return out
-}
-
-// FabricsNewValues returns the values of the indented clearFields lines of
-// next (portals, base name, initiator, target and CHAP names) that are not
-// clear values of stored: the names a request brings, which
-// MaskSecretsExcept hides in free text. Record headers (IDs, the version)
-// are left out: they are short numbers, which free text such as a journal
-// is full of.
-func FabricsNewValues(stored, next []byte) []string {
-	had := map[string]bool{}
-	for _, v := range FabricsClearValues(stored) {
-		had[v] = true
-	}
-	var out []string
-	for _, l := range splitLines(next) {
-		if fabIndent(l.Text) == 0 {
-			continue
-		}
-		if vs, ve, ok := clearValueSpan(l.Text); ok && ve > vs && !had[l.Text[vs:ve]] {
-			out = append(out, l.Text[vs:ve])
-		}
-	}
-	return out
-}
-
-// MaskSecretsExcept is MaskSecrets for free text, such as a journal tail,
-// that may quote secrets and the names a client sets in clear. What it
-// masks must not depend on whether a name the client chose holds, equals
-// or borders a stored secret: text masked or shown as the name the client
-// sends matches a secret or not would confirm a guess.
-//
-// keep are names the client can already read (the stored file's clear
-// values), which stay readable. Their bytes are not compared with a
-// secret: they match any byte. An occurrence of a secret is one where the
-// bytes of s outside every keep occurrence match it, with at least one
-// byte outside them; text wholly inside keep values is no occurrence and
-// is left as it is. So whether text beside a stored name is masked
-// depends on where the name is and on the bytes from outside next to it,
-// never on what the name holds: "ck:" and "zz:" mask the same bytes of
-// "...pick: error", whichever is stored, and a name that holds a secret
-// shows as it is. A secret that starts or ends with the text from outside
-// next to a name is masked there with the name's bytes it would span,
-// which may tell that the secret ends (or starts) with that text and how
-// long it is, never whether a guess equals it. A secret that text from
-// outside quotes in full is masked, as its own bytes match; mhvtl-fabrics
-// never logs one, only whether CHAP is set
-// (https://github.com/markh794/mhvtl/blob/19b71bd98d8ac2371db1e23a4af8dc17e3b089f3/usr/fabrics_cfs.c#L802).
-//
-// hide are the names the request brings (FabricsNewValues). When there is
-// one, every line of s that holds one of them or an occurrence of a secret
-// is masked whole, up to its newline, and no other byte is masked. A
-// secret holds no newline (a fabrics.conf value ends with its line,
-// redactFabrics), so an occurrence that touches a line lies inside it.
-// Masking only the name would not do: a secret that starts inside it and
-// runs past it, such as "ck:" after a name ending in "pick" in
-// "...pick: error", would mask the colon only when the guess is right.
-// Masking only the lines with a name would not do either: where the text
-// quotes a secret that holds the name, the line would be masked whole
-// when the name is part of the secret and only in part otherwise. A line
-// is masked when it holds a name the client sent, whatever is stored, or
-// else by the keep rule above, whatever the request's names are.
-func MaskSecretsExcept(s string, secrets, keep, hide []string) string {
-	inName := make([]bool, len(s))
-	for _, k := range keep {
-		for i := 0; k != "" && i < len(s); {
-			j := strings.Index(s[i:], k)
-			if j < 0 {
-				break
-			}
-			for x := i + j; x < i+j+len(k); x++ {
-				inName[x] = true
-			}
-			i += j + 1
-		}
-	}
-	masked := make([]bool, len(s))
-	hit := false
-	for _, v := range secrets {
-		for a := 0; v != "" && a+len(v) <= len(s); a++ {
-			match, outside := true, false
-			for x := 0; x < len(v) && match; x++ {
-				if !inName[a+x] {
-					match, outside = s[a+x] == v[x], true
-				}
-			}
-			if match && outside {
-				for x := a; x < a+len(v); x++ {
-					masked[x] = true
-				}
-				hit = true
-			}
-		}
-	}
-	lines := false
-	for _, v := range hide {
-		lines = lines || v != ""
-		for i := 0; v != "" && i < len(s); {
-			j := strings.Index(s[i:], v)
-			if j < 0 {
-				break
-			}
-			masked[i+j], hit = true, true
-			i += j + 1
-		}
-	}
-	for ls := 0; lines && ls < len(s); {
-		le := len(s)
-		if n := strings.IndexByte(s[ls:], '\n'); n >= 0 {
-			le = ls + n
-		}
-		whole := false
-		for x := ls; x < le && !whole; x++ {
-			whole = masked[x]
-		}
-		for x := ls; x < le; x++ {
-			masked[x] = whole
-		}
-		ls = le + 1
-	}
-	if !hit {
-		return s
-	}
-	var out strings.Builder
-	for i := 0; i < len(s); i++ {
-		if !masked[i] {
-			out.WriteByte(s[i])
-			continue
-		}
-		out.WriteString(SecretMask)
-		for i+1 < len(s) && masked[i+1] {
-			i++
-		}
-	}
-	return out.String()
 }
 
 // RedactFabrics returns data with the value of every CHAP secret and

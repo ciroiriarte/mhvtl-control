@@ -37,6 +37,10 @@ type AuditRecord struct {
 	Result        string   `json:"result"`
 	Error         string   `json:"error,omitempty"`
 	Message       string   `json:"message,omitempty"`
+	// Detail is Response.Detail: text from outside the helper that the
+	// answer left out, with CHAP secrets masked. It is not sent to the
+	// journal with the record.
+	Detail string `json:"detail,omitempty"`
 	// OrphanedMedia are cartridges an apply left out of every library;
 	// their media is kept.
 	OrphanedMedia []string `json:"orphaned_media"`

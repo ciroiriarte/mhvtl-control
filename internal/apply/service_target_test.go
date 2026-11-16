@@ -3,6 +3,7 @@ package apply
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1213,5 +1214,74 @@ func TestServiceTargetRestartRollbackForeignFabricsTarget(t *testing.T) {
 	err := &targetNotStarted{err: errors.New("systemctl show " + FabricsUnit + ": exit status 1")}
 	if want := "could not tell whether starting it would have " + FabricsUnit + " take over an iSCSI target it does not own (systemctl show"; !strings.Contains(err.Error(), want) {
 		t.Errorf("%q, want %q", err.Error(), want)
+	}
+}
+
+// TestServiceJournalTailSafeUnitsOnly: a target action whose failed unit
+// is mhvtl.target, whose start pulls in mhvtl-fabrics.service, or a
+// support unit answers no journal lines, even when the journal quotes a
+// CHAP secret: journalctl -u shows them. A vtltape@ or vtllibrary@ unit's
+// journal is answered (TestServiceTargetStart, TestServiceStartFailure).
+func TestServiceJournalTailSafeUnitsOnly(t *testing.T) {
+	const leak = "mhvtl-fabrics: CHAP secret " + fabSecret
+	journal := func(e *env) {
+		e.cfg.JournalTail = func(_ context.Context, unit string) ([]byte, error) { return []byte(leak + " (" + unit + ")"), nil }
+		e.rebuild()
+	}
+	check := func(t *testing.T, resp Response, unit string) {
+		t.Helper()
+		b, _ := json.Marshal(resp)
+		if resp.FailedUnit != unit || resp.JournalTail != "" || strings.Contains(string(b), fabSecret) {
+			t.Errorf("failed unit %s: %s", unit, b)
+		}
+	}
+	t.Run("start, mhvtl.target fails", func(t *testing.T) {
+		e, s := newExecEnv(t)
+		all := append(append([]string{}, library10Units...), "vtllibrary@30.service", "vtltape@31.service", "vtltape@32.service", "vtltape@33.service", "vtltape@34.service")
+		for _, u := range all {
+			s.state[u] = "inactive"
+			s.enabled[u] = true
+		}
+		journal(e)
+		pr := e.do(target(OpServicePlan, ActionStart, nil))
+		if pr.Result != ResultValidated {
+			t.Fatalf("service_plan: %+v", pr)
+		}
+		// The units come up, but systemctl start mhvtl.target fails.
+		run := e.cfg.Systemctl
+		e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
+			if len(args) == 2 && args[0] == "start" && args[1] == mhvtlTarget {
+				s.mu.Lock()
+				for _, u := range all {
+					s.state[u] = "active"
+				}
+				s.mu.Unlock()
+				return nil, errors.New("exit status 1")
+			}
+			return run(ctx, args...)
+		}
+		e.rebuild()
+		resp := e.do(target(OpService, ActionStart, pr.Units))
+		if resp.Result != ResultError || resp.Error != ErrStart {
+			t.Fatalf("service: %+v", resp)
+		}
+		check(t, resp, mhvtlTarget)
+	})
+	for _, unit := range []string{mhvtlTarget, "mhvtl-tcmu-handler.service"} {
+		t.Run("restart, "+unit+" fails", func(t *testing.T) {
+			e, s := newExecEnv(t)
+			partOf(s)
+			journal(e)
+			pr := e.do(target(OpServicePlan, ActionRestart, nil))
+			if pr.Result != ResultValidated {
+				t.Fatalf("service_plan: %+v", pr)
+			}
+			s.failStart[unit] = true
+			resp := e.do(target(OpService, ActionRestart, pr.Units))
+			if resp.Result != ResultRolledBack || resp.Error != ErrStart {
+				t.Fatalf("service: %+v", resp)
+			}
+			check(t, resp, unit)
+		})
 	}
 }

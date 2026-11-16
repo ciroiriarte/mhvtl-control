@@ -196,7 +196,7 @@ func (h *Helper) fabrics(ctx context.Context, req *Request, rec *AuditRecord) Re
 		return responseOf(errKilled)
 	}
 	if err := h.runFabrics(ctx, action); err != nil {
-		resp := h.rollBackFabrics(ctx, it, action, err, h.fabricsMask(cur.data, next))
+		resp := h.rollBackFabrics(ctx, it, action, err, h.fabricsKnown(cur.data, next))
 		if it.RollbackDir != "" {
 			resp.RollbackDir = filepath.Join(h.cfg.StateDir, rollbackDir, it.RollbackDir)
 		}
@@ -846,7 +846,7 @@ func showBlocks(out []byte, n int) ([]map[string]string, error) {
 const fabricsStop = "stop"
 
 // runFabrics runs systemctl reload, start or stop on the unit, and on no
-// other, bounded by fabricsTimeout.
+// other, bounded by fabricsTimeout. A failed run is a *fabricsRunError.
 func (h *Helper) runFabrics(ctx context.Context, action string) error {
 	switch action {
 	case FabricsReload, FabricsStart, fabricsStop:
@@ -855,8 +855,57 @@ func (h *Helper) runFabrics(ctx context.Context, action string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, fabricsTimeout)
 	defer cancel()
-	_, err := h.cfg.Systemctl(ctx, action, FabricsUnit)
-	return err
+	if _, err := h.cfg.Systemctl(ctx, action, FabricsUnit); err != nil {
+		return &fabricsRunError{verb: action, status: runStatus(err), detail: "systemctl " + action + " " + FabricsUnit + ": " + errText(err)}
+	}
+	return nil
+}
+
+// fabricsLogs is where a fabrics failure's own output is: no answer quotes
+// it (fabricsRunError).
+const fabricsLogs = "see journalctl -u " + FabricsUnit + " and the mhvtl-control audit log"
+
+// fabricsRunError is a failed systemctl reload, start or stop of
+// mhvtl-fabrics.service. Its message says only which verb failed and how
+// it ended (runStatus): what systemctl and the unit print may quote
+// fabrics.conf, its CHAP secrets and names a client chose included, and
+// no masking of such text has held up (mhvtl-control#96). detail is that
+// text, for the audit log only (auditDetail).
+type fabricsRunError struct{ verb, status, detail string }
+
+func (e *fabricsRunError) Error() string {
+	return fmt.Sprintf("systemctl %s %s failed (%s)", e.verb, FabricsUnit, e.status)
+}
+
+// runStatus is how a failed command ended, in words that do not depend on
+// what it printed: its exit status or signal, a timeout, or that it did
+// not run to its end.
+func runStatus(err error) string {
+	var ee *exec.ExitError
+	switch {
+	case errors.As(err, &ee) && ee.ProcessState != nil:
+		return ee.ProcessState.String()
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	}
+	return "did not run to its end"
+}
+
+// auditDetail is the text from outside the helper that err's message
+// leaves out, for the audit log: a *fabricsRunError's output or a
+// *fabricsLeftover's state file. "" for any other error.
+func auditDetail(err error) string {
+	var re *fabricsRunError
+	var lo *fabricsLeftover
+	switch {
+	case errors.As(err, &re):
+		return re.detail
+	case errors.As(err, &lo):
+		return lo.detail
+	}
+	return ""
 }
 
 // rollBackFabrics restores fabrics.conf after a failed reload or start
@@ -866,24 +915,26 @@ func (h *Helper) runFabrics(ctx context.Context, action string) error {
 // or start). The intent is kept when the restore fails, so that recovery
 // retries it. A failed reconcile answers fabrics_recovery_required, as
 // configfs may then not match the file; reconcileFailed says what is kept
-// for the retry. m masks the failed commands' errors, the journal and
-// the state file's names as output, the message as one the helper
-// composed.
-func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string, runErr error, m fabricsMask) Response {
+// for the retry. The answer quotes nothing the unit or systemctl printed,
+// nor the unit's journal (fabricsRunError): that goes to the audit log
+// only (Response.Detail), with the secrets of k's files masked.
+func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string, runErr error, k fabricsKnown) (resp Response) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricsTimeout)
 	defer cancel()
-	resp := Response{Result: ResultRolledBack, Error: ErrFabricsApply, FailedUnit: FabricsUnit, FabricsAction: action}
-	msg := fmt.Sprintf("systemctl %s %s failed: %s", action, FabricsUnit, m.output(errText(runErr)))
+	resp = Response{Result: ResultRolledBack, Error: ErrFabricsApply, FailedUnit: FabricsUnit, FabricsAction: action}
+	msg := runErr.Error()
+	details := []string{auditDetail(runErr)}
 	if h.cfg.JournalTail != nil {
 		if tail, err := h.cfg.JournalTail(ctx, FabricsUnit); err == nil {
-			resp.JournalTail = m.output(string(tail))
+			details = append(details, "journalctl -u "+FabricsUnit+":\n"+string(tail))
 		}
 	}
+	defer func() { resp.Detail = k.audit(details...) }()
 	conflicts, err := h.restore(it)
 	resp.Conflicts = conflicts
 	if err != nil {
 		resp.Result, resp.Error = ResultError, ErrInternal
-		resp.Message = msg + "; restoring " + fabricsConf + ": " + err.Error()
+		resp.Message = msg + "; restoring " + fabricsConf + ": " + err.Error() + "; " + fabricsLogs
 		return resp
 	}
 	if len(conflicts) > 0 {
@@ -892,17 +943,18 @@ func (h *Helper) rollBackFabrics(ctx context.Context, it *Intent, action string,
 		msg += "; " + fabricsConf + " restored"
 	}
 	removed := h.newFabricsRemoved(it)
-	note, err := h.reconcileFabrics(ctx, removed, m)
+	note, err := h.reconcileFabrics(ctx, removed, k)
 	if err != nil {
+		details = append(details, auditDetail(err))
 		resp.Result, resp.Error = ResultError, ErrFabricsState
-		resp.Message = m.message(msg + "; " + h.reconcileFailed(err, removed))
+		resp.Message = msg + "; " + h.reconcileFailed(err, removed) + "; " + fabricsLogs
 		return resp
 	}
 	msg += "; " + note
 	if err := h.removeIntent(); err != nil {
 		msg += "; " + err.Error()
 	}
-	resp.Message = m.message(msg)
+	resp.Message = msg + "; " + fabricsLogs
 	return resp
 }
 
@@ -940,18 +992,20 @@ func (h *Helper) newFabricsRemoved(it *Intent) bool {
 // device.conf (diskProblems): apply would fail on them, and a marker would
 // then refuse every iSCSI change, the unbind that removes them included;
 // the file is left not applied, as a FabricsNotApplied apply leaves it. It
-// runs to its end even when ctx ends. What the error quotes from outside
-// the helper (systemctl's error, the state file's names and read error) is
-// masked with m.output. reconcileStep decides what it runs.
-func (h *Helper) reconcileFabrics(ctx context.Context, removed bool, m fabricsMask) (string, error) {
+// runs to its end even when ctx ends. Its error quotes nothing from
+// outside the helper: a failed systemctl is a *fabricsRunError, the state
+// file a *fabricsLeftover, whose text from outside auditDetail gives.
+// reconcileStep decides what it runs; k tells the state file's names a
+// client knows.
+func (h *Helper) reconcileFabrics(ctx context.Context, removed bool, k fabricsKnown) (string, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fabricsTimeout)
 	defer cancel()
-	verb, note, err := h.reconcileStep(ctx, removed, m)
+	verb, note, err := h.reconcileStep(ctx, removed, k)
 	if err != nil || verb == "" {
 		return note, err
 	}
 	if err := h.runFabrics(ctx, verb); err != nil {
-		return "", fmt.Errorf("systemctl %s %s with it failed too: %s", verb, FabricsUnit, m.output(errText(err)))
+		return "", fmt.Errorf("with it, %w too", err)
 	}
 	return note, nil
 }
@@ -960,7 +1014,7 @@ func (h *Helper) reconcileFabrics(ctx context.Context, removed bool, m fabricsMa
 // verb (FabricsReload or fabricsStop) and the note that says it was done,
 // or no verb and the note that says why, or the error that refuses. A
 // plan (peekMarker) answers it, and an apply's retry runs it.
-func (h *Helper) reconcileStep(ctx context.Context, removed bool, m fabricsMask) (verb, note string, err error) {
+func (h *Helper) reconcileStep(ctx context.Context, removed bool, k fabricsKnown) (verb, note string, err error) {
 	st, err := showProp(ctx, &h.cfg, FabricsUnit, "ActiveState")
 	if err != nil {
 		return "", "", err
@@ -968,12 +1022,17 @@ func (h *Helper) reconcileStep(ctx context.Context, removed bool, m fabricsMask)
 	switch st {
 	case "failed":
 		if owned, err := fabricsOwned(h.cfg.FabricsState); err != nil || len(owned) > 0 {
-			lo := &fabricsLeftover{path: h.cfg.FabricsState}
+			lo := &fabricsLeftover{path: h.cfg.FabricsState, unreadable: err != nil}
 			for _, o := range owned {
-				lo.owned = append(lo.owned, m.name(o))
+				if k.names[o] {
+					lo.shown = append(lo.shown, o)
+				} else {
+					lo.others++
+				}
 			}
+			lo.detail = h.cfg.FabricsState + " lists: " + strings.Join(owned, " ")
 			if err != nil {
-				lo.err = errors.New(m.output(err.Error()))
+				lo.detail = "reading " + h.cfg.FabricsState + ": " + err.Error()
 			}
 			return "", "", lo
 		}
@@ -1162,24 +1221,25 @@ func (h *Helper) retryReconcile(ctx context.Context, rec *AuditRecord) error {
 		return err
 	}
 	removed := markerStops(m, cur)
-	mask := h.fabricsMask(cur.data)
+	k := h.fabricsKnown(cur.data)
 	audit := AuditRecord{TS: h.cfg.Now(), Actor: rec.Actor, Peer: rec.Peer, Op: OpRecover, Result: ResultRecovered}
-	note, err := h.reconcileFabrics(ctx, removed, mask)
+	note, err := h.reconcileFabrics(ctx, removed, k)
+	detail := k.audit(auditDetail(err))
 	var lo *fabricsLeftover
 	switch {
 	case err == nil:
 		if err := h.clearFabricsMarker(); err != nil {
 			return err
 		}
-		audit.Message = mask.message("an earlier rollback left configfs possibly out of step with " + fabricsConf + ": " + note)
+		audit.Message = "an earlier rollback left configfs possibly out of step with " + fabricsConf + ": " + note
 		h.audit(audit)
 		return nil
 	case errors.As(err, &lo):
-		err = errors.Join(refuse(ErrFabricsState, "%s", mask.message(lo.Error())), h.clearFabricsMarker())
+		err = errors.Join(&refusal{code: ErrFabricsState, msg: lo.Error(), detail: detail}, h.clearFabricsMarker())
 	default:
-		err = refuse(ErrFabricsState, "%s", mask.message("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and retrying failed: "+markerAdvice(err, removed)))
+		err = &refusal{code: ErrFabricsState, msg: "an earlier rollback restored " + fabricsConf + " but could not make the targets follow it, and retrying failed: " + markerAdvice(err, removed), detail: detail}
 	}
-	audit.Result, audit.Error, audit.Message = ResultError, ErrFabricsState, err.Error()
+	audit.Result, audit.Error, audit.Message, audit.Detail = ResultError, ErrFabricsState, err.Error(), detail
 	h.audit(audit)
 	return err
 }
@@ -1199,16 +1259,16 @@ func (h *Helper) peekMarker(ctx context.Context) (note, verb string, err error) 
 		return "", "", err
 	}
 	removed := markerStops(m, cur)
-	mask := h.fabricsMask(cur.data)
-	verb, why, err := h.reconcileStep(ctx, removed, mask)
+	k := h.fabricsKnown(cur.data)
+	verb, why, err := h.reconcileStep(ctx, removed, k)
 	var lo *fabricsLeftover
 	switch {
 	case errors.As(err, &lo):
-		return "", "", refuse(ErrFabricsState, "%s", mask.message(lo.Error()))
+		return "", "", &refusal{code: ErrFabricsState, msg: lo.Error(), detail: k.audit(lo.detail)}
 	case err != nil:
-		return "", "", refuse(ErrFabricsState, "%s", mask.message("an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and applying a change would retry that first: "+markerAdvice(err, removed)))
+		return "", "", refuse(ErrFabricsState, "%s", "an earlier rollback restored "+fabricsConf+" but could not make the targets follow it, and applying a change would retry that first: "+markerAdvice(err, removed))
 	case verb == "":
-		return mask.message(fmt.Sprintf("an earlier rollback restored %s but could not make the targets follow it: applying this change first checks again, finds that %s, and clears that record", fabricsConf, why)), "", nil
+		return fmt.Sprintf("an earlier rollback restored %s but could not make the targets follow it: applying this change first checks again, finds that %s, and clears that record", fabricsConf, why), "", nil
 	}
 	return fmt.Sprintf("an earlier rollback restored %s but could not make the targets follow it: applying this change first runs systemctl %s %s again, and is refused if that fails", fabricsConf, verb, FabricsUnit), verb, nil
 }
@@ -1221,17 +1281,28 @@ func (h *Helper) peekMarker(ctx context.Context) (note, verb string, err error) 
 func markerStops(m *fabricsMarker, cur fileState) bool { return m.Removed && !cur.exists }
 
 // fabricsLeftover is a failed mhvtl-fabrics.service whose state file
-// lists targets, or cannot be read: they may still be exported.
+// lists targets, or cannot be read (unreadable): they may still be
+// exported. Its message names only the listed targets a client knows
+// (shown, fabricsKnown) and counts the others: a name left from a file a
+// failed apply rolled back may hold anything, and the state file and its
+// read error are text from outside the helper. detail has them, for the
+// audit log.
 type fabricsLeftover struct {
-	path  string
-	owned []string
-	err   error
+	path       string
+	shown      []string
+	others     int
+	unreadable bool
+	detail     string
 }
 
 func (e *fabricsLeftover) Error() string {
-	what := "lists targets the failed run exported (" + strings.Join(e.owned, ", ") + ")"
-	if e.err != nil {
-		what = "cannot be read (" + e.err.Error() + "), so targets the failed run exported may remain"
+	names := e.shown
+	if e.others > 0 {
+		names = append(append([]string(nil), names...), fmt.Sprintf("%d other target(s)", e.others))
+	}
+	what := "lists targets the failed run exported (" + strings.Join(names, ", ") + ")"
+	if e.unreadable {
+		what = "cannot be read, so targets the failed run exported may remain"
 	}
 	return fmt.Sprintf("%s failed and its state file %s %s: they stay exported until systemctl restart %s, whose apply removes the owned targets %s no longer names, or mhvtl-fabrics remove",
 		FabricsUnit, e.path, what, FabricsUnit, fabricsConf)
@@ -1346,7 +1417,7 @@ func markerAdvice(err error, removed bool) string {
 }
 
 // errText is err with the stderr of a failed command, which Output keeps
-// in the *exec.ExitError.
+// in the *exec.ExitError: a fabricsRunError's detail, for the audit log.
 func errText(err error) string {
 	var ee *exec.ExitError
 	if errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
@@ -1366,108 +1437,56 @@ func fabricsDiff(before, after []byte) (string, bool) {
 	return d, false
 }
 
-// fabricsMask masks the CHAP secrets of the files of a fabrics answer:
-// stored, the file a client could read before (the file the request
-// edits, or the one a rollback or recovery restored), and newer, the files
-// a request brought (the edit, or the half-applied file a recovery finds).
-// Besides the files' clear values (names a client sets and reads in
-// clear, conffile.FabricsClearValues) it knows every target name the
-// ownership checks may name for each file against device.conf as it is on
-// disk (conffile.FabricsConf.OwnershipWWNs): a derived name, the Base name
-// and ".lib<ID>" or ".tape<ID>", is one the client can tell from the file
-// too, and a secret that spans the Base name and that suffix must be
-// masked, or not, whether or not it is the guess. With a device.conf
-// upstream may read differently from the model that is both suffixes, as
-// foreignOnDisk may refuse a foreign ".tape<ID>" where the model plans
-// ".lib<ID>": keeping both is safe, as they are made only of a Base name
-// and a record ID the client reads in clear, so they show the same
-// whether or not a secret lies inside. A file whose names cannot be told
-// (an error), or a device.conf that cannot be read, gives none: the
-// checks then name no target of it, and name masks a state file's names
-// whole.
-type fabricsMask struct {
+// fabricsKnown is what a fabrics answer may tell of mhvtl-fabrics' state
+// file, and what the audit log masks, for the files of the answer: the
+// file a client could read before (the one the request edits, or the one
+// a rollback or recovery restored) and the files a request brought (the
+// edit, or the half-applied file a recovery finds). names are the names a
+// client sets or derives from them: their clear values
+// (conffile.FabricsClearValues) and every target name the ownership checks
+// may name against device.conf as it is on disk
+// (conffile.FabricsConf.OwnershipWWNs). A state-file name equal to one of
+// them is shown: the client knows it already, whatever it holds. secrets
+// are the files' CHAP secrets, which the audit log's text from outside
+// the helper masks.
+type fabricsKnown struct {
 	secrets []string
-	// keepOut are the names stored has, clear values and the target
-	// names it may give; hideOut the names newer brings, which stored has not.
-	keepOut, hideOut []string
-	// keepMsg are the names of every file.
-	keepMsg []string
-	wwns    map[string]bool
+	names   map[string]bool
 }
 
-func (h *Helper) fabricsMask(stored []byte, newer ...[]byte) fabricsMask {
-	files := append([][]byte{stored}, newer...)
-	m := fabricsMask{secrets: fabricsSecrets(files...), wwns: map[string]bool{}}
+func (h *Helper) fabricsKnown(files ...[]byte) fabricsKnown {
+	k := fabricsKnown{secrets: fabricsSecrets(files...), names: map[string]bool{}}
 	var dev *conffile.DeviceConf
 	if dc, err := readTarget(h.cfg.ConfigDir, deviceConf); err == nil {
 		dev = conffile.ParseDeviceConf(dc.data)
 	}
-	planned := func(f []byte) []string {
+	for _, f := range files {
+		for _, v := range conffile.FabricsClearValues(f) {
+			k.names[v] = true
+		}
 		if dev == nil {
-			return nil
+			continue
 		}
-		wwns, err := conffile.ParseFabricsConf(f).OwnershipWWNs(dev)
-		if err != nil {
-			return nil
-		}
-		return wwns
-	}
-	storedWWNs := planned(stored)
-	had := map[string]bool{}
-	for _, w := range storedWWNs {
-		had[w], m.wwns[w] = true, true
-	}
-	m.keepOut = append(conffile.FabricsClearValues(stored), storedWWNs...)
-	m.keepMsg = append([]string(nil), m.keepOut...)
-	for _, f := range newer {
-		m.hideOut = append(m.hideOut, conffile.FabricsNewValues(stored, f)...)
-		m.keepMsg = append(m.keepMsg, conffile.FabricsClearValues(f)...)
-		for _, w := range planned(f) {
-			m.wwns[w] = true
-			m.keepMsg = append(m.keepMsg, w)
-			if !had[w] {
-				m.hideOut = append(m.hideOut, w)
+		if wwns, err := conffile.ParseFabricsConf(f).OwnershipWWNs(dev); err == nil {
+			for _, w := range wwns {
+				k.names[w] = true
 			}
 		}
 	}
-	return m
+	return k
 }
 
-// output masks text from outside the helper (systemctl's error, the
-// journal, mhvtl-fabrics' state file), which may quote a stored secret
-// anywhere (conffile.MaskSecretsExcept). The names stored has, which the
-// client reads in clear, are shown and never compared with a secret; when
-// newer brings names, each line that holds one or a stored secret is
-// masked whole: either way the answer is the same whether or not a name
-// the client chose contains, equals or borders a stored secret.
-func (m fabricsMask) output(s string) string {
-	return conffile.MaskSecretsExcept(conffile.CutHashes(s), m.secrets, m.keepOut, m.hideOut)
-}
-
-// message masks a message the helper composed, whose parts from outside
-// went through output: it names targets and quotes the reconcile's
-// systemctl errors, but no journal. The names of every file are shown and
-// never compared with a secret, so that a new name the message gives, such
-// as a derived target name, shows as the client sent it whether or not it
-// contains or borders a stored secret. Both cut every SHA-256 first
-// (conffile.CutHashes), such as the hash of fabrics.conf a restore
-// conflict quotes: masked first, a secret inside it would split it into
-// runs the daemon's cut no longer finds.
-func (m fabricsMask) message(s string) string {
-	return conffile.MaskSecretsExcept(conffile.CutHashes(s), m.secrets, m.keepMsg, nil)
-}
-
-// name masks a target name mhvtl-fabrics' state file lists: one that a
-// file may give (OwnershipWWNs) is a name the client set or derives,
-// shown as it is whatever it contains; any other is masked whole. Such a name may be left from a
-// file a failed apply rolled back, so a client may have chosen it; output
-// would mask only a stored secret inside it, which would tell whether a
-// guess in the name is that secret.
-func (m fabricsMask) name(s string) string {
-	if m.wwns[s] {
-		return s
+// audit joins the non-empty texts from outside the helper for the audit
+// log (Response.Detail), with the files' secrets masked: no client reads
+// the log, so a mask there tells no one whether a guess was right.
+func (k fabricsKnown) audit(texts ...string) string {
+	var out []string
+	for _, t := range texts {
+		if t != "" {
+			out = append(out, t)
+		}
 	}
-	return conffile.SecretMask
+	return conffile.MaskSecrets(strings.Join(out, "\n"), k.secrets)
 }
 
 // fabricsSecrets lists the CHAP secret values of both files, for the audit

@@ -430,7 +430,9 @@ type iscsiTargetStateDTO struct {
 // the file is in flight (fabricsFiles.busy), and from a helper's answer
 // when another call that may have changed the file started or ended since
 // the request read it (versionSince). Result "unchanged" is an edit that
-// leaves the file as it is, not sent to the helper.
+// leaves the file as it is, not sent to the helper. FailedUnit is
+// mhvtl-fabrics.service when its reload or start failed; no journal lines
+// are answered (journalctl -u shows them).
 type iscsiWriteDTO struct {
 	DryRun        bool                 `json:"dry_run"`
 	Action        string               `json:"action"`
@@ -440,7 +442,7 @@ type iscsiWriteDTO struct {
 	Message       string               `json:"message,omitempty"`
 	Error         *errorDetail         `json:"error,omitempty"`
 	CurrentSHA256 *string              `json:"current_sha256,omitempty"`
-	JournalTail   string               `json:"journal_tail,omitempty"`
+	FailedUnit    string               `json:"failed_unit,omitempty"`
 	RollbackDir   string               `json:"rollback_dir,omitempty"`
 	Target        *iscsiTargetStateDTO `json:"target,omitempty"`
 }
@@ -825,54 +827,15 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 		writeJSON(w, http.StatusOK, iscsiWriteDTO{DryRun: q.dryRun, SHA256: f.versionOf(), Result: resultUnchanged})
 		return
 	}
-	// The helper's answers quote secrets and names the client set. The
-	// request's own secrets are masked everywhere. The journal tail may
-	// quote a stored secret anywhere: there the names the stored file has
-	// are shown and never compared with the files' secrets, and when the
-	// request brings names each line that holds one or a secret is masked
-	// whole (conffile.MaskSecretsExcept), as the helper does. The helper's
-	// messages quote output from outside only masked that way, and may name
-	// a new name, which is kept: the names of either file are shown and
-	// never compared with the files' secrets. The names
-	// include every target name the helper's ownership checks may name for
-	// each file (OwnershipWWNs): a derived one, the Base name and
-	// ".lib<ID>" or ".tape<ID>", may hold a secret that spans the two,
-	// which must not be masked only when it is the guess. With a
-	// device.conf upstream may read differently from the model that is
-	// both suffixes, not only the planned one: the helper may refuse a
-	// foreign ".tape<ID>" target where the model plans ".lib<ID>". Keeping
-	// both clear reveals nothing: they are made of the Base name and the
-	// record ID, which GET config shows in clear, and are shown the same
-	// whether or not a secret lies inside. A file whose names cannot be
-	// told gives none, and the helper then names no target either.
-	ownership := func(data []byte) []string {
-		wwns, err := conffile.ParseFabricsConf(data).OwnershipWWNs(f.dev)
-		if err != nil {
-			return nil
-		}
-		return wwns
-	}
-	fileSecrets := append(append([]string(nil), stored...), conffile.FabricsSecrets(next)...)
-	storedWWNs := ownership(f.data)
-	storedNames := append(conffile.FabricsClearValues(f.data), storedWWNs...)
-	newNames := conffile.FabricsNewValues(f.data, next)
-	allNames := append(append([]string(nil), storedNames...), conffile.FabricsClearValues(next)...)
-	plannedBefore := map[string]bool{}
-	for _, w := range storedWWNs {
-		plannedBefore[w] = true
-	}
-	for _, w := range ownership(next) {
-		allNames = append(allNames, w)
-		if !plannedBefore[w] {
-			newNames = append(newNames, w)
-		}
-	}
-	external := func(s string) string {
-		return conffile.MaskSecrets(conffile.MaskSecretsExcept(conffile.CutHashes(s), fileSecrets, storedNames, newNames), own)
-	}
-	mask := func(s string) string {
-		return conffile.MaskSecrets(conffile.MaskSecretsExcept(conffile.CutHashes(s), fileSecrets, allNames, nil), own)
-	}
+	// The helper's fabrics answers quote nothing from outside it: no
+	// journal, no systemctl output, no state file (apply.Response.Detail
+	// keeps those for its audit log). What they quote of the files are
+	// values a client sets and GET config shows in clear, such as target
+	// names, and parser messages, which never quote a secret. Masking the
+	// stored secrets there would tell the client whether a name it chose
+	// holds one; so, as for a refusal of the edit, only the request's own
+	// secrets are masked (refusalText).
+	mask := func(s string) string { return refusalText(s, own) }
 
 	// The helper checks the file's real hash: base_sha256, when sent, was
 	// found to be the version of this very content above.
@@ -930,8 +893,10 @@ func (s *Server) fabricsWrite(w http.ResponseWriter, r *http.Request, q fabricsW
 	now := s.versionSince(f.seq + seqSteps(hreq.Op))
 	out := iscsiWriteDTO{
 		DryRun: q.dryRun, Action: resp.FabricsAction, Diff: previewDiff(before, next, own, stored),
-		SHA256: now, Result: resp.Result, Message: mask(resp.Message),
-		JournalTail: external(resp.JournalTail), RollbackDir: resp.RollbackDir,
+		SHA256: now, Result: resp.Result, Message: mask(resp.Message), RollbackDir: resp.RollbackDir,
+	}
+	if resp.FailedUnit == apply.FabricsUnit {
+		out.FailedUnit = resp.FailedUnit
 	}
 	if resp.Result == apply.ResultConflict {
 		// The helper answers the file's real hash, in current_sha256 and

@@ -91,7 +91,8 @@ type Config struct {
 	// read for its --per-library-home option.
 	MakeVTLMedia string
 	// JournalTail returns the last journal lines of a unit, for the
-	// response of a rollback.
+	// response of a rollback (journalTail) and, for
+	// mhvtl-fabrics.service, the audit log.
 	JournalTail func(ctx context.Context, unit string) ([]byte, error)
 	// ReadTimeout bounds reading the request.
 	ReadTimeout time.Duration
@@ -292,7 +293,7 @@ func (h *Helper) Handle(ctx context.Context, peer Peer, req *Request) Response {
 }
 
 func (h *Helper) auditResponse(rec AuditRecord, resp Response) {
-	rec.Result, rec.Error, rec.Message, rec.Conflicts = resp.Result, resp.Error, resp.Message, resp.Conflicts
+	rec.Result, rec.Error, rec.Message, rec.Conflicts, rec.Detail = resp.Result, resp.Error, resp.Message, resp.Conflicts, resp.Detail
 	rec.OrphanedMedia, rec.ForcedUnloads, rec.Unplaced = resp.OrphanedMedia, resp.ForcedUnloads, resp.Unplaced
 	h.audit(rec)
 }
@@ -632,7 +633,7 @@ func libraryIDs(inv config.Inventory) map[int]bool {
 func responseOf(err error) Response {
 	var r *refusal
 	if errors.As(err, &r) {
-		return Response{Result: ResultRefused, Error: r.code, Message: r.msg}
+		return Response{Result: ResultRefused, Error: r.code, Message: r.msg, Detail: r.detail}
 	}
 	if c, ok := conflictOf(err); ok {
 		cur := c.Current

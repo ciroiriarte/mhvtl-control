@@ -355,13 +355,17 @@ func TestFabricsRollBack(t *testing.T) {
 	if v := f.verbs(); len(v) != 2 || v[0] != "reload "+FabricsUnit || v[1] != "reload "+FabricsUnit {
 		t.Errorf("systemctl %v, want the failed reload, then a reload of the restored file", v)
 	}
-	if !strings.Contains(resp.Message, "restored") || !strings.Contains(resp.Message, "reloaded") {
+	if !strings.Contains(resp.Message, "restored") || !strings.Contains(resp.Message, "reloaded") || !strings.HasSuffix(resp.Message, fabricsLogs) {
 		t.Errorf("message %q", resp.Message)
 	}
-	for _, s := range []string{resp.Message, resp.JournalTail} {
-		if strings.Contains(s, fabNewSecret) || !strings.Contains(s, conffile.SecretMask) {
-			t.Errorf("%q: secret not masked", s)
-		}
+	// Neither systemctl's output nor the journal is answered, masked or
+	// not: they go to the audit log, masked there.
+	if resp.JournalTail != "" || strings.Contains(resp.Message, "Job failed") || strings.Contains(resp.Message, conffile.SecretMask) {
+		t.Errorf("answer quotes the unit's output: message %q, journal %q", resp.Message, resp.JournalTail)
+	}
+	if audit := strings.Join(f.auditLines(), "\n"); !strings.Contains(audit, "Job failed; secret "+conffile.SecretMask+" in output") ||
+		!strings.Contains(audit, "refusing CHAP secret "+conffile.SecretMask) {
+		t.Errorf("audit.jsonl lacks the output: %s", audit)
 	}
 	if resp.RollbackDir == "" || f.intentExists() {
 		t.Errorf("rollback dir %q, intent left %v", resp.RollbackDir, f.intentExists())
@@ -1111,15 +1115,12 @@ func TestDeviceConfLeavesAmbiguousNamesForeignTarget(t *testing.T) {
 	}
 }
 
-// TestFabricsRollBackMaskKeepsClearValues: the journal tail and the
-// systemctl error of a rollback mask the files' secrets, keep the names
-// the stored file has, and mask whole each line that holds a name the
-// request brings or a secret, so the answer is byte-identical whether a
-// new CHAP name holds the stored secret, equals it, or neither. Keeping the
-// new name would show the stored secret in clear where the journal quotes
-// it alone when the name equals it; masking only the secret inside it
-// would tell which name holds one.
-func TestFabricsRollBackMaskKeepsClearValues(t *testing.T) {
+// TestFabricsRollBackOutputNotAnswered: a rollback whose journal and
+// systemctl error quote the CHAP name the request brings and the stored
+// secret answers neither: the answer is byte-identical whether the new
+// name holds the stored secret, equals it, or neither, and holds nothing
+// the unit printed.
+func TestFabricsRollBackOutputNotAnswered(t *testing.T) {
 	for _, double := range []bool{false, true} {
 		for _, shape := range []string{"x%sy", "%s"} {
 			rollBackAnswers(t, double, shape)
@@ -1151,13 +1152,13 @@ func rollBackAnswers(t *testing.T, double bool, shape string) {
 			if resp.Result != result {
 				t.Fatalf("%s: %+v", name, resp)
 			}
-			if double && !strings.Contains(resp.Message, "failed too: "+conffile.SecretMask+"\n"+conffile.SecretMask+";") {
+			if double && !strings.Contains(resp.Message, "with it, systemctl reload "+FabricsUnit+" failed (") {
 				t.Errorf("%s: message %q", name, resp.Message)
 			}
-			want := conffile.SecretMask + "\n" + conffile.SecretMask + "\nunit stopped"
-			if resp.JournalTail != want {
-				t.Errorf("%s: journal %q, want %q", name, resp.JournalTail, want)
+			if resp.JournalTail != "" || strings.Contains(resp.Message, "login of") || strings.Contains(resp.Message, "stored pbs1") {
+				t.Errorf("%s: output answered: message %q, journal %q", name, resp.Message, resp.JournalTail)
 			}
+			f.noSecret(fabSecret, fabNewSecret)
 			answers = append(answers, resp.JournalTail+"\n"+strings.ReplaceAll(resp.Message, resp.RollbackDir, ""))
 		}
 		if answers[0] != answers[1] {
@@ -1166,11 +1167,12 @@ func rollBackAnswers(t *testing.T, double bool, shape string) {
 	}
 }
 
-// TestFabricsRecoveryMaskNewNames: a crash recovery whose reload fails
-// quotes systemctl's error, which may quote the half-applied file's new
-// CHAP name and the stored secret: the answer is byte for byte the same
-// whether the name is a wrong guess, the stored secret, or contains it.
-func TestFabricsRecoveryMaskNewNames(t *testing.T) {
+// TestFabricsRecoveryOutputNotAnswered: a crash recovery whose reload
+// fails does not quote systemctl's error, which may quote the half-applied
+// file's new CHAP name and the stored secret: the answer is byte for byte
+// the same whether the name is a wrong guess, the stored secret, or
+// contains it.
+func TestFabricsRecoveryOutputNotAnswered(t *testing.T) {
 	var answers []string
 	for _, name := range []string{"password1", fabSecret, "x" + fabSecret + "y", "xpassword1y"} {
 		f := newFabEnv(t)
@@ -1181,7 +1183,8 @@ func TestFabricsRecoveryMaskNewNames(t *testing.T) {
 		f.h.killPoint = func(string) bool { return false }
 		f.failAlways[FabricsReload] = &exec.ExitError{Stderr: []byte("login of " + name + " refused\nstored pbs1 secret " + fabSecret)}
 		resp := f.do(Request{Op: OpRecover, Actor: "test"})
-		if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "failed too: "+conffile.SecretMask+"\n"+conffile.SecretMask+";") {
+		if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "with it, systemctl reload "+FabricsUnit+" failed (") ||
+			strings.Contains(resp.Message, "login of") || !strings.HasSuffix(resp.Message, fabricsLogs) {
 			t.Fatalf("%s: %+v", name, resp)
 		}
 		answers = append(answers, resp.Message)
@@ -1196,10 +1199,10 @@ func TestFabricsRecoveryMaskNewNames(t *testing.T) {
 
 // TestFabricsRollBackSecretPastName: the journal quotes a name the client
 // chose followed by ':', and the stored secret is the name's tail and the
-// colon. The rollback answers the same whether that is the stored secret
-// or another one for a name the request brings (its line is masked
-// whole), and the same whatever the guess in a name the stored file has
-// when the request brings none (its bytes are not compared with a secret).
+// colon (mhvtl-control#96 round 12: names cut from systemd's fixed
+// "mhvtl-fabrics.service: ..." line). The rollback answers the same
+// whether that is the stored secret or another one, for a name the request
+// brings and for one the stored file has: no journal text is answered.
 func TestFabricsRollBackSecretPastName(t *testing.T) {
 	const name, right = "chap-n-0123456789", "n-0123456789:"
 	answer := func(secret, newName, storedName string) Response {
@@ -1227,11 +1230,11 @@ func TestFabricsRollBackSecretPastName(t *testing.T) {
 	}
 	text := func(r Response) string { return r.JournalTail + "\n" + r.Message }
 	matching, other := answer(right, name, "pbs1"), answer("other-secret-0123", name, "pbs1")
-	if text(matching) != text(other) || matching.JournalTail != conffile.SecretMask+"\nunit stopped" {
+	if text(matching) != text(other) || matching.JournalTail != "" || strings.Contains(matching.Message, "login") {
 		t.Errorf("new name: the answer depends on the stored secret:\n%s\n%s", text(matching), text(other))
 	}
 	matching, other = answer(right, "", name), answer(right, "", "chap-n-0123456780")
-	if text(matching) != text(other) || matching.JournalTail != "Nov 16 mhvtl-fabrics[7]: chap-"+conffile.SecretMask+" login refused\nunit stopped" {
+	if text(matching) != text(other) || matching.JournalTail != "" || strings.Contains(matching.Message, "login") {
 		t.Errorf("stored name: the answer depends on the guess:\n%s\n%s", text(matching), text(other))
 	}
 }
@@ -1569,9 +1572,10 @@ func TestFabricsMarkerEarlierBoot(t *testing.T) {
 	}
 }
 
-// TestFabricsRecoveryMasksNewFile: a recovery whose reload fails answers
-// with the systemctl error, masked for the secrets of the half-applied new
-// file it found on disk as well as of the original it restored.
+// TestFabricsRecoveryMasksNewFile: a recovery whose reload fails does not
+// answer the systemctl error; the audit log keeps it, masked for the
+// secrets of the half-applied new file it found on disk as well as of the
+// original it restored.
 func TestFabricsRecoveryMasksNewFile(t *testing.T) {
 	f := newFabEnv(t)
 	f.writeConf(fabricsConf, fabConf, 0o600)
@@ -1580,8 +1584,11 @@ func TestFabricsRecoveryMasksNewFile(t *testing.T) {
 	f.h.killPoint = func(string) bool { return false }
 	f.failAlways[FabricsReload] = &exec.ExitError{Stderr: []byte("refusing " + fabNewSecret + " and " + fabSecret)}
 	resp := f.do(Request{Op: OpRecover, Actor: "test"})
-	if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "refusing "+conffile.SecretMask+" and "+conffile.SecretMask) {
-		t.Fatalf("recover: %+v, want both secrets masked", resp)
+	if resp.Error != ErrFabricsState || strings.Contains(resp.Message, "refusing") {
+		t.Fatalf("recover: %+v, want the output left out", resp)
+	}
+	if audit := strings.Join(f.auditLines(), "\n"); !strings.Contains(audit, "refusing "+conffile.SecretMask+" and "+conffile.SecretMask) {
+		t.Errorf("audit.jsonl lacks the masked output: %s", audit)
 	}
 	f.noSecret(fabSecret, fabNewSecret)
 }
@@ -1716,20 +1723,6 @@ func TestFabricsLeftoverNameNoOracle(t *testing.T) {
 		}
 		if strings.Contains(a[1], "pbs1-secret-9999") {
 			t.Errorf("%s: the leftover name is shown: %s", op, a[1])
-		}
-	}
-}
-
-// TestFabricsMaskCutsHashes: the helper's masks cut a SHA-256 before
-// masking the secrets in it; a secret inside the hash would otherwise
-// leave the runs on either side, too short for the daemon's cut.
-func TestFabricsMaskCutsHashes(t *testing.T) {
-	hash := conffile.Hash([]byte(fabConf))
-	m := fabricsMask{secrets: []string{hash[20:30]}}
-	text := "fabrics.conf: conflict (now sha256 \"" + hash + "\")"
-	for name, got := range map[string]string{"output": m.output(text), "message": m.message(text)} {
-		if strings.Contains(got, hash[:20]) || strings.Contains(got, hash[30:]) || !strings.Contains(got, "(hash not shown)") {
-			t.Errorf("%s: %q", name, got)
 		}
 	}
 }
@@ -2019,4 +2012,105 @@ func TestBackendUnknownChangeChecksForeignTargets(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFabricsJournalTextNotAnswered covers the probes of mhvtl-control#96
+// round 12 against the rollback, the crash recovery and the marker's
+// retry, with systemctl and the journal quoting the stored secret
+// verbatim next to names the client stored: a CHAP name cut from
+// systemd's fixed "mhvtl-fabrics.service: ..." journal line, whose
+// neighbours would tell the secret's characters by position, and a
+// hash-shaped name, which a hash cut would have changed before any
+// matching. Each answer is the same whatever the stored secret is, holds
+// none of that text, masked or not, and points at the logs; the audit log
+// has the text with the secret masked.
+func TestFabricsJournalTextNotAnswered(t *testing.T) {
+	hashName := strings.Repeat("0123456789abcdef", 4)
+	for _, name := range []string{"mhvtl-fabrics.service:", "fabrics.service:", hashName} {
+		answers := map[string][]string{}
+		for _, secret := range []string{"Main-process-0", "Main-process-1", "zz-other-secret"} {
+			stored := strings.Replace(strings.Replace(fabConf, fabSecret, secret, 1), " CHAP name: pbs1\n", " CHAP name: "+name+"\n", 1)
+			next := strings.Replace(stored, "pbs1\n", "pbs7\n", 1)
+			journal := name + " " + secret + " exited, code=exited, status=1/FAILURE\n" + FabricsUnit + ": Failed with result 'exit-code'."
+			output := &exec.ExitError{Stderr: []byte("Job for " + FabricsUnit + " failed: " + name + " " + secret)}
+			setup := func() *fabEnv {
+				f := newFabEnv(t)
+				f.writeConf(fabricsConf, stored, 0o600)
+				f.tail = journal
+				return f
+			}
+			check := func(f *fabEnv, what string, resp Response) {
+				t.Helper()
+				want := map[string]string{"rollback": ErrFabricsApply, "double rollback": ErrFabricsState, "retry": ErrFabricsState, "recovery": ErrFabricsState}[what]
+				if resp.Error != want {
+					t.Fatalf("%s %q: error %q, want %q: %+v", what, name, resp.Error, want, resp)
+				}
+				if resp.JournalTail != "" || strings.Contains(resp.Message, "exited") || strings.Contains(resp.Message, "Job for") ||
+					strings.Contains(resp.Message, conffile.SecretMask) || !strings.Contains(resp.Message, "journalctl -u "+FabricsUnit) {
+					t.Errorf("%s %q: answer quotes the output: %+v", what, name, resp)
+				}
+				b, _ := json.Marshal(resp)
+				if strings.Contains(string(b), secret) {
+					t.Errorf("%s %q: secret in the answer: %s", what, name, b)
+				}
+				f.noSecret(secret)
+				answers[what] = append(answers[what], strings.ReplaceAll(strings.ReplaceAll(resp.Message, f.cfg.StateDir, ""), resp.RollbackDir, ""))
+			}
+
+			f := setup()
+			f.fail[FabricsReload] = output
+			check(f, "rollback", f.do(f.fabricsReq(OpFabrics, next)))
+			if audit := strings.Join(f.auditLines(), "\n"); !strings.Contains(audit, "exited, code=exited") || !strings.Contains(audit, "Job for") {
+				t.Errorf("%q: the audit log lacks the output: %s", name, audit)
+			}
+
+			f = setup()
+			f.failAlways[FabricsReload] = output
+			check(f, "double rollback", f.do(f.fabricsReq(OpFabrics, next)))
+			check(f, "retry", f.do(f.fabricsReq(OpFabrics, next)))
+
+			f = setup()
+			f.h.killPoint = func(step string) bool { return step == "applying" }
+			f.do(f.fabricsReq(OpFabrics, next))
+			f.h.killPoint = func(string) bool { return false }
+			f.failAlways[FabricsReload] = output
+			check(f, "recovery", f.do(Request{Op: OpRecover, Actor: "test"}))
+		}
+		for what, a := range answers {
+			for _, o := range a[1:] {
+				if o != a[0] {
+					t.Errorf("%s %q: the answer depends on the stored secret:\n%s\n%s", what, name, a[0], o)
+				}
+			}
+		}
+	}
+}
+
+// TestFabricsLeftoverKnownNames: a failed unit's state file names the
+// targets a client knows (a target name of the file) and only counts the
+// others, whatever they hold; the audit log has them all.
+func TestFabricsLeftoverKnownNames(t *testing.T) {
+	const known = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	f := newFabEnv(t)
+	f.writeConf(fabricsConf, fabConf, 0o600)
+	f.fab = "failed"
+	if err := os.WriteFile(f.cfg.FabricsState, []byte("iscsi "+known+"\niscsi iqn.2003-01.org.linux-iscsi.vtl1:"+fabSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.h.markFabrics(false); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []string{OpFabricsPlan, OpFabrics} {
+		resp := f.do(f.fabricsReq(op, fabConf))
+		if resp.Error != ErrFabricsState || !strings.Contains(resp.Message, "("+known+", 1 other target(s))") || strings.Contains(resp.Message, fabSecret) {
+			t.Errorf("%s: %+v", op, resp)
+		}
+		if op == OpFabricsPlan {
+			// A refused plan is audited too.
+			if audit := strings.Join(f.auditLines(), "\n"); !strings.Contains(audit, `"detail":"`+f.cfg.FabricsState+" lists: "+known+" iqn.2003-01.org.linux-iscsi.vtl1:"+conffile.SecretMask) {
+				t.Errorf("audit.jsonl lacks the state file: %s", audit)
+			}
+		}
+	}
+	f.noSecret(fabSecret)
 }

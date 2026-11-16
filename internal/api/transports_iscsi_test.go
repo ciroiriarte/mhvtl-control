@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -486,8 +487,9 @@ func TestISCSIUnbind(t *testing.T) {
 	}
 }
 
-// The helper's refusals and failures keep its status mapping, carry the
-// diff, and are masked even when the helper quotes a secret.
+// The helper's refusals and failures keep its status mapping and carry the
+// diff; a journal tail the helper sends, which quotes a stored secret, is
+// not passed on.
 func TestISCSIHelperAnswers(t *testing.T) {
 	cur := "abc123"
 	for _, c := range []struct {
@@ -500,9 +502,9 @@ func TestISCSIHelperAnswers(t *testing.T) {
 		{"recovery", apply.Response{Result: apply.ResultRefused, Error: apply.ErrFabricsState, Message: "failed"}, 422, apply.ErrFabricsState},
 		{"conflict", apply.Response{Result: apply.ResultConflict, File: "fabrics.conf", CurrentSHA256: &cur}, 409, apply.ResultConflict},
 		{"rolled back", apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrFabricsApply, FabricsAction: "reload",
-			FailedUnit: apply.FabricsUnit, Message: "reload failed near " + chapSecret, JournalTail: "chap " + mutualSecret + " rejected",
+			FailedUnit: apply.FabricsUnit, Message: "systemctl reload mhvtl-fabrics.service failed (exit status 1)", JournalTail: "chap " + mutualSecret + " rejected",
 			RollbackDir: "/var/lib/x"}, 500, apply.ResultRolledBack},
-		{"error", apply.Response{Result: apply.ResultError, Error: apply.ErrInternal, Message: "boom " + chapSecret}, 500, apply.ErrInternal},
+		{"error", apply.Response{Result: apply.ResultError, Error: apply.ErrInternal, Message: "boom", JournalTail: chapSecret}, 500, apply.ErrInternal},
 		{"in progress", apply.Response{Result: apply.ResultInProgress}, 409, apply.ResultInProgress},
 		{"foreign target", apply.Response{Result: apply.ResultRefused, Error: apply.ErrInvalid,
 			Message: "iSCSI target iqn.2026-11.lan.example:x already exists in configfs and mhvtl-fabrics does not own it"}, 422, apply.ErrInvalid},
@@ -532,8 +534,9 @@ func TestISCSIHelperAnswers(t *testing.T) {
 					t.Errorf("foreign target message = %q", got.Error.Message)
 				}
 			case "rolled back":
-				if got.JournalTail != "chap "+conffile.SecretMask+" rejected" || got.RollbackDir != "/var/lib/x" || got.Action != "reload" {
-					t.Errorf("rollback = %+v", got)
+				if got.FailedUnit != apply.FabricsUnit || got.RollbackDir != "/var/lib/x" || got.Action != "reload" ||
+					strings.Contains(rec.Body.String(), "rejected") || strings.Contains(rec.Body.String(), "journal_tail") {
+					t.Errorf("rollback = %s", rec.Body)
 				}
 			}
 		})
@@ -1189,11 +1192,10 @@ func TestISCSIProblemSecretName(t *testing.T) {
 }
 
 // TestISCSIMessageCHAPNameNoOracle: the helper's journal tail quotes the
-// CHAP name the request sets and the stored secret. The tail answered is
-// byte-identical whether the name holds the stored secret, equals it, or
-// neither: each line that holds the new name or a secret is masked whole. The
-// helper's message, which quotes outside output only masked that way,
-// shows a new name as sent.
+// CHAP name the request sets and the stored secret. It is not answered, so
+// the answer is the same whether the name holds the stored secret, equals
+// it, or neither; the helper's message, which quotes nothing from outside
+// it, shows a new name as sent.
 func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
 	answer := func(name string) iscsiWriteDTO {
 		t.Helper()
@@ -1207,14 +1209,14 @@ func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
 		rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
 			"chap": map[string]string{"name": name, "secret": "Fresh-secret-0123"}})
 		noSecrets(t, name, strings.ReplaceAll(rec.Body.String(), name, ""), "Fresh-secret-0123")
+		if strings.Contains(rec.Body.String(), "login of") || strings.Contains(rec.Body.String(), "unit stopped") {
+			t.Errorf("%q: journal answered: %s", name, rec.Body)
+		}
 		return decodeBody[iscsiWriteDTO](t, rec)
 	}
 	for _, shape := range []string{"x%sy", "%s"} {
 		wrongName, rightName := strings.Replace(shape, "%s", "password1", 1), strings.Replace(shape, "%s", chapSecret, 1)
 		wrong, right := answer(wrongName), answer(rightName)
-		if wrong.JournalTail != right.JournalTail || wrong.JournalTail != conffile.SecretMask+"\n"+conffile.SecretMask+"\nunit stopped" {
-			t.Errorf("%q: journal tails %q and %q", shape, wrong.JournalTail, right.JournalTail)
-		}
 		if right.Message != strings.ReplaceAll(wrong.Message, wrongName, rightName) {
 			t.Errorf("%q: messages %q and %q", shape, wrong.Message, right.Message)
 		}
@@ -1223,8 +1225,8 @@ func TestISCSIMessageCHAPNameNoOracle(t *testing.T) {
 
 // TestISCSIJournalSecretPastNewName: the journal tail quotes the CHAP name
 // the request sets followed by ':', and the stored secret is the name's
-// tail and the colon. The tail answered is the same whether that is the
-// stored secret or another one: the name's line is masked whole.
+// tail and the colon. The answer is the same whether that is the stored
+// secret or another one: the tail is not answered.
 func TestISCSIJournalSecretPastNewName(t *testing.T) {
 	const name = "chap-n-0123456789"
 	answer := func(secret string) iscsiWriteDTO {
@@ -1241,8 +1243,7 @@ func TestISCSIJournalSecretPastNewName(t *testing.T) {
 		return decodeBody[iscsiWriteDTO](t, rec)
 	}
 	matching, other := answer("n-0123456789:"), answer("Other-secret-0123")
-	if matching.JournalTail != other.JournalTail || matching.Message != other.Message ||
-		matching.JournalTail != conffile.SecretMask+"\nunit stopped" {
+	if matching.Message != other.Message || !reflect.DeepEqual(matching.Error, other.Error) || strings.Contains(matching.Message, "login") {
 		t.Errorf("the answer depends on the stored secret: %+v\n%+v", matching, other)
 	}
 }
@@ -1290,7 +1291,8 @@ func TestISCSIProblemCHAPNameNoToken(t *testing.T) {
 // TestISCSIHelperHashNotPassedOn: a helper conflict, built as the helper's
 // responseOf builds it, quotes the real SHA-256 of fabrics.conf in
 // current_sha256 and in its message; neither reaches the client, nor does
-// a hash in any other helper text the routes pass on.
+// a hash in a journal tail. The helper's other fabrics messages quote no
+// hash (apply.Response.Detail keeps text from outside it).
 func TestISCSIHelperHashNotPassedOn(t *testing.T) {
 	sha := conffile.Hash([]byte(fabricsSample))
 	path := "/etc/mhvtl/fabrics.conf"
@@ -1302,8 +1304,7 @@ func TestISCSIHelperHashNotPassedOn(t *testing.T) {
 	for name, resp := range map[string]apply.Response{
 		"conflict": conflict(),
 		"rolled back": {Result: apply.ResultRolledBack, Error: apply.ErrFabricsApply, FabricsAction: "reload",
-			Message: "restoring: " + path + " now sha256 " + sha, JournalTail: "apply read " + strings.ToUpper(sha)},
-		"error": {Result: apply.ResultError, Error: apply.ErrInternal, Message: "recovery: " + sha},
+			Message: "systemctl reload mhvtl-fabrics.service failed (exit status 1)", JournalTail: "apply read " + strings.ToUpper(sha)},
 	} {
 		for _, dry := range []bool{true, false} {
 			e := iscsiEnv(t, fabricsSample, "reload", nil)
@@ -1385,7 +1386,10 @@ func TestISCSIOwnershipNameNoOracle(t *testing.T) {
 		if got.Error == nil {
 			t.Fatalf("%s: %s", base, rec.Body)
 		}
-		return got.Message + "\n" + got.Error.Message + "\n" + got.JournalTail
+		if strings.Contains(rec.Body.String(), "journal_tail") {
+			t.Errorf("%s: journal answered: %s", base, rec.Body)
+		}
+		return got.Message + "\n" + got.Error.Message
 	}
 	wrong, right := answer("iqn.2026-11.lan.example:pock"), answer("iqn.2026-11.lan.example:pick")
 	if right != strings.ReplaceAll(wrong, "pock", "pick") {
@@ -1896,5 +1900,145 @@ func TestHelperCallOutlivesClient(t *testing.T) {
 	}
 	if before == nil || after == nil || *after == *before {
 		t.Errorf("version %s after, %s before: want both, different", str(after), str(before))
+	}
+}
+
+// TestISCSIJournalNeverAnswered: whatever the helper answers, a journal
+// tail it sends is not passed on, even one that quotes a stored secret
+// verbatim beside the names the client chose: a CHAP name cut from
+// systemd's fixed "mhvtl-fabrics.service: ..." journal line and a
+// hash-shaped one (mhvtl-control#96 round 12). The answer is the same
+// whatever the stored secret is.
+func TestISCSIJournalNeverAnswered(t *testing.T) {
+	hashName := strings.Repeat("0123456789abcdef", 4)
+	for _, name := range []string{"mhvtl-fabrics.service:", "fabrics.service:", hashName} {
+		for _, resp := range []apply.Response{
+			{Result: apply.ResultRolledBack, Error: apply.ErrFabricsApply, FabricsAction: "reload", FailedUnit: apply.FabricsUnit,
+				Message: "systemctl reload mhvtl-fabrics.service failed (exit status 1)"},
+			{Result: apply.ResultError, Error: apply.ErrFabricsState, FailedUnit: apply.FabricsUnit, Message: "fabrics_recovery_required"},
+			{Result: apply.ResultRefused, Error: apply.ErrFabricsState, Message: "an earlier rollback restored fabrics.conf"},
+			{Result: apply.ResultRecovered, Message: "recovered"},
+			{Result: apply.ResultApplied, FabricsAction: "reload"},
+		} {
+			var answers []string
+			for _, secret := range []string{"Main-process-0", "Main-process-1"} {
+				e := iscsiEnv(t, strings.Replace(fabricsSample, chapSecret, secret, 1), "reload", nil)
+				e.srv.fabricsKey = []byte("one key for both answers")
+				r := resp
+				r.JournalTail = name + " " + secret + " exited, code=exited, status=1/FAILURE\n" + apply.FabricsUnit + ": Failed with result 'exit-code'."
+				e.h.answer = func(apply.Request) apply.Response { return r }
+				rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
+					"chap": map[string]string{"name": name, "secret": "Fresh-secret-0123"}})
+				body := rec.Body.String()
+				noSecrets(t, name, body, secret, "Fresh-secret-0123")
+				if strings.Contains(body, "exited") || strings.Contains(body, "journal_tail") || strings.Contains(body, conffile.SecretMask+" exited") {
+					t.Errorf("%s %q: journal answered: %s", resp.Result, name, body)
+				}
+				got := decodeBody[iscsiWriteDTO](t, rec)
+				answers = append(answers, fmt.Sprintf("%d %s %s %+v %s", rec.Code, got.Result, got.Message, got.Error, got.FailedUnit))
+			}
+			if answers[0] != answers[1] {
+				t.Errorf("%s %q: the answer depends on the stored secret:\n%s\n%s", resp.Result, name, answers[0], answers[1])
+			}
+		}
+	}
+}
+
+// realFabricsHelper answers e's helper requests with a real apply helper
+// over e's configuration directory. mhvtl-fabrics.service is active, and
+// every reload of it fails with systemctl's output and the unit's journal
+// quoting out (stored secrets and names the client chose).
+func realFabricsHelper(t *testing.T, e *writeEnv, out string) {
+	t.Helper()
+	root := t.TempDir()
+	for _, d := range []string{"state", "run", "home", "target"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "mhvtl.conf"), []byte("MHVTL_BACKEND=tcmu\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bootID := filepath.Join(root, "boot_id")
+	if err := os.WriteFile(bootID, []byte("11111111-2222-3333-4444-555555555555\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	clock := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	fab := "active"
+	cfg := apply.Config{
+		ConfigDir:   e.dir,
+		StateDir:    filepath.Join(root, "state"),
+		RuntimeDir:  filepath.Join(root, "run"),
+		LegacyEnv:   filepath.Join(root, "mhvtl-control.env"),
+		DefaultHome: filepath.Join(root, "home"),
+		SysRoot:     filepath.Join(root, "sys"),
+		BootIDPath:  bootID,
+		Version:     "test",
+		Getenv:      func(string) string { return "" },
+		Now:         func() time.Time { clock = clock.Add(time.Second); return clock },
+		Systemctl: func(_ context.Context, args ...string) ([]byte, error) {
+			switch {
+			case args[0] == "show" && strings.Contains(args[1], "CanReload"):
+				return []byte("LoadState=loaded\nActiveState=" + fab + "\nCanReload=yes\n\nLoadState=loaded\nActiveState=active\nCanReload=no\n"), nil
+			case args[0] == "show" && args[1] == "--property=LoadState":
+				return []byte("loaded\n"), nil
+			case args[0] == "show":
+				return []byte(fab + "\n"), nil
+			case args[0] == apply.FabricsReload:
+				return nil, &exec.ExitError{Stderr: []byte("Job for " + apply.FabricsUnit + " failed: " + out)}
+			}
+			return nil, nil
+		},
+		JournalTail: func(context.Context, string) ([]byte, error) {
+			return []byte(apply.FabricsUnit + ": " + out + "\n" + apply.FabricsUnit + ": Failed with result 'exit-code'."), nil
+		},
+		Journal:      func(map[string]string) {},
+		Logf:         func(string, ...any) {},
+		FabricsState: filepath.Join(root, "fabrics.state"),
+		TargetRoot:   filepath.Join(root, "target"),
+	}
+	h := apply.New(cfg)
+	e.h.answer = func(req apply.Request) apply.Response {
+		return h.Handle(context.Background(), apply.Peer{PID: 1}, &req)
+	}
+}
+
+// TestISCSIHelperComposition: a bind through the API to a real helper,
+// whose reload and the rollback's reload of the restored file both fail,
+// with systemctl and the journal quoting the stored secret beside the CHAP
+// name the request brings (mhvtl-control#96 round 12: the helper's masks
+// and the daemon's, run one after the other, lost which names were the
+// stored file's). The API answers none of that text, and the same whether
+// the name holds the stored secret, equals it, or neither; then the
+// marker's retry answers the same way.
+func TestISCSIHelperComposition(t *testing.T) {
+	for _, shape := range []string{"x%sy", "%s", "%s:"} {
+		var answers []string
+		for _, guess := range []string{"Password1-xx", chapSecret} {
+			name := strings.Replace(shape, "%s", guess, 1)
+			e := iscsiEnv(t, fabricsSample, "reload", nil)
+			e.srv.fabricsKey = []byte("one key for both answers")
+			realFabricsHelper(t, e, "login of "+name+" refused; stored pbs secret "+chapSecret)
+			text := ""
+			for _, what := range []string{"rollback", "retry"} {
+				rec := e.call(http.MethodPost, "/api/v1/transports/iscsi/bind", map[string]any{"library": 30,
+					"chap": map[string]string{"name": name, "secret": "Fresh-secret-0123"}})
+				body := rec.Body.String()
+				got := decodeBody[iscsiWriteDTO](t, rec)
+				if got.Error == nil || got.Error.Code != apply.ErrFabricsState {
+					t.Fatalf("%s %q: %d %s", what, name, rec.Code, body)
+				}
+				if strings.Contains(body, "login of") || strings.Contains(body, "Job for") || strings.Contains(body, "journal_tail") ||
+					strings.Contains(got.Message+got.Error.Message, conffile.SecretMask) {
+					t.Errorf("%s %q: output answered: %s", what, name, body)
+				}
+				noSecrets(t, what, strings.ReplaceAll(body, name, "(name)"), "Fresh-secret-0123")
+				text += fmt.Sprintf("%s: %d %s %s %+v\n", what, rec.Code, got.Result, got.Message, got.Error)
+			}
+			answers = append(answers, strings.ReplaceAll(text, name, "(name)"))
+		}
+		if answers[0] != answers[1] {
+			t.Errorf("%q: the answer depends on the guess:\n%s\n%s", shape, answers[0], answers[1])
+		}
 	}
 }

@@ -26,7 +26,7 @@ func (h *Helper) recover(ctx context.Context, it *Intent, boot bool, actor strin
 	if it.RollbackDir != "" {
 		resp.RollbackDir = filepath.Join(h.cfg.StateDir, rollbackDir, it.RollbackDir)
 	}
-	rec.Result, rec.Error, rec.Message, rec.Conflicts, rec.RollbackDir = resp.Result, resp.Error, resp.Message, resp.Conflicts, resp.RollbackDir
+	rec.Result, rec.Error, rec.Message, rec.Conflicts, rec.RollbackDir, rec.Detail = resp.Result, resp.Error, resp.Message, resp.Conflicts, resp.RollbackDir, resp.Detail
 	rec.OrphanedMedia = resp.OrphanedMedia
 	h.audit(rec)
 	return resp
@@ -49,7 +49,8 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 		}
 	}
 	// A fabrics apply that died may have left its new file in place, whose
-	// secrets the messages below must mask too: read it before the restore.
+	// secrets the audit log masks and whose names a client knows: read it
+	// before the restore.
 	var halfApplied []byte
 	if it.Op == OpFabrics {
 		if cur, err := readTarget(h.cfg.ConfigDir, fabricsConf); err == nil {
@@ -84,13 +85,13 @@ func (h *Helper) recoverIntent(ctx context.Context, it *Intent, boot bool) Respo
 				original = f.Original
 			}
 		}
-		// The names of the half-applied file came with the request that
-		// died: what reconcileFabrics quotes from outside masks them whole.
-		mask := h.fabricsMask(original, halfApplied)
-		note, err := h.reconcileFabrics(ctx, removed, mask)
+		// The answer quotes nothing from outside the helper; that goes to
+		// the audit log (auditDetail).
+		k := h.fabricsKnown(original, halfApplied)
+		note, err := h.reconcileFabrics(ctx, removed, k)
 		if err != nil {
 			return Response{Result: ResultError, Error: ErrFabricsState, Conflicts: conflicts,
-				Message: mask.message("recovery: " + h.reconcileFailed(err, removed))}
+				Message: "recovery: " + h.reconcileFailed(err, removed) + "; " + fabricsLogs, Detail: k.audit(auditDetail(err))}
 		}
 		fabricsNote = note
 	}
