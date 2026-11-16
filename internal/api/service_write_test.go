@@ -137,6 +137,9 @@ func TestServiceActionStatuses(t *testing.T) {
 		{apply.Response{Result: apply.ResultRefused, Error: apply.ErrBudget, Message: "restart the libraries one at a time"}, true, http.StatusUnprocessableEntity, "budget"},
 		{apply.Response{Result: apply.ResultRefused, Error: apply.ErrPlacement}, true, http.StatusUnprocessableEntity, "placement"},
 		{apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrStart, FailedUnit: "vtltape@11.service", JournalTail: "tail"}, false, http.StatusInternalServerError, "rolled_back"},
+		// A rollback that left mhvtl.target stopped (ownership check).
+		{apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrFabricsState, FailedUnit: "vtltape@11.service", JournalTail: "tail",
+			Message: "start_failed: x; mhvtl.target was left stopped: y"}, false, http.StatusInternalServerError, apply.ErrFabricsState},
 		{apply.Response{Result: apply.ResultRecovered, Message: "recovered"}, false, http.StatusConflict, "recovered"},
 		{apply.Response{Result: apply.ResultInProgress}, true, http.StatusConflict, "apply_in_progress"},
 		{apply.Response{Result: apply.ResultError, Error: apply.ErrStart, FailedUnit: "vtltape@13.service"}, false, http.StatusInternalServerError, "start_failed"},

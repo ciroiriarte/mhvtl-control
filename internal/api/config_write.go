@@ -876,6 +876,12 @@ func applyStatus(resp apply.Response) (int, string) {
 	case apply.ResultConflict, apply.ResultInProgress, apply.ResultRecovered:
 		return http.StatusConflict, resp.Result
 	case apply.ResultRolledBack:
+		// A rollback that left mhvtl.target stopped, as starting it could
+		// have mhvtl-fabrics adopt a target it does not own, says so in
+		// its code: the client has to act.
+		if resp.Error == apply.ErrFabricsState {
+			return http.StatusInternalServerError, resp.Error
+		}
 		return http.StatusInternalServerError, resp.Result
 	case apply.ResultError:
 		return http.StatusInternalServerError, resp.Error

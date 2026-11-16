@@ -1075,3 +1075,59 @@ func TestServiceTargetStopRecoverForeignFabricsTarget(t *testing.T) {
 		})
 	}
 }
+
+// A target restart whose start fails rolls back, and the rollback's unwind
+// would start mhvtl.target again, which starts mhvtl-fabrics.service. When
+// fabrics.conf then names a target that exists in configfs and
+// mhvtl-fabrics does not own (made during the restart), the target stays
+// stopped: the answer stays rolled_back with its rollback details, but its
+// code is fabrics_recovery_required, the cause's code kept in the message,
+// so a client sees that it has to act.
+func TestServiceTargetRestartRollbackForeignFabricsTarget(t *testing.T) {
+	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
+	e, s := newExecEnv(t)
+	standalone34(e)
+	partOf(s)
+	e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
+	e.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
+	sysctl := e.cfg.Systemctl
+	e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
+		if len(args) == 4 && args[0] == "show" && args[1] == "--property=LoadState" && args[3] == FabricsUnit {
+			return []byte("loaded\n"), nil
+		}
+		return sysctl(ctx, args...)
+	}
+	e.rebuild()
+	files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n", fabricsConf: fabConf}
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.state[FabricsUnit] = "active"
+	s.state[bayMonitor] = "active"
+	s.failStart["vtltape@34.service"] = true
+	// The target appears after the restart's own check passed, when
+	// mhvtl-fabrics.service stops with mhvtl.target.
+	prev := s.onStop
+	s.onStop = func(u string) {
+		prev(u)
+		if u != mhvtlTarget {
+			return
+		}
+		s.state[FabricsUnit] = "inactive"
+		if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", lib10, "tpgt_1"), 0o755); err != nil {
+			t.Error(err)
+		}
+	}
+	resp := e.do(target(OpService, ActionRestart, targetUnits))
+	if resp.Result != ResultRolledBack || resp.Error != ErrFabricsState || resp.FailedUnit != "vtltape@34.service" || e.intentExists() {
+		t.Fatalf("service: %+v", resp)
+	}
+	if !strings.HasPrefix(resp.Message, ErrStart+": ") || !strings.Contains(resp.Message, mhvtlTarget+" was left stopped") || !strings.Contains(resp.Message, lib10) {
+		t.Errorf("message %q", resp.Message)
+	}
+	if s.unitState(mhvtlTarget) == "active" {
+		t.Errorf("%s started: %v", mhvtlTarget, s.calls)
+	}
+}

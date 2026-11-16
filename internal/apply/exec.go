@@ -1275,6 +1275,12 @@ func (x *execution) rollback(ctx context.Context, cause error) Response {
 		resp.Unplaced, err = h.unwind(rctx, x.it, again)
 		var tns *targetNotStarted
 		if errors.As(err, &tns) {
+			// The rollback completed, but mhvtl.target is left stopped:
+			// the code says so, and the message keeps the cause's.
+			if resp.Error != "" && !strings.HasPrefix(resp.Message, resp.Error+": ") {
+				resp.Message = resp.Error + ": " + resp.Message
+			}
+			resp.Error = ErrFabricsState
 			resp.Message += "; " + tns.Error()
 			err = nil
 		}

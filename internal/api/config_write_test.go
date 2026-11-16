@@ -461,6 +461,8 @@ func TestConfigApplyResults(t *testing.T) {
 		{apply.Response{Result: apply.ResultRecovered}, http.StatusConflict, apply.ResultRecovered},
 		{apply.Response{Result: apply.ResultRefused, Error: apply.ErrInvalid, Findings: &validate.Result{Errors: []validate.Finding{{Code: "e.x"}}}}, http.StatusUnprocessableEntity, apply.ErrInvalid},
 		{apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrStart, FailedUnit: "vtllibrary@10.service"}, http.StatusInternalServerError, apply.ResultRolledBack},
+		{apply.Response{Result: apply.ResultRolledBack, Error: apply.ErrFabricsState, FailedUnit: "vtllibrary@10.service",
+			Message: "start_failed: x; mhvtl.target was left stopped: y"}, http.StatusInternalServerError, apply.ErrFabricsState},
 		{apply.Response{Result: apply.ResultError, Error: apply.ErrInternal}, http.StatusInternalServerError, apply.ErrInternal},
 		{apply.Response{Result: "what"}, http.StatusBadGateway, "helper_error"},
 	} {
@@ -475,7 +477,7 @@ func TestConfigApplyResults(t *testing.T) {
 		if tc.resp.Result == apply.ResultConflict && (got.File != "library_contents.10" || got.CurrentSHA256 == nil || *got.CurrentSHA256 != cur) {
 			t.Errorf("conflict: %+v", got)
 		}
-		if tc.resp.Result == apply.ResultRolledBack && got.FailedUnit != "vtllibrary@10.service" {
+		if tc.resp.Result == apply.ResultRolledBack && (got.FailedUnit != "vtllibrary@10.service" || got.Result != apply.ResultRolledBack) {
 			t.Errorf("rolled back: %+v", got)
 		}
 	}

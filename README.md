@@ -594,7 +594,8 @@ that parses), they are refused with `invalid`. A rollback or crash
 recovery of a target restart or stop that would start `mhvtl.target` again
 is checked the same way: it then leaves `mhvtl.target` (and the bay
 monitor) stopped, completes, and answers `500 fabrics_recovery_required`
-naming the target; remove that target or unbind it, then start
+naming the target (a rollback keeps `"result": "rolled_back"` and its
+details, the cause's code in the message); remove that target or unbind it, then start
 `mhvtl.target`. A start
 of `mhvtl-fabrics.service` outside the helper (at boot, or by hand) is not
 checked at all. The ownership checks look at configfs when
