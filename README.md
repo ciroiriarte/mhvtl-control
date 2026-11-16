@@ -381,9 +381,12 @@ not have changed in between (`409 unit`). The answer has the fields of
 - An action that, with its rollback, may not fit the helper's 30-minute
   `RuntimeMaxSec=` is refused with `422 budget` (act on the libraries one at
   a time), and a placement the helper cannot save with `422 placement`.
-- A failed action is rolled back (`500 rolled_back`, with `failed_unit` and
-  `journal_tail`); one interrupted by a crash is recovered by the next
-  request (`409 recovered`).
+- A failed action is rolled back (`500 rolled_back`, with `failed_unit`, and
+  `journal_tail` when that unit is a `vtllibrary@`, `vtltape@` or
+  `mhvtl-media.service`); one interrupted by a crash is recovered by the next
+  request (`409 recovered`). No journal lines are answered for
+  `mhvtl.target`, whose start pulls in `mhvtl-fabrics.service`, or for the
+  other support units: see `journalctl -u <unit>`.
 - A stopped library or target stays down until started, and starts again at
   boot. A stop interrupted by a crash is undone by its recovery, which starts
   the units it had stopped again: the library ends up running, so retry the
@@ -619,16 +622,20 @@ it, the unbind that fixes it included. Left so after a failed reload,
 configfs may still hold part of the failed change until the next change
 that leaves no such targets applies the file. If a first start fails, the new file is removed and the unit is
 left failed, its targets removed by its `ExecStopPost`; the next export
-starts it again. Either way the answer is `rolled_back` and carries the
-unit's last journal lines. In those lines and in the systemctl error, every
-CHAP secret is masked, except inside a name the file already had; the
-names the change brings (a new initiator, target or CHAP name, portal or
-base name) are shown as `********` too, so that the answer does not tell
-whether a name the client chose is, or contains, a stored secret. The same
-goes for the systemctl error of the restored file's reload or stop, of the
-retry and of a crash recovery. A target name a state file lists that no
-file plans, such as one left from a file a failed apply rolled back, is
-shown as `********` whole, whatever it contains. When the reload of the restored file fails too,
+starts it again. Either way the answer is `rolled_back` with
+`failed_unit` `mhvtl-fabrics.service`. Fabrics failures return no log
+text: no answer of an iSCSI route, of a retry or of a crash recovery
+quotes the unit's journal, systemctl's output or the state file, which may
+quote `fabrics.conf`, its CHAP secrets and the names a client chose. The
+message says which systemctl verb failed and how it ended (its exit status),
+and ends with "see journalctl -u mhvtl-fabrics.service and the mhvtl-control
+audit log": the journal has the unit's output, and
+`/var/lib/mhvtl-control-apply/audit.jsonl` (root only; no route serves it)
+has, in each record's `detail`, systemctl's output, the journal lines and
+the state file as the helper read them, with CHAP secrets masked. Of the
+targets a state file lists, an answer names only those a client knows (a
+target name or derived name of the file, or another clear value of it) and
+counts the others. When the reload of the restored file fails too,
 configfs may not match `fabrics.conf`: the answer is
 `fabrics_recovery_required`; check `journalctl -u mhvtl-fabrics` and fix
 the cause. The helper records this, and the next iSCSI change retries the

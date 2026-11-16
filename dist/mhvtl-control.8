@@ -189,7 +189,22 @@ recovery never reloads such a file, which would fail; left so after a
 failed reload, configfs may still hold part of the failed change until the
 next change that leaves no such targets applies the file.
 A failed first start removes the new file
-and leaves the unit failed; the next export starts it again. When the
+and leaves the unit failed; the next export starts it again.
+Fabrics failures return no log text: no answer quotes the unit's journal,
+systemctl's output or the state file, which may quote the file's CHAP
+secrets and names a client chose. The answer names the failed unit
+.RB ( failed_unit
+.BR mhvtl\-fabrics.service ),
+the systemctl verb and its exit status, and points at
+.B "journalctl -u mhvtl-fabrics.service"
+and the audit log
+.IR /var/lib/mhvtl\-control\-apply/audit.jsonl ,
+readable by root only and served by no route, whose records keep that text in
+.I detail
+with CHAP secrets masked. Of the targets the state file lists, an answer
+names only those the file names or derives and counts the others. A
+service action's answer carries journal lines only for a failed
+vtllibrary@, vtltape@ or mhvtl\-media.service unit. When the
 reload of the restored file fails too, the answer is
 .B fabrics_recovery_required
 (configfs may not match the file): check
