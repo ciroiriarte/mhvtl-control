@@ -614,3 +614,32 @@ func TestApplyAnswersNoFabricsHash(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyTimeoutOutlastsHelper: the daemon waits for the helper past its
+// RuntimeMaxSec= and the TimeoutStopSec= after the SIGTERM that ends it,
+// with a minute's margin, so it never drops a call in flight while the
+// helper may still act.
+func TestApplyTimeoutOutlastsHelper(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "dist", "mhvtl-control-apply@.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total time.Duration
+	for _, key := range []string{"RuntimeMaxSec", "TimeoutStopSec"} {
+		var sec int
+		for _, l := range strings.Split(string(data), "\n") {
+			if v, ok := strings.CutPrefix(l, key+"="); ok {
+				if _, err := fmt.Sscanf(v, "%d", &sec); err != nil {
+					t.Fatalf("%s: %v", l, err)
+				}
+			}
+		}
+		if sec == 0 {
+			t.Fatalf("no %s= in the helper's unit", key)
+		}
+		total += time.Duration(sec) * time.Second
+	}
+	if applyTimeout < total+time.Minute {
+		t.Errorf("applyTimeout %v, want at least %v (RuntimeMaxSec= + TimeoutStopSec= + 1m)", applyTimeout, total+time.Minute)
+	}
+}

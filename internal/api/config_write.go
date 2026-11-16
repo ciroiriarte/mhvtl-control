@@ -29,9 +29,11 @@ const helperEnable = "systemctl enable --now mhvtl-control-apply.socket"
 // (cmd/mhvtl-control).
 const envFile = "/etc/mhvtl-control/mhvtl-control.env"
 
-// applyTimeout bounds an apply: the helper's RuntimeMaxSec=1800
-// (dist/mhvtl-control-apply@.service) and a margin for its answer.
-const applyTimeout = 31 * time.Minute
+// applyTimeout bounds an apply: the helper's RuntimeMaxSec=1800, then
+// TimeoutStopSec=60 after its SIGTERM (dist/mhvtl-control-apply@.service),
+// and a minute's margin, so the daemon does not drop a call it holds in
+// flight before the helper is gone.
+const applyTimeout = 32 * time.Minute
 
 // maxNewElements bounds the slots or MAP slots one request adds.
 const maxNewElements = 4096

@@ -19,7 +19,9 @@ StandardError=journal
 # Type=simple service, so RuntimeMaxSec= is the bound. See systemd.service(5):
 # https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#RuntimeMaxSec=
 RuntimeMaxSec=1800
-# Time after SIGTERM to finish or roll back what is under way.
+# Time after SIGTERM to finish or roll back what is under way. mhvtl-control
+# waits for an answer up to 32 minutes (applyTimeout), past RuntimeMaxSec= and
+# this together.
 TimeoutStopSec=60
 
 # The helper runs as root: it writes root-owned /etc/mhvtl, runs systemctl

@@ -499,7 +499,9 @@ gives the current one. While such a request is in progress (an apply of
 `fabrics.conf` writes the file and then reloads `mhvtl-fabrics`, which can
 take minutes), `GET .../config` answers no `sha256`, and every preview
 and apply gets 409 with `error.code` `apply_in_progress`, whatever it
-sends; applies are never queued. From an apply's read of `fabrics.conf`
+sends; applies are never queued. A helper that hangs keeps it so for up
+to 32 minutes (its 30-minute `RuntimeMaxSec=` and stop time, and a margin),
+after which mhvtl-control stops waiting for it. From an apply's read of `fabrics.conf`
 to its answer, a stage check or apply and a service action or dry run get
 409 `apply_in_progress` too, without reaching the helper. A preview during which another such
 request started or finished gets 409 `apply_in_progress` too, with no

@@ -219,6 +219,9 @@ no answer holds a version: clients read the file again once it is done,
 and every iSCSI preview or apply sent meanwhile gets 409
 .BR apply_in_progress ,
 whatever it sends.
+A helper that hangs keeps it so for up to 32 minutes, its 30-minute
+RuntimeMaxSec= and stop time and a margin, after which mhvtl-control stops
+waiting for it.
 From an apply's read of the file to its answer, a configuration check or
 apply and a service action or dry run get 409
 .B apply_in_progress
