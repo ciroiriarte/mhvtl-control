@@ -651,11 +651,21 @@ func (h *Helper) checkTargetFabrics(ctx context.Context, files *fileSet, restart
 		return err
 	}
 	if len(foreign) > 0 {
-		return refuse(ErrInvalid, "%s names iSCSI target %s, which exists in configfs and mhvtl-fabrics does not own (not in %s): starting %s with %s would take it over, remove the ACLs and LUNs it does not list, and delete it on unbind; remove that target first, or stop exporting it in %s (iSCSI unbind)",
-			fabricsConf, strings.Join(foreign, ", "), h.cfg.FabricsState, FabricsUnit, mhvtlTarget, fabricsConf)
+		return &foreignStart{wwns: foreign, err: refuse(ErrInvalid, "%s names iSCSI target %s, which exists in configfs and mhvtl-fabrics does not own (not in %s): starting %s with %s would take it over, remove the ACLs and LUNs it does not list, and delete it on unbind; remove that target first, or stop exporting it in %s (iSCSI unbind)",
+			fabricsConf, strings.Join(foreign, ", "), h.cfg.FabricsState, FabricsUnit, mhvtlTarget, fabricsConf)}
 	}
 	return nil
 }
+
+// foreignStart is checkTargetFabrics' refusal (err) for the foreign
+// targets it found (wwns), as against one where it could not tell.
+type foreignStart struct {
+	wwns []string
+	err  error
+}
+
+func (e *foreignStart) Error() string { return e.err.Error() }
+func (e *foreignStart) Unwrap() error { return e.err }
 
 // foreignTargets returns the names of wwns that exist in configfs as
 // targets mhvtl-fabrics' state file does not list. The state file is read

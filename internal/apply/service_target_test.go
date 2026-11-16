@@ -2,6 +2,7 @@ package apply
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1082,52 +1083,74 @@ func TestServiceTargetStopRecoverForeignFabricsTarget(t *testing.T) {
 // mhvtl-fabrics does not own (made during the restart), the target stays
 // stopped: the answer stays rolled_back with its rollback details, but its
 // code is fabrics_recovery_required, the cause's code kept in the message,
-// so a client sees that it has to act.
+// so a client sees that it has to act. The message tells a foreign target
+// found from a check that could not tell (the state file unreadable).
 func TestServiceTargetRestartRollbackForeignFabricsTarget(t *testing.T) {
 	const lib10 = "iqn.2003-01.org.linux-iscsi.vtl1:mhvtl.lib10"
-	e, s := newExecEnv(t)
-	standalone34(e)
-	partOf(s)
-	e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
-	e.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
-	sysctl := e.cfg.Systemctl
-	e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
-		if len(args) == 4 && args[0] == "show" && args[1] == "--property=LoadState" && args[3] == FabricsUnit {
-			return []byte("loaded\n"), nil
-		}
-		return sysctl(ctx, args...)
+	for _, c := range []struct {
+		name       string
+		unreadable bool
+		want       string
+	}{
+		{"foreign", false, mhvtlTarget + " was left stopped: foreign iSCSI target found (" + lib10 + "): "},
+		{"state file unreadable", true, mhvtlTarget + " was left stopped: could not tell whether starting it would have " + FabricsUnit + " take over an iSCSI target it does not own (" + lib10 + " exists in configfs and the state file cannot be read"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, s := newExecEnv(t)
+			standalone34(e)
+			partOf(s)
+			e.cfg.FabricsState = filepath.Join(t.TempDir(), "fabrics.state")
+			if c.unreadable {
+				if err := os.Mkdir(e.cfg.FabricsState, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.cfg.TargetRoot = filepath.Join(t.TempDir(), "target")
+			sysctl := e.cfg.Systemctl
+			e.cfg.Systemctl = func(ctx context.Context, args ...string) ([]byte, error) {
+				if len(args) == 4 && args[0] == "show" && args[1] == "--property=LoadState" && args[3] == FabricsUnit {
+					return []byte("loaded\n"), nil
+				}
+				return sysctl(ctx, args...)
+			}
+			e.rebuild()
+			files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n", fabricsConf: fabConf}
+			for name, data := range files {
+				if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.state[FabricsUnit] = "active"
+			s.state[bayMonitor] = "active"
+			s.failStart["vtltape@34.service"] = true
+			// The target appears after the restart's own check passed, when
+			// mhvtl-fabrics.service stops with mhvtl.target.
+			prev := s.onStop
+			s.onStop = func(u string) {
+				prev(u)
+				if u != mhvtlTarget {
+					return
+				}
+				s.state[FabricsUnit] = "inactive"
+				if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", lib10, "tpgt_1"), 0o755); err != nil {
+					t.Error(err)
+				}
+			}
+			resp := e.do(target(OpService, ActionRestart, targetUnits))
+			if resp.Result != ResultRolledBack || resp.Error != ErrFabricsState || resp.FailedUnit != "vtltape@34.service" || e.intentExists() {
+				t.Fatalf("service: %+v", resp)
+			}
+			if !strings.HasPrefix(resp.Message, ErrStart+": ") || !strings.Contains(resp.Message, c.want) {
+				t.Errorf("message %q, want %q", resp.Message, c.want)
+			}
+			if s.unitState(mhvtlTarget) == "active" {
+				t.Errorf("%s started: %v", mhvtlTarget, s.calls)
+			}
+		})
 	}
-	e.rebuild()
-	files := map[string]string{mhvtlConf: string(e.read(mhvtlConf)) + "MHVTL_BACKEND=tcmu\n", fabricsConf: fabConf}
-	for name, data := range files {
-		if err := os.WriteFile(filepath.Join(e.dir, name), []byte(data), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	s.state[FabricsUnit] = "active"
-	s.state[bayMonitor] = "active"
-	s.failStart["vtltape@34.service"] = true
-	// The target appears after the restart's own check passed, when
-	// mhvtl-fabrics.service stops with mhvtl.target.
-	prev := s.onStop
-	s.onStop = func(u string) {
-		prev(u)
-		if u != mhvtlTarget {
-			return
-		}
-		s.state[FabricsUnit] = "inactive"
-		if err := os.MkdirAll(filepath.Join(e.cfg.TargetRoot, "iscsi", lib10, "tpgt_1"), 0o755); err != nil {
-			t.Error(err)
-		}
-	}
-	resp := e.do(target(OpService, ActionRestart, targetUnits))
-	if resp.Result != ResultRolledBack || resp.Error != ErrFabricsState || resp.FailedUnit != "vtltape@34.service" || e.intentExists() {
-		t.Fatalf("service: %+v", resp)
-	}
-	if !strings.HasPrefix(resp.Message, ErrStart+": ") || !strings.Contains(resp.Message, mhvtlTarget+" was left stopped") || !strings.Contains(resp.Message, lib10) {
-		t.Errorf("message %q", resp.Message)
-	}
-	if s.unitState(mhvtlTarget) == "active" {
-		t.Errorf("%s started: %v", mhvtlTarget, s.calls)
+	// A systemctl show that fails cannot tell either.
+	err := &targetNotStarted{err: errors.New("systemctl show " + FabricsUnit + ": exit status 1")}
+	if want := "could not tell whether starting it would have " + FabricsUnit + " take over an iSCSI target it does not own (systemctl show"; !strings.Contains(err.Error(), want) {
+		t.Errorf("%q, want %q", err.Error(), want)
 	}
 }

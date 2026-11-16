@@ -1484,11 +1484,21 @@ func (h *Helper) unwind(ctx context.Context, it *Intent, latest []*LibStop) ([]s
 // removes the intent rather than keep it: the target stopped is a state a
 // later start through the helper checks the same way, and a kept intent
 // would have every request, the iSCSI unbind that resolves it included,
-// recover first and fail.
+// recover first and fail. Its message tells a foreign target found
+// (foreignStart) from a check that could not tell, such as a systemctl
+// show that failed or a state file that cannot be read.
 type targetNotStarted struct{ err error }
 
 func (e *targetNotStarted) Error() string {
-	return mhvtlTarget + " was left stopped: " + e.err.Error() + "; then start " + mhvtlTarget + " (service start)"
+	msg := e.err.Error()
+	if _, m, ok := Refused(e.err); ok {
+		msg = m
+	}
+	var fs *foreignStart
+	if errors.As(e.err, &fs) {
+		return mhvtlTarget + " was left stopped: foreign iSCSI target found (" + strings.Join(fs.wwns, ", ") + "): " + msg + "; then start " + mhvtlTarget + " (service start)"
+	}
+	return mhvtlTarget + " was left stopped: could not tell whether starting it would have " + FabricsUnit + " take over an iSCSI target it does not own (" + msg + "); fix that, then start " + mhvtlTarget + " (service start)"
 }
 
 func (e *targetNotStarted) Unwrap() error { return e.err }
