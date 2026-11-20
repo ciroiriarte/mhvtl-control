@@ -1148,24 +1148,6 @@ func checkDestination(to string, slot int) error {
 	return nil
 }
 
-// dispositionPath reads {library} and {barcode}: a library in the
-// configuration in force, since a disposition is for a cartridge leaving
-// one, and a barcode a library_contents line could carry.
-func dispositionPath(r *http.Request, st *stage) (int, string, error) {
-	id, err := pathInt(r, "library")
-	if err != nil {
-		return 0, "", err
-	}
-	bc := r.PathValue("barcode")
-	if err := conffile.CheckCartridgeBarcode(bc); err != nil {
-		return 0, "", badEdit("%v", err)
-	}
-	if _, ok := findConfigLibrary(st.cur, id); !ok {
-		return 0, "", notFound("library %d is not in the configuration in force", id)
-	}
-	return id, bc, nil
-}
-
 // handleConfigDispositionPut sets or replaces where one cartridge leaving
 // a library goes (mhvtl-control#104): a disposition a slot or library
 // delete recorded, or one for a cartridge an edit displaced
@@ -1180,9 +1162,19 @@ func (s *Server) handleConfigDispositionPut(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.stageEdit(w, r, r.PathValue("id"), func(_ context.Context, st *stage) error {
-		id, bc, err := dispositionPath(r, st)
+		// The library is one in force, since a disposition is for a
+		// cartridge leaving one, and the barcode one a library_contents line
+		// could carry.
+		id, err := pathInt(r, "library")
 		if err != nil {
 			return err
+		}
+		bc := r.PathValue("barcode")
+		if err := conffile.CheckCartridgeBarcode(bc); err != nil {
+			return badEdit("%v", err)
+		}
+		if _, ok := findConfigLibrary(st.cur, id); !ok {
+			return notFound("library %d is not in the configuration in force", id)
 		}
 		st.dispose(validate.Disposition{Library: id, Barcode: bc, To: req.To, Slot: req.Slot})
 		return nil
