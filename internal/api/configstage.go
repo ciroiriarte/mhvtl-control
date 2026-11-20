@@ -500,9 +500,24 @@ func (st *stage) changes() (files []apply.File, del []apply.Delete) {
 	return files, del
 }
 
+// dispositionList returns the stage's dispositions sorted by library and
+// barcode, as the apply request and the stage's answer carry them.
+// A disposition counts only while its library is in both the configuration
+// on disk and the staged one, which is all validation accepts
+// (removal.unknown_library). Deleting a library leaves the dispositions for
+// its cartridges in the stage, out of the list: its cartridges stay in its
+// home (AC 12). They count again if the stage creates the library anew,
+// whose new slots may no longer hold them (mhvtl-control#97).
 func (st *stage) dispositionList() []validate.Disposition {
+	dc, _ := st.deviceConf() // a file that is not writable still lists its stanzas
 	out := make([]validate.Disposition, 0, len(st.dispositions))
 	for _, d := range st.dispositions {
+		if _, inCur := findConfigLibrary(st.cur, d.Library); !inCur {
+			continue
+		}
+		if _, inNext := dc.Stanza("Library", d.Library); !inNext {
+			continue
+		}
 		out = append(out, d)
 	}
 	slices.SortFunc(out, func(a, b validate.Disposition) int {

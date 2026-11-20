@@ -87,14 +87,6 @@ Library: 30 CHANNEL: 00 TARGET: 08 LUN: 00
  Backoff: 400
 # fifo: /run/mhvtl/fifo
 
-Library: 40 CHANNEL: 00 TARGET: 16 LUN: 00
- Vendor identification: IBM
- Product identification: 03584L32
- Unit serial number: XYZZY_C
- NAA: 40:22:33:44:ab:00:16:00
- Home directory: /var/lib/mhvtl/40
- PERSIST: False
-
 Drive: 31 CHANNEL: 00 TARGET: 09 LUN: 00
  Library ID: 30 Slot: 01
  Vendor identification: STK
@@ -142,6 +134,14 @@ Drive: 34 CHANNEL: 00 TARGET: 12 LUN: 00
  Compression type: lzo
  Backoff: 400
 # fifo: /run/mhvtl/fifo
+
+Library: 40 CHANNEL: 00 TARGET: 16 LUN: 00
+ Vendor identification: IBM
+ Product identification: 03584L32
+ Unit serial number: XYZZY_C
+ NAA: 40:22:33:44:ab:00:16:00
+ Home directory: /var/lib/mhvtl/40
+ PERSIST: False
 
 Drive: 41 CHANNEL: 00 TARGET: 17 LUN: 00
  Library ID: 40 Slot: 01

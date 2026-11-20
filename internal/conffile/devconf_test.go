@@ -1,6 +1,8 @@
 package conffile
 
 import (
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -249,5 +251,62 @@ func TestWritable(t *testing.T) {
 	}
 	if err := ParseMhvtlConf([]byte("MHVTL_CONFIG_PATH=\"/etc/mhvtl\"\n")).Writable(); err == nil {
 		t.Error("mhvtl.conf with a Problem is writable")
+	}
+}
+
+// AddStanza keeps a library next to its drives (#99): a new library goes
+// after every stanza, a drive after the last stanza of its library.
+func TestAddStanzaGroupsByLibrary(t *testing.T) {
+	const base = "Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00\n\n" +
+		"Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00\n Library ID: 10 Slot: 01\n\n" +
+		"Library: 30 CHANNEL: 00 TARGET: 08 LUN: 00\n\n" +
+		"Drive: 31 CHANNEL: 00 TARGET: 09 LUN: 00\n Library ID: 30 Slot: 01\n"
+	drive := func(id, lib int) (Header, []Attr) {
+		return Header{Kind: "Drive", ID: id, Target: id % 16}, []Attr{{Key: "Library ID", Value: fmt.Sprintf("%d Slot: 02", lib)}}
+	}
+	for _, tc := range []struct {
+		name string
+		add  func(*DeviceConf) error
+		want []string // stanza order, kind and ID
+	}{
+		{"a library, then its drive", func(c *DeviceConf) error {
+			if err := c.AddStanza(Header{Kind: "Library", ID: 20, Target: 5}, nil); err != nil {
+				return err
+			}
+			return c.AddStanza(drive(21, 20))
+		}, []string{"Library 10", "Drive 11", "Library 30", "Drive 31", "Library 20", "Drive 21"}},
+		{"a drive of a library that is not last", func(c *DeviceConf) error { return c.AddStanza(drive(12, 10)) },
+			[]string{"Library 10", "Drive 11", "Drive 12", "Library 30", "Drive 31"}},
+		{"a drive of a library with no drives yet", func(c *DeviceConf) error {
+			if err := c.RemoveStanza("Drive", 11); err != nil {
+				return err
+			}
+			return c.AddStanza(drive(12, 10))
+		}, []string{"Library 10", "Drive 12", "Library 30", "Drive 31"}},
+		{"a drive after one whose Library ID vtllibrary reads glued", func(c *DeviceConf) error {
+			if err := c.SetAttr("Drive", 11, "Library ID", "10Slot: 01"); err != nil {
+				return err
+			}
+			return c.AddStanza(drive(12, 10))
+		}, []string{"Library 10", "Drive 11", "Drive 12", "Library 30", "Drive 31"}},
+		{"a drive naming no library stanza", func(c *DeviceConf) error { return c.AddStanza(drive(51, 50)) },
+			[]string{"Library 10", "Drive 11", "Library 30", "Drive 31", "Drive 51"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ParseDeviceConf([]byte(base))
+			if err := tc.add(c); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, st := range c.stanzas {
+				got = append(got, fmt.Sprintf("%s %d", st.Kind, st.ID))
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("order %v, want %v\n%s", got, tc.want, c.Render())
+			}
+			if len(c.Problems) != 0 {
+				t.Errorf("problems %v\n%s", c.Problems, c.Render())
+			}
+		})
 	}
 }
