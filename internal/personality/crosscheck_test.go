@@ -858,30 +858,31 @@ func abs(n int) int {
 
 // commentCitations are lines of mhVTL that comments of this module cite
 // (packages personality, ident and validate), with text the cited line
-// holds at upstream master 852b78a, or at ebbda22 where the comment says so.
+// holds at upstream master 01c7710, the commit CI checks against. The
+// comments themselves may name the older commit they were written against.
 // TestCommentCitations fails when the text
 // moves more than maxCitationDrift lines away, and logs any smaller move.
 var commentCitations = []struct{ cite, text string }{
-	{"usr/vtllib.c:2423", "void update_vpd_83("},
-	{"usr/vtllib.c:2449", "NAA IEEE registered identifier (faked)"},
-	{"usr/vtllib.c:2482", "d[num + 4] &= 0x0f;"},
-	{"usr/vtllib.c:2374", "void ibm_lto_serial_pad("},
-	{"usr/vtllib.c:1673", "void find_media_home_directory("},
-	{"usr/vtllib.c:1723", `" Home directory: %s"`},
-	{"usr/vtllib.c:1150", "void conf_clamp_string("},
+	{"usr/vtllib.c:2482", "void update_vpd_83("},
+	{"usr/vtllib.c:2508", "NAA IEEE registered identifier (faked)"},
+	{"usr/vtllib.c:2541", "d[num + 4] &= 0x0f;"},
+	{"usr/vtllib.c:2433", "void ibm_lto_serial_pad("},
+	{"usr/vtllib.c:1715", "void find_media_home_directory("},
+	{"usr/vtllib.c:1765", `" Home directory: %s"`},
+	{"usr/vtllib.c:1192", "void conf_clamp_string("},
 	{"usr/cmd/make_vtl_media.in:120", "regex='[A-Z0-9]{6,8}([SLXTJDPM])"},
 	{"usr/cmd/make_vtl_media.in:77", "set_media_type()"},
 	{"usr/cmd/make_vtl_media.in:58", "library_home()"},
-	{"usr/cmd/make_vtl_media.in:364", "awk '/^Slot/ {print $3}'"},
-	{"usr/cmd/vtllibrary.c:686", `" Library ID: %ld Slot: %d"`},
-	{"usr/cmd/vtllibrary.c:874", "smc_p->num_drives++;"},
-	{"usr/cmd/vtllibrary.c:1074", "Linked list data needs to be built in slot order"},
-	{"usr/cmd/vtllibrary.c:324", "if (strlen(barcode) > MAX_BARCODE_LEN)"},
-	{"usr/cmd/vtltape.c:1484", "if (!lu_ssc.pm->set_WORM)"},
-	{"usr/cmd/vtltape.c:2560", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
-	{"usr/cmd/vtllibrary.c:1712", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
+	{"usr/cmd/make_vtl_media.in:369", "awk '/^Slot/ {print $3}'"},
+	{"usr/cmd/vtllibrary.c:808", `" Library ID: %ld Slot: %d"`},
+	{"usr/cmd/vtllibrary.c:996", "smc_p->num_drives++;"},
+	{"usr/cmd/vtllibrary.c:1196", "Linked list data needs to be built in slot order"},
+	{"usr/cmd/vtllibrary.c:346", "if (strlen(barcode) > MAX_BARCODE_LEN)"},
+	{"usr/cmd/vtltape.c:1598", "if (!lu_ssc.pm->set_WORM)"},
+	{"usr/cmd/vtltape.c:2744", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
+	{"usr/cmd/vtllibrary.c:1808", "if ((my_id < 0) || (my_id >= MAXPRIOR))"},
 	{"kernel/mhvtl.c:126", "#define DEF_MAX_LUNS 32"},
-	{"kernel/mhvtl.c:602", "if (SCpnt->device->lun >= mhvtl_max_luns)"},
+	{"kernel/mhvtl.c:630", "if (SCpnt->device->lun >= mhvtl_max_luns)"},
 	{"include/utils/q.h:51", "#define MAXPRIOR 1024"},
 }
 
