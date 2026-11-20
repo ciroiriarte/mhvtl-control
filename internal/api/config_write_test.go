@@ -731,6 +731,21 @@ func TestConfigStageDispositions(t *testing.T) {
 	}
 }
 
+// TestConfigStageDispositionEscapedBarcode: a barcode with a slash is one
+// path segment when escaped.
+func TestConfigStageDispositionEscapedBarcode(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	st := e.staged()
+	path := "/api/v1/config/stages/" + st.Stage + "/dispositions/10/A%2FB1"
+	st = e.edit(http.MethodPut, path, map[string]any{"to": "shelf"})
+	if want := []validate.Disposition{{Library: 10, Barcode: "A/B1", To: "shelf"}}; !reflect.DeepEqual(st.Dispositions, want) {
+		t.Fatalf("after PUT: %+v, want %+v", st.Dispositions, want)
+	}
+	if st = e.edit(http.MethodDelete, path, nil); len(st.Dispositions) != 0 {
+		t.Fatalf("after DELETE: %+v", st.Dispositions)
+	}
+}
+
 // TestConfigStageDispositionForDisplaced: a cartridge a slot edit displaces
 // has no disposition until PUT gives it one (removal.leaves).
 func TestConfigStageDispositionForDisplaced(t *testing.T) {
@@ -780,6 +795,11 @@ func TestConfigStageDispositionsHeldAndValidated(t *testing.T) {
 	st = e.edit(http.MethodPost, "/api/v1/config/libraries", map[string]any{
 		"stage": st.Stage, "id": 50, "channel": 0, "target": 5, "lun": 0, "slots": 2, "maps": 1})
 	st = e.edit(http.MethodPatch, "/api/v1/config/libraries/50/slots/1", map[string]any{"stage": st.Stage, "barcode": "NEW001L8"})
+	st = e.edit(http.MethodPatch, "/api/v1/config/libraries/50/slots/2", map[string]any{"stage": st.Stage, "barcode": "NEW002L8"})
+	st = e.edit(http.MethodDelete, "/api/v1/config/libraries/50/slots/2", map[string]any{"stage": st.Stage, "disposition": map[string]any{"to": "shelf"}})
+	if len(st.HeldDispositions) != 0 || len(st.Dispositions) != 0 {
+		t.Fatalf("slot delete in library 50 only in the stage: dispositions %+v held %+v", st.Dispositions, st.HeldDispositions)
+	}
 	st = e.edit(http.MethodDelete, "/api/v1/config/libraries/50", map[string]any{
 		"stage": st.Stage, "dispositions": []map[string]any{{"barcode": "NEW001L8", "to": "shelf"}}})
 	if len(st.HeldDispositions) != 0 || len(st.Dispositions) != 0 {

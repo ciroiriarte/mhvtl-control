@@ -799,7 +799,10 @@ func (s *Server) handleConfigSlotDelete(w http.ResponseWriter, r *http.Request) 
 			return err
 		}
 		st.next[contentsFile(id)] = lc.Render()
-		if d := req.Disposition; d != nil {
+		// A library only the stage creates has no cartridge in force to
+		// leave it: there is nothing to dispose of (see the library delete).
+		if _, inCur := findConfigLibrary(st.cur, id); inCur && req.Disposition != nil {
+			d := req.Disposition
 			d.Library, d.Barcode = id, e.Barcode
 			st.dispose(*d)
 		}
@@ -1193,10 +1196,14 @@ func (s *Server) handleConfigDispositionDelete(w http.ResponseWriter, r *http.Re
 		return
 	}
 	s.stageEdit(w, r, r.PathValue("id"), func(_ context.Context, st *stage) error {
-		id, bc, err := dispositionPath(r, st)
+		// Only the disposition's identity is checked: whatever the stage
+		// holds can be removed, even one recorded before the checks PUT
+		// makes existed.
+		id, err := pathInt(r, "library")
 		if err != nil {
 			return err
 		}
+		bc := r.PathValue("barcode")
 		k := dispositionKey(id, bc)
 		if _, ok := st.dispositions[k]; !ok {
 			return notFound("the stage has no disposition for %s in library %d", bc, id)
