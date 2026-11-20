@@ -678,6 +678,7 @@ func TestFindingsFollowSelection(t *testing.T) {
 		"core.viewAfterApply(cfgView, cfgStage && cfgStage.target)",
 		"core.findingsCurrent({ lib: libId, app: app }, cfgView)",
 		"if (last()) { return refreshConfigLibrary(gen, signal, false); }",
+		`findingsStatus.error("configuration: " + e.message, bg ? "poll" : "load");`,
 	} {
 		if !strings.Contains(app, want) {
 			t.Errorf("app.js missing %q", want)

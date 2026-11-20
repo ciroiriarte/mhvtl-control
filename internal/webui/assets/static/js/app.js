@@ -3497,6 +3497,9 @@
       if (!bg) { busy("config-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
       configStatus.error("configuration: " + e.message, bg ? "poll" : "load");
+      // The findings are validated after this load: an earlier request of
+      // theirs, aborted for this one, is not followed by another.
+      findingsStatus.error("configuration: " + e.message, bg ? "poll" : "load");
     });
   }
 
