@@ -301,9 +301,12 @@ func TestConfigWriteLibrariesAndDrives(t *testing.T) {
 		t.Errorf("library_contents.50 base %q %v, want empty", b, ok)
 	}
 
-	// Deleting a library removes its drives and its library_contents.
+	// Deleting a library removes its drives and its library_contents. Its
+	// cartridges stay in its home with no disposition: validation refuses
+	// one for a library the new configuration lacks (#97). The
+	// dispositions clients up to 0.7.0 send are accepted and dropped.
 	st = e.edit(http.MethodDelete, "/api/v1/config/libraries/30", map[string]any{
-		"stage": st.Stage, "dispositions": []map[string]any{{"barcode": "G03001TA", "to": "shelf"}}})
+		"stage": st.Stage, "dispositions": []map[string]any{{"barcode": "G03002TA", "to": "shelf"}}})
 	got := file(t, st, "device.conf")
 	for _, h := range []string{"Library: 30 ", "Drive: 31 ", "Drive: 32 ", "Drive: 33 ", "Drive: 34 "} {
 		if strings.Contains(got, h) {
@@ -316,13 +319,29 @@ func TestConfigWriteLibrariesAndDrives(t *testing.T) {
 	if got := st.Base["library_contents.30"]; got != conffile.Hash([]byte(e.disk("library_contents.30"))) {
 		t.Errorf("library_contents.30 base %s", got)
 	}
-	if !reflect.DeepEqual(st.Dispositions, []validate.Disposition{{Library: 30, Barcode: "G03001TA", To: "shelf"}}) {
-		t.Errorf("dispositions %+v", st.Dispositions)
+	if len(st.Dispositions) != 0 {
+		t.Errorf("dispositions after deleting library 30: %+v", st.Dispositions)
 	}
 	// A library new in the stage leaves nothing behind.
 	st = e.edit(http.MethodDelete, "/api/v1/config/libraries/50", map[string]any{"stage": st.Stage})
 	if _, ok := st.Files["library_contents.50"]; ok {
 		t.Errorf("library_contents.50 still staged: %v", st.Files)
+	}
+}
+
+// A slot deleted before its library leaves a disposition for the library,
+// which the library's delete drops: validation refuses one for a library
+// the new configuration lacks (#97).
+func TestConfigLibraryDeleteDropsDispositions(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	st := e.edit(http.MethodDelete, "/api/v1/config/libraries/10/slots/39", map[string]any{
+		"disposition": map[string]any{"to": "shelf"}})
+	if !reflect.DeepEqual(st.Dispositions, []validate.Disposition{{Library: 10, Barcode: "F01039L6", To: "shelf"}}) {
+		t.Fatalf("dispositions after the slot delete %+v", st.Dispositions)
+	}
+	st = e.edit(http.MethodDelete, "/api/v1/config/libraries/10", map[string]any{"stage": st.Stage})
+	if len(st.Dispositions) != 0 {
+		t.Errorf("dispositions after deleting library 10: %+v", st.Dispositions)
 	}
 }
 

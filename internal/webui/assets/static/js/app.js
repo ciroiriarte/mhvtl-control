@@ -2706,8 +2706,7 @@
     var msg = "Library " + coerceNumber(lib.id) + ", its " + coerceArray(lib.drives).length + " drives and library_contents." + coerceNumber(lib.id) + " are removed when the change is applied.";
     if (carts.length) { msg += " Its " + carts.length + " cartridges stay in their home, out of any library (shelf)."; }
     openConfirm("Delete library " + coerceNumber(lib.id), msg, "Stage delete", function () {
-      var body = { dispositions: carts.map(function (bc) { return { barcode: bc, to: "shelf" }; }) };
-      if (stageId()) { body.stage = stageId(); }
+      var body = stageId() ? { stage: stageId() } : {};
       stageEdit("DELETE", libCfgPath(lib.id), body, function (e) { if (e) { configStatus.error(e.message); } });
     });
   }

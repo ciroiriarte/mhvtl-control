@@ -89,6 +89,13 @@ func TestRemovals(t *testing.T) {
 			i.Libraries[0].MAPs = i.Libraries[0].MAPs[:1]
 		}, live(Placement{MAPs: map[int]string{2: "M00002L8"}}),
 			[]Disposition{{Library: 10, Barcode: "M00002L8", To: ToSlot, Slot: 6}, {Library: 10, Barcode: "A00002L8", To: ToShelf}}, nil},
+		// A deleted library's cartridges stay in its home (AC 12): no
+		// disposition is needed, and one is refused (#97).
+		{"delete a library holding cartridges", func(i *config.Inventory) { i.Libraries = nil },
+			live(Placement{}), nil, nil},
+		{"a disposition for a deleted library", func(i *config.Inventory) { i.Libraries = nil },
+			live(Placement{}), []Disposition{{Library: 10, Barcode: "A00002L8", To: ToShelf}},
+			[]string{"dispositions name library 10, which is not in both the current and the new configuration"}},
 		{"remove a MAP slot holding a cartridge", func(i *config.Inventory) { i.Libraries[0].MAPs = i.Libraries[0].MAPs[:1] },
 			live(Placement{MAPs: map[int]string{2: "M00002L8"}}), nil,
 			[]string{"library 10: M00002L8 (MAP slot 2) would leave the library"}},
