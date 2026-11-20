@@ -3437,16 +3437,18 @@
     }
     var app = cfgView.app;
     // last: this is the latest foreground request. An answer for a library
-    // or application no longer selected is dropped (mhvtl-control#100); the
-    // latest foreground one still ends the loading state, the answer for
-    // the selection having been drawn by a poll.
+    // or application no longer selected is dropped (mhvtl-control#100). When
+    // it is the latest foreground one, the selection changed under it without
+    // a request of its own (a poll found the library gone), so the current
+    // selection is asked for in the foreground: its answer ends the loading
+    // state, and a poll's error for it is not reported as fixed.
     var last = function () { return !bg && seq === findingsFg; };
     var current = function () { return core.findingsCurrent({ lib: libId, app: app }, cfgView); };
     return api("/api/v1/config/validate", { method: "POST", body: buildValidateBody(libId, app), signal: signal, read: true }).then(function (res) {
       if (last()) { busy("findings-panel", false); }
       if (isStale(gen, NodeState.generation)) { return; }
       if (!current()) {
-        if (last()) { findingsStatus.ok(); }
+        if (last()) { return refreshConfigLibrary(gen, signal, false); }
         return;
       }
       if (drawPanel("findings", $("config-findings"), bg, res, [gen, problems, libId, app], function () { renderFindings(problems, res); })) {
@@ -3457,7 +3459,7 @@
       if (last()) { busy("findings-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
       if (!current()) {
-        if (last()) { findingsStatus.ok(); }
+        if (last()) { return refreshConfigLibrary(gen, signal, false); }
         return;
       }
       findingsStatus.error("validate: " + e.message, bg ? "poll" : "load");
