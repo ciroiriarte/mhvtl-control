@@ -307,3 +307,20 @@ test("wizardHomeHint names the default home, or why it is unknown", () => {
   assert.strictEqual(core.wizardHomeHint(unreadable, { default_home_effective: "/srv/staged" }), "Blank: the default home, /srv/staged." + tail);
   assert.strictEqual(core.wizardHomeHint(null, null), "Blank: the default home, unknown." + tail);
 });
+
+// mhvtl-control#100: the findings panel draws only the answer for the
+// library and application it shows, and an applied wizard stage selects its
+// library, checked for its application.
+test("findingsCurrent drops a validate answer for an older selection", () => {
+  assert.strictEqual(core.findingsCurrent({ lib: "30", app: "pbs" }, { selected: "30", app: "pbs" }), true);
+  assert.strictEqual(core.findingsCurrent({ lib: "30", app: "" }, { selected: "30", app: undefined }), true);
+  assert.strictEqual(core.findingsCurrent({ lib: "30", app: "pbs" }, { selected: "20", app: "pbs" }), false);
+  assert.strictEqual(core.findingsCurrent({ lib: "30", app: "pbs" }, { selected: "30", app: "" }), false);
+});
+
+test("viewAfterApply selects the library a wizard staged for an application", () => {
+  const view = { selected: "30", app: "" };
+  assert.deepStrictEqual(core.viewAfterApply(view, { library: 20, app: "pbs" }), { selected: "20", app: "pbs" });
+  assert.deepStrictEqual(core.viewAfterApply(view, null), view);
+  assert.deepStrictEqual(core.viewAfterApply(view, { library: 20, app: "" }), view);
+});

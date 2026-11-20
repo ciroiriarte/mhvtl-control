@@ -294,3 +294,33 @@ func TestListDisksScanPaths(t *testing.T) {
 		t.Fatalf("disk path = %q, want %q", d.Path, img)
 	}
 }
+
+// TestListDisksSkipsOptical: a CD/DVD drive (SCSI type 5, or 4 for WORM) is
+// never listed, a disk (type 0) and a device without a SCSI type (NVMe) are
+// (mhvtl-control#98). The names are not in /dev, so no host disk is read.
+func TestListDisksSkipsOptical(t *testing.T) {
+	sys := t.TempDir()
+	for name, typ := range map[string]string{"fakesda": "0", "fakesr0": "5", "fakesr1": "4", "fakenvme0n1": ""} {
+		dev := filepath.Join(sys, name, "device")
+		if err := os.MkdirAll(dev, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if typ != "" {
+			if err := os.WriteFile(filepath.Join(dev, "type"), []byte(typ+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	disks, err := ListDisks(Options{SysBlockDir: sys})
+	if err != nil {
+		t.Fatalf("ListDisks: %v", err)
+	}
+	var names []string
+	for _, d := range disks {
+		names = append(names, d.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"fakenvme0n1", "fakesda"}; !slices.Equal(names, want) {
+		t.Fatalf("listed %v, want %v", names, want)
+	}
+}

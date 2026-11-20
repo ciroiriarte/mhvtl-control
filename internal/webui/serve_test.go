@@ -653,6 +653,42 @@ func jsIdent(ch byte) bool {
 	return ch == '_' || ch == '$' || ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z'
 }
 
+// The Service table's state badges and uptimes, and the transport tables'
+// badges, stay on one line (mhvtl-control#101).
+func TestServiceTableNoWrap(t *testing.T) {
+	h := newServer()
+	if _, css := get(t, h, "/static/css/themes.css"); !strings.Contains(css, ".svc-table .badge, .svc-table td.nowrap { white-space: nowrap; }") {
+		t.Error("themes.css: no nowrap rule for .svc-table badges and cells")
+	}
+	if _, app := get(t, h, "/static/js/app.js"); !strings.Contains(app, `mk("td", { class: "nowrap", text: r.uptime || "—" })`) {
+		t.Error("app.js: the Service table's uptime cell is not nowrap")
+	}
+}
+
+// The findings panel follows the selection (mhvtl-control#100): the wizard
+// leaves the view's application alone and records the library to select
+// after the apply on the stage, later edits keep it, and an answer for an
+// older selection is dropped.
+func TestFindingsFollowSelection(t *testing.T) {
+	h := newServer()
+	_, app := get(t, h, "/static/js/app.js")
+	for _, want := range []string{
+		"cfgStage.target = app.value ? { library: v.w.id, app: app.value } : null;",
+		"cfgStage.id === String(res && res.stage || \"\") ? cfgStage.target : null;",
+		"core.viewAfterApply(cfgView, cfgStage && cfgStage.target)",
+		"core.findingsCurrent({ lib: libId, app: app }, cfgView)",
+		"if (last()) { return refreshConfigLibrary(gen, signal, false); }",
+		`findingsStatus.error("configuration: " + e.message, bg ? "poll" : "load");`,
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js missing %q", want)
+		}
+	}
+	if strings.Contains(app, "cfgView.app = app.value") {
+		t.Error("app.js: the wizard sets the view's application again")
+	}
+}
+
 // The Transport Map's iSCSI export section and its dialog. The CHAP secret
 // inputs are password fields the browser does not fill from a saved login,
 // and app.js never sets them other than to clear them.

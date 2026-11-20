@@ -76,7 +76,7 @@
   /* ---- staged configuration change (plan 4.2): the daemon holds the
    * stage; the dashboard keeps its id, its last answer, the node generation
    * it belongs to, and the last dry run.                                 */
-  var cfgStage = null;   // { id, data, gen, plan (planSummary), result }
+  var cfgStage = null;   // { id, data, gen, plan (planSummary), result, target, appCheck }
 
   /* ---- localStorage (errors surfaced, never silently implying success) -- */
   var LS_THEME = "mhvtl-control.theme";
@@ -435,7 +435,7 @@
         unit,
         mk("td", { children: [mk("span", { class: "badge " + r.cls, text: r.state })] }),
         mk("td", { class: "mono", text: r.pid || "—" }),
-        mk("td", { text: r.uptime || "—" }),
+        mk("td", { class: "nowrap", text: r.uptime || "—" }),
         mk("td", { children: scope === null ? [] : [serviceButtons(svc, scope, r.key)] }),
       ] });
     });
@@ -2469,7 +2469,13 @@
     } else {
       var lib = null;
       libs.forEach(function (l) { if (String(coerceNumber(l.id)) === String(cfgView.selected)) { lib = l; } });
-      if (!lib) { lib = libs[0]; }
+      if (!lib) {
+        // A library that is gone takes its application with it: the first
+        // library is not checked for an application nobody chose for it.
+        lib = libs[0];
+        cfgView.app = "";
+        if (appSel) { appSel.value = ""; }
+      }
       cfgView.selected = String(coerceNumber(lib.id));
       if (sel) { sel.value = cfgView.selected; }
 
@@ -2655,7 +2661,10 @@
     if (!cfgEditable()) { done(new Error("Editing is not available now.")); return; }
     api(path, { method: method, body: body }).then(function (res) {
       if (isStale(gen, NodeState.generation)) { done(new Error("The node changed.")); return; }
-      cfgStage = { id: String(res && res.stage || ""), data: res || {}, gen: gen, plan: null, result: null };
+      // The library a wizard staged for an application stays the one the
+      // view selects after the apply, across later edits of the same stage.
+      var target = cfgStage && cfgStage.id === String(res && res.stage || "") ? cfgStage.target : null;
+      cfgStage = { id: String(res && res.stage || ""), data: res || {}, gen: gen, plan: null, result: null, target: target };
       done(null);
       renderStage();
     }).catch(function (e) {
@@ -2821,11 +2830,11 @@
       files: validateFiles(st.data.files), dispositions: coerceArray(st.data.dispositions), target_apps: buildValidateBody(libID, app).target_apps,
     } }).then(function (res) {
       if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
-      st.appCheck = { name: name, library: libID, rows: findingRows(res).filter(function (r) { return r.code.indexOf("preset.") === 0 && r.library === libID; }) };
+      st.appCheck = { name: name, app: app, library: libID, rows: findingRows(res).filter(function (r) { return r.code.indexOf("preset.") === 0 && r.library === libID; }) };
       renderStage();
     }).catch(function (e) {
       if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
-      st.appCheck = { name: name, library: libID, error: e.message, rows: [] };
+      st.appCheck = { name: name, app: app, library: libID, error: e.message, rows: [] };
       renderStage();
     });
   }
@@ -2970,12 +2979,12 @@
           return;
         }
         if (dlg.open) { dlg.close(); }
-        if (app.value) {
-          cfgView.app = app.value;
-          var appSel = $("config-target-app");
-          if (appSel) { appSel.value = app.value; }
-          checkForApp(v.w.id, app.value);
-        }
+        // The stage panel checks the new library for its application. The
+        // view's application stays: it applies to the selected library, which
+        // is not the new one until the apply, when the view selects it
+        // (mhvtl-control#100).
+        if (cfgStage) { cfgStage.target = app.value ? { library: v.w.id, app: app.value } : null; }
+        if (app.value) { checkForApp(v.w.id, app.value); }
       });
     });
     dlg.addEventListener("close", function () { if (dlg.parentNode) { dlg.parentNode.removeChild(dlg); } });
@@ -3276,6 +3285,9 @@
   // applied ends the stage after an apply that applied (res is its answer,
   // or the tombstone's last_apply).
   function applied(res) {
+    var after = core.viewAfterApply(cfgView, cfgStage && cfgStage.target);
+    cfgView.selected = after.selected;
+    cfgView.app = after.app;
     cfgStage = null;
     renderStage();
     var n = coerceArray(res && res.plan && res.plan.units).length;
@@ -3410,26 +3422,46 @@
   // refreshConfigLibrary validates the configuration in force for the
   // application the selected library is checked for. Validation proposes no
   // file and never writes; it reuses the changer reads GET /config made.
+  // findingsFg numbers the foreground validate requests: only the latest
+  // one clears the panel's busy state and its loading status.
+  var findingsFg = 0;
   function refreshConfigLibrary(gen, signal, bg) {
     if (gen === undefined) { gen = NodeState.generation; }
     if (!lastCfg || isStale(gen, NodeState.generation)) { return Promise.resolve(); }
     var libId = cfgView.selected;
     var problems = lastCfg.config && lastCfg.config.problems;
+    var seq = bg ? 0 : ++findingsFg;
     if (!bg) {
       findingsStatus.loading();
       busy("findings-panel", true);
     }
     var app = cfgView.app;
+    // last: this is the latest foreground request. An answer for a library
+    // or application no longer selected is dropped (mhvtl-control#100). When
+    // it is the latest foreground one, the selection changed under it without
+    // a request of its own (a poll found the library gone), so the current
+    // selection is asked for in the foreground: its answer ends the loading
+    // state, and a poll's error for it is not reported as fixed.
+    var last = function () { return !bg && seq === findingsFg; };
+    var current = function () { return core.findingsCurrent({ lib: libId, app: app }, cfgView); };
     return api("/api/v1/config/validate", { method: "POST", body: buildValidateBody(libId, app), signal: signal, read: true }).then(function (res) {
-      if (!bg) { busy("findings-panel", false); }
+      if (last()) { busy("findings-panel", false); }
       if (isStale(gen, NodeState.generation)) { return; }
+      if (!current()) {
+        if (last()) { return refreshConfigLibrary(gen, signal, false); }
+        return;
+      }
       if (drawPanel("findings", $("config-findings"), bg, res, [gen, problems, libId, app], function () { renderFindings(problems, res); })) {
         setPanelGrey("config-findings", false);
       }
       (bg ? findingsStatus.quietOk() : findingsStatus.ok());
     }).catch(function (e) {
-      if (!bg) { busy("findings-panel", false); }
+      if (last()) { busy("findings-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      if (!current()) {
+        if (last()) { return refreshConfigLibrary(gen, signal, false); }
+        return;
+      }
       findingsStatus.error("validate: " + e.message, bg ? "poll" : "load");
     });
   }
@@ -3465,6 +3497,9 @@
       if (!bg) { busy("config-panel", false); }
       if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
       configStatus.error("configuration: " + e.message, bg ? "poll" : "load");
+      // The findings are validated after this load: an earlier request of
+      // theirs, aborted for this one, is not followed by another.
+      findingsStatus.error("configuration: " + e.message, bg ? "poll" : "load");
     });
   }
 
