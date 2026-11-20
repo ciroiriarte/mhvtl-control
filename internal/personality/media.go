@@ -34,8 +34,8 @@ type DriveModel struct {
 	Source string // the init function's definition
 	// WORM is whether the personality sets ssc_pm.set_WORM. vtltape refuses
 	// to load a WORM cartridge in a drive whose personality does not
-	// ("drive doesn't support WORM", usr/cmd/vtltape.c:1484-1488, upstream
-	// master ebbda22), whatever its media list says.
+	// ("drive doesn't support WORM", usr/cmd/vtltape.c:1598-1602, upstream
+	// master 01c7710), whatever its media list says.
 	WORM bool
 	// SP is the personality's ssc_pm.drive_supports_SP: only then does
 	// vtltape register SECURITY PROTOCOL IN/OUT (usr/cmd/vtltape.c:2475,
@@ -50,70 +50,70 @@ const DefaultDriveInit = "init_default_ssc"
 
 // DriveProducts is tape_drives[] in mhvtl usr/cmd/vtltape.c.
 var DriveProducts = []DriveProduct{
-	{Product: "ULT3580-TD1", InitFn: "init_ult3580_td1", Source: "usr/cmd/vtltape.c:139"},
-	{Product: "ULT3580-TD2", InitFn: "init_ult3580_td2", Source: "usr/cmd/vtltape.c:140"},
-	{Product: "ULT3580-TD3", InitFn: "init_ult3580_td3", Source: "usr/cmd/vtltape.c:141"},
-	{Product: "ULT3580-TD4", InitFn: "init_ult3580_td4", Source: "usr/cmd/vtltape.c:142"},
-	{Product: "ULT3580-TD5", InitFn: "init_ult3580_td5", Source: "usr/cmd/vtltape.c:143"},
-	{Product: "ULT3580-TD6", InitFn: "init_ult3580_td6", Source: "usr/cmd/vtltape.c:144"},
-	{Product: "ULT3580-TD7", InitFn: "init_ult3580_td7", Source: "usr/cmd/vtltape.c:145"},
-	{Product: "ULT3580-HH7", InitFn: "init_ult3580_td7", Source: "usr/cmd/vtltape.c:146"},
-	{Product: "ULT3580-TD8", InitFn: "init_ult3580_td8", Source: "usr/cmd/vtltape.c:147"},
-	{Product: "ULT3580-HH8", InitFn: "init_ult3580_td8", Source: "usr/cmd/vtltape.c:148"},
-	{Product: "ULT3580-TD9", InitFn: "init_ult3580_td9", Source: "usr/cmd/vtltape.c:149"},
-	{Product: "ULT3580-HH9", InitFn: "init_ult3580_td9", Source: "usr/cmd/vtltape.c:150"},
-	{Product: "ULT3580-TDA", InitFn: "init_ult3580_tda", Source: "usr/cmd/vtltape.c:151"},
-	{Product: "ULT3580-HHA", InitFn: "init_ult3580_tda", Source: "usr/cmd/vtltape.c:152"},
-	{Product: "ULTRIUM-TD1", InitFn: "init_ult3580_td1", Source: "usr/cmd/vtltape.c:153"},
-	{Product: "ULTRIUM-TD2", InitFn: "init_ult3580_td2", Source: "usr/cmd/vtltape.c:154"},
-	{Product: "ULTRIUM-HH2", InitFn: "init_ult3580_td2", Source: "usr/cmd/vtltape.c:155"},
-	{Product: "ULTRIUM-TD3", InitFn: "init_ult3580_td3", Source: "usr/cmd/vtltape.c:156"},
-	{Product: "ULTRIUM-HH3", InitFn: "init_ult3580_td3", Source: "usr/cmd/vtltape.c:157"},
-	{Product: "ULTRIUM-TD4", InitFn: "init_ult3580_td4", Source: "usr/cmd/vtltape.c:158"},
-	{Product: "ULTRIUM-HH4", InitFn: "init_ult3580_td4", Source: "usr/cmd/vtltape.c:159"},
-	{Product: "ULTRIUM-TD5", InitFn: "init_ult3580_td5", Source: "usr/cmd/vtltape.c:160"},
-	{Product: "ULTRIUM-HH5", InitFn: "init_ult3580_td5", Source: "usr/cmd/vtltape.c:161"},
-	{Product: "ULTRIUM-TD6", InitFn: "init_ult3580_td6", Source: "usr/cmd/vtltape.c:162"},
-	{Product: "ULTRIUM-HH6", InitFn: "init_ult3580_td6", Source: "usr/cmd/vtltape.c:163"},
-	{Product: "ULTRIUM-TD7", InitFn: "init_ult3580_td7", Source: "usr/cmd/vtltape.c:164"},
-	{Product: "ULTRIUM-HH7", InitFn: "init_ult3580_td7", Source: "usr/cmd/vtltape.c:165"},
-	{Product: "ULTRIUM-TD8", InitFn: "init_ult3580_td8", Source: "usr/cmd/vtltape.c:166"},
-	{Product: "ULTRIUM-HH8", InitFn: "init_ult3580_td8", Source: "usr/cmd/vtltape.c:167"},
-	{Product: "ULTRIUM-TD9", InitFn: "init_ult3580_td9", Source: "usr/cmd/vtltape.c:168"},
-	{Product: "ULTRIUM-HH9", InitFn: "init_ult3580_td9", Source: "usr/cmd/vtltape.c:169"},
-	{Product: "ULTRIUM-TDA", InitFn: "init_ult3580_tda", Source: "usr/cmd/vtltape.c:170"},
-	{Product: "ULTRIUM-HHA", InitFn: "init_ult3580_tda", Source: "usr/cmd/vtltape.c:171"},
-	{Product: "Ultrium 1-SCSI", InitFn: "init_hp_ult_1", Source: "usr/cmd/vtltape.c:172"},
-	{Product: "Ultrium 2-SCSI", InitFn: "init_hp_ult_2", Source: "usr/cmd/vtltape.c:173"},
-	{Product: "Ultrium 3-SCSI", InitFn: "init_hp_ult_3", Source: "usr/cmd/vtltape.c:174"},
-	{Product: "Ultrium 4-SCSI", InitFn: "init_hp_ult_4", Source: "usr/cmd/vtltape.c:175"},
-	{Product: "Ultrium 5-SCSI", InitFn: "init_hp_ult_5", Source: "usr/cmd/vtltape.c:176"},
-	{Product: "Ultrium 6-SCSI", InitFn: "init_hp_ult_6", Source: "usr/cmd/vtltape.c:177"},
-	{Product: "Ultrium 7-SCSI", InitFn: "init_hp_ult_7", Source: "usr/cmd/vtltape.c:178"},
-	{Product: "Ultrium 8-SCSI", InitFn: "init_hp_ult_8", Source: "usr/cmd/vtltape.c:179"},
-	{Product: "SDX-300C", InitFn: "init_ait1_ssc", Source: "usr/cmd/vtltape.c:180"},
-	{Product: "SDX-500C", InitFn: "init_ait2_ssc", Source: "usr/cmd/vtltape.c:181"},
-	{Product: "SDX-500V", InitFn: "init_ait2_ssc", Source: "usr/cmd/vtltape.c:182"},
-	{Product: "SDX-700C", InitFn: "init_ait3_ssc", Source: "usr/cmd/vtltape.c:183"},
-	{Product: "SDX-700V", InitFn: "init_ait3_ssc", Source: "usr/cmd/vtltape.c:184"},
-	{Product: "SDX-900V", InitFn: "init_ait4_ssc", Source: "usr/cmd/vtltape.c:185"},
-	{Product: "03592J1A", InitFn: "init_3592_j1a", Source: "usr/cmd/vtltape.c:186"},
-	{Product: "03592E05", InitFn: "init_3592_E05", Source: "usr/cmd/vtltape.c:187"},
-	{Product: "03592E06", InitFn: "init_3592_E06", Source: "usr/cmd/vtltape.c:188"},
-	{Product: "03592E07", InitFn: "init_3592_E07", Source: "usr/cmd/vtltape.c:189"},
-	{Product: "T10000C", InitFn: "init_t10kC_ssc", Source: "usr/cmd/vtltape.c:190"},
-	{Product: "T10000B", InitFn: "init_t10kB_ssc", Source: "usr/cmd/vtltape.c:191"},
-	{Product: "T10000A", InitFn: "init_t10kA_ssc", Source: "usr/cmd/vtltape.c:192"},
-	{Product: "T9840D", InitFn: "init_9840D_ssc", Source: "usr/cmd/vtltape.c:193"},
-	{Product: "T9840C", InitFn: "init_9840C_ssc", Source: "usr/cmd/vtltape.c:194"},
-	{Product: "T9840B", InitFn: "init_9840B_ssc", Source: "usr/cmd/vtltape.c:195"},
-	{Product: "T9840A", InitFn: "init_9840A_ssc", Source: "usr/cmd/vtltape.c:196"},
-	{Product: "T9940B", InitFn: "init_9940B_ssc", Source: "usr/cmd/vtltape.c:197"},
-	{Product: "T9940A", InitFn: "init_9940A_ssc", Source: "usr/cmd/vtltape.c:198"},
-	{Product: "DLT7000", InitFn: "init_dlt7000_ssc", Source: "usr/cmd/vtltape.c:199"},
-	{Product: "DLT8000", InitFn: "init_dlt8000_ssc", Source: "usr/cmd/vtltape.c:200"},
-	{Product: "SDLT 320", InitFn: "init_sdlt320_ssc", Source: "usr/cmd/vtltape.c:201"},
-	{Product: "SDLT600", InitFn: "init_sdlt600_ssc", Source: "usr/cmd/vtltape.c:202"},
+	{Product: "ULT3580-TD1", InitFn: "init_ult3580_td1", Source: "usr/cmd/vtltape.c:158"},
+	{Product: "ULT3580-TD2", InitFn: "init_ult3580_td2", Source: "usr/cmd/vtltape.c:159"},
+	{Product: "ULT3580-TD3", InitFn: "init_ult3580_td3", Source: "usr/cmd/vtltape.c:160"},
+	{Product: "ULT3580-TD4", InitFn: "init_ult3580_td4", Source: "usr/cmd/vtltape.c:161"},
+	{Product: "ULT3580-TD5", InitFn: "init_ult3580_td5", Source: "usr/cmd/vtltape.c:162"},
+	{Product: "ULT3580-TD6", InitFn: "init_ult3580_td6", Source: "usr/cmd/vtltape.c:163"},
+	{Product: "ULT3580-TD7", InitFn: "init_ult3580_td7", Source: "usr/cmd/vtltape.c:164"},
+	{Product: "ULT3580-HH7", InitFn: "init_ult3580_td7", Source: "usr/cmd/vtltape.c:165"},
+	{Product: "ULT3580-TD8", InitFn: "init_ult3580_td8", Source: "usr/cmd/vtltape.c:166"},
+	{Product: "ULT3580-HH8", InitFn: "init_ult3580_td8", Source: "usr/cmd/vtltape.c:167"},
+	{Product: "ULT3580-TD9", InitFn: "init_ult3580_td9", Source: "usr/cmd/vtltape.c:168"},
+	{Product: "ULT3580-HH9", InitFn: "init_ult3580_td9", Source: "usr/cmd/vtltape.c:169"},
+	{Product: "ULT3580-TDA", InitFn: "init_ult3580_tda", Source: "usr/cmd/vtltape.c:170"},
+	{Product: "ULT3580-HHA", InitFn: "init_ult3580_tda", Source: "usr/cmd/vtltape.c:171"},
+	{Product: "ULTRIUM-TD1", InitFn: "init_ult3580_td1", Source: "usr/cmd/vtltape.c:172"},
+	{Product: "ULTRIUM-TD2", InitFn: "init_ult3580_td2", Source: "usr/cmd/vtltape.c:173"},
+	{Product: "ULTRIUM-HH2", InitFn: "init_ult3580_td2", Source: "usr/cmd/vtltape.c:174"},
+	{Product: "ULTRIUM-TD3", InitFn: "init_ult3580_td3", Source: "usr/cmd/vtltape.c:175"},
+	{Product: "ULTRIUM-HH3", InitFn: "init_ult3580_td3", Source: "usr/cmd/vtltape.c:176"},
+	{Product: "ULTRIUM-TD4", InitFn: "init_ult3580_td4", Source: "usr/cmd/vtltape.c:177"},
+	{Product: "ULTRIUM-HH4", InitFn: "init_ult3580_td4", Source: "usr/cmd/vtltape.c:178"},
+	{Product: "ULTRIUM-TD5", InitFn: "init_ult3580_td5", Source: "usr/cmd/vtltape.c:179"},
+	{Product: "ULTRIUM-HH5", InitFn: "init_ult3580_td5", Source: "usr/cmd/vtltape.c:180"},
+	{Product: "ULTRIUM-TD6", InitFn: "init_ult3580_td6", Source: "usr/cmd/vtltape.c:181"},
+	{Product: "ULTRIUM-HH6", InitFn: "init_ult3580_td6", Source: "usr/cmd/vtltape.c:182"},
+	{Product: "ULTRIUM-TD7", InitFn: "init_ult3580_td7", Source: "usr/cmd/vtltape.c:183"},
+	{Product: "ULTRIUM-HH7", InitFn: "init_ult3580_td7", Source: "usr/cmd/vtltape.c:184"},
+	{Product: "ULTRIUM-TD8", InitFn: "init_ult3580_td8", Source: "usr/cmd/vtltape.c:185"},
+	{Product: "ULTRIUM-HH8", InitFn: "init_ult3580_td8", Source: "usr/cmd/vtltape.c:186"},
+	{Product: "ULTRIUM-TD9", InitFn: "init_ult3580_td9", Source: "usr/cmd/vtltape.c:187"},
+	{Product: "ULTRIUM-HH9", InitFn: "init_ult3580_td9", Source: "usr/cmd/vtltape.c:188"},
+	{Product: "ULTRIUM-TDA", InitFn: "init_ult3580_tda", Source: "usr/cmd/vtltape.c:189"},
+	{Product: "ULTRIUM-HHA", InitFn: "init_ult3580_tda", Source: "usr/cmd/vtltape.c:190"},
+	{Product: "Ultrium 1-SCSI", InitFn: "init_hp_ult_1", Source: "usr/cmd/vtltape.c:191"},
+	{Product: "Ultrium 2-SCSI", InitFn: "init_hp_ult_2", Source: "usr/cmd/vtltape.c:192"},
+	{Product: "Ultrium 3-SCSI", InitFn: "init_hp_ult_3", Source: "usr/cmd/vtltape.c:193"},
+	{Product: "Ultrium 4-SCSI", InitFn: "init_hp_ult_4", Source: "usr/cmd/vtltape.c:194"},
+	{Product: "Ultrium 5-SCSI", InitFn: "init_hp_ult_5", Source: "usr/cmd/vtltape.c:195"},
+	{Product: "Ultrium 6-SCSI", InitFn: "init_hp_ult_6", Source: "usr/cmd/vtltape.c:196"},
+	{Product: "Ultrium 7-SCSI", InitFn: "init_hp_ult_7", Source: "usr/cmd/vtltape.c:197"},
+	{Product: "Ultrium 8-SCSI", InitFn: "init_hp_ult_8", Source: "usr/cmd/vtltape.c:198"},
+	{Product: "SDX-300C", InitFn: "init_ait1_ssc", Source: "usr/cmd/vtltape.c:199"},
+	{Product: "SDX-500C", InitFn: "init_ait2_ssc", Source: "usr/cmd/vtltape.c:200"},
+	{Product: "SDX-500V", InitFn: "init_ait2_ssc", Source: "usr/cmd/vtltape.c:201"},
+	{Product: "SDX-700C", InitFn: "init_ait3_ssc", Source: "usr/cmd/vtltape.c:202"},
+	{Product: "SDX-700V", InitFn: "init_ait3_ssc", Source: "usr/cmd/vtltape.c:203"},
+	{Product: "SDX-900V", InitFn: "init_ait4_ssc", Source: "usr/cmd/vtltape.c:204"},
+	{Product: "03592J1A", InitFn: "init_3592_j1a", Source: "usr/cmd/vtltape.c:205"},
+	{Product: "03592E05", InitFn: "init_3592_E05", Source: "usr/cmd/vtltape.c:206"},
+	{Product: "03592E06", InitFn: "init_3592_E06", Source: "usr/cmd/vtltape.c:207"},
+	{Product: "03592E07", InitFn: "init_3592_E07", Source: "usr/cmd/vtltape.c:208"},
+	{Product: "T10000C", InitFn: "init_t10kC_ssc", Source: "usr/cmd/vtltape.c:209"},
+	{Product: "T10000B", InitFn: "init_t10kB_ssc", Source: "usr/cmd/vtltape.c:210"},
+	{Product: "T10000A", InitFn: "init_t10kA_ssc", Source: "usr/cmd/vtltape.c:211"},
+	{Product: "T9840D", InitFn: "init_9840D_ssc", Source: "usr/cmd/vtltape.c:212"},
+	{Product: "T9840C", InitFn: "init_9840C_ssc", Source: "usr/cmd/vtltape.c:213"},
+	{Product: "T9840B", InitFn: "init_9840B_ssc", Source: "usr/cmd/vtltape.c:214"},
+	{Product: "T9840A", InitFn: "init_9840A_ssc", Source: "usr/cmd/vtltape.c:215"},
+	{Product: "T9940B", InitFn: "init_9940B_ssc", Source: "usr/cmd/vtltape.c:216"},
+	{Product: "T9940A", InitFn: "init_9940A_ssc", Source: "usr/cmd/vtltape.c:217"},
+	{Product: "DLT7000", InitFn: "init_dlt7000_ssc", Source: "usr/cmd/vtltape.c:218"},
+	{Product: "DLT8000", InitFn: "init_dlt8000_ssc", Source: "usr/cmd/vtltape.c:219"},
+	{Product: "SDLT 320", InitFn: "init_sdlt320_ssc", Source: "usr/cmd/vtltape.c:220"},
+	{Product: "SDLT600", InitFn: "init_sdlt600_ssc", Source: "usr/cmd/vtltape.c:221"},
 }
 
 // DriveModels holds, per drive init function in usr/pm/*_pm.c, the media it
@@ -137,7 +137,7 @@ var DriveModels = []DriveModel{
 		{"AIT3", RW}, {"AIT3 Clean", RO},
 		{"AIT4", RW}, {"AIT4 Clean", RO}, {"AIT4 WORM", RW},
 	}},
-	{InitFn: "init_default_ssc", Source: "usr/pm/default_ssc_pm.c:387", WORM: true, Media: []Media{
+	{InitFn: "init_default_ssc", Source: "usr/pm/default_ssc_pm.c:389", WORM: true, Media: []Media{
 		{"LTO1", RW},
 		{"LTO2", RW},
 		{"LTO3", RW},
@@ -180,39 +180,39 @@ var DriveModels = []DriveModel{
 		{"03592 JB", RW},
 		{"03592 JC", RW},
 	}},
-	{InitFn: "init_hp_ult_1", Source: "usr/pm/hp_ultrium_pm.c:416", Media: []Media{
+	{InitFn: "init_hp_ult_1", Source: "usr/pm/hp_ultrium_pm.c:424", Media: []Media{
 		{"LTO1", RW}, {"LTO1 Clean", RO},
 	}},
-	{InitFn: "init_hp_ult_2", Source: "usr/pm/hp_ultrium_pm.c:463", Media: []Media{
+	{InitFn: "init_hp_ult_2", Source: "usr/pm/hp_ultrium_pm.c:471", Media: []Media{
 		{"LTO1", RW}, {"LTO1 Clean", RO},
 		{"LTO2", RW}, {"LTO2 Clean", RO},
 	}},
-	{InitFn: "init_hp_ult_3", Source: "usr/pm/hp_ultrium_pm.c:514", WORM: true, Media: []Media{
+	{InitFn: "init_hp_ult_3", Source: "usr/pm/hp_ultrium_pm.c:522", WORM: true, Media: []Media{
 		{"LTO1", RO}, {"LTO1 Clean", RO},
 		{"LTO2", RW}, {"LTO2 Clean", RO},
 		{"LTO3", RW}, {"LTO3 Clean", RO}, {"LTO3 WORM", RW},
 	}},
-	{InitFn: "init_hp_ult_4", Source: "usr/pm/hp_ultrium_pm.c:573", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_hp_ult_4", Source: "usr/pm/hp_ultrium_pm.c:581", WORM: true, SP: true, Media: []Media{
 		{"LTO2", RO}, {"LTO2 Clean", RO},
 		{"LTO3", RW}, {"LTO3 Clean", RO}, {"LTO3 WORM", RW},
 		{"LTO4", RW}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW},
 	}},
-	{InitFn: "init_hp_ult_5", Source: "usr/pm/hp_ultrium_pm.c:642", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_hp_ult_5", Source: "usr/pm/hp_ultrium_pm.c:650", WORM: true, SP: true, Media: []Media{
 		{"LTO3", RO}, {"LTO3 Clean", RO},
 		{"LTO4", RW}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW}, {"LTO4 ENCR", RW},
 		{"LTO5", RW}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 	}},
-	{InitFn: "init_hp_ult_6", Source: "usr/pm/hp_ultrium_pm.c:716", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_hp_ult_6", Source: "usr/pm/hp_ultrium_pm.c:724", WORM: true, SP: true, Media: []Media{
 		{"LTO4", RO}, {"LTO4 Clean", RO}, {"LTO4 WORM", RO},
 		{"LTO5", RW}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 		{"LTO6", RW}, {"LTO6 Clean", RO}, {"LTO6 WORM", RW}, {"LTO6 ENCR", RW},
 	}},
-	{InitFn: "init_hp_ult_7", Source: "usr/pm/hp_ultrium_pm.c:791", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_hp_ult_7", Source: "usr/pm/hp_ultrium_pm.c:799", WORM: true, SP: true, Media: []Media{
 		{"LTO5", RO}, {"LTO5 Clean", RO}, {"LTO5 WORM", RO},
 		{"LTO6", RW}, {"LTO6 Clean", RO}, {"LTO6 WORM", RW}, {"LTO6 ENCR", RW},
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
 	}},
-	{InitFn: "init_hp_ult_8", Source: "usr/pm/hp_ultrium_pm.c:865", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_hp_ult_8", Source: "usr/pm/hp_ultrium_pm.c:873", WORM: true, SP: true, Media: []Media{
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
 		{"LTO8", RW}, {"LTO8 Clean", RO}, {"LTO8 WORM", RW}, {"LTO8 ENCR", RW}, {"LTO8 M8", RW},
 	}},
@@ -251,83 +251,83 @@ var DriveModels = []DriveModel{
 		{"SDLT 320", RW}, {"SDLT 320 Clean", RO},
 		{"SDLT 600", RW}, {"SDLT 600 Clean", RO}, {"SDLT 600 WORM", RW},
 	}},
-	{InitFn: "init_9840A_ssc", Source: "usr/pm/stk9x40_pm.c:343", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_9840A_ssc", Source: "usr/pm/stk9x40_pm.c:335", WORM: true, SP: true, Media: []Media{
 		{"9840A", RW}, {"9840A Clean", RO},
 	}},
-	{InitFn: "init_9840B_ssc", Source: "usr/pm/stk9x40_pm.c:382", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_9840B_ssc", Source: "usr/pm/stk9x40_pm.c:374", WORM: true, SP: true, Media: []Media{
 		{"9840A", RW}, {"9840A Clean", RO},
 		{"9840B", RW}, {"9840B Clean", RO},
 	}},
-	{InitFn: "init_9840C_ssc", Source: "usr/pm/stk9x40_pm.c:424", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_9840C_ssc", Source: "usr/pm/stk9x40_pm.c:416", WORM: true, SP: true, Media: []Media{
 		{"9840A", RO}, {"9840A Clean", RO},
 		{"9840B", RW}, {"9840B Clean", RO},
 		{"9840C", RW}, {"9840C Clean", RO},
 	}},
-	{InitFn: "init_9840D_ssc", Source: "usr/pm/stk9x40_pm.c:470", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_9840D_ssc", Source: "usr/pm/stk9x40_pm.c:462", WORM: true, SP: true, Media: []Media{
 		{"9840B", RO}, {"9840B Clean", RO},
 		{"9840C", RW}, {"9840C Clean", RO},
 		{"9840D", RW}, {"9840D Clean", RO},
 	}},
-	{InitFn: "init_9940A_ssc", Source: "usr/pm/stk9x40_pm.c:513", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_9940A_ssc", Source: "usr/pm/stk9x40_pm.c:505", WORM: true, SP: true, Media: []Media{
 		{"9940A", RW}, {"9940A Clean", RO},
 	}},
-	{InitFn: "init_9940B_ssc", Source: "usr/pm/stk9x40_pm.c:549", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_9940B_ssc", Source: "usr/pm/stk9x40_pm.c:541", WORM: true, SP: true, Media: []Media{
 		{"9940A", RW}, {"9940A Clean", RO},
 		{"9940B", RW}, {"9940B Clean", RO},
 	}},
-	{InitFn: "init_t10kA_ssc", Source: "usr/pm/t10000_pm.c:425", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_t10kA_ssc", Source: "usr/pm/t10000_pm.c:417", WORM: true, SP: true, Media: []Media{
 		{"T10KA", RW}, {"T10KA Clean", RO},
 	}},
-	{InitFn: "init_t10kB_ssc", Source: "usr/pm/t10000_pm.c:465", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_t10kB_ssc", Source: "usr/pm/t10000_pm.c:457", WORM: true, SP: true, Media: []Media{
 		{"T10KA", RW}, {"T10KA Clean", RO},
 		{"T10KB", RW}, {"T10KB Clean", RO},
 	}},
-	{InitFn: "init_t10kC_ssc", Source: "usr/pm/t10000_pm.c:508", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_t10kC_ssc", Source: "usr/pm/t10000_pm.c:500", WORM: true, SP: true, Media: []Media{
 		{"T10KA", RW}, {"T10KA Clean", RO},
 		{"T10KB", RW}, {"T10KB Clean", RO},
 		{"T10KC", RW}, {"T10KC Clean", RO},
 	}},
-	{InitFn: "init_ult3580_td1", Source: "usr/pm/ult3580_pm.c:539", Media: []Media{
+	{InitFn: "init_ult3580_td1", Source: "usr/pm/ult3580_pm.c:543", Media: []Media{
 		{"LTO1", RW}, {"LTO1 Clean", RO},
 	}},
-	{InitFn: "init_ult3580_td2", Source: "usr/pm/ult3580_pm.c:588", Media: []Media{
+	{InitFn: "init_ult3580_td2", Source: "usr/pm/ult3580_pm.c:592", Media: []Media{
 		{"LTO1", RW}, {"LTO1 Clean", RO},
 		{"LTO2", RW}, {"LTO2 Clean", RO},
 	}},
-	{InitFn: "init_ult3580_td3", Source: "usr/pm/ult3580_pm.c:639", WORM: true, Media: []Media{
+	{InitFn: "init_ult3580_td3", Source: "usr/pm/ult3580_pm.c:643", WORM: true, Media: []Media{
 		{"LTO1", RO}, {"LTO1 Clean", RO},
 		{"LTO2", RW}, {"LTO2 Clean", RO},
 		{"LTO3", RW}, {"LTO3 Clean", RO}, {"LTO3 WORM", RW},
 	}},
-	{InitFn: "init_ult3580_td4", Source: "usr/pm/ult3580_pm.c:699", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_ult3580_td4", Source: "usr/pm/ult3580_pm.c:703", WORM: true, SP: true, Media: []Media{
 		{"LTO2", RO}, {"LTO2 Clean", RO},
 		{"LTO3", RW}, {"LTO3 Clean", RO}, {"LTO3 WORM", RW},
 		{"LTO4", RW}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW},
 	}},
-	{InitFn: "init_ult3580_td5", Source: "usr/pm/ult3580_pm.c:767", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_ult3580_td5", Source: "usr/pm/ult3580_pm.c:771", WORM: true, SP: true, Media: []Media{
 		{"LTO3", RO}, {"LTO3 Clean", RO},
 		{"LTO4", RW}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW}, {"LTO4 ENCR", RW},
 		{"LTO5", RW}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_td6", Source: "usr/pm/ult3580_pm.c:843", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_ult3580_td6", Source: "usr/pm/ult3580_pm.c:848", WORM: true, SP: true, Media: []Media{
 		{"LTO4", RO}, {"LTO4 Clean", RO}, {"LTO4 WORM", RW},
 		{"LTO5", RW}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 		{"LTO6", RW}, {"LTO6 Clean", RO}, {"LTO6 WORM", RW}, {"LTO6 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_td7", Source: "usr/pm/ult3580_pm.c:1024", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_ult3580_td7", Source: "usr/pm/ult3580_pm.c:1031", WORM: true, SP: true, Media: []Media{
 		{"LTO5", RO}, {"LTO5 Clean", RO}, {"LTO5 WORM", RW}, {"LTO5 ENCR", RW},
 		{"LTO6", RW}, {"LTO6 Clean", RO}, {"LTO6 WORM", RW}, {"LTO6 ENCR", RW},
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_td8", Source: "usr/pm/ult3580_pm.c:1034", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_ult3580_td8", Source: "usr/pm/ult3580_pm.c:1041", WORM: true, SP: true, Media: []Media{
 		{"LTO7", RW}, {"LTO7 Clean", RO}, {"LTO7 WORM", RW}, {"LTO7 ENCR", RW},
 		{"LTO8", RW}, {"LTO8 Clean", RO}, {"LTO8 WORM", RW}, {"LTO8 ENCR", RW}, {"LTO8 M8", RW},
 	}},
-	{InitFn: "init_ult3580_td9", Source: "usr/pm/ult3580_pm.c:1049", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_ult3580_td9", Source: "usr/pm/ult3580_pm.c:1057", WORM: true, SP: true, Media: []Media{
 		{"LTO8", RW}, {"LTO8 Clean", RO}, {"LTO8 WORM", RW}, {"LTO8 ENCR", RW},
 		{"LTO9", RW}, {"LTO9 Clean", RO}, {"LTO9 WORM", RW}, {"LTO9 ENCR", RW},
 	}},
-	{InitFn: "init_ult3580_tda", Source: "usr/pm/ult3580_pm.c:1062", WORM: true, SP: true, Media: []Media{
+	{InitFn: "init_ult3580_tda", Source: "usr/pm/ult3580_pm.c:1070", WORM: true, SP: true, Media: []Media{
 		{"LTO10", RW}, {"LTO10 Clean", RO}, {"LTO10 WORM", RW}, {"LTO10 ENCR", RW},
 		{"LTO10P", RW},
 	}},
