@@ -4,7 +4,7 @@
 %global debug_package %{nil}
 
 Name:           mhvtl-control
-Version:        0.6.0
+Version:        0.7.0
 Release:        1%{?dist}
 Summary:        Management daemon and web dashboard for the mhVTL virtual tape library
 License:        Apache-2.0
@@ -155,6 +155,12 @@ fi
 %dir %attr(0700,root,root) %{_sharedstatedir}/mhvtl-control-apply
 
 %changelog
+* Thu Nov 19 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.7.0-1
+- iSCSI export (#6 phase 2): GET /api/v1/transports/iscsi/config reads /etc/mhvtl/fabrics.conf; PATCH /api/v1/transports/iscsi sets portals and base name; POST .../iscsi/bind and .../iscsi/unbind export a library or standalone drive to initiators, with optional CHAP and mutual CHAP. Each write previews a diff (secrets masked) and is applied by the configuration helper, which has mhvtl-fabrics reload the file, so sessions to untouched targets stay up. A target already in configfs but not created by mhvtl-fabrics is refused. The Transport Map panel previews and applies the same changes. The package adds a mhvtl-fabrics.service drop-in with ExecReload=/usr/bin/mhvtl-fabrics apply (#96).
+- Transport map (#6 phase 1): GET /api/v1/transports lists TCMU backstores and the loopback, iSCSI, Fibre Channel and USB gadget targets from configfs with their LUNs, ACLs and iSCSI sessions; the dashboard shows it, and GET /api/v1/system reports the real active transports (#93).
+- Dashboard: the Media panel renders again; it hit a call-stack overflow since 0.5.0 (#94).
+- Web UI files carry Cache-Control: no-cache and a content ETag, so a browser does not run a cached app.js against an upgraded daemon (#95).
+
 * Sat Oct 31 2026 Ciro Iriarte <ciro.iriarte@gmail.com> - 0.6.0-1
 - Service control (#14): GET /api/v1/service reports mhvtl.target, its support units, each vtllibrary@ and vtltape@ unit, the configured backend next to the loaded modules, and the message queue; the System panel shows it (#89).
 - Restart, stop and start a library or the whole mhvtl.target from the API (POST /api/v1/service/...) and the dashboard, through the configuration helper and behind the same gate as configuration writes. With PERSIST off a library's live cartridge placement is written to library_contents first, so a restart keeps it; a cartridge in a drive is put back in its slot with a force token; a failed action is rolled back and an interrupted one recovered. A stop leaves units enabled (#90-#92).
