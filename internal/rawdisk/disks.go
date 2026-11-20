@@ -49,6 +49,17 @@ const defaultSysBlockDir = "/sys/block"
 // virtualPrefixes are kernel-name prefixes skipped unless IncludeVirtual.
 var virtualPrefixes = []string{"loop", "ram", "dm-", "zram"}
 
+// isOptical reports whether /sys/block/<name> is a CD/DVD drive: a SCSI
+// device of type 5 (TYPE_ROM) or 4 (TYPE_WORM), the two types the sr driver
+// takes (drivers/scsi/sr.c, sr_probe;
+// https://github.com/torvalds/linux/blob/v6.12/drivers/scsi/sr.c#L620).
+// It cannot hold a cartridge, so it is never a format candidate
+// (mhvtl-control#98). A device with no SCSI type (NVMe, virtio) is not one.
+func isOptical(sysDir, name string) bool {
+	t, ok := readInt(filepath.Join(sysDir, name, "device", "type"))
+	return ok && (t == 4 || t == 5)
+}
+
 func isVirtual(name string) bool {
 	for _, p := range virtualPrefixes {
 		if strings.HasPrefix(name, p) {
@@ -86,7 +97,7 @@ func ListDisks(opts Options) ([]Disk, error) {
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if !opts.IncludeVirtual && isVirtual(name) {
+		if (!opts.IncludeVirtual && isVirtual(name)) || isOptical(sysDir, name) {
 			continue
 		}
 		disks = append(disks, probeSysBlock(sysDir, name, mounts))

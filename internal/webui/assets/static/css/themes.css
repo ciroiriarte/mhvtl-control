@@ -407,6 +407,10 @@ select, input[type="text"], input[type="password"], input[type="number"], input[
 .svc-table th, .svc-table td { font-size: 12px; vertical-align: top; }
 .svc-table td.mono { font-family: var(--font-mono); }
 .svc-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+/* A state badge or an uptime breaks at its spaces into fragments, each with
+   its own border (CSS Fragmentation, box-decoration-break: slice); keep them
+   whole, .svc-scroll scrolls instead (mhvtl-control#101). */
+.svc-table .badge, .svc-table td.nowrap { white-space: nowrap; }
 .badge.st-active { color: var(--ok); border-color: var(--ok); }
 .badge.st-failed { color: var(--err); border-color: var(--err-border); background: var(--err-bg); }
 .badge.st-transition { color: var(--warn); border-color: var(--warn); }

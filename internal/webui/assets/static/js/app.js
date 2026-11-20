@@ -435,7 +435,7 @@
         unit,
         mk("td", { children: [mk("span", { class: "badge " + r.cls, text: r.state })] }),
         mk("td", { class: "mono", text: r.pid || "—" }),
-        mk("td", { text: r.uptime || "—" }),
+        mk("td", { class: "nowrap", text: r.uptime || "—" }),
         mk("td", { children: scope === null ? [] : [serviceButtons(svc, scope, r.key)] }),
       ] });
     });
@@ -2821,11 +2821,11 @@
       files: validateFiles(st.data.files), dispositions: coerceArray(st.data.dispositions), target_apps: buildValidateBody(libID, app).target_apps,
     } }).then(function (res) {
       if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
-      st.appCheck = { name: name, library: libID, rows: findingRows(res).filter(function (r) { return r.code.indexOf("preset.") === 0 && r.library === libID; }) };
+      st.appCheck = { name: name, app: app, library: libID, rows: findingRows(res).filter(function (r) { return r.code.indexOf("preset.") === 0 && r.library === libID; }) };
       renderStage();
     }).catch(function (e) {
       if (isStale(gen, NodeState.generation) || cfgStage !== st) { return; }
-      st.appCheck = { name: name, library: libID, error: e.message, rows: [] };
+      st.appCheck = { name: name, app: app, library: libID, error: e.message, rows: [] };
       renderStage();
     });
   }
@@ -2970,12 +2970,10 @@
           return;
         }
         if (dlg.open) { dlg.close(); }
-        if (app.value) {
-          cfgView.app = app.value;
-          var appSel = $("config-target-app");
-          if (appSel) { appSel.value = app.value; }
-          checkForApp(v.w.id, app.value);
-        }
+        // The stage panel checks the new library for its application. The
+        // view's application stays: it applies to the selected library, which
+        // is not the new one until the apply (mhvtl-control#100).
+        if (app.value) { checkForApp(v.w.id, app.value); }
       });
     });
     dlg.addEventListener("close", function () { if (dlg.parentNode) { dlg.parentNode.removeChild(dlg); } });
@@ -3276,6 +3274,9 @@
   // applied ends the stage after an apply that applied (res is its answer,
   // or the tombstone's last_apply).
   function applied(res) {
+    var after = core.viewAfterApply(cfgView, cfgStage && cfgStage.appCheck);
+    cfgView.selected = after.selected;
+    cfgView.app = after.app;
     cfgStage = null;
     renderStage();
     var n = coerceArray(res && res.plan && res.plan.units).length;
@@ -3422,14 +3423,14 @@
     var app = cfgView.app;
     return api("/api/v1/config/validate", { method: "POST", body: buildValidateBody(libId, app), signal: signal, read: true }).then(function (res) {
       if (!bg) { busy("findings-panel", false); }
-      if (isStale(gen, NodeState.generation)) { return; }
+      if (isStale(gen, NodeState.generation) || !core.findingsCurrent({ lib: libId, app: app }, cfgView)) { return; }
       if (drawPanel("findings", $("config-findings"), bg, res, [gen, problems, libId, app], function () { renderFindings(problems, res); })) {
         setPanelGrey("config-findings", false);
       }
       (bg ? findingsStatus.quietOk() : findingsStatus.ok());
     }).catch(function (e) {
       if (!bg) { busy("findings-panel", false); }
-      if (e.name === "AbortError" || isStale(gen, NodeState.generation)) { return; }
+      if (e.name === "AbortError" || isStale(gen, NodeState.generation) || !core.findingsCurrent({ lib: libId, app: app }, cfgView)) { return; }
       findingsStatus.error("validate: " + e.message, bg ? "poll" : "load");
     });
   }

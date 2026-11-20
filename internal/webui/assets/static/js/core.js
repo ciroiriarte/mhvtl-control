@@ -467,6 +467,27 @@
     return body;
   }
 
+  // findingsCurrent is whether a POST /config/validate answer the findings
+  // panel asked for (asked: the library and the application it was checked
+  // for) still answers the view's selection. An answer to a poll sent before
+  // the selection changed can arrive after the newer one and would draw over
+  // it (mhvtl-control#100).
+  function findingsCurrent(asked, view) {
+    return String(asked.lib) === String(view.selected) && String(asked.app || "") === String(view.app || "");
+  }
+
+  // viewAfterApply is the library and application the Configuration view
+  // selects once a stage is applied: the library the wizard staged for a
+  // backup application (the stage's app check), checked for it, so the
+  // findings panel shows what the stage's check showed. Otherwise the view
+  // keeps its selection.
+  function viewAfterApply(view, appCheck) {
+    if (appCheck && appCheck.app && Number(appCheck.library) > 0) {
+      return { selected: String(Number(appCheck.library)), app: String(appCheck.app) };
+    }
+    return { selected: view.selected, app: view.app };
+  }
+
   /* ---- configuration editing (plan 4.2) ------------------------------- */
 
   // writesEditable is whether the dashboard offers edits: only when the
@@ -2161,6 +2182,8 @@
     findingRows: findingRows,
     problemText: problemText,
     buildValidateBody: buildValidateBody,
+    findingsCurrent: findingsCurrent,
+    viewAfterApply: viewAfterApply,
     kernelChNote: kernelChNote,
     fmtUptime: fmtUptime,
     serviceRows: serviceRows,

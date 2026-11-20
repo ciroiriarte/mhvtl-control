@@ -653,6 +653,18 @@ func jsIdent(ch byte) bool {
 	return ch == '_' || ch == '$' || ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z'
 }
 
+// The Service table's state badges and uptimes, and the transport tables'
+// badges, stay on one line (mhvtl-control#101).
+func TestServiceTableNoWrap(t *testing.T) {
+	h := newServer()
+	if _, css := get(t, h, "/static/css/themes.css"); !strings.Contains(css, ".svc-table .badge, .svc-table td.nowrap { white-space: nowrap; }") {
+		t.Error("themes.css: no nowrap rule for .svc-table badges and cells")
+	}
+	if _, app := get(t, h, "/static/js/app.js"); !strings.Contains(app, `mk("td", { class: "nowrap", text: r.uptime || "—" })`) {
+		t.Error("app.js: the Service table's uptime cell is not nowrap")
+	}
+}
+
 // The Transport Map's iSCSI export section and its dialog. The CHAP secret
 // inputs are password fields the browser does not fill from a saved login,
 // and app.js never sets them other than to clear them.
