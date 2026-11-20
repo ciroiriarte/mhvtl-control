@@ -320,7 +320,7 @@ test("findingsCurrent drops a validate answer for an older selection", () => {
 
 test("viewAfterApply selects the library a wizard staged for an application", () => {
   const view = { selected: "30", app: "" };
-  assert.deepStrictEqual(core.viewAfterApply(view, { library: 20, app: "pbs", name: "Proxmox Backup Server", rows: [] }), { selected: "20", app: "pbs" });
+  assert.deepStrictEqual(core.viewAfterApply(view, { library: 20, app: "pbs" }), { selected: "20", app: "pbs" });
   assert.deepStrictEqual(core.viewAfterApply(view, null), view);
-  assert.deepStrictEqual(core.viewAfterApply(view, { library: 20, app: "", rows: [] }), view);
+  assert.deepStrictEqual(core.viewAfterApply(view, { library: 20, app: "" }), view);
 });

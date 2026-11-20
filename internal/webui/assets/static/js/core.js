@@ -477,13 +477,13 @@
   }
 
   // viewAfterApply is the library and application the Configuration view
-  // selects once a stage is applied: the library the wizard staged for a
-  // backup application (the stage's app check), checked for it, so the
+  // selects once a stage is applied: the library the wizard last staged for
+  // a backup application (the stage's target), checked for it, so the
   // findings panel shows what the stage's check showed. Otherwise the view
   // keeps its selection.
-  function viewAfterApply(view, appCheck) {
-    if (appCheck && appCheck.app && Number(appCheck.library) > 0) {
-      return { selected: String(Number(appCheck.library)), app: String(appCheck.app) };
+  function viewAfterApply(view, target) {
+    if (target && target.app && Number(target.library) > 0) {
+      return { selected: String(Number(target.library)), app: String(target.app) };
     }
     return { selected: view.selected, app: view.app };
   }
