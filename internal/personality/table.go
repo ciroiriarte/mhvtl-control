@@ -60,9 +60,9 @@ type Personality struct {
 	Rule Rule
 }
 
-// Rules is customise_lu (vtllibrary.c:1536-1553) and its helpers
-// (vtllibrary.c:1490-1534) in evaluation order. An OR of two strncasecmp is
-// two rules.
+// Rules is customise_lu (vtllibrary.c:1659-1679) and its helpers
+// (vtllibrary.c:1613-1657, upstream master 01c7710) in evaluation order. An
+// OR of two strncasecmp is two rules.
 var Rules = []Rule{
 	{Vendor: "stk", ProductPrefix: "SL500", InitFn: "init_stkslxx", Source: "usr/cmd/vtllibrary.c:1623"},
 	{Vendor: "stk", ProductPrefix: "L20", InitFn: "init_stkl20", Source: "usr/cmd/vtllibrary.c:1625"},

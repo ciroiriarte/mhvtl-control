@@ -38,8 +38,8 @@ type DriveModel struct {
 	// master 01c7710), whatever its media list says.
 	WORM bool
 	// SP is the personality's ssc_pm.drive_supports_SP: only then does
-	// vtltape register SECURITY PROTOCOL IN/OUT (usr/cmd/vtltape.c:2475,
-	// upstream master ebbda22), so only then can the drive encrypt.
+	// vtltape register SECURITY PROTOCOL IN/OUT (usr/cmd/vtltape.c:2658,
+	// upstream master 01c7710), so only then can the drive encrypt.
 	SP    bool
 	Media []Media
 }
