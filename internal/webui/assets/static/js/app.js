@@ -3137,7 +3137,7 @@
     fields.push({ name: "slot", label: "Storage slot (when moving to one)", type: "number", value: d && d.to === "slot" ? String(coerceNumber(d.slot)) : "" });
     formDialog({
       title: d ? "Where " + String(d.barcode) + " goes" : "Where a cartridge goes",
-      intro: d ? String(d.barcode) + " leaves its element in library " + coerceNumber(d.library) + "." : "For a cartridge that leaves its element in a library.",
+      intro: (d ? String(d.barcode) + " leaves its element in library " + coerceNumber(d.library) + "." : "For a cartridge that leaves its element in a library.") + " Check confirms it leaves.",
       fields: fields,
       submit: "Stage",
       onSubmit: function (v, done) {

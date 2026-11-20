@@ -232,6 +232,7 @@ test("dispositionPath names the stage, library and barcode", () => {
   assert.throws(() => core.dispositionPath("ab12", 10, ""), RangeError);
   assert.throws(() => core.dispositionPath("ab12", 10, "TWO WORDS"), RangeError);
   assert.throws(() => core.dispositionPath("ab12", 10, "ABCDEFGHIJKLMNOPQ"), RangeError);
+  assert.throws(() => core.dispositionPath("ab12", 10, ".."), RangeError);
 });
 
 test("dispositionText says where the cartridge goes", () => {

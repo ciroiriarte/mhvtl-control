@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -402,6 +403,7 @@ func TestConfigApply(t *testing.T) {
 		!strings.Contains(rec.Body.String(), "plan_required") {
 		t.Fatalf("apply after an edit: %d %s", rec.Code, rec.Body)
 	}
+	e.answer(func(apply.Request) apply.Response { return apply.Response{Result: apply.ResultValidated} })
 	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage, "dry_run": true}); rec.Code != http.StatusOK {
 		t.Fatalf("dry run: %d %s", rec.Code, rec.Body)
 	}
@@ -552,6 +554,7 @@ func TestConfigWriteGate(t *testing.T) {
 	e = newWriteEnv(t, nil)
 	e.answer(func(apply.Request) apply.Response { return apply.Response{Result: apply.ResultValidated} })
 	st := e.staged()
+	e.answer(func(apply.Request) apply.Response { return apply.Response{Result: apply.ResultValidated} })
 	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage, "dry_run": true}); rec.Code != http.StatusOK {
 		t.Fatalf("dry run: %d %s", rec.Code, rec.Body)
 	}
@@ -741,5 +744,88 @@ func TestConfigStageDispositionForDisplaced(t *testing.T) {
 	st = e.edit(http.MethodPut, "/api/v1/config/stages/"+st.Stage+"/dispositions/10/F01030L6", map[string]any{"to": "export"})
 	if want := []validate.Disposition{{Library: 10, Barcode: "F01030L6", To: "export"}}; !reflect.DeepEqual(st.Dispositions, want) {
 		t.Fatalf("after PUT: %+v, want %+v", st.Dispositions, want)
+	}
+}
+
+// TestConfigStageDispositionsHeldAndValidated: a held disposition is
+// removed while its library is deleted; a library only the stage creates
+// keeps no disposition; a library delete refuses a malformed one; and
+// validation of the re-created library loses removal.slot_missing once the
+// disposition goes to the shelf (mhvtl-control#104).
+func TestConfigStageDispositionsHeldAndValidated(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	st := e.edit(http.MethodDelete, "/api/v1/config/libraries/10/slots/39", map[string]any{
+		"disposition": map[string]any{"to": "slot", "slot": 5}})
+	path := "/api/v1/config/stages/" + st.Stage + "/dispositions/10/F01039L6"
+
+	// Malformed dispositions in a library delete are refused, the stage kept.
+	for _, d := range []map[string]any{
+		{"barcode": "TOOLONGBARCODE12345", "to": "shelf"},
+		{"barcode": "F01030L6", "to": "away"},
+		{"barcode": "F01030L6", "to": "shelf", "slot": 2},
+	} {
+		if rec := e.call(http.MethodDelete, "/api/v1/config/libraries/10", map[string]any{"stage": st.Stage, "dispositions": []any{d}}); rec.Code != http.StatusBadRequest {
+			t.Errorf("library delete with %v: %d %s", d, rec.Code, rec.Body)
+		}
+	}
+
+	st = e.edit(http.MethodDelete, "/api/v1/config/libraries/10", map[string]any{"stage": st.Stage})
+	if len(st.HeldDispositions) != 1 {
+		t.Fatalf("held after the library delete: %+v", st.HeldDispositions)
+	}
+	st = e.edit(http.MethodDelete, path, nil)
+	if len(st.HeldDispositions) != 0 || len(st.Dispositions) != 0 {
+		t.Fatalf("after removing the held one: dispositions %+v held %+v", st.Dispositions, st.HeldDispositions)
+	}
+
+	// A library only the stage creates keeps no disposition when deleted.
+	st = e.edit(http.MethodPost, "/api/v1/config/libraries", map[string]any{
+		"stage": st.Stage, "id": 50, "channel": 0, "target": 5, "lun": 0, "slots": 2, "maps": 1})
+	st = e.edit(http.MethodPatch, "/api/v1/config/libraries/50/slots/1", map[string]any{"stage": st.Stage, "barcode": "NEW001L8"})
+	st = e.edit(http.MethodDelete, "/api/v1/config/libraries/50", map[string]any{
+		"stage": st.Stage, "dispositions": []map[string]any{{"barcode": "NEW001L8", "to": "shelf"}}})
+	if len(st.HeldDispositions) != 0 || len(st.Dispositions) != 0 {
+		t.Fatalf("library 50 only in the stage: dispositions %+v held %+v", st.Dispositions, st.HeldDispositions)
+	}
+}
+
+// TestConfigStageDispositionClearsSlotMissing: in the #104 scenario Check
+// reports removal.slot_missing until PUT sends the cartridge to the shelf,
+// and a disposition edit after a dry run needs another.
+func TestConfigStageDispositionClearsSlotMissing(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	st := e.edit(http.MethodDelete, "/api/v1/config/libraries/10/slots/39", map[string]any{
+		"disposition": map[string]any{"to": "slot", "slot": 5}})
+	st = e.edit(http.MethodDelete, "/api/v1/config/libraries/10", map[string]any{"stage": st.Stage})
+	st = e.edit(http.MethodPost, "/api/v1/config/libraries", map[string]any{
+		"stage": st.Stage, "id": 10, "channel": 0, "target": 0, "lun": 0, "slots": 3, "maps": 1,
+		"attrs": []map[string]string{{"key": "Home directory", "value": "testdata/gen/home"}}})
+	codes := func(st stageDTO) []string {
+		t.Helper()
+		rec := e.call(http.MethodPost, "/api/v1/config/validate", map[string]any{"files": st.Files, "dispositions": st.Dispositions})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("validate: %d %s", rec.Code, rec.Body)
+		}
+		var out []string
+		for _, f := range decodeBody[validateResponse](t, rec).Errors {
+			out = append(out, f.Code)
+		}
+		return out
+	}
+	if c := codes(st); !slices.Contains(c, validate.CodeRemovalSlotMissing) {
+		t.Fatalf("before the PUT: errors %v, want %s", c, validate.CodeRemovalSlotMissing)
+	}
+
+	e.answer(func(apply.Request) apply.Response { return apply.Response{Result: apply.ResultValidated} })
+	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage, "dry_run": true}); rec.Code != http.StatusOK {
+		t.Fatalf("dry run: %d %s", rec.Code, rec.Body)
+	}
+	st = e.edit(http.MethodPut, "/api/v1/config/stages/"+st.Stage+"/dispositions/10/F01039L6", map[string]any{"to": "shelf"})
+	if c := codes(st); slices.Contains(c, validate.CodeRemovalSlotMissing) {
+		t.Errorf("after the PUT: errors %v", c)
+	}
+	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage}); rec.Code != http.StatusConflict ||
+		!strings.Contains(rec.Body.String(), "plan_required") {
+		t.Errorf("apply after a disposition edit: %d %s", rec.Code, rec.Body)
 	}
 }

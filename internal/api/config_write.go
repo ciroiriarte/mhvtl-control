@@ -449,8 +449,11 @@ func (s *Server) handleConfigLibraryDelete(w http.ResponseWriter, r *http.Reques
 			return err
 		}
 		for _, d := range req.Dispositions {
-			if d.Barcode == "" {
-				return badEdit("a disposition needs a barcode")
+			if err := conffile.CheckCartridgeBarcode(d.Barcode); err != nil {
+				return badEdit("disposition: %v", err)
+			}
+			if err := checkDestination(d.To, d.Slot); err != nil {
+				return badEdit("disposition for %s: %v", d.Barcode, err)
 			}
 		}
 		dc, err := st.deviceConf()
@@ -474,9 +477,15 @@ func (s *Server) handleConfigLibraryDelete(w http.ResponseWriter, r *http.Reques
 			// New in the stage: there is nothing to delete.
 			delete(st.next, name)
 		}
-		for _, d := range req.Dispositions {
-			d.Library = id
-			st.dispose(d)
+		// A library only the stage creates has no cartridge in force to
+		// leave it, so its dispositions are not kept: a held one would never
+		// count again, nor could DELETE /config/stages/{id}/dispositions
+		// reach it (mhvtl-control#104).
+		if _, inCur := findConfigLibrary(st.cur, id); inCur {
+			for _, d := range req.Dispositions {
+				d.Library = id
+				st.dispose(d)
+			}
 		}
 		return nil
 	})
@@ -780,6 +789,11 @@ func (s *Server) handleConfigSlotDelete(w http.ResponseWriter, r *http.Request) 
 		}
 		if req.Disposition != nil && e.Barcode == "" {
 			return badEdit("%s %d holds no cartridge to dispose of", kind, n)
+		}
+		if d := req.Disposition; d != nil {
+			if err := checkDestination(d.To, d.Slot); err != nil {
+				return badEdit("disposition: %v", err)
+			}
 		}
 		if err := lc.RemoveEntry(kind, n); err != nil {
 			return err
@@ -1110,13 +1124,25 @@ func (s *Server) handleConfigStage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st.dto(now.Add(stageTTL)))
 }
 
-// handleConfigStageDelete discards a stage (#61 review L1). A stage an
-// apply uses is not discarded.
 // dispositionPutRequest is where a cartridge leaving a library goes: the
 // body of PUT /config/stages/{id}/dispositions/{library}/{barcode}.
 type dispositionPutRequest struct {
 	To   string `json:"to"`
 	Slot int    `json:"slot"`
+}
+
+// checkDestination refuses a disposition's destination other than a
+// storage slot (with its positive number), export or the shelf.
+func checkDestination(to string, slot int) error {
+	switch {
+	case to != validate.ToSlot && to != validate.ToExport && to != validate.ToShelf:
+		return fmt.Errorf("to must be %q, %q or %q", validate.ToSlot, validate.ToExport, validate.ToShelf)
+	case to == validate.ToSlot && slot <= 0:
+		return errors.New("a disposition to a slot needs a positive slot number")
+	case to != validate.ToSlot && slot != 0:
+		return errors.New("slot is only for a disposition to a slot")
+	}
+	return nil
 }
 
 // dispositionPath reads {library} and {barcode}: a library in the
@@ -1146,15 +1172,8 @@ func (s *Server) handleConfigDispositionPut(w http.ResponseWriter, r *http.Reque
 	if !s.writeAllowed(w, r) || !decodeStrict(w, r, &req) {
 		return
 	}
-	switch {
-	case req.To != validate.ToSlot && req.To != validate.ToExport && req.To != validate.ToShelf:
-		writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("to must be %q, %q or %q", validate.ToSlot, validate.ToExport, validate.ToShelf))
-		return
-	case req.To == validate.ToSlot && req.Slot <= 0:
-		writeError(w, http.StatusBadRequest, "bad_request", "a disposition to a slot needs a positive slot number")
-		return
-	case req.To != validate.ToSlot && req.Slot != 0:
-		writeError(w, http.StatusBadRequest, "bad_request", "slot is only for a disposition to a slot")
+	if err := checkDestination(req.To, req.Slot); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 	s.stageEdit(w, r, r.PathValue("id"), func(_ context.Context, st *stage) error {
@@ -1187,6 +1206,8 @@ func (s *Server) handleConfigDispositionDelete(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// handleConfigStageDelete discards a stage (#61 review L1). A stage an
+// apply uses is not discarded.
 func (s *Server) handleConfigStageDelete(w http.ResponseWriter, r *http.Request) {
 	if !s.writeAllowed(w, r) {
 		return

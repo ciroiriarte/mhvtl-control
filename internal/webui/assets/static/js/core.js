@@ -790,6 +790,8 @@
     if (!stage) { throw new RangeError("there are no pending changes"); }
     if (!(id > 0)) { throw new RangeError("the library must be a positive number"); }
     if (!/^[\x21-\x7e]{1,16}$/.test(bc)) { throw new RangeError("a barcode is one word of up to 16 printable characters"); }
+    // fetch resolves "." and ".." path segments before sending.
+    if (bc === "." || bc === "..") { throw new RangeError("the barcode " + bc + " cannot be named in a path"); }
     return "/api/v1/config/stages/" + encodeURIComponent(stage) + "/dispositions/" + id + "/" + encodeURIComponent(bc);
   }
 
