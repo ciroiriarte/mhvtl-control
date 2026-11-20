@@ -430,10 +430,7 @@ func (s *Server) handleConfigLibraryPatch(w http.ResponseWriter, r *http.Request
 
 type libraryDeleteRequest struct {
 	Stage string `json:"stage"`
-	// Dispositions is accepted and ignored, as clients up to 0.7.0 send
-	// one per cartridge. A deleted library's cartridges stay in its home,
-	// out of any library (AC 12), and validation refuses a disposition for
-	// a library the new configuration lacks (mhvtl-control#97).
+	// Dispositions say where the library's cartridges go.
 	Dispositions []validate.Disposition `json:"dispositions"`
 }
 
@@ -450,6 +447,11 @@ func (s *Server) handleConfigLibraryDelete(w http.ResponseWriter, r *http.Reques
 		lib, err := stageLibrary(s.cfg.ConfigDir, st, id)
 		if err != nil {
 			return err
+		}
+		for _, d := range req.Dispositions {
+			if d.Barcode == "" {
+				return badEdit("a disposition needs a barcode")
+			}
 		}
 		dc, err := st.deviceConf()
 		if err != nil {
@@ -472,12 +474,9 @@ func (s *Server) handleConfigLibraryDelete(w http.ResponseWriter, r *http.Reques
 			// New in the stage: there is nothing to delete.
 			delete(st.next, name)
 		}
-		// Slot edits made earlier in the stage may have left dispositions
-		// for this library; they no longer apply.
-		for k, d := range st.dispositions {
-			if d.Library == id {
-				delete(st.dispositions, k)
-			}
+		for _, d := range req.Dispositions {
+			d.Library = id
+			st.dispose(d)
 		}
 		return nil
 	})

@@ -283,6 +283,12 @@ func TestAddStanzaGroupsByLibrary(t *testing.T) {
 			}
 			return c.AddStanza(drive(12, 10))
 		}, []string{"Library 10", "Drive 12", "Library 30", "Drive 31"}},
+		{"a drive after one whose Library ID vtllibrary reads glued", func(c *DeviceConf) error {
+			if err := c.SetAttr("Drive", 11, "Library ID", "10Slot: 01"); err != nil {
+				return err
+			}
+			return c.AddStanza(drive(12, 10))
+		}, []string{"Library 10", "Drive 11", "Drive 12", "Library 30", "Drive 31"}},
 		{"a drive naming no library stanza", func(c *DeviceConf) error { return c.AddStanza(drive(51, 50)) },
 			[]string{"Library 10", "Drive 11", "Library 30", "Drive 31", "Drive 51"}},
 	} {

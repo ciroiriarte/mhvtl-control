@@ -65,7 +65,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -766,12 +765,24 @@ func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 			}
 		}
 	} else {
-		if lib, ok := libraryID(attrs); ok {
-			for j, st := range c.stanzas {
-				if st.Kind == "Library" && st.ID == lib {
+		lib, ok := -1, false
+		for _, a := range attrs {
+			if a.Key == "Library ID" {
+				lib, ok = libraryID(a.Value)
+			}
+		}
+		for j, st := range c.stanzas {
+			if !ok {
+				break
+			}
+			switch st.Kind {
+			case "Library":
+				if st.ID == lib {
 					last = j
-				} else if v, _ := st.Get("Library ID"); st.Kind == "Drive" {
-					if l, ok := libraryID([]Attr{{Key: "Library ID", Value: v}}); ok && l == lib {
+				}
+			case "Drive":
+				if v, has := st.Get("Library ID"); has {
+					if l, ok := libraryID(v); ok && l == lib {
 						last = j
 					}
 				}
@@ -810,18 +821,12 @@ func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 	return nil
 }
 
-// libraryID returns the library a "Library ID: L Slot: N" attribute names.
-func libraryID(attrs []Attr) (int, bool) {
-	for _, a := range attrs {
-		if a.Key != "Library ID" {
-			continue
-		}
-		f := strings.Fields(a.Value)
-		if len(f) == 0 {
-			return 0, false
-		}
-		n, err := strconv.Atoi(f[0])
-		return n, err == nil
+// libraryID returns the library a " Library ID: L Slot: N" value names, read
+// as vtllibrary reads it (sscanf, mhvtl usr/cmd/vtllibrary.c:808 at
+// 01c7710), which takes the drive only with both numbers.
+func libraryID(value string) (int, bool) {
+	if n, v := cScan(" Library ID: "+value, " Library ID: %ld Slot: %d"); n == 2 {
+		return int(v[0]), true
 	}
 	return 0, false
 }
