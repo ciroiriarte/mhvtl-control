@@ -65,6 +65,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -723,13 +724,18 @@ type Header struct {
 }
 
 // AddStanza adds a stanza in canonical form, as the shipped generator writes
-// it (etc/generate_device_conf.in): the header, then " Key: value" lines. It
-// goes after the last stanza of its kind, separated by one blank line. The
-// first Library goes before every other stanza, and the first Drive after
-// them all. Where a Drive lands doesn't matter to mhVTL: a drive belongs to
-// the library its " Library ID:" names (mhvtl usr/cmd/vtllibrary.c:686), not
-// to the Library stanza it follows. Blank lines it writes are empty, never
-// white space (see ambiguousBlank).
+// it (etc/generate_device_conf.in): the header, then " Key: value" lines,
+// separated from its neighbours by one blank line. It keeps each library
+// next to its drives, as the generator lays them out: a Library goes after
+// the last stanza of the file, and a Drive after the last stanza of the
+// library its " Library ID:" names (the Library or one of its drives). The
+// first Library goes before every other stanza. A Drive whose library has
+// no stanza goes after the last Drive, or after every stanza. Where a Drive
+// lands doesn't matter to mhVTL: a drive belongs to the library its
+// " Library ID:" names (mhvtl usr/cmd/vtllibrary.c:686), not to the Library
+// stanza it follows; the layout is for whoever reads the file
+// (mhvtl-control#99). Blank lines it writes are empty, never white space
+// (see ambiguousBlank).
 func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 	if h.Kind != "Library" && h.Kind != "Drive" {
 		return fmt.Errorf("invalid stanza kind %q", h.Kind)
@@ -752,9 +758,31 @@ func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 		block = append(block, Line{Text: attrText(a.Key, a.Value), EOL: nl})
 	}
 	last := -1
-	for j, st := range c.stanzas {
-		if st.Kind == h.Kind {
-			last = j
+	if h.Kind == "Library" {
+		for _, st := range c.stanzas {
+			if st.Kind == "Library" {
+				last = len(c.stanzas) - 1
+				break
+			}
+		}
+	} else {
+		if lib, ok := libraryID(attrs); ok {
+			for j, st := range c.stanzas {
+				if st.Kind == "Library" && st.ID == lib {
+					last = j
+				} else if v, _ := st.Get("Library ID"); st.Kind == "Drive" {
+					if l, ok := libraryID([]Attr{{Key: "Library ID", Value: v}}); ok && l == lib {
+						last = j
+					}
+				}
+			}
+		}
+		if last < 0 {
+			for j, st := range c.stanzas {
+				if st.Kind == "Drive" {
+					last = j
+				}
+			}
 		}
 	}
 	switch {
@@ -780,6 +808,22 @@ func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 	}
 	c.index()
 	return nil
+}
+
+// libraryID returns the library a "Library ID: L Slot: N" attribute names.
+func libraryID(attrs []Attr) (int, bool) {
+	for _, a := range attrs {
+		if a.Key != "Library ID" {
+			continue
+		}
+		f := strings.Fields(a.Value)
+		if len(f) == 0 {
+			return 0, false
+		}
+		n, err := strconv.Atoi(f[0])
+		return n, err == nil
+	}
+	return 0, false
 }
 
 // RemoveStanza removes a stanza from Start to End: its leading comment
