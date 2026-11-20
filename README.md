@@ -260,7 +260,13 @@ one):
 - `POST /config/apply`: `{"stage": "...", "dry_run": true}` checks; without
   `dry_run` it applies, with `force_token` after a `drive_loaded` check.
 - `GET /config/stages/{id}` shows a stage and its last apply;
-  `DELETE /config/stages/{id}` discards it.
+  `DELETE /config/stages/{id}` discards it. Its `dispositions` say where
+  cartridges leaving a library go; `held_dispositions` are kept for a
+  library the stage deletes and count again if the stage creates it anew.
+- `PUT /config/stages/{id}/dispositions/{library}/{barcode}` with
+  `{"to": "slot", "slot": N}`, `{"to": "export"}` or `{"to": "shelf"}` sets
+  where that cartridge goes; `DELETE` on the same path removes the
+  disposition.
 
 ## Monitoring
 

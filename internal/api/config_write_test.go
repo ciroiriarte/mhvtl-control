@@ -670,3 +670,76 @@ func TestApplyTimeoutOutlastsHelper(t *testing.T) {
 		t.Errorf("applyTimeout %v, want at least %v (RuntimeMaxSec= + TimeoutStopSec= + 1m)", applyTimeout, total+time.Minute)
 	}
 }
+
+// TestConfigStageDispositions: one disposition of a stage can be set,
+// replaced and removed (mhvtl-control#104), including one held for a
+// library the stage deletes and created anew with fewer slots.
+func TestConfigStageDispositions(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	st := e.edit(http.MethodDelete, "/api/v1/config/libraries/10/slots/39", map[string]any{
+		"disposition": map[string]any{"to": "slot", "slot": 5}})
+	path := "/api/v1/config/stages/" + st.Stage + "/dispositions/10/F01039L6"
+	toSlot5 := validate.Disposition{Library: 10, Barcode: "F01039L6", To: "slot", Slot: 5}
+
+	// Deleting the library holds the disposition, shown apart.
+	st = e.edit(http.MethodDelete, "/api/v1/config/libraries/10", map[string]any{"stage": st.Stage})
+	if len(st.Dispositions) != 0 || !reflect.DeepEqual(st.HeldDispositions, []validate.Disposition{toSlot5}) {
+		t.Fatalf("library 10 deleted: dispositions %+v held %+v", st.Dispositions, st.HeldDispositions)
+	}
+	// Created anew with 3 slots, it counts again, and slot 5 is gone.
+	st = e.edit(http.MethodPost, "/api/v1/config/libraries", map[string]any{
+		"stage": st.Stage, "id": 10, "channel": 0, "target": 0, "lun": 0, "slots": 3, "maps": 1,
+		"attrs": []map[string]string{{"key": "Home directory", "value": "testdata/gen/home"}}})
+	if !reflect.DeepEqual(st.Dispositions, []validate.Disposition{toSlot5}) || len(st.HeldDispositions) != 0 {
+		t.Fatalf("library 10 created anew: dispositions %+v held %+v", st.Dispositions, st.HeldDispositions)
+	}
+
+	// PUT replaces it.
+	st = e.edit(http.MethodPut, path, map[string]any{"to": "shelf"})
+	if want := []validate.Disposition{{Library: 10, Barcode: "F01039L6", To: "shelf"}}; !reflect.DeepEqual(st.Dispositions, want) {
+		t.Fatalf("after PUT: %+v, want %+v", st.Dispositions, want)
+	}
+	// DELETE removes it; a second DELETE finds none.
+	st = e.edit(http.MethodDelete, path, nil)
+	if len(st.Dispositions) != 0 || len(st.HeldDispositions) != 0 {
+		t.Fatalf("after DELETE: dispositions %+v held %+v", st.Dispositions, st.HeldDispositions)
+	}
+	if rec := e.call(http.MethodDelete, path, nil); rec.Code != http.StatusNotFound {
+		t.Errorf("DELETE of a disposition the stage lacks: %d %s", rec.Code, rec.Body)
+	}
+
+	for _, c := range []struct {
+		name, method, path string
+		body               any
+		code               int
+	}{
+		{"unknown destination", http.MethodPut, path, map[string]any{"to": "away"}, http.StatusBadRequest},
+		{"slot without a number", http.MethodPut, path, map[string]any{"to": "slot"}, http.StatusBadRequest},
+		{"slot with the shelf", http.MethodPut, path, map[string]any{"to": "shelf", "slot": 3}, http.StatusBadRequest},
+		{"unknown field", http.MethodPut, path, map[string]any{"to": "shelf", "library": 10}, http.StatusBadRequest},
+		{"library not in force", http.MethodPut, "/api/v1/config/stages/" + st.Stage + "/dispositions/77/F01039L6", map[string]any{"to": "shelf"}, http.StatusNotFound},
+		{"barcode too long", http.MethodPut, "/api/v1/config/stages/" + st.Stage + "/dispositions/10/ABCDEFGHIJKLMNOPQ", map[string]any{"to": "shelf"}, http.StatusBadRequest},
+		{"unknown stage", http.MethodPut, "/api/v1/config/stages/nosuch/dispositions/10/F01039L6", map[string]any{"to": "shelf"}, http.StatusNotFound},
+	} {
+		if rec := e.call(c.method, c.path, c.body); rec.Code != c.code {
+			t.Errorf("%s: %d %s, want %d", c.name, rec.Code, rec.Body, c.code)
+		}
+	}
+	if got := e.edit(http.MethodGet, "/api/v1/config/stages/"+st.Stage, nil); len(got.Dispositions) != 0 {
+		t.Errorf("refused requests changed the stage: %+v", got.Dispositions)
+	}
+}
+
+// TestConfigStageDispositionForDisplaced: a cartridge a slot edit displaces
+// has no disposition until PUT gives it one (removal.leaves).
+func TestConfigStageDispositionForDisplaced(t *testing.T) {
+	e := newWriteEnv(t, nil)
+	st := e.edit(http.MethodPatch, "/api/v1/config/libraries/10/slots/30", map[string]any{"barcode": "NEW030L8"})
+	if len(st.Dispositions) != 0 {
+		t.Fatalf("dispositions after the slot edit: %+v", st.Dispositions)
+	}
+	st = e.edit(http.MethodPut, "/api/v1/config/stages/"+st.Stage+"/dispositions/10/F01030L6", map[string]any{"to": "export"})
+	if want := []validate.Disposition{{Library: 10, Barcode: "F01030L6", To: "export"}}; !reflect.DeepEqual(st.Dispositions, want) {
+		t.Fatalf("after PUT: %+v, want %+v", st.Dispositions, want)
+	}
+}

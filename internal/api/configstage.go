@@ -509,17 +509,33 @@ func (st *stage) changes() (files []apply.File, del []apply.Delete) {
 // home (AC 12). They count again if the stage creates the library anew,
 // whose new slots may no longer hold them (mhvtl-control#97).
 func (st *stage) dispositionList() []validate.Disposition {
+	out, _ := st.splitDispositions()
+	return out
+}
+
+// splitDispositions returns the stage's dispositions that count (see
+// dispositionList) and those held for a library the stage deletes, each
+// sorted by library and barcode. The held ones are shown, not validated, so
+// that they do not come back unannounced when the library is created anew
+// (mhvtl-control#104).
+func (st *stage) splitDispositions() (counted, held []validate.Disposition) {
 	dc, _ := st.deviceConf() // a file that is not writable still lists its stanzas
-	out := make([]validate.Disposition, 0, len(st.dispositions))
+	counted = make([]validate.Disposition, 0, len(st.dispositions))
 	for _, d := range st.dispositions {
-		if _, inCur := findConfigLibrary(st.cur, d.Library); !inCur {
-			continue
+		_, inCur := findConfigLibrary(st.cur, d.Library)
+		_, inNext := dc.Stanza("Library", d.Library)
+		if inCur && inNext {
+			counted = append(counted, d)
+		} else {
+			held = append(held, d)
 		}
-		if _, inNext := dc.Stanza("Library", d.Library); !inNext {
-			continue
-		}
-		out = append(out, d)
 	}
+	sortDispositions(counted)
+	sortDispositions(held)
+	return counted, held
+}
+
+func sortDispositions(out []validate.Disposition) {
 	slices.SortFunc(out, func(a, b validate.Disposition) int {
 		if a.Library != b.Library {
 			return a.Library - b.Library
@@ -532,11 +548,14 @@ func (st *stage) dispositionList() []validate.Disposition {
 		}
 		return 0
 	})
-	return out
+}
+
+func dispositionKey(library int, barcode string) string {
+	return fmt.Sprintf("%d/%s", library, barcode)
 }
 
 func (st *stage) dispose(d validate.Disposition) {
-	st.dispositions[fmt.Sprintf("%d/%s", d.Library, d.Barcode)] = d
+	st.dispositions[dispositionKey(d.Library, d.Barcode)] = d
 }
 
 // Values of stageDTO.State.
@@ -559,6 +578,9 @@ type stageDTO struct {
 	Files        map[string]*string     `json:"files"`
 	Base         map[string]string      `json:"base_sha256"`
 	Dispositions []validate.Disposition `json:"dispositions"`
+	// HeldDispositions are dispositions kept for a library the stage
+	// deletes; they count again if the stage creates it anew.
+	HeldDispositions []validate.Disposition `json:"held_dispositions,omitempty"`
 	// LastApply is the answer of the stage's last apply, not a dry run.
 	LastApply *applyResultDTO `json:"last_apply,omitempty"`
 	// Notes say where the stage took a library's placement from when its
@@ -572,7 +594,8 @@ type stageDTO struct {
 
 func (st *stage) dto(expires time.Time) stageDTO {
 	d := stageDTO{Stage: st.id, Expires: expires, State: stageOpen, Files: map[string]*string{}, Base: map[string]string{},
-		Dispositions: st.dispositionList(), LastApply: st.last}
+		LastApply: st.last}
+	d.Dispositions, d.HeldDispositions = st.splitDispositions()
 	for _, n := range st.notes {
 		d.Notes = append(d.Notes, n)
 	}
