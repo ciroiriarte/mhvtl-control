@@ -403,7 +403,6 @@ func TestConfigApply(t *testing.T) {
 		!strings.Contains(rec.Body.String(), "plan_required") {
 		t.Fatalf("apply after an edit: %d %s", rec.Code, rec.Body)
 	}
-	e.answer(func(apply.Request) apply.Response { return apply.Response{Result: apply.ResultValidated} })
 	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage, "dry_run": true}); rec.Code != http.StatusOK {
 		t.Fatalf("dry run: %d %s", rec.Code, rec.Body)
 	}
@@ -554,7 +553,6 @@ func TestConfigWriteGate(t *testing.T) {
 	e = newWriteEnv(t, nil)
 	e.answer(func(apply.Request) apply.Response { return apply.Response{Result: apply.ResultValidated} })
 	st := e.staged()
-	e.answer(func(apply.Request) apply.Response { return apply.Response{Result: apply.ResultValidated} })
 	if rec := e.call(http.MethodPost, "/api/v1/config/apply", map[string]any{"stage": st.Stage, "dry_run": true}); rec.Code != http.StatusOK {
 		t.Fatalf("dry run: %d %s", rec.Code, rec.Body)
 	}
