@@ -212,6 +212,15 @@ func (c *LibContents) lookup(kind string, n int) int {
 	return found
 }
 
+// CheckCartridgeBarcode refuses a barcode a Slot or MAP line could not
+// carry (checkBarcode), for an API that names a cartridge outside a line.
+func CheckCartridgeBarcode(barcode string) error {
+	if barcode == "" {
+		return fmt.Errorf("library_contents: empty barcode")
+	}
+	return checkBarcode("Slot", barcode)
+}
+
 // checkBarcode refuses a barcode mhVTL would not read back whole, sscanf
 // "Slot %d: %s" stopping at the first white space (mhvtl
 // usr/cmd/vtllibrary.c:1055), or one add_barcode exits on for its length

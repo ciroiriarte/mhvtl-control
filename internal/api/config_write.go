@@ -449,8 +449,11 @@ func (s *Server) handleConfigLibraryDelete(w http.ResponseWriter, r *http.Reques
 			return err
 		}
 		for _, d := range req.Dispositions {
-			if d.Barcode == "" {
-				return badEdit("a disposition needs a barcode")
+			if err := conffile.CheckCartridgeBarcode(d.Barcode); err != nil {
+				return badEdit("disposition: %v", err)
+			}
+			if err := checkDestination(d.To, d.Slot); err != nil {
+				return badEdit("disposition for %s: %v", d.Barcode, err)
 			}
 		}
 		dc, err := st.deviceConf()
@@ -474,9 +477,15 @@ func (s *Server) handleConfigLibraryDelete(w http.ResponseWriter, r *http.Reques
 			// New in the stage: there is nothing to delete.
 			delete(st.next, name)
 		}
-		for _, d := range req.Dispositions {
-			d.Library = id
-			st.dispose(d)
+		// A library only the stage creates has no cartridge in force to
+		// leave it, so its dispositions are not kept: a held one would never
+		// count again, nor could DELETE /config/stages/{id}/dispositions
+		// reach it (mhvtl-control#104).
+		if _, inCur := findConfigLibrary(st.cur, id); inCur {
+			for _, d := range req.Dispositions {
+				d.Library = id
+				st.dispose(d)
+			}
 		}
 		return nil
 	})
@@ -781,11 +790,19 @@ func (s *Server) handleConfigSlotDelete(w http.ResponseWriter, r *http.Request) 
 		if req.Disposition != nil && e.Barcode == "" {
 			return badEdit("%s %d holds no cartridge to dispose of", kind, n)
 		}
+		if d := req.Disposition; d != nil {
+			if err := checkDestination(d.To, d.Slot); err != nil {
+				return badEdit("disposition: %v", err)
+			}
+		}
 		if err := lc.RemoveEntry(kind, n); err != nil {
 			return err
 		}
 		st.next[contentsFile(id)] = lc.Render()
-		if d := req.Disposition; d != nil {
+		// A library only the stage creates has no cartridge in force to
+		// leave it: there is nothing to dispose of (see the library delete).
+		if _, inCur := findConfigLibrary(st.cur, id); inCur && req.Disposition != nil {
+			d := req.Disposition
 			d.Library, d.Barcode = id, e.Barcode
 			st.dispose(*d)
 		}
@@ -1108,6 +1125,84 @@ func (s *Server) handleConfigStage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.releaseStage(st)
 	writeJSON(w, http.StatusOK, st.dto(now.Add(stageTTL)))
+}
+
+// dispositionPutRequest is where a cartridge leaving a library goes: the
+// body of PUT /config/stages/{id}/dispositions/{library}/{barcode}.
+type dispositionPutRequest struct {
+	To   string `json:"to"`
+	Slot int    `json:"slot"`
+}
+
+// checkDestination refuses a disposition's destination other than a
+// storage slot (with its positive number), export or the shelf.
+func checkDestination(to string, slot int) error {
+	switch {
+	case to != validate.ToSlot && to != validate.ToExport && to != validate.ToShelf:
+		return fmt.Errorf("to must be %q, %q or %q", validate.ToSlot, validate.ToExport, validate.ToShelf)
+	case to == validate.ToSlot && slot <= 0:
+		return errors.New("a disposition to a slot needs a positive slot number")
+	case to != validate.ToSlot && slot != 0:
+		return errors.New("slot is only for a disposition to a slot")
+	}
+	return nil
+}
+
+// handleConfigDispositionPut sets or replaces where one cartridge leaving
+// a library goes (mhvtl-control#104): a disposition a slot or library
+// delete recorded, or one for a cartridge an edit displaced
+// (removal.leaves).
+func (s *Server) handleConfigDispositionPut(w http.ResponseWriter, r *http.Request) {
+	var req dispositionPutRequest
+	if !s.writeAllowed(w, r) || !decodeStrict(w, r, &req) {
+		return
+	}
+	if err := checkDestination(req.To, req.Slot); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	s.stageEdit(w, r, r.PathValue("id"), func(_ context.Context, st *stage) error {
+		// The library is one in force, since a disposition is for a
+		// cartridge leaving one, and the barcode one a library_contents line
+		// could carry.
+		id, err := pathInt(r, "library")
+		if err != nil {
+			return err
+		}
+		bc := r.PathValue("barcode")
+		if err := conffile.CheckCartridgeBarcode(bc); err != nil {
+			return badEdit("%v", err)
+		}
+		if _, ok := findConfigLibrary(st.cur, id); !ok {
+			return notFound("library %d is not in the configuration in force", id)
+		}
+		st.dispose(validate.Disposition{Library: id, Barcode: bc, To: req.To, Slot: req.Slot})
+		return nil
+	})
+}
+
+// handleConfigDispositionDelete removes one disposition from a stage,
+// counted or held for a deleted library (mhvtl-control#104).
+func (s *Server) handleConfigDispositionDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.writeAllowed(w, r) {
+		return
+	}
+	s.stageEdit(w, r, r.PathValue("id"), func(_ context.Context, st *stage) error {
+		// Only the disposition's identity is checked: whatever the stage
+		// holds can be removed, even one recorded before the checks PUT
+		// makes existed.
+		id, err := pathInt(r, "library")
+		if err != nil {
+			return err
+		}
+		bc := r.PathValue("barcode")
+		k := dispositionKey(id, bc)
+		if _, ok := st.dispositions[k]; !ok {
+			return notFound("the stage has no disposition for %s in library %d", bc, id)
+		}
+		delete(st.dispositions, k)
+		return nil
+	})
 }
 
 // handleConfigStageDelete discards a stage (#61 review L1). A stage an

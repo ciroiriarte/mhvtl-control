@@ -207,3 +207,36 @@ test("stageEditable holds every edit while the stage's apply is in flight", () =
   assert.strictEqual(core.stageEditable(true, { id: "s", applying: true }), false);
   assert.strictEqual(core.stageEditable(false, { id: "s" }), false);
 });
+
+// mhvtl-control#104: one disposition of a stage is set, replaced and
+// removed at /config/stages/{id}/dispositions/{library}/{barcode}.
+test("buildDisposition: slot, export, shelf; slot only with a number", () => {
+  assert.deepStrictEqual(core.buildDisposition("F01039L6", { to: "slot", slot: "5" }), { to: "slot", slot: 5 });
+  assert.deepStrictEqual(core.buildDisposition("F01039L6", { to: "export", slot: "" }), { to: "export" });
+  assert.deepStrictEqual(core.buildDisposition("F01039L6", { to: "shelf", slot: "7" }), { to: "shelf" });
+  assert.throws(() => core.buildDisposition("F01039L6", { to: "slot", slot: "" }), RangeError);
+  assert.throws(() => core.buildDisposition("F01039L6", { to: "slot", slot: "0" }), RangeError);
+  assert.throws(() => core.buildDisposition("F01039L6", { to: "away" }), RangeError);
+  assert.throws(() => core.buildDisposition("F01039L6", null), /F01039L6/);
+  // A slot delete carries the same disposition.
+  assert.deepStrictEqual(core.buildSlotDelete("s1", "slot", "F01039L6", { to: "slot", slot: "5" }),
+    { stage: "s1", kind: "slot", disposition: { to: "slot", slot: 5 } });
+});
+
+test("dispositionPath names the stage, library and barcode", () => {
+  assert.strictEqual(core.dispositionPath("ab12", 10, "F01039L6"), "/api/v1/config/stages/ab12/dispositions/10/F01039L6");
+  assert.strictEqual(core.dispositionPath("ab12", "10", " A/B1 "), "/api/v1/config/stages/ab12/dispositions/10/A%2FB1");
+  assert.throws(() => core.dispositionPath("", 10, "F01039L6"), RangeError);
+  assert.throws(() => core.dispositionPath("ab12", 0, "F01039L6"), RangeError);
+  assert.throws(() => core.dispositionPath("ab12", "x", "F01039L6"), RangeError);
+  assert.throws(() => core.dispositionPath("ab12", 10, ""), RangeError);
+  assert.throws(() => core.dispositionPath("ab12", 10, "TWO WORDS"), RangeError);
+  assert.throws(() => core.dispositionPath("ab12", 10, "ABCDEFGHIJKLMNOPQ"), RangeError);
+  assert.throws(() => core.dispositionPath("ab12", 10, ".."), RangeError);
+});
+
+test("dispositionText says where the cartridge goes", () => {
+  assert.strictEqual(core.dispositionText({ library: 10, barcode: "F01039L6", to: "slot", slot: 5 }), "F01039L6 (library 10): to slot 5");
+  assert.strictEqual(core.dispositionText({ library: 10, barcode: "F01039L6", to: "export" }), "F01039L6 (library 10): to a MAP slot");
+  assert.strictEqual(core.dispositionText({ library: 10, barcode: "F01039L6", to: "shelf" }), "F01039L6 (library 10): out of the library");
+});

@@ -689,6 +689,24 @@ func TestFindingsFollowSelection(t *testing.T) {
 	}
 }
 
+// The pending-changes panel changes, removes and adds dispositions, and
+// lists the held ones (mhvtl-control#104).
+func TestStageDispositionControls(t *testing.T) {
+	h := newServer()
+	_, app := get(t, h, "/static/js/app.js")
+	for _, want := range []string{
+		"dispositionBlocks(box, editable);",
+		"coerceArray(cfgStage.data.held_dispositions)",
+		`stageEdit("PUT", path, body, done);`,
+		`stageEdit("DELETE", path, null,`,
+		"core.dispositionPath(stageId(),",
+	} {
+		if !strings.Contains(app, want) {
+			t.Errorf("app.js missing %q", want)
+		}
+	}
+}
+
 // The Transport Map's iSCSI export section and its dialog. The CHAP secret
 // inputs are password fields the browser does not fill from a saved login,
 // and app.js never sets them other than to clear them.

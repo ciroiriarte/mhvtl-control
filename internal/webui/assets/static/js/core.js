@@ -758,17 +758,47 @@
   function buildSlotDelete(stage, kind, barcode, disposition) {
     var body = withStage(stage, { kind: kind === "map" ? "map" : "slot" });
     if (!barcode) { return body; }
+    body.disposition = buildDisposition(barcode, disposition);
+    return body;
+  }
+
+  // buildDisposition is where the cartridge barcode goes: { to } for
+  // "export" or "shelf", { to, slot } for a storage slot. It is the body of
+  // PUT /config/stages/{id}/dispositions/{library}/{barcode} and a slot
+  // delete's disposition.
+  function buildDisposition(barcode, disposition) {
     if (!disposition || !disposition.to) {
       throw new RangeError("say where the cartridge " + String(barcode) + " goes");
     }
     var d = { to: String(disposition.to) };
+    if (d.to !== "slot" && d.to !== "export" && d.to !== "shelf") {
+      throw new RangeError("a cartridge goes to a slot, a MAP slot (export) or the shelf");
+    }
     if (d.to === "slot") {
       var n = intField(disposition.slot);
       if (!(n > 0)) { throw new RangeError("the slot must be a positive number"); }
       d.slot = n;
     }
-    body.disposition = d;
-    return body;
+    return d;
+  }
+
+  // dispositionPath is the path of one disposition of stage: the cartridge
+  // barcode leaving library (mhvtl-control#104). The barcode is one word of
+  // printable characters, at most 16 (library_contents).
+  function dispositionPath(stage, library, barcode) {
+    var id = intField(library), bc = String(barcode == null ? "" : barcode).trim();
+    if (!stage) { throw new RangeError("there are no pending changes"); }
+    if (!(id > 0)) { throw new RangeError("the library must be a positive number"); }
+    if (!/^[\x21-\x7e]{1,16}$/.test(bc)) { throw new RangeError("a barcode is one word of up to 16 printable characters"); }
+    // fetch resolves "." and ".." path segments before sending.
+    if (bc === "." || bc === "..") { throw new RangeError("the barcode " + bc + " cannot be named in a path"); }
+    return "/api/v1/config/stages/" + encodeURIComponent(stage) + "/dispositions/" + id + "/" + encodeURIComponent(bc);
+  }
+
+  // dispositionText says where a disposition sends its cartridge.
+  function dispositionText(d) {
+    return String(d.barcode) + " (library " + coerceNumber(d.library) + "): " +
+      (d.to === "slot" ? "to slot " + coerceNumber(d.slot) : d.to === "export" ? "to a MAP slot" : "out of the library");
   }
 
   // buildSlotsAdd adds count Slot or MAP lines after the last.
@@ -2152,6 +2182,9 @@
     buildAttrPatch: buildAttrPatch,
     buildSlotPatch: buildSlotPatch,
     buildSlotDelete: buildSlotDelete,
+    buildDisposition: buildDisposition,
+    dispositionPath: dispositionPath,
+    dispositionText: dispositionText,
     buildSlotsAdd: buildSlotsAdd,
     esc: esc,
     fmtRatio: fmtRatio,

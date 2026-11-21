@@ -3087,6 +3087,76 @@
     }
   }
 
+  // dispositionBlocks lists where the stage sends cartridges leaving their
+  // element, each with Change… and Remove while the stage is editable, and
+  // the dispositions held for a library the stage deletes, which count again
+  // if it creates the library anew (mhvtl-control#104).
+  function dispositionBlocks(box, editable) {
+    var rows = function (list, change) {
+      return list.map(function (d) {
+        var li = mk("li", { text: core.dispositionText(d) });
+        if (editable) {
+          var acts = [];
+          if (change) { acts.push(editButton("Change…", "Change where " + String(d.barcode) + " goes", function () { dispositionDialog(d); })); }
+          acts.push(editButton("Remove", "Remove the disposition of " + String(d.barcode), function () { removeDisposition(d); }));
+          li.appendChild(mk("span", { class: "drive-actions", children: acts }));
+        }
+        return li;
+      });
+    };
+    var disp = coerceArray(cfgStage.data.dispositions), held = coerceArray(cfgStage.data.held_dispositions);
+    if (disp.length) {
+      box.appendChild(mk("div", { class: "stage-block", children: [
+        mk("h4", { class: "cfg-h", text: "Cartridges leaving their element" }), mk("ul", { children: rows(disp, true) }),
+      ] }));
+    }
+    if (held.length) {
+      box.appendChild(mk("div", { class: "stage-block", children: [
+        mk("h4", { class: "cfg-h", text: "Kept while their library is deleted" }),
+        mk("p", { class: "muted", text: "They count again if the pending changes create the library anew." }),
+        mk("ul", { children: rows(held, false) }),
+      ] }));
+    }
+    if (editable) {
+      box.appendChild(mk("div", { class: "drive-actions", children: [
+        editButton("Where a cartridge goes…", "Say where a cartridge leaving a library goes", function () { dispositionDialog(null); }),
+      ] }));
+    }
+  }
+
+  // dispositionDialog sets where a cartridge goes: d's, or one the user
+  // names (a cartridge Check reports as leaving, removal.leaves).
+  function dispositionDialog(d) {
+    var fields = [];
+    if (!d) {
+      fields.push({ name: "library", label: "Library", type: "number", value: "" });
+      fields.push({ name: "barcode", label: "Barcode", value: "" });
+    }
+    fields.push({ name: "to", label: "Where it goes", type: "select", value: d ? String(d.to) : "shelf",
+      options: [["shelf", "Out of the library (stays in its home)"], ["slot", "To a storage slot"], ["export", "To a MAP slot"]] });
+    fields.push({ name: "slot", label: "Storage slot (when moving to one)", type: "number", value: d && d.to === "slot" ? String(coerceNumber(d.slot)) : "" });
+    formDialog({
+      title: d ? "Where " + String(d.barcode) + " goes" : "Where a cartridge goes",
+      intro: (d ? String(d.barcode) + " leaves its element in library " + coerceNumber(d.library) + "." : "For a cartridge that leaves its element in a library.") + " Check confirms it leaves.",
+      fields: fields,
+      submit: "Stage",
+      onSubmit: function (v, done) {
+        var path, body;
+        try {
+          path = core.dispositionPath(stageId(), d ? d.library : v.library, d ? d.barcode : v.barcode);
+          body = core.buildDisposition(d ? d.barcode : v.barcode, { to: v.to, slot: v.slot });
+        } catch (e) { done(e); return; }
+        stageEdit("PUT", path, body, done);
+      },
+    });
+  }
+
+  function removeDisposition(d) {
+    var path;
+    try { path = core.dispositionPath(stageId(), d.library, d.barcode); } catch (e) { stageStatus.error(e.message); return; }
+    stageEdit("DELETE", path, null, function (e) { if (e) { stageStatus.error(e.message); } });
+  }
+
   // renderResult shows what a failed apply reported: the unit that failed
   // and its journal, or where its logs are when the node answers none
   // (core.logsHint), and the cartridges a rollback left aside.
@@ -3132,18 +3202,13 @@
       ] }));
       if (row.kind !== "delete") { box.appendChild(diffBlock(row)); }
     });
-    var disp = coerceArray(cfgStage.data.dispositions).map(function (d) {
-      return String(d.barcode) + " (library " + coerceNumber(d.library) + "): " +
-        (d.to === "slot" ? "to slot " + coerceNumber(d.slot) : d.to === "export" ? "to a MAP slot" : "out of the library");
-    });
-    var db = listBlock("Cartridges leaving their element", disp, "");
-    if (db) { box.appendChild(db); }
+    var editable = cfgEditable();
+    dispositionBlocks(box, editable);
     // A library that is not running keeps its file's placement (notes).
     var nb = listBlock("Placement", coerceArray(cfgStage.data.notes).map(String), "");
     if (nb) { box.appendChild(nb); }
     box.appendChild(mk("p", { class: "muted", text: "library_contents of a running library is written with the live placement, so the diff includes cartridges moved since the file was written." }));
 
-    var editable = cfgEditable();
     var check = editButton("Check", "Check the pending changes with the apply helper", function () { checkStage(); });
     var plan = cfgStage.plan;
     var apply = editButton(plan && plan.force ? "Apply with unload…" : "Apply…", "Apply the pending changes", function () { applyStage(); });

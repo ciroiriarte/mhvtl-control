@@ -273,6 +273,8 @@ func TestConfigWriteRoutesGated(t *testing.T) {
 		{http.MethodPost, "/api/v1/config/apply"},
 		{http.MethodPatch, "/api/v1/config/system"},
 		{http.MethodDelete, "/api/v1/config/stages/0123"},
+		{http.MethodPut, "/api/v1/config/stages/0123/dispositions/10/A%2FB1"},
+		{http.MethodDelete, "/api/v1/config/stages/0123/dispositions/10/A%2FB1"},
 		{http.MethodPatch, "/api/v1/transports/iscsi"},
 		{http.MethodPost, "/api/v1/transports/iscsi/bind"},
 		{http.MethodPost, "/api/v1/transports/iscsi/unbind"},
