@@ -35,11 +35,11 @@ type DriveModel struct {
 	// WORM is whether the personality sets ssc_pm.set_WORM. vtltape refuses
 	// to load a WORM cartridge in a drive whose personality does not
 	// ("drive doesn't support WORM", usr/cmd/vtltape.c:1598-1602, upstream
-	// master 01c7710), whatever its media list says.
+	// master 2c40a93), whatever its media list says.
 	WORM bool
 	// SP is the personality's ssc_pm.drive_supports_SP: only then does
 	// vtltape register SECURITY PROTOCOL IN/OUT (usr/cmd/vtltape.c:2658,
-	// upstream master 01c7710), so only then can the drive encrypt.
+	// upstream master 2c40a93), so only then can the drive encrypt.
 	SP    bool
 	Media []Media
 }
