@@ -858,7 +858,7 @@ func abs(n int) int {
 
 // commentCitations are lines of mhVTL that comments of this module cite
 // (packages personality, ident and validate), with text the cited line
-// holds at upstream master 01c7710, the commit CI checks against. The
+// holds at upstream master 2c40a93, the commit CI checks against. The
 // comments themselves may name the older commit they were written against.
 // TestCommentCitations fails when the text
 // moves more than maxCitationDrift lines away, and logs any smaller move.

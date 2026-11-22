@@ -823,7 +823,7 @@ func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 
 // libraryID returns the library a " Library ID: L Slot: N" value names, read
 // as vtllibrary reads it (sscanf, mhvtl usr/cmd/vtllibrary.c:808 at
-// 01c7710), which takes the drive only with both numbers.
+// 2c40a93), which takes the drive only with both numbers.
 func libraryID(value string) (int, bool) {
 	if n, v := cScan(" Library ID: "+value, " Library ID: %ld Slot: %d"); n == 2 {
 		return int(v[0]), true

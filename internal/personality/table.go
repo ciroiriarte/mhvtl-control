@@ -61,7 +61,7 @@ type Personality struct {
 }
 
 // Rules is customise_lu (vtllibrary.c:1659-1679) and its helpers
-// (vtllibrary.c:1613-1657, upstream master 01c7710) in evaluation order. An
+// (vtllibrary.c:1613-1657, upstream master 2c40a93) in evaluation order. An
 // OR of two strncasecmp is two rules.
 var Rules = []Rule{
 	{Vendor: "stk", ProductPrefix: "SL500", InitFn: "init_stkslxx", Source: "usr/cmd/vtllibrary.c:1623"},
