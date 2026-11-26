@@ -34,7 +34,7 @@
   var driveState = core.driveState, firstEmptyDrive = core.firstEmptyDrive, mountCandidates = core.mountCandidates;
   var emptyLocations = core.emptyLocations, fmtRatio = core.fmtRatio, validBarcode = core.validBarcode;
   var expandBarcodes = core.expandBarcodes, parseSizeMB = core.parseSizeMB, buildMediaPatch = core.buildMediaPatch;
-  var dataOnlyError = core.dataOnlyError;
+  var dataOnlyError = core.dataOnlyError, mamGroups = core.mamGroups, buildMAMPatch = core.buildMAMPatch;
   var mediaLocText = core.mediaLocText, filterMedia = core.filterMedia;
   var nodeRows = core.nodeRows;
   var capabilityNotice = core.capabilityNotice, findingRows = core.findingRows, problemText = core.problemText;
@@ -1644,6 +1644,9 @@
               : c.missing === "file_absent" ? "its media files are incomplete" : "";
       acts.appendChild(mediaButton("media/" + bc + "/edit", "Edit", "Edit " + bc, editWhy || "Change write protect, type, density or size",
         !mutationsEnabled || !!editWhy, function () { openEditDialog(libId, c, renderGen); }));
+      acts.appendChild(mediaButton("media/" + bc + "/attributes", "Attributes", "MAM attributes of " + bc,
+        c.backend ? "Show the cartridge's MAM attributes; edit the application ones while it is in a drive" : "no media on disk",
+        !c.backend, function () { openMAMDialog(libId, c, renderGen); }));
       if (kind === "shelf") {
         var importWhy = !c.backend ? "no media on disk" : c.media_absent ? "its disk is not attached"
           : c.missing === "file_absent" ? "its media files are incomplete" : "";
@@ -1841,6 +1844,115 @@
       errEl: $("me-error"), dialog: "media-edit-dialog", method: "PATCH",
       path: libPath(ctx.libId, "/media/" + encodeURIComponent(bc)), body: body,
       done: function () { return "Updated " + bc; },
+    });
+  }
+
+  /* ---- MAM attributes dialog -------------------------------------------- */
+  var mamCtx = null; // { libId, barcode, renderGen, attrs, editable, seq }
+  var mamSeq = 0;
+  // openMAMDialog shows the MAM attributes of a cartridge (GET
+  // .../attributes). The host attributes become inputs while the cartridge
+  // is in a drive, as the server writes them through it.
+  function openMAMDialog(libId, cart, renderGen) {
+    mamCtx = { libId: libId, barcode: String(cart.barcode || ""), renderGen: renderGen, attrs: [], editable: false };
+    $("mam-dialog-title").textContent = "MAM attributes · " + mamCtx.barcode;
+    var dlg = $("mam-dialog");
+    if (dlg.showModal && !dlg.open) { dlg.showModal(); }
+    loadMAM();
+  }
+
+  function loadMAM() {
+    if (!mamCtx) { return; }
+    var ctx = mamCtx;
+    var seq = ++mamSeq;
+    var gen = NodeState.generation;
+    var body = $("mam-body");
+    clear(body);
+    $("mam-intro").textContent = "";
+    $("mam-note").textContent = "";
+    $("mam-error").textContent = "";
+    $("mam-submit").disabled = true;
+    body.appendChild(mk("p", { class: "muted", text: "Reading attributes…" }));
+    api(libPath(ctx.libId, "/media/" + encodeURIComponent(ctx.barcode) + "/attributes"))
+      .then(function (r) {
+        if (isStale(gen, NodeState.generation) || seq !== mamSeq) { return; }
+        renderMAM(ctx, r || {});
+      })
+      .catch(function (e) {
+        if (isStale(gen, NodeState.generation) || seq !== mamSeq) { return; }
+        clear(body);
+        body.appendChild(mk("p", { class: "error full", text: "Reading attributes failed: " + e.message }));
+      });
+  }
+
+  function renderMAM(ctx, r) {
+    var body = $("mam-body");
+    clear(body);
+    var lib = activeLib();
+    var drives = lib && coerceNumber(lib.id) === coerceNumber(ctx.libId) ? lib.drives : [];
+    var at = r.loaded_in || null;
+    ctx.attrs = coerceArray(r.attributes);
+    ctx.editable = !!at && mutationsEnabled;
+    $("mam-intro").textContent = at
+      ? "Loaded in " + (coerceNumber(at.library) === coerceNumber(ctx.libId)
+        ? mediaLocText({ kind: "drive", number: at.position }, drives)
+        : "drive position " + coerceNumber(at.position) + " of library #" + coerceNumber(at.library)) +
+        (mutationsEnabled ? ": the application attributes can be edited." : ".")
+      : "Not loaded in a drive" + (r.live_error ? " (changer state unknown: " + String(r.live_error) + ")" : "") +
+        ": mount the cartridge to edit its attributes.";
+    $("mam-note").textContent = String(r.note || "");
+    if (r.error) { body.appendChild(mk("p", { class: "error full", text: "⚠ " + String(r.error) })); }
+    if (!ctx.attrs.length) {
+      body.appendChild(mk("p", { class: "muted full", text: "No attributes recorded yet." }));
+    }
+    mamGroups(ctx.attrs).forEach(function (g) {
+      var rows = g.attrs.map(function (a) {
+        var id = String(a.id || "");
+        var val;
+        if (ctx.editable && a.editable) {
+          val = mk("input", { key: "mam/" + id, attrs: {
+            type: "text", value: String(a.value == null ? "" : a.value), "data-mam-id": id,
+            "aria-label": (a.name || id) + " (" + id + ")", maxlength: String(coerceNumber(a.length)),
+          } });
+        } else {
+          val = document.createTextNode(String(a.value == null ? "" : a.value));
+        }
+        var fmt = String(a.format || "") + (a.read_only ? " · RO" : a.editable ? " · editable" : "");
+        return mk("tr", { children: [
+          mk("td", { class: "mono", text: id }),
+          mk("th", { text: String(a.name || "—") }),
+          mk("td", { children: [val], attrs: a.raw ? { title: "raw " + String(a.raw) } : null }),
+          mk("td", { class: "muted", text: fmt }),
+        ] });
+      });
+      var sec = mk("section", { class: "full" });
+      sec.appendChild(mk("h4", { text: g.title }));
+      sec.appendChild(mk("table", { children: [mk("tbody", { children: rows })] }));
+      body.appendChild(sec);
+    });
+    $("mam-submit").disabled = !ctx.editable;
+  }
+
+  function doMAMSave() {
+    if (!mamCtx || !mamCtx.editable) { return; }
+    var ctx = mamCtx;
+    var form = {};
+    Array.prototype.forEach.call($("mam-body").querySelectorAll("input[data-mam-id]"), function (el) {
+      form[el.getAttribute("data-mam-id")] = el.value;
+    });
+    var body;
+    try {
+      body = buildMAMPatch(ctx.attrs, form);
+    } catch (e) {
+      $("mam-error").textContent = e.message;
+      return;
+    }
+    if (!body) { $("mam-error").textContent = "Nothing changed."; return; }
+    mutate({
+      renderGen: ctx.renderGen, btn: $("mam-submit"), what: "write attributes of " + ctx.barcode, status: mediaStatus,
+      errEl: $("mam-error"), dialog: "mam-dialog", method: "PATCH",
+      path: libPath(ctx.libId, "/media/" + encodeURIComponent(ctx.barcode) + "/attributes"), body: body,
+      done: function () { return "Updated attributes of " + ctx.barcode; },
     });
   }
 
@@ -3942,7 +4054,7 @@
     setPanelGrey("media-list", true);
     setPanelGrey("config-view", true);
     setPanelGrey("config-findings", true);
-    ["media-create-dialog", "media-edit-dialog", "import-dialog", "move-dialog", "confirm-dialog", "stats-dialog"].forEach(closeDialog);
+    ["media-create-dialog", "media-edit-dialog", "mam-dialog", "import-dialog", "move-dialog", "confirm-dialog", "stats-dialog"].forEach(closeDialog);
     // The pending changes were staged on the previous node; their dialogs
     // (built per edit) go with them.
     stageStatus.grey();
@@ -4089,7 +4201,7 @@
 
     // Enter in a text field runs the dialog's primary action instead of the
     // form's default (first) button, which is Cancel.
-    [["media-create-form", "mc-submit"], ["media-edit-form", "me-submit"], ["move-form", "move-submit"]].forEach(function (p) {
+    [["media-create-form", "mc-submit"], ["media-edit-form", "me-submit"], ["mam-form", "mam-submit"], ["move-form", "move-submit"]].forEach(function (p) {
       $(p[0]).addEventListener("keydown", function (e) {
         if (e.key === "Enter" && e.target && e.target.tagName === "INPUT") {
           e.preventDefault();
@@ -4101,6 +4213,8 @@
     $("media-create-form").addEventListener("change", updateCreatePreview);
     $("mc-submit").addEventListener("click", doCreate);
     $("me-submit").addEventListener("click", doEdit);
+    $("mam-submit").addEventListener("click", doMAMSave);
+    $("mam-refresh").addEventListener("click", loadMAM);
     $("move-submit").addEventListener("click", doMove);
     $("stats-refresh").addEventListener("click", loadStats);
     $("iscsi-preview-btn").addEventListener("click", function () { iscsiSend(true); });

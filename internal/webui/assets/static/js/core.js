@@ -311,6 +311,72 @@
     return Object.keys(body).length ? body : null;
   }
 
+  // MAM_GROUPS orders and titles the attribute groups of GET
+  // /media/{barcode}/attributes.
+  var MAM_GROUPS = [
+    ["host", "Host (application)"], ["host_vendor", "Host vendor specific"],
+    ["medium", "Medium"], ["device", "Device"],
+    ["device_vendor", "Device vendor specific"], ["medium_vendor", "Medium vendor specific"],
+    ["mhvtl", "mhVTL private"],
+  ];
+
+  // mamGroups splits the attributes of GET /media/{barcode}/attributes into
+  // [{group, title, attrs}] in MAM_GROUPS order, leaving out empty groups;
+  // an unknown group comes last under its own name.
+  function mamGroups(attrs) {
+    var by = {};
+    var order = MAM_GROUPS.map(function (g) { return g[0]; });
+    coerceArray(attrs).forEach(function (a) {
+      var g = String((a && a.group) || "other");
+      if (!by[g]) { by[g] = []; if (order.indexOf(g) < 0) { order.push(g); } }
+      by[g].push(a);
+    });
+    var titles = {};
+    MAM_GROUPS.forEach(function (g) { titles[g[0]] = g[1]; });
+    return order.filter(function (g) { return by[g]; }).map(function (g) {
+      return { group: g, title: titles[g] || g, attrs: by[g] };
+    });
+  }
+
+  // utf8Length is the byte length of s in UTF-8.
+  function utf8Length(s) {
+    var n = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c < 0x80) { n += 1; } else if (c < 0x800) { n += 2; } else if (c >= 0xd800 && c <= 0xdbff) { n += 4; i++; } else { n += 3; }
+    }
+    return n;
+  }
+
+  // buildMAMPatch returns the PATCH /media/{barcode}/attributes body for the
+  // editable attributes whose value form ({id: value}) changes, or null when
+  // none does. It checks what the server checks: the value fits the field
+  // (length in bytes), ASCII is printable 0x20-0x7E, TEXT has no NUL. The
+  // server also limits TEXT to ASCII unless the cartridge says UTF-8.
+  // Throws RangeError naming the attribute otherwise.
+  function buildMAMPatch(attrs, form) {
+    form = form || {};
+    var out = {};
+    coerceArray(attrs).forEach(function (a) {
+      if (!a || !a.editable || !Object.prototype.hasOwnProperty.call(form, a.id)) { return; }
+      var v = String(form[a.id]);
+      if (v === String(a.value == null ? "" : a.value)) { return; }
+      var label = String(a.id) + (a.name ? " (" + a.name + ")" : "");
+      if (a.format === "ascii" && !/^[\x20-\x7e]*$/.test(v)) {
+        throw new RangeError(label + ": ASCII allows only printable characters 0x20-0x7E");
+      }
+      if (a.format === "text" && v.indexOf("\u0000") >= 0) {
+        throw new RangeError(label + ": text must not contain NUL");
+      }
+      var max = coerceNumber(a.length);
+      if (utf8Length(v) > max) {
+        throw new RangeError(label + ": at most " + max + " bytes fit");
+      }
+      out[a.id] = v;
+    });
+    return Object.keys(out).length ? { attributes: out } : null;
+  }
+
   // mediaLocText renders a cartridge location from GET /media. Drive locations
   // carry the drive POSITION; drives (the library's drives[]) maps it to the
   // drive id when known.
@@ -2192,6 +2258,8 @@
     expandBarcodes: expandBarcodes,
     parseSizeMB: parseSizeMB,
     buildMediaPatch: buildMediaPatch,
+    mamGroups: mamGroups,
+    buildMAMPatch: buildMAMPatch,
     dataOnlyError: dataOnlyError,
     mediaLocText: mediaLocText,
     filterMedia: filterMedia,

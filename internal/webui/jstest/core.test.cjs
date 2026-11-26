@@ -330,6 +330,40 @@ test("buildMediaPatch sends only changed fields", () => {
   assert.deepStrictEqual(core.buildMediaPatch(orig, { size_mb: "1024" }), { size_mb: 1024 });
 });
 
+test("mamGroups orders groups and drops empty ones", () => {
+  const attrs = [
+    { id: "0x0000", group: "device" }, { id: "0x01", group: "mhvtl" },
+    { id: "0x0801", group: "host" }, { id: "0x0400", group: "medium" }, { id: "0x0802", group: "host" },
+    { id: "0x9", group: "odd" },
+  ];
+  const g = core.mamGroups(attrs);
+  assert.deepStrictEqual(g.map((x) => x.group), ["host", "medium", "device", "mhvtl", "odd"]);
+  assert.deepStrictEqual(g[0].attrs.map((a) => a.id), ["0x0801", "0x0802"]);
+  assert.strictEqual(g[0].title, "Host (application)");
+  assert.strictEqual(g[4].title, "odd");
+  assert.deepStrictEqual(core.mamGroups(undefined), []);
+});
+
+test("buildMAMPatch sends only changed editable attributes", () => {
+  const attrs = [
+    { id: "0x0801", name: "Application name", format: "ascii", length: 32, value: "Bareos", editable: true },
+    { id: "0x0808", name: "Media pool", format: "text", length: 160, value: "", editable: true },
+    { id: "0x0800", name: "Application vendor", format: "ascii", length: 8, value: "", editable: true },
+    { id: "0x0401", name: "Medium serial number", format: "ascii", length: 32, value: "SN1", editable: false },
+  ];
+  assert.strictEqual(core.buildMAMPatch(attrs, { "0x0801": "Bareos", "0x0808": "" }), null);
+  assert.deepStrictEqual(core.buildMAMPatch(attrs, { "0x0801": "Bareos", "0x0808": "Full é", "0x0401": "x" }),
+    { attributes: { "0x0808": "Full é" } });
+  // clearing a value is a change
+  assert.deepStrictEqual(core.buildMAMPatch(attrs, { "0x0801": "" }), { attributes: { "0x0801": "" } });
+  assert.throws(() => core.buildMAMPatch(attrs, { "0x0800": "123456789" }), /0x0800 \(Application vendor\): at most 8 bytes/);
+  assert.throws(() => core.buildMAMPatch(attrs, { "0x0801": "café" }), /ASCII/);
+  assert.throws(() => core.buildMAMPatch(attrs, { "0x0808": "a\u0000b" }), /NUL/);
+  // a TEXT field holds bytes, not characters
+  assert.throws(() => core.buildMAMPatch(attrs, { "0x0808": "é".repeat(81) }), RangeError);
+  assert.ok(core.buildMAMPatch(attrs, { "0x0808": "é".repeat(80) }));
+});
+
 test("dataOnlyError refuses a non-data type with a data-only density", () => {
   const only = ["LTO8M8"];
   assert.strictEqual(core.dataOnlyError("WORM", "LTO8M8", only), "LTO8M8 media exists only as a data cartridge");

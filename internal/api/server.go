@@ -50,6 +50,9 @@ type Config struct {
 	// Drives reads tape drive statistics. Nil means statistics are
 	// unavailable (503).
 	Drives DriveStatsService
+	// DriveAttributes writes MAM attributes through a drive. Nil means
+	// attribute edits are unavailable (503); reading them still works.
+	DriveAttributes DriveAttributeService
 	// Nodes resolves the device nodes of changers and drives for GET
 	// /libraries. Nil means no nodes are reported.
 	Nodes NodeService
@@ -311,6 +314,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/libraries/{id}/media", s.handleMediaList)
 	mux.HandleFunc("POST /api/v1/libraries/{id}/media", s.handleMediaCreate)
 	mux.HandleFunc("PATCH /api/v1/libraries/{id}/media/{barcode}", s.handleMediaEdit)
+	mux.HandleFunc("GET /api/v1/libraries/{id}/media/{barcode}/attributes", s.handleMediaAttributes)
+	mux.HandleFunc("PATCH /api/v1/libraries/{id}/media/{barcode}/attributes", s.handleMediaAttributesEdit)
 	mux.HandleFunc("GET /api/v1/libraries/{id}/drives/{drive}/stats", s.handleDriveStats)
 	mux.HandleFunc("GET /api/v1/storage/disks", s.handleDisks)
 	mux.HandleFunc("GET /api/v1/transports", s.handleTransports)

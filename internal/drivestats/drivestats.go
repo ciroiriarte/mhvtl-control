@@ -6,6 +6,8 @@
 // It never reads the TapeAlert page (2Eh): on mhVTL and on real drives a
 // LOG SENSE of that page clears the flags, which would steal the alerts from
 // the backup application that owns the drive.
+//
+// WriteAttributes writes MAM attributes through the same drive node.
 package drivestats
 
 import (
