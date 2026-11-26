@@ -34,6 +34,16 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 		{"white space in a Drive", drv + "  \n", 2, "Compression sscanf"},
 		{"Encryption ignored", drv + " Encryption: aes\n", 2, "neither 'aes-gcm' nor 'simulated'"},
 		{"Encryption non-ASCII fold", drv + " Encryption: \u017fimulated\n", 2, "neither 'aes-gcm' nor 'simulated'"},
+		{"Compression type unknown", drv + " Compression type: gzip\n", 2, "vtltape ignores it and keeps an earlier Compression type line or its default"},
+		{"Compression type prefix", drv + " Compression type: lz4hc\n", 2, "reads only its first letters and uses lz4"},
+		{"Backoff not a number", drv + " Backoff: fast\n", 2, "Backoff \"fast\" is not a number: vtltape"},
+		{"Backoff trailing text", lib + " Backoff: 500ms\n", 2, "vtllibrary reads it as 500, so vtllibrary polls with 500; write 500"},
+		{"Backoff trailing text out of range", drv + " Backoff: 5ms\n", 2, "vtltape reads it as 5, so vtltape ignores it and keeps an earlier Backoff line or the default 400"},
+		{"Backoff wraps at 32 bits", drv + " Backoff: 4294967796\n", 2, "does not fit in an int: vtltape reads it as 500, so vtltape polls with 500"},
+		{"Backoff past int64", lib + " Backoff: 9999999999999999999999\n", 2, "does not fit in an int: vtllibrary reads it as -1, so vtllibrary ignores it"},
+		{"Backoff too high", drv + " Backoff: 10000\n", 2, "Backoff 10000 is outside 10-9999: vtltape"},
+		{"Backoff low for vtltape", drv + " Backoff: 5\n", 2, "Backoff 5 is outside 10-9999"},
+		{"Backoff low for vtllibrary", lib + " Backoff: 1\n", 2, "Backoff 1 is outside 2-9999: vtllibrary"},
 		{"short NAA", lib + " NAA: 10:22\n", 2, "NAA has 2 of 8"},
 		{"Library ID without Slot", drv + " Library ID: 10\n", 2, "without 'Slot: N'"},
 		{"bare Library header", "Library: 10\n Vendor identification: STK\n", 1, "Library 10 has no CHANNEL"},
@@ -70,6 +80,21 @@ func TestDeviceConfAsMhvtlReads(t *testing.T) {
 	}
 	if c := ParseDeviceConf([]byte(drv + " Compression: 5\n")); len(c.Problems) != 0 {
 		t.Errorf("Compression: 5 flagged: %v", c.Problems)
+	}
+	// Feature directive values vtltape and vtllibrary take as written; a
+	// Library has no Compression type or Encryption, so those are not checked
+	// there.
+	for _, in := range []string{
+		drv + " Compression type: ZSTD\n Backoff: 10\n Encryption: Simulated\n",
+		drv + " Compression type: lzo\n Backoff: 9999\n",
+		drv + " Backoff: +400\n",
+		drv + " Backoff: 0400\n",
+		drv + " Backoff: \v400\f\n",
+		lib + " Backoff: 2\n Compression type: bogus\n",
+	} {
+		if c := ParseDeviceConf([]byte(in)); len(c.Problems) != 0 {
+			t.Errorf("%q flagged: %v", in, c.Problems)
+		}
 	}
 	// sscanf ignores text after LUN, so the address is read.
 	c0 := ParseDeviceConf([]byte("Drive: 11 CHANNEL: 00 TARGET: 01 LUN: 00 # x\n"))
@@ -130,6 +155,32 @@ func TestConfValue(t *testing.T) {
 	}
 	if err := c.AddStanza(Header{Kind: "Drive", ID: 12, Target: 2}, []Attr{{Key: "Compression"}}); err == nil {
 		t.Error("AddStanza with an empty Compression accepted")
+	}
+	// Feature directives mhVTL would ignore (mhvtl-control#80).
+	for _, kv := range [][2]string{{"Compression type", "gzip"}, {"Backoff", "20000"}, {"Encryption", "aes"}} {
+		if err := c.SetAttr("Drive", 11, kv[0], kv[1]); err == nil {
+			t.Errorf("SetAttr(%q, %q) accepted", kv[0], kv[1])
+		}
+	}
+	lc := ParseDeviceConf([]byte("Library: 10 CHANNEL: 00 TARGET: 00 LUN: 00\n"))
+	if err := lc.SetAttr("Library", 10, "Backoff", "1"); err == nil {
+		t.Error("SetAttr(Library Backoff, 1) accepted")
+	}
+	if err := lc.SetAttr("Library", 10, "Backoff", "5"); err != nil {
+		t.Errorf("SetAttr(Library Backoff, 5): %v", err)
+	}
+	if err := c.AddStanza(Header{Kind: "Drive", ID: 12, Target: 2}, []Attr{{Key: "Backoff", Value: "0"}}); err == nil {
+		t.Error("AddStanza with Backoff: 0 accepted")
+	}
+	for _, kv := range [][2]string{{"Compression type", "zstd"}, {"Backoff", "400"}, {"Encryption", "simulated"}} {
+		if err := c.SetAttr("Drive", 11, kv[0], kv[1]); err != nil {
+			t.Errorf("SetAttr(%q, %q): %v", kv[0], kv[1], err)
+		}
+	}
+	for _, k := range []string{"Compression type", "Backoff", "Encryption"} {
+		if err := c.DeleteAttr("Drive", 11, k); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	for _, v := range []string{"HP #x", "HP\t#x", " HP", "HP ", "A\x00B"} {

@@ -65,6 +65,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -422,8 +423,8 @@ func (c *DeviceConf) index() {
 			if msg := scanfProblem(st.Kind, key, cText(l)); msg != "" {
 				problem(i, true, "%s", msg)
 			}
-			if st.Kind == "Drive" && key == "Encryption" && value != "" && EncryptionKind(value) == "" {
-				problem(i, true, "Encryption %q is neither 'aes-gcm' nor 'simulated': vtltape ignores it (vtltape.c:2391-2401 at 03c7d09)", value)
+			if msg := valueProblem(st.Kind, key, value); msg != "" {
+				problem(i, true, "%s", msg)
 			}
 			// mhVTL does not settle a repeated key one way: a string read
 			// by conf_value keeps its last non-empty value, PERSIST is
@@ -484,9 +485,84 @@ func (c *DeviceConf) index() {
 	sort.SliceStable(c.Problems, func(a, b int) bool { return c.Problems[a].Line < c.Problems[b].Line })
 }
 
+// valueProblem reports a feature directive whose value vtltape or vtllibrary
+// ignores, or reads as something other than what it says. An empty value is
+// left to the other checks. Line numbers are mhvtl upstream 2c40a93.
+func valueProblem(kind, key, value string) string {
+	if value == "" {
+		return ""
+	}
+	switch {
+	case kind == "Drive" && key == "Encryption":
+		if EncryptionKind(value) == "" {
+			return fmt.Sprintf("Encryption %q is neither 'aes-gcm' nor 'simulated': vtltape ignores it (vtltape.c:2477-2487)", value)
+		}
+	case kind == "Drive" && key == "Compression type":
+		// vtltape compares only the first 3 or 4 letters (strncasecmp,
+		// vtltape.c:2464-2475), so "lz4hc" selects lz4 and "gzip" nothing.
+		if CompressionType(value) != "" {
+			return ""
+		}
+		for _, t := range compressionTypes {
+			if len(value) > len(t) && asciiLower(value[:len(t)]) == t {
+				return fmt.Sprintf("Compression type %q is not one of zlib, lzo, lz4, zstd: vtltape reads only its first letters and uses %s (vtltape.c:2464-2475); write %s", value, t, t)
+			}
+		}
+		return fmt.Sprintf("Compression type %q is not one of zlib, lzo, lz4, zstd: vtltape ignores it and keeps an earlier Compression type line or its default (vtltape.c:2464-2475)", value)
+	case key == "Backoff" && (kind == "Drive" || kind == "Library"):
+		// Both daemons take sscanf "%d" only when 1 < n < 10000
+		// (vtltape.c:2457-2463, vtllibrary.c:1469-1475); vtltape then
+		// puts anything outside 10-10000 back to DEFLT_BACKOFF_VALUE,
+		// 400 (vtltape.c:2556-2559, include/vtllib.h:101). device.conf(5)
+		// gives 10-10000 with a default of 1000.
+		daemon, low := "vtltape", int64(10)
+		if kind == "Library" {
+			daemon, low = "vtllibrary", 2
+		}
+		n, vals := cScan(value, "%d")
+		if n != 1 {
+			return fmt.Sprintf("Backoff %q is not a number: %s ignores it and keeps an earlier Backoff line or the default 400", value, daemon)
+		}
+		// What the daemon stores: strtol truncated to an int (cInt), so a
+		// number past 32 bits wraps rather than being refused.
+		v := cInt(vals[0])
+		outcome := fmt.Sprintf("%s ignores it and keeps an earlier Backoff line or the default 400", daemon)
+		if v >= low && v <= 9999 {
+			outcome = fmt.Sprintf("%s polls with %d; write %d", daemon, v, v)
+		}
+		// %d skips C white space (\v, \f) that conf_value leaves in.
+		_, err := strconv.ParseInt(strings.TrimFunc(value, isCSpace), 10, 64)
+		switch {
+		case err != nil && !errors.Is(err, strconv.ErrRange):
+			return fmt.Sprintf("Backoff %q has text after the number: %s reads it as %d, so %s", value, daemon, v, outcome)
+		case err != nil || v != vals[0]:
+			return fmt.Sprintf("Backoff %s does not fit in an int: %s reads it as %d, so %s", value, daemon, v, outcome)
+		case v < low || v > 9999:
+			return fmt.Sprintf("Backoff %d is outside %d-9999: %s", v, low, outcome)
+		}
+	}
+	return ""
+}
+
+// compressionTypes are the device.conf Compression type values vtltape
+// knows (vtltape.c:2464-2475 at mhvtl 2c40a93).
+var compressionTypes = []string{"zlib", "lzo", "lz4", "zstd"}
+
+// CompressionType returns the codec a device.conf Compression type value
+// names, lowered, or "" when it is not exactly one of compressionTypes in
+// any case.
+func CompressionType(value string) string {
+	for _, t := range compressionTypes {
+		if len(value) == len(t) && asciiLower(value) == t {
+			return t
+		}
+	}
+	return ""
+}
+
 // EncryptionKind returns the kind of drive encryption a device.conf
 // Encryption value selects, "aes-gcm" or "simulated", matched as vtltape's
-// strcasecmp does (mhvtl usr/cmd/vtltape.c:2391-2401 at 03c7d09, from
+// strcasecmp does (mhvtl usr/cmd/vtltape.c:2477-2487 at 2c40a93, from
 // markh794/mhvtl#328). It returns "" for any other value, which vtltape
 // logs and ignores.
 func EncryptionKind(value string) string {
@@ -624,10 +700,15 @@ func checkKV(key, value string) error {
 	return nil
 }
 
-// checkScanf refuses a value of a field mhVTL reads with sscanf that it would
-// not read as written (see scanfProblem), such as an NAA short of 8 bytes.
-func checkScanf(kind, key, value string) error {
-	if msg := scanfProblem(kind, key, attrText(key, value)); msg != "" {
+// checkValue refuses a value mhVTL would not read as written: a field it
+// reads with sscanf (see scanfProblem), such as an NAA short of 8 bytes, or a
+// feature directive it ignores (see valueProblem), such as Backoff: 20000.
+func checkValue(kind, key, value string) error {
+	msg := scanfProblem(kind, key, attrText(key, value))
+	if msg == "" {
+		msg = valueProblem(kind, key, value)
+	}
+	if msg != "" {
 		return fmt.Errorf("invalid value for %s: %s", key, msg)
 	}
 	return nil
@@ -653,7 +734,7 @@ func (c *DeviceConf) SetAttr(kind string, id int, key, value string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkScanf(kind, key, value); err != nil {
+	if err := checkValue(kind, key, value); err != nil {
 		return err
 	}
 	if i, ok := st.Attr[key]; ok {
@@ -746,7 +827,7 @@ func (c *DeviceConf) AddStanza(h Header, attrs []Attr) error {
 		if err := checkKV(a.Key, a.Value); err != nil {
 			return err
 		}
-		if err := checkScanf(h.Kind, a.Key, a.Value); err != nil {
+		if err := checkValue(h.Kind, a.Key, a.Value); err != nil {
 			return err
 		}
 	}

@@ -884,6 +884,13 @@ var commentCitations = []struct{ cite, text string }{
 	{"kernel/mhvtl.c:126", "#define DEF_MAX_LUNS 32"},
 	{"kernel/mhvtl.c:630", "if (SCpnt->device->lun >= mhvtl_max_luns)"},
 	{"include/utils/q.h:51", "#define MAXPRIOR 1024"},
+	// conffile.valueProblem (mhvtl-control#80).
+	{"usr/cmd/vtltape.c:2457", `v = conf_value(b, "Backoff");`},
+	{"usr/cmd/vtltape.c:2464", `v = conf_value(b, "Compression type");`},
+	{"usr/cmd/vtltape.c:2477", `v = conf_value(b, "Encryption");`},
+	{"usr/cmd/vtltape.c:2556", "if ((backoff < 10) || (backoff > 10000))"},
+	{"usr/cmd/vtllibrary.c:1469", `v = conf_value(b, "Backoff");`},
+	{"include/vtllib.h:101", "#define DEFLT_BACKOFF_VALUE 400"},
 }
 
 func TestCommentCitations(t *testing.T) {
