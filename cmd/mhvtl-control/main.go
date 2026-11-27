@@ -116,13 +116,16 @@ func main() {
 		DefaultHome: *homeDir,
 		Vtltape:     &mhvtlbin.Vtltape{Path: *vtltape},
 		Drives:      stats,
-		Nodes:       changer.NodeResolver{Locator: &sysfsOnly, Drive: nodeDrives.Locate},
-		DiskOptions: rawdisk.Options{IncludeVirtual: *includeVirtual, ScanPaths: scanPaths},
-		Formatter:   rawdisk.ToolFormatter{ToolPath: *formatTool},
-		Token:       token,
-		CORSOrigin:  *corsOrigin,
-		StaticFS:    webui.FS(),
-		Version:     version,
+		// WRITE ATTRIBUTE goes through the drive's sg node, found as for
+		// its statistics.
+		DriveAttributes: stats,
+		Nodes:           changer.NodeResolver{Locator: &sysfsOnly, Drive: nodeDrives.Locate},
+		DiskOptions:     rawdisk.Options{IncludeVirtual: *includeVirtual, ScanPaths: scanPaths},
+		Formatter:       rawdisk.ToolFormatter{ToolPath: *formatTool},
+		Token:           token,
+		CORSOrigin:      *corsOrigin,
+		StaticFS:        webui.FS(),
+		Version:         version,
 		// Configuration writes need TLS off loopback (plan 4.1); GET
 		// /config/capabilities reports it.
 		InsecureListen:      !isLoopbackHost(host) && (*tlsCert == "" || *tlsKey == ""),

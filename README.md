@@ -408,6 +408,92 @@ waits at most a minute for a library a move or queue command holds, then
 answers `503 busy`. The dashboard
 offers the actions on the Service table's target and library rows.
 
+## Cartridge attributes
+
+`GET /api/v1/libraries/{id}/media/{barcode}/attributes` reports a
+cartridge's MAM (Medium Auxiliary Memory) attributes, read-only from its
+`mam` and `mhvtl_data` files, or from the MAM region of a raw-disk
+cartridge:
+
+```json
+{
+  "barcode": "E01001L8", "backend": "file",
+  "tape_format_version": 3, "mam_format_version": 4,
+  "attributes": [
+    {"id": "0x0801", "name": "Application name", "group": "host", "format": "ascii",
+     "read_only": false, "editable": true, "length": 32, "value": "Bareos", "raw": "426172656f732020..."},
+    {"id": "0x0408", "name": "Medium type", "group": "medium", "format": "binary",
+     "read_only": false, "editable": false, "length": 1, "value": "data", "raw": "00"}
+  ],
+  "loaded_in": {"library": 10, "position": 1, "drive": 11},
+  "note": "Values as of the cartridge's last MAM write: ..."
+}
+```
+
+- `group` is the attribute's range: `device`, `medium`, `host`,
+  `device_vendor`, `medium_vendor`, `host_vendor`, or `mhvtl` for mhVTL's
+  private records (`mhvtl_data`).
+- `value` is decoded: numbers in decimal, strings without their padding,
+  the medium type by name, volume coherency information summarized, other
+  binary values in hex. `raw` is the stored value in hex. The AES-GCM key
+  salt is left out.
+- `loaded_in` names the drive the cartridge is in, from the live changer
+  state of every library sharing its media home; `live_error` says why
+  that is unknown.
+- The values are those of the last MAM write. vtltape rewrites the files after
+  every WRITE ATTRIBUTE and when it unloads the cartridge. While the cartridge
+  is loaded, its counters may be ahead of the files.
+- `error` says why the attributes are incomplete. The answer is `404` when
+  the library has no such cartridge.
+
+`PATCH` on the same path writes attributes with WRITE ATTRIBUTE through
+the drive the cartridge is loaded in, then answers like `GET`:
+
+```json
+{"attributes": {"0x0801": "Bareos", "0x0808": "Full"}}
+```
+
+- Only the ASCII and TEXT host attributes an application may write can be
+  set: `0x0800` application vendor, `0x0801` application name, `0x0802`
+  application version, `0x0803` user medium text label, `0x0804` date and
+  time last written, `0x0806` barcode, `0x0807` owning host textual name,
+  `0x0808` media pool, `0x080b` application format version. Any other id,
+  including the binary ones (text localization, volume coherency, volume
+  lock, medium type) and vendor ids, is refused with `400`.
+- A value longer than its field or ASCII outside `0x20`-`0x7E` is refused
+  with `400`. TEXT follows the cartridge's text localization identifier
+  (`0x0805`): printable ASCII unless it is `81h` (UTF-8), then UTF-8 without
+  NUL. Values are sent
+  padded to the full field width (ASCII with spaces, TEXT with NULs), as
+  mhVTL copies only the bytes sent: a shorter value replaces a longer one
+  whole. An empty string clears the attribute.
+- The cartridge is identified by its medium serial number (`0x0401`), which
+  no host can write, not by the barcode attribute. The drive's serial number
+  is read before the write and must match the one in the cartridge's MAM
+  file. A different or missing one (a backup application swapped the
+  cartridge), or UNIT ATTENTION on that read or on the write (a cartridge was
+  just loaded), answers `409 conflict` and nothing is written; retry.
+  A cartridge whose MAM file has no serial number answers `500 media_error`.
+- The serial number is read again after the write. If the drive then holds
+  another cartridge, the answer is `500 write_unverified`: the attributes may
+  have gone to that cartridge. mhVTL offers no way to make the check and the
+  write atomic (one pending UNIT ATTENTION per drive, shared by all
+  initiators; the library's unload ignores PREVENT), so a swap in the
+  milliseconds between the two commands is detected afterwards, not
+  prevented.
+- Like any command mhVTL does not exempt, the edit reports and so clears a
+  pending UNIT ATTENTION for every initiator, including the one a backup
+  application would see after its own load.
+- A cartridge that is not loaded in a drive answers `409 not_loaded`: mount it
+  first. mhVTL has no way to change these attributes on a cartridge outside a
+  drive.
+- A drive another initiator holds a reservation on answers `409 conflict`, a
+  drive that refuses the command `422 scsi_error` with the sense, and an
+  unreachable drive or changer `503`.
+
+The dashboard's Attributes button on each media row shows them; while the
+cartridge is in a drive the application attributes can be edited there.
+
 ## Transport map
 
 `GET /api/v1/transports` reports how mhVTL's devices are exported, read-only

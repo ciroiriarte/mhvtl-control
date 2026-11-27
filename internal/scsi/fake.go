@@ -7,15 +7,21 @@ import (
 
 // FakeDevice is an in-memory Device for tests. Respond decides each command's
 // outcome: it fills dataIn (returning the byte count) or returns an error such
-// as a *SenseError. Every CDB is recorded in order.
+// as a *SenseError. Every CDB is recorded in order. A data-out command
+// (DoOut) is passed to Respond with the data it sends, which is also
+// recorded in DataOut.
 type FakeDevice struct {
 	mu      sync.Mutex
 	CDBs    [][]byte
-	Respond func(cdb, dataIn []byte) (int, error)
+	DataOut [][]byte
+	Respond func(cdb, data []byte) (int, error)
 	Closed  bool
 }
 
-var _ Device = (*FakeDevice)(nil)
+var (
+	_ Device        = (*FakeDevice)(nil)
+	_ DataOutDevice = (*FakeDevice)(nil)
+)
 
 // Do records cdb and delegates to Respond.
 func (f *FakeDevice) Do(cdb, dataIn []byte, _ time.Duration) (int, []byte, error) {
@@ -30,6 +36,22 @@ func (f *FakeDevice) Do(cdb, dataIn []byte, _ time.Duration) (int, []byte, error
 		return n, se.Sense, err
 	}
 	return n, nil, err
+}
+
+// DoOut records cdb and dataOut and delegates to Respond.
+func (f *FakeDevice) DoOut(cdb, dataOut []byte, _ time.Duration) ([]byte, error) {
+	f.mu.Lock()
+	f.CDBs = append(f.CDBs, append([]byte(nil), cdb...))
+	f.DataOut = append(f.DataOut, append([]byte(nil), dataOut...))
+	f.mu.Unlock()
+	if f.Respond == nil {
+		return nil, nil
+	}
+	_, err := f.Respond(cdb, append([]byte(nil), dataOut...))
+	if se, ok := err.(*SenseError); ok {
+		return se.Sense, err
+	}
+	return nil, err
 }
 
 // Close marks the fake closed.

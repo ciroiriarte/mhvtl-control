@@ -25,6 +25,14 @@ type Device interface {
 	Do(cdb, dataIn []byte, timeout time.Duration) (n int, sense []byte, err error)
 }
 
+// DataOutDevice executes one SCSI command that sends data to the target in
+// its data-out phase, such as WRITE ATTRIBUTE. It is apart from Device so
+// that Device's implementations need not support the direction. It returns
+// any sense data, and errors as Device.Do does.
+type DataOutDevice interface {
+	DoOut(cdb, dataOut []byte, timeout time.Duration) (sense []byte, err error)
+}
+
 // SG_IO ioctl request and its interface id (include/scsi/sg.h).
 const (
 	sgIO          = 0x2285
@@ -102,7 +110,10 @@ type SGDevice struct {
 	f *os.File
 }
 
-var _ Device = (*SGDevice)(nil)
+var (
+	_ Device        = (*SGDevice)(nil)
+	_ DataOutDevice = (*SGDevice)(nil)
+)
 
 // OpenSG opens a SCSI generic node read-write (SG_IO needs write access for
 // commands that change state, such as MOVE MEDIUM).
@@ -119,6 +130,19 @@ func (d *SGDevice) Close() error { return d.f.Close() }
 
 // Do issues cdb with SG_IO. A non-empty dataIn selects SG_DXFER_FROM_DEV.
 func (d *SGDevice) Do(cdb, dataIn []byte, timeout time.Duration) (int, []byte, error) {
+	return d.sgIO(cdb, dataIn, sgDxferFromDev, timeout)
+}
+
+// DoOut issues cdb with SG_IO, sending dataOut in the data-out phase
+// (SG_DXFER_TO_DEV).
+func (d *SGDevice) DoOut(cdb, dataOut []byte, timeout time.Duration) ([]byte, error) {
+	_, sense, err := d.sgIO(cdb, dataOut, sgDxferToDev, timeout)
+	return sense, err
+}
+
+// sgIO issues cdb with SG_IO, transferring data in direction dir; an empty
+// data buffer means no data transfer.
+func (d *SGDevice) sgIO(cdb, data []byte, dir int32, timeout time.Duration) (int, []byte, error) {
 	if len(cdb) == 0 || len(cdb) > 255 {
 		return 0, nil, fmt.Errorf("scsi: bad CDB length %d", len(cdb))
 	}
@@ -132,19 +156,19 @@ func (d *SGDevice) Do(cdb, dataIn []byte, timeout time.Duration) (int, []byte, e
 		Sbp:            unsafe.Pointer(&sense[0]),
 		Timeout:        uint32(timeout / time.Millisecond),
 	}
-	if len(dataIn) > 0 {
-		hdr.DxferDirection = sgDxferFromDev
-		hdr.DxferLen = uint32(len(dataIn))
-		hdr.Dxferp = unsafe.Pointer(&dataIn[0])
+	if len(data) > 0 {
+		hdr.DxferDirection = dir
+		hdr.DxferLen = uint32(len(data))
+		hdr.Dxferp = unsafe.Pointer(&data[0])
 	}
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, d.f.Fd(), sgIO, uintptr(unsafe.Pointer(&hdr)))
 	runtime.KeepAlive(cdb)
-	runtime.KeepAlive(dataIn)
+	runtime.KeepAlive(data)
 	runtime.KeepAlive(sense)
 	if errno != 0 {
 		return 0, nil, &os.SyscallError{Syscall: "ioctl(SG_IO)", Err: errno}
 	}
-	return checkHdr(&hdr, len(dataIn), sense)
+	return checkHdr(&hdr, len(data), sense)
 }
 
 // checkHdr turns a completed sg_io_hdr into the Device results.

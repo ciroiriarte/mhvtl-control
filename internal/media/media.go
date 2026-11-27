@@ -325,24 +325,33 @@ func readRawOnce(c *Cartridge, link string) error {
 	return nil
 }
 
-// parseRawMAM decodes the raw backend's MAM region: two host-order u32
-// lengths, then the mam and mhvtl_data streams.
+// parseRawMAM decodes the raw backend's MAM region (splitRawMAM).
 func parseRawMAM(c *Cartridge, b []byte) error {
+	mam, vtl, err := splitRawMAM(b)
+	if err != nil {
+		return err
+	}
+	if err := parseMAM(c, mam); err != nil {
+		return fmt.Errorf("mam: %w", err)
+	}
+	if err := parseMhvtl(c, vtl); err != nil {
+		return fmt.Errorf("mhvtl_data: %w", err)
+	}
+	return nil
+}
+
+// splitRawMAM splits the raw backend's MAM region into its mam and
+// mhvtl_data streams: two host-order u32 lengths, then the streams.
+func splitRawMAM(b []byte) (mam, vtl []byte, err error) {
 	if len(b) < 8 {
-		return errors.New("mam: short header")
+		return nil, nil, errors.New("mam: short header")
 	}
 	mlen := uint64(binary.NativeEndian.Uint32(b))
 	hlen := uint64(binary.NativeEndian.Uint32(b[4:]))
 	if 8+mlen+hlen > uint64(len(b)) {
-		return fmt.Errorf("mam: %w", errTruncated)
+		return nil, nil, fmt.Errorf("mam: %w", errTruncated)
 	}
-	if err := parseMAM(c, b[8:8+mlen]); err != nil {
-		return fmt.Errorf("mam: %w", err)
-	}
-	if err := parseMhvtl(c, b[8+mlen:8+mlen+hlen]); err != nil {
-		return fmt.Errorf("mhvtl_data: %w", err)
-	}
-	return nil
+	return b[8 : 8+mlen], b[8+mlen : 8+mlen+hlen], nil
 }
 
 // errText is err without the path a *os.PathError carries, since it ends up

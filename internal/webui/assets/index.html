@@ -266,6 +266,22 @@
     </form>
   </dialog>
 
+  <!-- MAM attributes: read from the cartridge's files; host attributes written through the drive it is in. -->
+  <dialog id="mam-dialog" class="wide" aria-labelledby="mam-dialog-title">
+    <form method="dialog" id="mam-form">
+      <h3 id="mam-dialog-title" style="margin:0 0 6px">MAM attributes</h3>
+      <p class="muted" id="mam-intro" style="margin:0 0 8px"></p>
+      <div id="mam-body" class="stats-body"></div>
+      <p class="muted footnote" id="mam-note"></p>
+      <p class="dialog-error" id="mam-error" role="alert"></p>
+      <div class="dialog-buttons">
+        <button class="btn" type="button" id="mam-refresh">Refresh</button>
+        <button class="btn" value="cancel">Close</button>
+        <button class="btn primary" type="button" id="mam-submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- Import: put a shelf cartridge into the MAP, optionally on into a free storage slot. -->
   <dialog id="import-dialog" aria-labelledby="import-dialog-title">
     <form method="dialog" id="import-form">

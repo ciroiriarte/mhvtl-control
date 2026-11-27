@@ -439,9 +439,14 @@ func (s *Server) librariesWithHome(home string) ([]config.Library, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Each library once: the callers lock every library returned, and a
+	// device.conf with two stanzas of one id (a Problem, but readable)
+	// would have them take the same lock twice and hang.
 	var out []config.Library
+	seen := map[int]bool{}
 	for _, l := range inv.Libraries {
-		if s.homeFor(l) == home {
+		if s.homeFor(l) == home && !seen[l.ID] {
+			seen[l.ID] = true
 			out = append(out, l)
 		}
 	}
